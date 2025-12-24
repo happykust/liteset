@@ -1,0 +1,295 @@
+version: "3.9"
+
+# Load Testing Environment for Apache Superset
+# This docker-compose file sets up databases with test data for load testing
+
+services:
+  # ============================================
+  # PostgreSQL - Superset metadata + test data
+  # ============================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: loadtest-postgres
+    environment:
+      POSTGRES_USER: loadtest
+      POSTGRES_PASSWORD: loadtest
+      POSTGRES_DB: loadtest
+      POSTGRES_MULTIPLE_DATABASES: superset,loadtest
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./postgres/generate_data.sql:/docker-entrypoint-initdb.d/02-generate_data.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loadtest"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - loadtest-network
+
+  # ============================================
+  # ClickHouse - Analytics database (100M+ rows)
+  # ============================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    container_name: loadtest-clickhouse
+    environment:
+      CLICKHOUSE_DB: loadtest
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./clickhouse/config.xml:/etc/clickhouse-server/config.d/custom.xml:ro
+    ports:
+      - "8123:8123"  # HTTP
+      - "9000:9000"  # Native
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - loadtest-network
+
+  # ============================================
+  # MySQL - Additional test database
+  # ============================================
+  mysql:
+    image: mysql:8.0
+    container_name: loadtest-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: loadtest
+      MYSQL_USER: loadtest
+      MYSQL_PASSWORD: loadtest
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    ports:
+      - "3306:3306"
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - loadtest-network
+
+  # ============================================
+  # Redis - Caching and Celery broker
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: loadtest-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - loadtest-network
+
+  # ============================================
+  # Superset - Main application
+  # ============================================
+  superset:
+    build:
+      context: ../../../
+      dockerfile: Dockerfile
+    container_name: loadtest-superset
+    environment:
+      SUPERSET_SECRET_KEY: "loadtest_secret_key_change_in_production"
+      SQLALCHEMY_DATABASE_URI: "postgresql+psycopg2://loadtest:loadtest@postgres:5432/superset"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      
+      # Cache configuration
+      CACHE_TYPE: RedisCache
+      CACHE_REDIS_HOST: redis
+      CACHE_REDIS_PORT: 6379
+      CACHE_REDIS_DB: 0
+      
+      # Results backend
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/1"
+      
+      # Performance settings
+      SUPERSET_WEBSERVER_TIMEOUT: 300
+      SQL_MAX_ROW: 100000
+      ROW_LIMIT: 50000
+      
+      # Feature flags for testing
+      FEATURE_FLAGS: >
+        {
+          "ENABLE_TEMPLATE_PROCESSING": true,
+          "ENABLE_EXPLORE_DRAG_AND_DROP": true,
+          "DASHBOARD_NATIVE_FILTERS": true,
+          "DASHBOARD_CROSS_FILTERS": true,
+          "DASHBOARD_NATIVE_FILTERS_SET": true,
+          "ALERT_REPORTS": true,
+          "SQLLAB_BACKEND_PERSISTENCE": true,
+          "THUMBNAILS": true,
+          "GLOBAL_ASYNC_QUERIES": true
+        }
+    ports:
+      - "8088:8088"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - superset_home:/app/superset_home
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - loadtest-network
+
+  # ============================================
+  # Celery Worker - Async query execution
+  # ============================================
+  celery-worker:
+    build:
+      context: ../../../
+      dockerfile: Dockerfile
+    container_name: loadtest-celery-worker
+    command: celery --app=superset.tasks.celery_app:app worker --pool=prefork --concurrency=4
+    environment:
+      SUPERSET_SECRET_KEY: "loadtest_secret_key_change_in_production"
+      SQLALCHEMY_DATABASE_URI: "postgresql+psycopg2://loadtest:loadtest@postgres:5432/superset"
+      REDIS_HOST: redis
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/1"
+    depends_on:
+      superset:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - superset_home:/app/superset_home
+    networks:
+      - loadtest-network
+
+  # ============================================
+  # Celery Beat - Scheduled tasks
+  # ============================================
+  celery-beat:
+    build:
+      context: ../../../
+      dockerfile: Dockerfile
+    container_name: loadtest-celery-beat
+    command: celery --app=superset.tasks.celery_app:app beat --pidfile /tmp/celerybeat.pid
+    environment:
+      SUPERSET_SECRET_KEY: "loadtest_secret_key_change_in_production"
+      SQLALCHEMY_DATABASE_URI: "postgresql+psycopg2://loadtest:loadtest@postgres:5432/superset"
+      REDIS_HOST: redis
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/1"
+    depends_on:
+      superset:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - loadtest-network
+
+  # ============================================
+  # Locust Master - Load test coordinator
+  # ============================================
+  locust-master:
+    image: locustio/locust:2.20.0
+    container_name: loadtest-locust-master
+    command: -f /mnt/locust/locustfile.py --master -H http://superset:8088
+    environment:
+      SUPERSET_URL: "http://superset:8088"
+      SUPERSET_USERNAME: admin
+      SUPERSET_PASSWORD: admin
+      LOAD_PROFILE: load
+      CACHE_MODE: mixed
+    volumes:
+      - ./..:/mnt/locust:ro
+    ports:
+      - "8089:8089"  # Locust web UI
+    depends_on:
+      superset:
+        condition: service_healthy
+    networks:
+      - loadtest-network
+
+  # ============================================
+  # Locust Workers - Load generators
+  # ============================================
+  locust-worker:
+    image: locustio/locust:2.20.0
+    command: -f /mnt/locust/locustfile.py --worker --master-host locust-master
+    environment:
+      SUPERSET_URL: "http://superset:8088"
+      SUPERSET_USERNAME: admin
+      SUPERSET_PASSWORD: admin
+    volumes:
+      - ./..:/mnt/locust:ro
+    depends_on:
+      - locust-master
+    deploy:
+      replicas: 4
+    networks:
+      - loadtest-network
+
+  # ============================================
+  # Data Generator - Populates test data
+  # ============================================
+  data-generator:
+    image: python:3.11-slim
+    container_name: loadtest-data-generator
+    volumes:
+      - ../data:/app/data:ro
+      - ./scripts:/app/scripts:ro
+    working_dir: /app
+    command: >
+      bash -c "
+        pip install clickhouse-driver psycopg2-binary pymysql faker tqdm &&
+        python scripts/generate_all_data.py
+      "
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      POSTGRES_HOST: postgres
+      MYSQL_HOST: mysql
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    networks:
+      - loadtest-network
+    profiles:
+      - generate-data
+
+networks:
+  loadtest-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  mysql_data:
+  redis_data:
+  superset_home:
