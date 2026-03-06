@@ -24,7 +24,7 @@ name = "apache_superset"
 description = "A modern, enterprise-ready business intelligence web application"
 readme = "README.md"
 dynamic = ["version", "scripts", "entry-points"]
-requires-python = ">=3.10"
+requires-python = ">=3.10, <3.14"
 license = { file="LICENSE.txt" }
 authors = [
     { name = "Apache Software Foundation", email = "dev@superset.apache.org" },
@@ -94,7 +94,7 @@ dependencies = [
     "sshtunnel>=0.4.0, <0.5",
     "simplejson>=3.15.0",
     "slack_sdk>=3.19.0, <4",
-    "sqlalchemy>=1.4, <2",
+    "sqlalchemy>=2.0, <2.1",  # liteset requires 2.0+ for async API (asyncpg, async_sessionmaker)
     "sqlalchemy-utils>=0.38.3, <0.39",
     "sqlglot>=27.15.2, <28",
     # newer pandas needs 0.9+
@@ -104,6 +104,15 @@ dependencies = [
     "wtforms>=2.3.3, <4",
     "wtforms-json",
     "xlsxwriter>=3.0.7, <3.1",
+    # liteset async backend dependencies
+    "litestar[standard]>=2.15.0",
+    "uvicorn[standard]>=0.34.0",
+    "uvloop>=0.21.0",
+    "pydantic-settings>=2.7.0",
+    "msgspec>=0.19.0",
+    "asgiref>=3.8.0",
+    "asyncpg>=0.30.0",
+    "aiosqlite>=0.21.0",
 ]
 
 [project.optional-dependencies]
@@ -424,3 +433,14 @@ python-geohash = "0"
 # TODO REMOVE THESE DEPS FROM CODEBASE
 paramiko = "3"  # GPL
 pyxlsb = "1"  # GPL
+
+[tool.uv]
+# sqlalchemy-databricks pins sqlalchemy<2, but liteset requires SA 2.0+ for async API.
+# Override the transitive constraint so the resolver can proceed.
+# Note: the databricks adapter is incompatible with SA 2.x at runtime.
+override-dependencies = [
+    "sqlalchemy>=2.0, <2.1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
