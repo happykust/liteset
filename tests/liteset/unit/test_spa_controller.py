@@ -1,0 +1,50 @@
+import pytest
+from litestar import Litestar
+from litestar.testing import AsyncTestClient
+
+from liteset.app import create_app
+from liteset.config import LitesetSettings
+from liteset.controllers.spa import SPA_ROUTES
+
+
+@pytest.fixture
+def app():
+    settings = LitesetSettings(
+        secret_key="test-secret-long-enough",
+        sqlalchemy_database_uri="sqlite+aiosqlite://",
+        cors_allow_origins=["*"],
+    )
+    return create_app(settings=settings, enable_flask_fallback=False)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/superset/welcome/",
+        "/explore/",
+        "/dashboard/list/",
+        "/superset/sqllab/",
+        "/chart/list/",
+    ],
+)
+async def test_spa_routes_return_html(app: Litestar, path: str):
+    async with AsyncTestClient(app=app) as client:
+        resp = await client.get(path)
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers.get("content-type", "")
+
+
+async def test_spa_route_contains_bootstrap_data(app: Litestar):
+    async with AsyncTestClient(app=app) as client:
+        resp = await client.get("/superset/welcome/")
+        assert resp.status_code == 200
+
+
+async def test_spa_route_with_path_param(app: Litestar):
+    async with AsyncTestClient(app=app) as client:
+        resp = await client.get("/dashboard/42/")
+        assert resp.status_code == 200
+
+
+async def test_spa_routes_list_is_not_empty():
+    assert len(SPA_ROUTES) > 0
