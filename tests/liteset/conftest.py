@@ -19,5 +19,37 @@
 
 Run liteset tests with: uv run pytest tests/liteset/
 """
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
 
 pytest_plugins = ["pytest_asyncio"]
+
+
+@asynccontextmanager
+async def create_test_session(
+    base: type[DeclarativeBase],
+) -> AsyncIterator[AsyncSession]:
+    """Factory for creating an async in-memory SQLite session.
+
+    Creates all tables for the given DeclarativeBase, yields an
+    AsyncSession, and disposes the engine on exit.
+
+    Usage in test modules::
+
+        @pytest.fixture
+        async def async_session():
+            async with create_test_session(Base) as session:
+                yield session
+    """
+    engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(base.metadata.create_all)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        yield session
+    await engine.dispose()
