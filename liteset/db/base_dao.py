@@ -27,21 +27,33 @@ T = TypeVar("T", bound=DeclarativeBase)
 
 class BaseAsyncDAO(Generic[T]):
     model_cls: type[T]
+    # Shared across all subclasses intentionally: keyed by model_cls,
+    # so each subclass caches its own PK column without collision.
+    _pk_column_cache: dict[type, Any] = {}  # noqa: RUF012
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    @classmethod
+    def _get_pk_column(cls) -> Any:
+        """Return the primary key column attribute, cached per model class."""
+        if cls.model_cls not in cls._pk_column_cache:
+            pk_cols = inspect(cls.model_cls).primary_key
+            if len(pk_cols) != 1:
+                raise ValueError(
+                    f"{cls.model_cls.__name__} has composite PK; "
+                    "use a custom query instead of find_by_ids"
+                )
+            cls._pk_column_cache[cls.model_cls] = getattr(
+                cls.model_cls, pk_cols[0].name,
+            )
+        return cls._pk_column_cache[cls.model_cls]
 
     async def find_by_id(self, model_id: int | str) -> T | None:
         return await self.session.get(self.model_cls, model_id)
 
     async def find_by_ids(self, model_ids: list[int | str]) -> list[T]:
-        pk_cols = inspect(self.model_cls).primary_key
-        if len(pk_cols) != 1:
-            raise ValueError(
-                f"{self.model_cls.__name__} has composite PK; "
-                "use a custom query instead of find_by_ids"
-            )
-        pk_col = getattr(self.model_cls, pk_cols[0].name)
+        pk_col = self._get_pk_column()
         stmt = select(self.model_cls).where(pk_col.in_(model_ids))
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
