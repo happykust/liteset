@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -35,8 +35,14 @@ class BaseAsyncDAO(Generic[T]):
         return await self.session.get(self.model_cls, model_id)
 
     async def find_by_ids(self, model_ids: list[int | str]) -> list[T]:
-        id_col = getattr(self.model_cls, "id")
-        stmt = select(self.model_cls).where(id_col.in_(model_ids))
+        pk_cols = inspect(self.model_cls).primary_key
+        if len(pk_cols) != 1:
+            raise ValueError(
+                f"{self.model_cls.__name__} has composite PK; "
+                "use a custom query instead of find_by_ids"
+            )
+        pk_col = getattr(self.model_cls, pk_cols[0].name)
+        stmt = select(self.model_cls).where(pk_col.in_(model_ids))
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
