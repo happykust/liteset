@@ -51,11 +51,13 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         expires_on: datetime | None = None,
     ) -> KeyValueEntry:
         """Create a new key-value entry."""
-        return await self.create({
-            "resource": resource,
-            "value": value,
-            "expires_on": expires_on,
-        })
+        return await self.create(
+            {
+                "resource": resource,
+                "value": value,
+                "expires_on": expires_on,
+            }
+        )
 
     async def upsert_entry(
         self,
@@ -80,10 +82,13 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         result = await self.session.execute(stmt)
         existing = result.scalars().one_or_none()
         if existing:
-            return await self.update(existing, {
-                "value": value,
-                "expires_on": expires_on,
-            })
+            return await self.update(
+                existing,
+                {
+                    "value": value,
+                    "expires_on": expires_on,
+                },
+            )
         return await self.create_entry(resource, value, expires_on)
 
     async def delete_entry(

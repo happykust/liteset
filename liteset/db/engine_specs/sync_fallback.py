@@ -45,7 +45,7 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
     information_schema queries otherwise.
     """
 
-    _sync_spec: type  # Flask BaseEngineSpec subclass
+    _sync_spec: Any  # Flask BaseEngineSpec subclass
 
     @classmethod
     async def get_catalog_names(
@@ -60,8 +60,9 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
                 try:
                     return set(sync_spec.get_catalog_names(inspector=inspector))
                 except TypeError:
-                    # Fallback: some specs expect database= instead of inspector=
-                    return set(inspector.get_schema_names())
+                    # Sync spec has incompatible signature — re-raise rather
+                    # than silently returning schema names as catalog names.
+                    raise
 
             return await conn.run_sync(_run)
         return await super().get_catalog_names(conn)
@@ -78,7 +79,12 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
             def _run(sync_conn: Connection) -> set[str]:
                 inspector = inspect(sync_conn)
                 try:
-                    return set(sync_spec.get_schema_names(inspector=inspector, catalog=catalog))
+                    return set(
+                        sync_spec.get_schema_names(
+                            inspector=inspector,
+                            catalog=catalog,
+                        )
+                    )
                 except TypeError:
                     return set(inspector.get_schema_names())
 
@@ -97,7 +103,12 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
             def _run(sync_conn: Connection) -> set[str]:
                 inspector = inspect(sync_conn)
                 try:
-                    return set(sync_spec.get_table_names(inspector=inspector, schema=schema))
+                    return set(
+                        sync_spec.get_table_names(
+                            inspector=inspector,
+                            schema=schema,
+                        )
+                    )
                 except TypeError:
                     return set(inspector.get_table_names(schema=schema))
 
@@ -117,7 +128,13 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
             def _run(sync_conn: Connection) -> list[dict[str, Any]]:
                 inspector = inspect(sync_conn)
                 try:
-                    return list(sync_spec.get_columns(inspector=inspector, table_name=table_name, schema=schema))
+                    return list(
+                        sync_spec.get_columns(
+                            inspector=inspector,
+                            table_name=table_name,
+                            schema=schema,
+                        )
+                    )
                 except TypeError:
                     return [
                         {
@@ -142,9 +159,7 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
             result = sync_conn.execute(text(query), parameters or {})
             columns = list(result.keys()) if result.returns_rows else []
             data = (
-                [tuple(row) for row in result.fetchall()]
-                if result.returns_rows
-                else []
+                [tuple(row) for row in result.fetchall()] if result.returns_rows else []
             )
             return AsyncResultSet(
                 columns=columns,

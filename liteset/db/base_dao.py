@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from sqlalchemy import inspect, select
+from sqlalchemy import CursorResult, delete as sa_delete, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -45,7 +45,8 @@ class BaseAsyncDAO(Generic[T]):
                     "use a custom query instead of find_by_ids"
                 )
             cls._pk_column_cache[cls.model_cls] = getattr(
-                cls.model_cls, pk_cols[0].name,
+                cls.model_cls,
+                pk_cols[0].name,
             )
         return cls._pk_column_cache[cls.model_cls]
 
@@ -93,3 +94,17 @@ class BaseAsyncDAO(Generic[T]):
     async def delete(self, items: list[T]) -> None:
         for item in items:
             await self.session.delete(item)
+
+    async def bulk_delete(self, ids: list[int | str]) -> int:
+        """Bulk delete by IDs in a single SQL DELETE. Returns deleted count.
+
+        WARNING: Bypasses ORM-level cascades (cascade="all, delete-orphan").
+        Use delete() for models with ORM cascades. Override in subclasses
+        when cascade behavior is required.
+        """
+        if not ids:
+            return 0
+        pk_col = self._get_pk_column()
+        stmt = sa_delete(self.model_cls).where(pk_col.in_(ids))
+        result: CursorResult[Any] = await self.session.execute(stmt)  # type: ignore[assignment]
+        return result.rowcount

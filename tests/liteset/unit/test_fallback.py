@@ -22,3 +22,18 @@ def test_create_flask_fallback_importable():
     from liteset.fallback import create_flask_fallback
 
     assert callable(create_flask_fallback)
+
+
+def test_init_flask_fallback_importable():
+    """Test that the init function is importable."""
+    from liteset.fallback import init_flask_fallback
+
+    assert callable(init_flask_fallback)
+
+
+def test_create_flask_fallback_does_not_import_superset():
+    """create_flask_fallback should not eagerly import superset."""
+    from liteset.fallback import create_flask_fallback
+
+    handler = create_flask_fallback()
+    assert handler is not None

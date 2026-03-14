@@ -17,10 +17,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, select
 
 from superset.models.core import FavStar, FavStarClassName
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class FavoriteMixin:
@@ -29,6 +33,7 @@ class FavoriteMixin:
     Subclass must set ``_fav_class_name`` and have ``self.session`` (AsyncSession).
     """
 
+    session: AsyncSession
     _fav_class_name: FavStarClassName
 
     async def favorited_ids(self, obj_ids: list[int], user_id: int) -> list[int]:

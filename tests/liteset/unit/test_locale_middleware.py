@@ -14,28 +14,28 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Backward-compatible 'superset' CLI that delegates to liteset."""
-
-from __future__ import annotations
-
-import warnings
-
-import click
-
-from liteset.cli.main import liteset_cli, normalize_token
+from liteset.middleware.locale import _parse_accept_language
 
 
-@click.group(context_settings={"token_normalize_func": normalize_token})
-@click.pass_context
-def superset_cli(ctx: click.Context) -> None:
-    """Legacy Superset CLI (deprecated — use 'liteset' instead)."""
-    warnings.warn(
-        "The 'superset' command is deprecated. Use 'liteset' instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    ctx.ensure_object(dict)
+def test_parse_simple():
+    assert _parse_accept_language("en") == "en"
 
 
-for cmd_name, cmd in liteset_cli.commands.items():
-    superset_cli.add_command(cmd, cmd_name)
+def test_parse_with_region():
+    assert _parse_accept_language("en-US") == "en"
+
+
+def test_parse_with_quality():
+    assert _parse_accept_language("fr-FR;q=0.9, en;q=0.8") == "fr"
+
+
+def test_parse_multiple():
+    assert _parse_accept_language("de, en;q=0.5") == "de"
+
+
+def test_parse_empty():
+    assert _parse_accept_language("") == "en"
+
+
+def test_parse_russian():
+    assert _parse_accept_language("ru-RU,ru;q=0.9,en;q=0.8") == "ru"

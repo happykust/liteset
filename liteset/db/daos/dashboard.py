@@ -16,7 +16,6 @@
 # under the License.
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -29,6 +28,7 @@ from superset.models.core import FavStarClassName
 from superset.models.dashboard import Dashboard
 from superset.models.embedded_dashboard import EmbeddedDashboard
 from superset.models.slice import Slice
+from superset.utils.json import dumps, loads
 
 
 class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
@@ -81,7 +81,7 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         result = await self.session.execute(stmt)
         return result.scalars().one_or_none() is None
 
-    async def set_dash_metadata(
+    async def set_dash_metadata(  # noqa: C901
         self,
         dashboard: Dashboard,
         data: dict[str, Any],
@@ -94,8 +94,8 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         md: dict[str, Any] = {}
         if dashboard.json_metadata:
             try:
-                md = json.loads(dashboard.json_metadata)
-            except (json.JSONDecodeError, TypeError):
+                md = loads(dashboard.json_metadata)  # type: ignore[arg-type]
+            except (ValueError, TypeError):
                 pass
 
         # Handle positions and sync slices
@@ -103,8 +103,8 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
             positions = data["positions"]
             if isinstance(positions, str):
                 try:
-                    positions = json.loads(positions)
-                except (json.JSONDecodeError, TypeError):
+                    positions = loads(positions)
+                except (ValueError, TypeError):
                     positions = {}
 
             # Extract chart IDs from positions
@@ -133,25 +133,28 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
                         chart_id = obj["meta"]["chartId"]
                         obj["meta"]["uuid"] = uuid_map.get(chart_id)
 
-            dashboard.position_json = json.dumps(
-                positions, indent=None, separators=(",", ":"), sort_keys=True,
+            dashboard.position_json = dumps(  # type: ignore[assignment]
+                positions,
+                indent=None,
+                separators=(",", ":"),
+                sort_keys=True,
             )
 
             # Filter default_filters to applicable slices only
             if "default_filters" in data:
                 try:
-                    default_filters_data = json.loads(
+                    default_filters_data = loads(
                         data["default_filters"]
                         if isinstance(data["default_filters"], str)
-                        else json.dumps(data["default_filters"])
+                        else dumps(data["default_filters"])
                     )
                     applicable_filters = {
                         key: v
                         for key, v in default_filters_data.items()
                         if int(key) in slice_ids
                     }
-                    md["default_filters"] = json.dumps(applicable_filters)
-                except (json.JSONDecodeError, TypeError, ValueError):
+                    md["default_filters"] = dumps(applicable_filters)
+                except (ValueError, TypeError):
                     md["default_filters"] = data["default_filters"]
 
             # positions have their own column, no need in metadata
@@ -173,7 +176,7 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
             if key in data:
                 md[key] = data[key]
 
-        dashboard.json_metadata = json.dumps(md)
+        dashboard.json_metadata = dumps(md)  # type: ignore[assignment]
 
     async def copy_dashboard(
         self,
@@ -183,7 +186,9 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
     ) -> Dashboard:
         """Create a copy of a dashboard including its slices."""
         dash = Dashboard()
-        dash.dashboard_title = data.get("dashboard_title", original_dash.dashboard_title)
+        dash.dashboard_title = data.get(
+            "dashboard_title", original_dash.dashboard_title
+        )
         dash.description = data.get("description", original_dash.description)
         dash.css = data.get("css", original_dash.css)
         dash.position_json = original_dash.position_json
@@ -223,18 +228,21 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         if not slices:
             return []
         datasource_ids = {
-            s.datasource_id for s in slices
+            s.datasource_id
+            for s in slices
             if s.datasource_id and s.datasource_type == "table"
         }
         if not datasource_ids:
             return []
         from superset.connectors.sqla.models import SqlaTable
+
         stmt = select(SqlaTable).where(SqlaTable.id.in_(datasource_ids))
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
     async def get_dashboard_and_slices_changed_on(
-        self, dashboard: Dashboard,
+        self,
+        dashboard: Dashboard,
     ) -> datetime:
         """Get max changed_on across dashboard and all its slices."""
         dash_changed = await self.get_dashboard_changed_on(dashboard)
@@ -250,7 +258,8 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         return max(dash_changed, slices_max.replace(microsecond=0))
 
     async def get_dashboard_and_datasets_changed_on(
-        self, dashboard: Dashboard,
+        self,
+        dashboard: Dashboard,
     ) -> datetime:
         """Get max changed_on across dashboard and all its datasets."""
         dash_changed = await self.get_dashboard_changed_on(dashboard)
@@ -266,33 +275,42 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         return max(dash_changed, ds_max.replace(microsecond=0))
 
     async def update_native_filters_config(
-        self, dashboard: Dashboard, native_filter_configuration: list[dict],
+        self,
+        dashboard: Dashboard,
+        native_filter_configuration: list[dict[str, Any]],
     ) -> None:
         """Update native filter configuration in dashboard metadata."""
         md: dict[str, Any] = {}
         if dashboard.json_metadata:
             try:
-                md = json.loads(dashboard.json_metadata)
-            except (json.JSONDecodeError, TypeError):
+                md = loads(dashboard.json_metadata)  # type: ignore[arg-type]
+            except (ValueError, TypeError):
                 pass
         md["native_filter_configuration"] = native_filter_configuration
-        dashboard.json_metadata = json.dumps(md)
+        dashboard.json_metadata = dumps(md)  # type: ignore[assignment]
 
     async def update_colors_config(
-        self, dashboard: Dashboard, data: dict[str, Any],
+        self,
+        dashboard: Dashboard,
+        data: dict[str, Any],
     ) -> None:
         """Update color-related keys in dashboard metadata."""
         md: dict[str, Any] = {}
         if dashboard.json_metadata:
             try:
-                md = json.loads(dashboard.json_metadata)
-            except (json.JSONDecodeError, TypeError):
+                md = loads(dashboard.json_metadata)  # type: ignore[arg-type]
+            except (ValueError, TypeError):
                 pass
-        for key in ("color_namespace", "color_scheme", "label_colors",
-                    "shared_label_colors", "color_scheme_domain"):
+        for key in (
+            "color_namespace",
+            "color_scheme",
+            "label_colors",
+            "shared_label_colors",
+            "color_scheme_domain",
+        ):
             if key in data:
                 md[key] = data[key]
-        dashboard.json_metadata = json.dumps(md)
+        dashboard.json_metadata = dumps(md)  # type: ignore[assignment]
 
 
 class AsyncEmbeddedDashboardDAO(BaseAsyncDAO[EmbeddedDashboard]):
@@ -324,7 +342,7 @@ class AsyncEmbeddedDashboardDAO(BaseAsyncDAO[EmbeddedDashboard]):
         """Create or update embedded dashboard config."""
         existing = await self.find_by_dashboard_id(dashboard_id)
         if existing:
-            existing.allowed_domains = allowed_domains
+            existing.allowed_domains = allowed_domains  # type: ignore[misc]
             return existing
         embedded = EmbeddedDashboard(
             dashboard_id=dashboard_id,

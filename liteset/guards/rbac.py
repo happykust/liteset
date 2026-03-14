@@ -23,18 +23,20 @@ from litestar.connection import ASGIConnection
 from litestar.exceptions import PermissionDeniedException
 from litestar.handlers import BaseRouteHandler
 
-GuardFn = Callable[[ASGIConnection, BaseRouteHandler], None]
+GuardFn = Callable[[ASGIConnection[Any, Any, Any, Any], BaseRouteHandler], None]
 
 
 def has_permissions(user: Any, required: set[str]) -> bool:
-    user_perms = getattr(user, "permissions", set())
+    user_perms: set[str] = getattr(user, "permissions", set())
     return required.issubset(user_perms)
 
 
 def require_permission(action: str, resource: str) -> GuardFn:
     permission_name = f"{action}_{resource}"
 
-    def guard_fn(connection: ASGIConnection, _: BaseRouteHandler) -> None:
+    def guard_fn(
+        connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandler
+    ) -> None:
         user = connection.user
         if not getattr(user, "is_authenticated", False):
             raise PermissionDeniedException(detail="Not authenticated")

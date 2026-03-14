@@ -16,12 +16,12 @@
 # under the License.
 from __future__ import annotations
 
-import json
+import json  # noqa: TID251 — liteset must not depend on superset for core imports
 import logging
 from pathlib import Path
 from typing import Any
 
-from litestar import Litestar, get
+from litestar import get, Litestar
 from litestar.config.compression import CompressionConfig
 from litestar.config.cors import CORSConfig
 from litestar.contrib.jinja import JinjaTemplateEngine
@@ -34,8 +34,18 @@ from sqlalchemy.engine import make_url
 
 from liteset.config import LitesetSettings
 from liteset.controllers.spa import SPAController
-from liteset.db.session import create_db_engine, create_session_factory, dispose_engine
-from liteset.dependencies import provide_async_session
+from liteset.db.session import (
+    create_db_engine,
+    create_session_factory,
+    dispose_engine,
+)
+from liteset.dependencies import provide_async_session, provide_request_cache
+from liteset.exceptions import (
+    generic_exception_handler,
+    liteset_exception_handler,
+    LitesetException,
+)
+from liteset.logging import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +58,7 @@ def _load_manifest(manifest_path: Path) -> dict[str, Any]:
     return {}
 
 
-def _make_manifest_lookup(
-    manifest: dict[str, Any], asset_type: str
-) -> Any:
+def _make_manifest_lookup(manifest: dict[str, Any], asset_type: str) -> Any:
     def lookup(ctx: dict[str, Any], bundle_name: str) -> list[str]:
         entry = manifest.get(bundle_name, {})
         if isinstance(entry, dict):
@@ -67,6 +75,7 @@ async def health_check() -> dict[str, str]:
 
 async def on_startup(app: Litestar) -> None:
     settings: LitesetSettings = app.state.settings
+    configure_logging(settings)
     engine = create_db_engine(settings.sqlalchemy_database_uri)
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
@@ -87,15 +96,18 @@ def create_app(
     enable_flask_fallback: bool = True,
 ) -> Litestar:
     if settings is None:
-        settings = LitesetSettings()
+        # secret_key is resolved at runtime from env vars or superset_config.py
+        settings = LitesetSettings()  # type: ignore[call-arg]
 
     route_handlers: list[Any] = [health_check, SPAController]
+    startup_hooks: list[Any] = [on_startup]
 
     if enable_flask_fallback:
         try:
-            from liteset.fallback import create_flask_fallback
+            from liteset.fallback import create_flask_fallback, init_flask_fallback
 
             route_handlers.append(create_flask_fallback())
+            startup_hooks.append(init_flask_fallback)
         except ImportError:
             logger.warning("Flask fallback not available")
 
@@ -119,35 +131,49 @@ def create_app(
             template_callable=lambda ctx: settings.static_assets_prefix,
         )
 
-    route_handlers.extend([
-        create_static_files_router(
-            path="/static/assets",
-            directories=[assets_dir],
-            name="static_assets",
-        ),
-        create_static_files_router(
-            path="/static/appbuilder",
-            directories=[appbuilder_dir],
-            name="static_appbuilder",
-        ),
-    ])
+    route_handlers.extend(
+        [
+            create_static_files_router(
+                path="/static/assets",
+                directories=[assets_dir],
+                name="static_assets",
+            ),
+            create_static_files_router(
+                path="/static/appbuilder",
+                directories=[appbuilder_dir],
+                name="static_appbuilder",
+            ),
+        ]
+    )
 
-    # TODO(liteset/data-layer): register AuthMiddleware after auth methods are implemented
-    #   middleware=[LitesetAuthMiddleware]
+    # TODO(liteset/data-layer): register AuthMiddleware after auth
+    #   methods are implemented: middleware=[LitesetAuthMiddleware]
     # TODO(liteset/data-layer): add current_user dependency
     #   "current_user": Provide(get_current_user)
-    # TODO(liteset/data-layer): add CSRFConfig after session system is ready
+    # TODO(liteset/data-layer): add CSRFConfig after session system
     #   csrf_config=CSRFConfig(secret=settings.secret_key, ...)
-    # TODO(liteset/cleanup): add security headers middleware (CSP, HSTS, X-Frame-Options)
-    #   replaces flask-talisman
+    # TODO(liteset/cleanup): add security headers middleware
+    #   (CSP, HSTS, X-Frame-Options) — replaces flask-talisman
 
     return Litestar(
         route_handlers=route_handlers,
-        dependencies={"session": Provide(provide_async_session)},
-        on_startup=[on_startup],
+        dependencies={
+            "session": Provide(provide_async_session),
+            "request_cache": Provide(
+                provide_request_cache,
+                use_cache=True,
+            ),
+        },
+        on_startup=startup_hooks,
         on_shutdown=[on_shutdown],
+        exception_handlers={
+            LitesetException: liteset_exception_handler,
+            Exception: generic_exception_handler,
+        },
         openapi_config=OpenAPIConfig(
-            title="Superset API", version="v1", path="/schema"
+            title="Superset API",
+            version="v1",
+            path="/swagger/v1",
         ),
         cors_config=CORSConfig(allow_origins=settings.cors_allow_origins)
         if settings.cors_allow_origins

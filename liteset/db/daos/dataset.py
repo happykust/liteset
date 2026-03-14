@@ -139,8 +139,8 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
 
         ids_to_delete = set(existing_columns.keys()) - incoming_ids
         if ids_to_delete:
-            stmt = delete(TableColumn).where(TableColumn.id.in_(ids_to_delete))
-            await self.session.execute(stmt)
+            del_stmt = delete(TableColumn).where(TableColumn.id.in_(ids_to_delete))
+            await self.session.execute(del_stmt)
 
     async def update_metrics(
         self,
@@ -170,8 +170,8 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
 
         ids_to_delete = set(existing_metrics.keys()) - incoming_ids
         if ids_to_delete:
-            stmt = delete(SqlMetric).where(SqlMetric.id.in_(ids_to_delete))
-            await self.session.execute(stmt)
+            del_stmt = delete(SqlMetric).where(SqlMetric.id.in_(ids_to_delete))
+            await self.session.execute(del_stmt)
 
     async def get_related_objects(
         self,

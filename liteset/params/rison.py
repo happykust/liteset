@@ -14,40 +14,31 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""Rison query parameter decoder for Superset API compatibility."""
+
 from __future__ import annotations
 
 from typing import Any
 
-import msgspec
+import prison
+from litestar.connection import Request
 
 
-class ApiResponse(msgspec.Struct):
-    result: Any = None
-    id: int | str | None = None
-    message: str | None = None
+async def provide_rison_query(request: Request[Any, Any, Any]) -> dict[str, Any] | None:
+    """Decode Rison-encoded 'q' query parameter.
 
+    Frontend sends: GET /api/v1/chart/?q=(filters:!(...),page:0,page_size:25)
+    Returns None if 'q' absent. Raises 422 on parse error.
+    """
+    raw = request.query_params.get("q")
+    if raw is None:
+        return None
+    try:
+        return prison.loads(raw)
+    except Exception as ex:
+        from liteset.exceptions import LitesetValidationException
 
-class ApiListResponse(msgspec.Struct):
-    result: list[Any] = []
-    count: int = 0
-    ids: list[int | str] = []
-    label_columns: dict[str, str] = {}
-    list_columns: list[str] = []
-    order_columns: list[str] = []
-    description_columns: dict[str, str] = {}
-
-
-class SupersetErrorDetail(msgspec.Struct):
-    """Single error entry in SIP-40 format."""
-
-    message: str = ""
-    error_type: str = "UNKNOWN_ERROR"
-    level: str = "error"
-    extra: dict[str, Any] = {}
-
-
-class ErrorResponse(msgspec.Struct):
-    """SIP-40 compatible error response."""
-
-    errors: list[SupersetErrorDetail] = []
-    message: str = ""  # legacy compat field
+        raise LitesetValidationException(
+            message=f"Invalid Rison query parameter: {ex}",
+            extra={"raw_value": raw},
+        ) from ex

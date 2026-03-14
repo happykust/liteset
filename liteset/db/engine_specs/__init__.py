@@ -22,7 +22,11 @@ from liteset.db.engine_specs.base import AsyncResultSet, BaseAsyncEngineSpec
 from liteset.db.engine_specs.clickhouse import AsyncClickHouseEngineSpec
 from liteset.db.engine_specs.mysql import AsyncMySQLEngineSpec
 from liteset.db.engine_specs.postgres import AsyncPostgresEngineSpec
-from liteset.db.engine_specs.sync_fallback import SyncFallbackEngineSpec, make_async_spec
+from liteset.db.engine_specs.sync_fallback import (
+    make_async_spec,
+    SyncFallbackEngineSpec,
+)
+from liteset.db.engine_specs.trino import AsyncTrinoEngineSpec
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +34,7 @@ _NATIVE_SPECS: dict[str, type[BaseAsyncEngineSpec]] = {
     "postgresql": AsyncPostgresEngineSpec,
     "mysql": AsyncMySQLEngineSpec,
     "clickhouse": AsyncClickHouseEngineSpec,
+    "trino": AsyncTrinoEngineSpec,
 }
 
 # Cache for dynamically created sync fallback specs.
@@ -45,6 +50,7 @@ def _get_sync_spec_map() -> dict[str, type]:
     global _sync_spec_map
     if _sync_spec_map is None:
         from superset.db_engine_specs import load_engine_specs
+
         _sync_spec_map = {
             getattr(cls, "engine", ""): cls
             for cls in load_engine_specs()
@@ -71,9 +77,7 @@ def get_async_engine_spec(engine: str) -> type[BaseAsyncEngineSpec]:
         if engine in sync_spec_map:
             async_spec = make_async_spec(sync_spec_map[engine])
             _fallback_cache[engine] = async_spec
-            logger.info(
-                "Created sync fallback async spec for engine: %s", engine
-            )
+            logger.info("Created sync fallback async spec for engine: %s", engine)
             return async_spec
     except (ImportError, ModuleNotFoundError):
         logger.warning(
@@ -89,6 +93,7 @@ __all__ = [
     "AsyncClickHouseEngineSpec",
     "AsyncMySQLEngineSpec",
     "AsyncPostgresEngineSpec",
+    "AsyncTrinoEngineSpec",
     "AsyncResultSet",
     "BaseAsyncEngineSpec",
     "SyncFallbackEngineSpec",

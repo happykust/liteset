@@ -19,9 +19,9 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy.ext.asyncio import (
+    async_sessionmaker,
     AsyncEngine,
     AsyncSession,
-    async_sessionmaker,
     create_async_engine as _create_async_engine,
 )
 

@@ -19,16 +19,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Generic, TypeVar
 
+from liteset.exceptions import CommandException  # noqa: F401 — re-export
+
 T = TypeVar("T")
-
-
-class CommandException(Exception):
-    def __init__(
-        self, message: str = "", exceptions: list[Exception] | None = None
-    ) -> None:
-        self.message = message
-        self.exceptions = exceptions or []
-        super().__init__(message)
 
 
 class AsyncBaseCommand(ABC, Generic[T]):

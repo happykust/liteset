@@ -14,28 +14,28 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Backward-compatible 'superset' CLI that delegates to liteset."""
-
-from __future__ import annotations
-
-import warnings
-
-import click
-
-from liteset.cli.main import liteset_cli, normalize_token
+from liteset.dependencies import RequestCache
 
 
-@click.group(context_settings={"token_normalize_func": normalize_token})
-@click.pass_context
-def superset_cli(ctx: click.Context) -> None:
-    """Legacy Superset CLI (deprecated — use 'liteset' instead)."""
-    warnings.warn(
-        "The 'superset' command is deprecated. Use 'liteset' instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    ctx.ensure_object(dict)
+async def test_get_or_set_calls_factory_once():
+    cache = RequestCache()
+    call_count = 0
+
+    async def factory():
+        nonlocal call_count
+        call_count += 1
+        return "value"
+
+    r1 = await cache.get_or_set("key", factory)
+    r2 = await cache.get_or_set("key", factory)
+    assert r1 == "value"
+    assert r2 == "value"
+    assert call_count == 1
 
 
-for cmd_name, cmd in liteset_cli.commands.items():
-    superset_cli.add_command(cmd, cmd_name)
+def test_get_set():
+    cache = RequestCache()
+    assert cache.get("x") is None
+    assert cache.get("x", "default") == "default"
+    cache.set("x", 42)
+    assert cache.get("x") == 42

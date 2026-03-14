@@ -17,50 +17,54 @@
 """SPA HTML shell controller.
 
 Renders the HTML page that bootstraps the React frontend.
+Uses explicit prefix-based routes to avoid intercepting un-migrated
+API endpoints that must fall through to the Flask ASGI fallback mount.
 """
+
 from __future__ import annotations
 
 from litestar import Controller, get
 from litestar.datastructures import State
 from litestar.response import Template
 
-SPA_ROUTES: list[str] = [
-    "/superset/welcome/",
-    "/explore/",
-    "/dashboard/list/",
-    "/dashboard/{pk:int}/",
-    "/superset/sqllab/",
-    "/chart/list/",
-    "/superset/profile/{username:str}/",
-    "/superset/dashboard/{slug:str}/",
-    "/alert/list/",
-    "/report/list/",
-    "/database/list/",
-    "/dataset/list/",
-    "/savedquery/list/",
-    "/csstemplate/list/",
-    "/annotationlayer/list/",
-    "/rowlevelsecurity/list/",
-    "/superset/tags/",
-    # FAB-style legacy routes (Flask-AppBuilder admin views)
-    "/users/list/",
-    "/users/add",
-    "/users/{pk:int}/edit",
-    "/roles/list/",
-    "/roles/add",
-    "/roles/{pk:int}/edit",
-    "/logmodelview/list/",
-]
+SPA_ROUTE_PREFIXES: frozenset[str] = frozenset(
+    {
+        "explore",
+        "dashboard",
+        "superset",
+        "chart",
+        "alert",
+        "report",
+        "database",
+        "dataset",
+        "savedquery",
+        "csstemplate",
+        "annotationlayer",
+        "rowlevelsecurity",
+        "users",
+        "roles",
+        "logmodelview",
+    }
+)
+
+# Explicit route paths: each prefix gets both /{prefix} and /{prefix}/{path:path}.
+# Un-matched paths (API, static, un-migrated endpoints) are NOT intercepted
+# and fall through to the Flask ASGI fallback mount during Strangler Fig coexistence.
+_SPA_PATHS: list[str] = (
+    ["/"]
+    + [f"/{prefix}/{{path:path}}" for prefix in SPA_ROUTE_PREFIXES]
+    + [f"/{prefix}" for prefix in SPA_ROUTE_PREFIXES]
+)
 
 
 class SPAController(Controller):
     path = "/"
 
     @get(
-        SPA_ROUTES,
-        opt={"exclude_from_auth": True},
+        _SPA_PATHS,
+        exclude_from_auth=True,
     )
-    async def spa_page(self, state: State) -> Template:
+    async def spa_page(self, state: State, path: str = "") -> Template:
         settings = state.settings
         return Template(
             template_name="spa.html",

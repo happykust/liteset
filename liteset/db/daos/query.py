@@ -81,8 +81,8 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
         if query.status in terminal_states:
             return query
 
-        query.status = QueryStatus.STOPPED
-        query.end_time = datetime.now(tz=timezone.utc).timestamp()
+        query.status = QueryStatus.STOPPED  # type: ignore[assignment]
+        query.end_time = datetime.now(tz=timezone.utc).timestamp()  # type: ignore[assignment]
         return query
 
 

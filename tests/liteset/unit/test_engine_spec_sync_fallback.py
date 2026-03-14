@@ -98,7 +98,6 @@ async def test_sync_fallback_execute_calls_run_sync() -> None:
     mock_sync_result.rowcount = 2
 
     async def fake_run_sync(fn):
-        # Simulate run_sync by calling fn with a mock sync conn
         mock_sync_conn = MagicMock()
         mock_sync_conn.execute.return_value = mock_sync_result
         return fn(mock_sync_conn)

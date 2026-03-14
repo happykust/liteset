@@ -14,6 +14,8 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""Native async engine spec for Trino using aiotrino driver."""
+
 from __future__ import annotations
 
 import re
@@ -24,53 +26,48 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from liteset.db.engine_specs.base import AsyncResultSet, BaseAsyncEngineSpec
 
 
-class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
-    """Async engine spec for MySQL using asyncmy driver."""
+class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
+    """Async engine spec for Trino using aiotrino driver."""
 
-    engine = "mysql"
-    engine_name = "MySQL"
-    default_driver = "asyncmy"
+    engine = "trino"
+    engine_name = "Trino"
+    default_driver = "aiotrino"
 
     _time_grain_expressions: dict[str | None, str] = {
         None: "{col}",
-        "PT1S": (
-            "DATE_ADD(DATE({col}), "
-            "INTERVAL (HOUR({col})*60*60 + MINUTE({col})*60 + SECOND({col})) SECOND)"
-        ),
-        "PT1M": (
-            "DATE_ADD(DATE({col}), INTERVAL (HOUR({col})*60 + MINUTE({col})) MINUTE)"
-        ),
-        "PT1H": "DATE_ADD(DATE({col}), INTERVAL HOUR({col}) HOUR)",
-        "P1D": "DATE({col})",
-        "P1W": "DATE(DATE_SUB({col}, INTERVAL DAYOFWEEK({col}) - 1 DAY))",
-        "1969-12-29T00:00:00Z/P1W": (
-            "DATE(DATE_SUB({col}, "
-            "INTERVAL DAYOFWEEK(DATE_SUB({col}, INTERVAL 1 DAY)) - 1 DAY))"
-        ),
-        "P1M": "DATE(DATE_SUB({col}, INTERVAL DAYOFMONTH({col}) - 1 DAY))",
-        "P3M": (
-            "MAKEDATE(YEAR({col}), 1) + "
-            "INTERVAL QUARTER({col}) QUARTER - INTERVAL 1 QUARTER"
-        ),
-        "P1Y": "DATE(DATE_SUB({col}, INTERVAL DAYOFYEAR({col}) - 1 DAY))",
+        "PT1S": "DATE_TRUNC('second', {col})",
+        "PT1M": "DATE_TRUNC('minute', {col})",
+        "PT1H": "DATE_TRUNC('hour', {col})",
+        "P1D": "DATE_TRUNC('day', {col})",
+        "P1W": "DATE_TRUNC('week', {col})",
+        "P1M": "DATE_TRUNC('month', {col})",
+        "P3M": "DATE_TRUNC('quarter', {col})",
+        "P1Y": "DATE_TRUNC('year', {col})",
     }
 
     _custom_errors: list[tuple[re.Pattern[str], str]] = [
         (
-            re.compile(r"Access denied for user '(?P<username>.*?)'"),
-            "Access denied for user: {username}",
+            re.compile(
+                r"line (?P<line>\d+):(?P<col>\d+): "
+                r"Column '(?P<column>.+?)' cannot be resolved"
+            ),
+            "Column '{column}' cannot be resolved (line {line}:{col})",
         ),
         (
-            re.compile(r"Unknown MySQL server host '(?P<host>.*?)'"),
-            "Unknown hostname: {host}",
+            re.compile(r"Table '(?P<table>.+?)' does not exist"),
+            "Table '{table}' does not exist",
         ),
         (
-            re.compile(r"Can't connect to MySQL server on '(?P<host>.*?)'"),
-            "Cannot connect to MySQL server: {host}",
+            re.compile(r"Schema '(?P<schema>.+?)' does not exist"),
+            "Schema '{schema}' does not exist",
         ),
         (
-            re.compile(r"Unknown database '(?P<database>.*?)'"),
-            "Unknown database: {database}",
+            re.compile(r"Catalog '(?P<catalog>.+?)' does not exist"),
+            "Catalog '{catalog}' does not exist",
+        ),
+        (
+            re.compile(r"Access Denied"),
+            "Access denied",
         ),
     ]
 
@@ -99,6 +96,5 @@ class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
         connect_args: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         args = connect_args.copy() if connect_args else {}
-        args.setdefault("charset", "utf8mb4")
-        args.setdefault("connect_timeout", 10)
+        args.setdefault("http_scheme", "https")
         return uri, args
