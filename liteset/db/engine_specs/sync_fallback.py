@@ -16,7 +16,10 @@
 # under the License.
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from sqlalchemy import Connection, inspect
@@ -24,6 +27,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql import text
 
 from liteset.db.engine_specs.base import AsyncResultSet, BaseAsyncEngineSpec
+
+_sync_db_pool = ThreadPoolExecutor(
+    max_workers=int(os.environ.get("LITESET_SYNC_DB_POOL_SIZE", "16")),
+    thread_name_prefix="sync-db",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +146,10 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
         query: str,
         parameters: dict[str, Any] | None = None,
     ) -> AsyncResultSet:
-        def _run(sync_conn: Connection) -> AsyncResultSet:
+        loop = asyncio.get_running_loop()
+
+        def _run() -> AsyncResultSet:
+            sync_conn = conn.sync_connection
             result = sync_conn.execute(text(query), parameters or {})
             columns = list(result.keys()) if result.returns_rows else []
             data = (
@@ -152,7 +163,7 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
                 row_count=result.rowcount if result.rowcount >= 0 else len(data),
             )
 
-        return await conn.run_sync(_run)
+        return await loop.run_in_executor(_sync_db_pool, _run)
 
     @classmethod
     async def fetch_data(
@@ -161,13 +172,16 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
         query: str,
         limit: int | None = None,
     ) -> list[tuple[Any, ...]]:
-        def _run(sync_conn: Connection) -> list[tuple[Any, ...]]:
+        loop = asyncio.get_running_loop()
+
+        def _run() -> list[tuple[Any, ...]]:
+            sync_conn = conn.sync_connection
             result = sync_conn.execute(text(query))
             if limit is not None:
                 return [tuple(row) for row in result.fetchmany(limit)]
             return [tuple(row) for row in result.fetchall()]
 
-        return await conn.run_sync(_run)
+        return await loop.run_in_executor(_sync_db_pool, _run)
 
     @classmethod
     def extract_errors(cls, ex: Exception) -> list[dict[str, Any]]:

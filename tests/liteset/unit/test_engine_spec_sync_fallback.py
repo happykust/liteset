@@ -28,6 +28,7 @@ from liteset.db.engine_specs.postgres import AsyncPostgresEngineSpec
 from liteset.db.engine_specs.sync_fallback import (
     SyncFallbackEngineSpec,
     _is_overridden,
+    _sync_db_pool,
     make_async_spec,
 )
 
@@ -88,7 +89,7 @@ def test_make_async_spec_preserves_time_grains() -> None:
     assert grains["P1D"] == "DATE({col})"
 
 
-async def test_sync_fallback_execute_calls_run_sync() -> None:
+async def test_sync_fallback_execute_uses_thread_pool() -> None:
     spec = make_async_spec(FakeSyncSpec)
 
     mock_sync_result = MagicMock()
@@ -97,14 +98,11 @@ async def test_sync_fallback_execute_calls_run_sync() -> None:
     mock_sync_result.fetchall.return_value = [(1,), (2,)]
     mock_sync_result.rowcount = 2
 
-    async def fake_run_sync(fn):
-        # Simulate run_sync by calling fn with a mock sync conn
-        mock_sync_conn = MagicMock()
-        mock_sync_conn.execute.return_value = mock_sync_result
-        return fn(mock_sync_conn)
+    mock_sync_conn = MagicMock()
+    mock_sync_conn.execute.return_value = mock_sync_result
 
     mock_conn = AsyncMock()
-    mock_conn.run_sync = fake_run_sync
+    mock_conn.sync_connection = mock_sync_conn
 
     rs = await spec.execute(mock_conn, "SELECT id FROM t")
     assert isinstance(rs, AsyncResultSet)
@@ -119,17 +117,23 @@ async def test_sync_fallback_fetch_data_with_limit() -> None:
     mock_sync_result = MagicMock()
     mock_sync_result.fetchmany.return_value = [(1,)]
 
-    async def fake_run_sync(fn):
-        mock_sync_conn = MagicMock()
-        mock_sync_conn.execute.return_value = mock_sync_result
-        return fn(mock_sync_conn)
+    mock_sync_conn = MagicMock()
+    mock_sync_conn.execute.return_value = mock_sync_result
 
     mock_conn = AsyncMock()
-    mock_conn.run_sync = fake_run_sync
+    mock_conn.sync_connection = mock_sync_conn
 
     rows = await spec.fetch_data(mock_conn, "SELECT id FROM t", limit=5)
     assert rows == [(1,)]
     mock_sync_result.fetchmany.assert_called_once_with(5)
+
+
+def test_sync_db_pool_exists() -> None:
+    import os
+
+    assert _sync_db_pool._max_workers == int(
+        os.environ.get("LITESET_SYNC_DB_POOL_SIZE", "16")
+    )
 
 
 def test_sync_fallback_extract_errors_delegates() -> None:
