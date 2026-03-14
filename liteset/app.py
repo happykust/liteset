@@ -36,7 +36,7 @@ from liteset.config import LitesetSettings
 from liteset.logging import configure_logging
 from liteset.controllers.spa import SPAController
 from liteset.db.session import create_db_engine, create_session_factory, dispose_engine
-from liteset.dependencies import provide_async_session
+from liteset.dependencies import provide_async_session, provide_request_cache
 from liteset.exceptions import (
     LitesetException,
     generic_exception_handler,
@@ -150,7 +150,10 @@ def create_app(
 
     return Litestar(
         route_handlers=route_handlers,
-        dependencies={"session": Provide(provide_async_session)},
+        dependencies={
+            "session": Provide(provide_async_session),
+            "request_cache": Provide(provide_request_cache),
+        },
         on_startup=[on_startup],
         on_shutdown=[on_shutdown],
         exception_handlers={
