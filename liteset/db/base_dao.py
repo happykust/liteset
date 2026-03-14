@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from sqlalchemy import inspect, select
+from sqlalchemy import delete as sa_delete, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -93,3 +93,17 @@ class BaseAsyncDAO(Generic[T]):
     async def delete(self, items: list[T]) -> None:
         for item in items:
             await self.session.delete(item)
+
+    async def bulk_delete(self, ids: list[int | str]) -> int:
+        """Bulk delete by IDs in a single SQL DELETE. Returns deleted count.
+
+        WARNING: Bypasses ORM-level cascades (cascade="all, delete-orphan").
+        Use delete() for models with ORM cascades. Override in subclasses
+        when cascade behavior is required.
+        """
+        if not ids:
+            return 0
+        pk_col = self._get_pk_column()
+        stmt = sa_delete(self.model_cls).where(pk_col.in_(ids))
+        result = await self.session.execute(stmt)
+        return result.rowcount

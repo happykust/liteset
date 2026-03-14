@@ -129,6 +129,26 @@ async def test_find_one_or_none(async_session: AsyncSession) -> None:
     assert not_found is None
 
 
+async def test_bulk_delete(async_session: AsyncSession) -> None:
+    dao = SampleDAO(async_session)
+    a = await dao.create({"name": "a"})
+    b = await dao.create({"name": "b"})
+    await dao.create({"name": "c"})
+    await async_session.flush()
+    deleted = await dao.bulk_delete([a.id, b.id])
+    await async_session.flush()
+    assert deleted == 2
+    remaining = await dao.find_all()
+    assert len(remaining) == 1
+    assert remaining[0].name == "c"
+
+
+async def test_bulk_delete_empty_list(async_session: AsyncSession) -> None:
+    dao = SampleDAO(async_session)
+    deleted = await dao.bulk_delete([])
+    assert deleted == 0
+
+
 async def test_find_by_ids(async_session: AsyncSession) -> None:
     dao = SampleDAO(async_session)
     a = await dao.create({"name": "a"})
