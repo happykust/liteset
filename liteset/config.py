@@ -22,8 +22,9 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import field_validator
+from pydantic.fields import FieldInfo
 from pydantic.functional_validators import AfterValidator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 from typing_extensions import Annotated
 
 
@@ -45,6 +46,49 @@ _SYNC_TO_ASYNC_DRIVERS = {
     "sqlite://": "sqlite+aiosqlite://",
 }
 
+_SUPERSET_TO_LITESET: dict[str, str] = {
+    "SECRET_KEY": "secret_key",
+    "SQLALCHEMY_DATABASE_URI": "sqlalchemy_database_uri",
+    "CORS_ALLOW_ORIGINS": "cors_allow_origins",
+    "GLOBAL_ASYNC_QUERIES": "global_async_queries",
+    "STATIC_ASSETS_PREFIX": "static_assets_prefix",
+}
+
+
+class SupersetConfigSettingsSource(PydanticBaseSettingsSource):
+    """Read settings from superset_config.py as a Pydantic settings source.
+
+    Priority: env vars > superset_config.py > defaults.
+    """
+
+    def __init__(self, settings_cls: type[BaseSettings]) -> None:
+        super().__init__(settings_cls)
+        self._values: dict[str, Any] = {}
+        self._load()
+
+    def _load(self) -> None:
+        path = os.environ.get("SUPERSET_CONFIG_PATH")
+        if not path or not Path(path).exists():
+            return
+        spec = importlib.util.spec_from_file_location("superset_config", path)
+        if spec is None or spec.loader is None:
+            return
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for sup_key, lit_key in _SUPERSET_TO_LITESET.items():
+            val = getattr(module, sup_key, None)
+            if val is not None:
+                self._values[lit_key] = val
+
+    def get_field_value(
+        self, field: FieldInfo, field_name: str
+    ) -> tuple[Any, str, bool]:
+        val = self._values.get(field_name)
+        return val, field_name, val is not None
+
+    def __call__(self) -> dict[str, Any]:
+        return self._values
+
 
 class LitesetSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -63,6 +107,8 @@ class LitesetSettings(BaseSettings):
     cors_allow_origins: list[str] = []
     log_level: str = "INFO"
     production: bool = False
+    cache_redis_url: str = ""
+    cache_default_ttl: int = 300
 
     @field_validator("sqlalchemy_database_uri")
     @classmethod
@@ -73,9 +119,27 @@ class LitesetSettings(BaseSettings):
         return v
 
     @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            SupersetConfigSettingsSource(settings_cls),
+            file_secret_settings,
+        )
+
+    @classmethod
     def from_superset_config(
         cls, config_path: str | None = None
     ) -> LitesetSettings:
+        """Load settings from superset_config.py (deprecated: use SUPERSET_CONFIG_PATH env var)."""
         path = config_path or os.environ.get("SUPERSET_CONFIG_PATH")
         if not path or not Path(path).exists():
             raise FileNotFoundError(
@@ -90,15 +154,8 @@ class LitesetSettings(BaseSettings):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
-        field_map = {
-            "SECRET_KEY": "secret_key",
-            "SQLALCHEMY_DATABASE_URI": "sqlalchemy_database_uri",
-            "CORS_ALLOW_ORIGINS": "cors_allow_origins",
-            "GLOBAL_ASYNC_QUERIES": "global_async_queries",
-            "STATIC_ASSETS_PREFIX": "static_assets_prefix",
-        }
         kwargs: dict[str, Any] = {}
-        for superset_key, liteset_key in field_map.items():
+        for superset_key, liteset_key in _SUPERSET_TO_LITESET.items():
             value = getattr(module, superset_key, None)
             if value is not None:
                 kwargs[liteset_key] = value
