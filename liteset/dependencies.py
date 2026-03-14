@@ -23,5 +23,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def provide_async_session(state: State) -> AsyncGenerator[AsyncSession, None]:
+    """Provide an AsyncSession with auto-commit/rollback."""
     async with state.session_factory() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
