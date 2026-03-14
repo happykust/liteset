@@ -97,12 +97,14 @@ def create_app(
         settings = LitesetSettings()
 
     route_handlers: list[Any] = [health_check, SPAController]
+    startup_hooks: list[Any] = [on_startup]
 
     if enable_flask_fallback:
         try:
-            from liteset.fallback import create_flask_fallback
+            from liteset.fallback import create_flask_fallback, init_flask_fallback
 
             route_handlers.append(create_flask_fallback())
+            startup_hooks.append(init_flask_fallback)
         except ImportError:
             logger.warning("Flask fallback not available")
 
@@ -154,7 +156,7 @@ def create_app(
             "session": Provide(provide_async_session),
             "request_cache": Provide(provide_request_cache),
         },
-        on_startup=[on_startup],
+        on_startup=startup_hooks,
         on_shutdown=[on_shutdown],
         exception_handlers={
             LitesetException: liteset_exception_handler,
