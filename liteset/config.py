@@ -61,6 +61,8 @@ class LitesetSettings(BaseSettings):
     static_assets_prefix: str = ""
     global_async_queries: bool = False
     cors_allow_origins: list[str] = []
+    log_level: str = "INFO"
+    production: bool = False
 
     @field_validator("sqlalchemy_database_uri")
     @classmethod

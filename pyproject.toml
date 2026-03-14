@@ -113,6 +113,7 @@ dependencies = [
     "asgiref>=3.8.0",
     "asyncpg>=0.30.0",
     "aiosqlite>=0.21.0",
+    "structlog>=25.5.0",
 ]
 
 [project.optional-dependencies]

@@ -33,6 +33,7 @@ from litestar.template.config import TemplateConfig
 from sqlalchemy.engine import make_url
 
 from liteset.config import LitesetSettings
+from liteset.logging import configure_logging
 from liteset.controllers.spa import SPAController
 from liteset.db.session import create_db_engine, create_session_factory, dispose_engine
 from liteset.dependencies import provide_async_session
@@ -72,6 +73,7 @@ async def health_check() -> dict[str, str]:
 
 async def on_startup(app: Litestar) -> None:
     settings: LitesetSettings = app.state.settings
+    configure_logging(settings)
     engine = create_db_engine(settings.sqlalchemy_database_uri)
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
