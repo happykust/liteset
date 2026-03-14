@@ -1,0 +1,101 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+"""Contextvars-based i18n, replacing flask-babel.
+
+Provides gettext() and lazy_gettext() compatible with Superset's
+translation patterns but without Flask dependency.
+"""
+from __future__ import annotations
+
+import contextvars
+from typing import Any
+
+_current_locale: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "current_locale", default="en"
+)
+
+# locale -> {msgid -> translated}
+_translations: dict[str, dict[str, str]] = {}
+
+
+def init_translations(translations: dict[str, dict[str, str]]) -> None:
+    """Load translation catalogs at startup."""
+    _translations.update(translations)
+
+
+def set_locale(locale: str) -> None:
+    _current_locale.set(locale)
+
+
+def get_locale() -> str:
+    return _current_locale.get()
+
+
+def gettext(msgid: str) -> str:
+    """Translate a string using the current locale."""
+    locale = _current_locale.get()
+    catalog = _translations.get(locale, {})
+    return catalog.get(msgid, msgid)
+
+
+class LazyString:
+    """Proxy that defers gettext resolution until string is used."""
+
+    __slots__ = ("_msgid",)
+
+    def __init__(self, msgid: str) -> None:
+        self._msgid = msgid
+
+    def _resolve(self) -> str:
+        return gettext(self._msgid)
+
+    def __str__(self) -> str:
+        return self._resolve()
+
+    def __repr__(self) -> str:
+        return f"LazyString({self._msgid!r})"
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, LazyString):
+            return str(self) == str(other)
+        return str(self) == other
+
+    def __hash__(self) -> int:
+        return hash(str(self))
+
+    def __add__(self, other: Any) -> str:
+        return str(self) + str(other)
+
+    def __radd__(self, other: Any) -> str:
+        return str(other) + str(self)
+
+    def __mod__(self, other: Any) -> str:
+        return str(self) % other
+
+    def __bool__(self) -> bool:
+        return bool(str(self))
+
+    def __len__(self) -> int:
+        return len(str(self))
+
+    def __contains__(self, item: Any) -> bool:
+        return item in str(self)
+
+
+def lazy_gettext(msgid: str) -> LazyString:
+    """Return a lazy proxy that resolves translation on access."""
+    return LazyString(msgid)
