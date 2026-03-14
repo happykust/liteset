@@ -37,7 +37,17 @@ class ApiListResponse(msgspec.Struct):
     description_columns: dict[str, str] = {}
 
 
-class ErrorResponse(msgspec.Struct):
+class SupersetErrorDetail(msgspec.Struct):
+    """Single error entry in SIP-40 format."""
+
     message: str = ""
-    errors: dict[str, list[str]] = {}
-    status: int = 400
+    error_type: str = "UNKNOWN_ERROR"
+    level: str = "error"
+    extra: dict[str, Any] = {}
+
+
+class ErrorResponse(msgspec.Struct):
+    """SIP-40 compatible error response."""
+
+    errors: list[SupersetErrorDetail] = []
+    message: str = ""  # legacy compat field

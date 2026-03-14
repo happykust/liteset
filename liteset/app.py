@@ -36,6 +36,11 @@ from liteset.config import LitesetSettings
 from liteset.controllers.spa import SPAController
 from liteset.db.session import create_db_engine, create_session_factory, dispose_engine
 from liteset.dependencies import provide_async_session
+from liteset.exceptions import (
+    LitesetException,
+    generic_exception_handler,
+    liteset_exception_handler,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +151,10 @@ def create_app(
         dependencies={"session": Provide(provide_async_session)},
         on_startup=[on_startup],
         on_shutdown=[on_shutdown],
+        exception_handlers={
+            LitesetException: liteset_exception_handler,
+            Exception: generic_exception_handler,
+        },
         openapi_config=OpenAPIConfig(
             title="Superset API", version="v1", path="/schema"
         ),
