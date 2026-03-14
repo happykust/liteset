@@ -23,6 +23,7 @@ from liteset.db.engine_specs.clickhouse import AsyncClickHouseEngineSpec
 from liteset.db.engine_specs.mysql import AsyncMySQLEngineSpec
 from liteset.db.engine_specs.postgres import AsyncPostgresEngineSpec
 from liteset.db.engine_specs.sync_fallback import SyncFallbackEngineSpec, make_async_spec
+from liteset.db.engine_specs.trino import AsyncTrinoEngineSpec
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ _NATIVE_SPECS: dict[str, type[BaseAsyncEngineSpec]] = {
     "postgresql": AsyncPostgresEngineSpec,
     "mysql": AsyncMySQLEngineSpec,
     "clickhouse": AsyncClickHouseEngineSpec,
+    "trino": AsyncTrinoEngineSpec,
 }
 
 # Cache for dynamically created sync fallback specs.
@@ -89,6 +91,7 @@ __all__ = [
     "AsyncClickHouseEngineSpec",
     "AsyncMySQLEngineSpec",
     "AsyncPostgresEngineSpec",
+    "AsyncTrinoEngineSpec",
     "AsyncResultSet",
     "BaseAsyncEngineSpec",
     "SyncFallbackEngineSpec",

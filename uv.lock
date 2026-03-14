@@ -107,6 +107,15 @@ wheels = [
 ]
 
 [[package]]
+name = "aioitertools"
+version = "0.13.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/3c/53c4a17a05fb9ea2313ee1777ff53f5e001aefd5cc85aa2f4c2d982e1e38/aioitertools-0.13.0.tar.gz", hash = "sha256:620bd241acc0bbb9ec819f1ab215866871b4bbd1f73836a55f799200ee86950c", size = 19322, upload-time = "2025-11-06T22:17:07.609Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/a1/510b0a7fadc6f43a6ce50152e69dbd86415240835868bb0bd9b5b88b1e06/aioitertools-0.13.0-py3-none-any.whl", hash = "sha256:0be0292b856f08dfac90e31f4739432f4cb6d7520ab9eb73e143f4f2fa5259be", size = 24182, upload-time = "2025-11-06T22:17:06.502Z" },
+]
+
+[[package]]
 name = "aiorwlock"
 version = "1.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -135,6 +144,25 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/4e/8a/64761f4005f17809769d23e518d915db74e6310474e733e3593cfc854ef1/aiosqlite-0.22.1.tar.gz", hash = "sha256:043e0bd78d32888c0a9ca90fc788b38796843360c855a7262a532813133a0650", size = 14821, upload-time = "2025-12-23T19:25:43.997Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/00/b7/e3bf5133d697a08128598c8d0abc5e16377b51465a33756de24fa7dee953/aiosqlite-0.22.1-py3-none-any.whl", hash = "sha256:21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb", size = 17405, upload-time = "2025-12-23T19:25:42.139Z" },
+]
+
+[[package]]
+name = "aiotrino"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "aioitertools" },
+    { name = "lz4" },
+    { name = "python-dateutil" },
+    { name = "pytz" },
+    { name = "tzdata" },
+    { name = "tzlocal" },
+    { name = "zstandard" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d3/ba/3c86ccba14f89a0b18c5e202a1a9f4012d8bc36a3bcc1d63e05427c62bb0/aiotrino-0.3.0.tar.gz", hash = "sha256:8770b0806db7428ae92724b543f45af78373601c9606da2cd4e1978ce261cd73", size = 50483, upload-time = "2025-03-21T00:47:25.129Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/71/f6a04a6f9dde7b31b8512560d166e82f7b0047a48703752d0f4426c40066/aiotrino-0.3.0-py3-none-any.whl", hash = "sha256:45cbe1adaa51d66efe074df02d48802dd1c1d850872cb93ff700a0cd6d795152", size = 55349, upload-time = "2025-03-21T00:47:23.545Z" },
 ]
 
 [[package]]
@@ -192,6 +220,7 @@ name = "apache-superset"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
+    { name = "aiotrino" },
     { name = "asgiref" },
     { name = "asyncpg" },
     { name = "backoff" },
@@ -471,6 +500,7 @@ ydb = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.21.0" },
+    { name = "aiotrino", specifier = ">=0.3.0" },
     { name = "asgiref", specifier = ">=3.8.0" },
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "backoff", specifier = ">=1.8.0" },
