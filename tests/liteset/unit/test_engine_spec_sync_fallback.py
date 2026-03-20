@@ -28,7 +28,6 @@ from liteset.db.engine_specs.postgres import AsyncPostgresEngineSpec
 from liteset.db.engine_specs.sync_fallback import (
     SyncFallbackEngineSpec,
     _is_overridden,
-    _sync_db_pool,
     make_async_spec,
 )
 
@@ -130,14 +129,6 @@ async def test_sync_fallback_fetch_data_with_limit() -> None:
     rows = await spec.fetch_data(mock_conn, "SELECT id FROM t", limit=5)
     assert rows == [(1,)]
     mock_sync_result.fetchmany.assert_called_once_with(5)
-
-
-def test_sync_db_pool_exists() -> None:
-    import os
-
-    assert _sync_db_pool._max_workers == int(
-        os.environ.get("LITESET_SYNC_DB_POOL_SIZE", "16")
-    )
 
 
 def test_sync_fallback_extract_errors_delegates() -> None:

@@ -96,6 +96,7 @@ async def test_clear_prefix(mock_redis):
     count = await mgr.clear_prefix("prefix:")
     assert count == 2
     assert mock_pipe.delete.call_count == 2
+    mock_pipe.execute.assert_called()
 
 
 async def test_close(mock_redis):

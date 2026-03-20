@@ -49,14 +49,17 @@ class SPAController(Controller):
     path = "/"
 
     @get(
-        "/{path:path}",
+        ["/", "/{path:path}"],
         opt={"exclude_from_auth": True},
     )
     async def spa_page(self, state: State, path: str = "") -> Template:
-        # Extract the first path segment to match against known prefixes
+        # Root "/" redirects to welcome page; other routes check prefix
         first_segment = path.strip("/").split("/")[0] if path.strip("/") else ""
 
-        if first_segment not in SPA_ROUTE_PREFIXES:
+        if not first_segment:
+            # Bare "/" — serve the welcome/landing SPA page
+            pass
+        elif first_segment not in SPA_ROUTE_PREFIXES:
             raise NotFoundException(detail=f"Unknown route: /{path}")
 
         settings = state.settings

@@ -17,10 +17,13 @@
 """Async cache manager backed by redis.asyncio."""
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 _CLEAR_PREFIX_BATCH_SIZE = 100
 
@@ -33,19 +36,33 @@ class AsyncCacheManager:
         self._default_ttl = default_ttl
 
     async def get(self, key: str) -> bytes | None:
-        return await self._redis.get(key)
+        try:
+            return await self._redis.get(key)
+        except Exception:
+            logger.warning("Cache get failed for key=%s", key, exc_info=True)
+            return None
 
     async def set(
         self, key: str, value: bytes, ttl: int | None = None
     ) -> None:
         ex = ttl if ttl is not None else self._default_ttl
-        await self._redis.set(key, value, ex=ex)
+        try:
+            await self._redis.set(key, value, ex=ex)
+        except Exception:
+            logger.warning("Cache set failed for key=%s", key, exc_info=True)
 
     async def delete(self, key: str) -> None:
-        await self._redis.delete(key)
+        try:
+            await self._redis.delete(key)
+        except Exception:
+            logger.warning("Cache delete failed for key=%s", key, exc_info=True)
 
     async def has(self, key: str) -> bool:
-        return bool(await self._redis.exists(key))
+        try:
+            return bool(await self._redis.exists(key))
+        except Exception:
+            logger.warning("Cache has failed for key=%s", key, exc_info=True)
+            return False
 
     async def get_or_set(
         self,

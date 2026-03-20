@@ -37,8 +37,9 @@ def init_translations(translations: dict[str, dict[str, str]]) -> None:
     _translations.update(translations)
 
 
-def set_locale(locale: str) -> None:
-    _current_locale.set(locale)
+def set_locale(locale: str) -> contextvars.Token[str]:
+    """Set locale and return token for reset."""
+    return _current_locale.set(locale)
 
 
 def get_locale() -> str:
@@ -75,7 +76,7 @@ class LazyString:
         return str(self) == other
 
     def __hash__(self) -> int:
-        return hash(self._msgid)
+        return hash(str(self))
 
     def __add__(self, other: Any) -> str:
         return str(self) + str(other)

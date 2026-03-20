@@ -93,8 +93,9 @@ class SupersetConfigSettingsSource(PydanticBaseSettingsSource):
     def get_field_value(
         self, field: FieldInfo, field_name: str
     ) -> tuple[Any, str, bool]:
-        val = self._values.get(field_name)
-        return val, field_name, val is not None
+        if field_name in self._values:
+            return self._values[field_name], field_name, True
+        return None, field_name, False
 
     def __call__(self) -> dict[str, Any]:
         return self._values

@@ -53,6 +53,7 @@ def configure_logging(settings: LitesetSettings) -> None:
         structlog.stdlib.PositionalArgumentsFormatter(),
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
+        structlog.processors.ExceptionRenderer(),
     ]
 
     if settings.production:

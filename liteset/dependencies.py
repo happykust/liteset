@@ -30,16 +30,19 @@ async def provide_async_session(state: State) -> AsyncGenerator[AsyncSession, No
     """Provide an AsyncSession with auto-commit/rollback.
 
     Commits on success, rolls back on exception. Read-only requests
-    incur a no-op commit (harmless). This simplifies the Strangler Fig
-    phase where every handler shares one session dependency.
+    incur a no-op commit (harmless). Session is managed manually
+    (not via async with) to avoid double-rollback from the context
+    manager's __aexit__.
     """
-    async with state.session_factory() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
+    session: AsyncSession = state.session_factory()
+    try:
+        yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
 
 
 class RequestCache:

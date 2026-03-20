@@ -17,8 +17,6 @@
 from __future__ import annotations
 
 import logging
-import os
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from sqlalchemy import Connection, inspect
@@ -26,11 +24,6 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql import text
 
 from liteset.db.engine_specs.base import AsyncResultSet, BaseAsyncEngineSpec
-
-_sync_db_pool = ThreadPoolExecutor(
-    max_workers=int(os.environ.get("LITESET_SYNC_DB_POOL_SIZE", "16")),
-    thread_name_prefix="sync-db",
-)
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +60,9 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
                 try:
                     return set(sync_spec.get_catalog_names(inspector=inspector))
                 except TypeError:
-                    # Fallback: some specs expect database= instead of inspector=
-                    return set(inspector.get_schema_names())
+                    # Sync spec has incompatible signature — re-raise rather
+                    # than silently returning schema names as catalog names.
+                    raise
 
             return await conn.run_sync(_run)
         return await super().get_catalog_names(conn)

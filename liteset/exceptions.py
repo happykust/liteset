@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from litestar import Request, Response
+from litestar import MediaType, Request, Response
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +34,17 @@ class LitesetException(Exception):
 
     status_code: int = 500
     message: str = "An unexpected error occurred"
-    extra: dict[str, Any] = {}
 
     def __init__(
         self,
         message: str = "",
         exception: Exception | None = None,
         error_type: str | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> None:
         if message:
             self.message = message
+        self.extra: dict[str, Any] = extra if extra is not None else {}
         self._exception = exception
         self._error_type = error_type
         super().__init__(self.message)
@@ -77,8 +78,7 @@ class LitesetValidationException(LitesetException):
         extra: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        self.extra = extra or {}
-        super().__init__(message=message, **kwargs)
+        super().__init__(message=message, extra=extra, **kwargs)
 
 
 class LitesetNotFoundError(LitesetException):
@@ -155,12 +155,16 @@ def liteset_exception_handler(
     request: Request, exc: LitesetException
 ) -> Response:
     """SIP-40 compatible error response handler."""
+    from liteset.schemas.base import ErrorResponse, SupersetErrorDetail
+
+    body = ErrorResponse(
+        errors=[SupersetErrorDetail(**exc.to_sip40())],
+        message=exc.message,
+    )
     return Response(
-        content={
-            "errors": [exc.to_sip40()],
-            "message": exc.message,
-        },
+        content=body,
         status_code=exc.status_code,
+        media_type=MediaType.JSON,
     )
 
 
@@ -174,17 +178,28 @@ def generic_exception_handler(request: Request, exc: Exception) -> Response:
     from litestar.exceptions import HTTPException
 
     if isinstance(exc, HTTPException):
+        # Only expose detail for 4xx errors; mask 5xx internals
+        if exc.status_code >= 500:
+            logger.exception(
+                "Unhandled HTTP %d on %s %s",
+                exc.status_code,
+                request.method,
+                request.url,
+            )
+            detail = "An unexpected error occurred"
+        else:
+            detail = exc.detail
         return Response(
             content={
                 "errors": [
                     {
-                        "message": exc.detail,
+                        "message": detail,
                         "error_type": type(exc).__name__,
                         "level": "error",
                         "extra": {},
                     }
                 ],
-                "message": exc.detail,
+                "message": detail,
             },
             status_code=exc.status_code,
         )
