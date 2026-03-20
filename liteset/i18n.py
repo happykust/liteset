@@ -75,7 +75,7 @@ class LazyString:
         return str(self) == other
 
     def __hash__(self) -> int:
-        return hash(str(self))
+        return hash(self._msgid)
 
     def __add__(self, other: Any) -> str:
         return str(self) + str(other)

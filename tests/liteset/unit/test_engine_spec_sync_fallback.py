@@ -89,7 +89,7 @@ def test_make_async_spec_preserves_time_grains() -> None:
     assert grains["P1D"] == "DATE({col})"
 
 
-async def test_sync_fallback_execute_uses_thread_pool() -> None:
+async def test_sync_fallback_execute_calls_run_sync() -> None:
     spec = make_async_spec(FakeSyncSpec)
 
     mock_sync_result = MagicMock()
@@ -98,11 +98,13 @@ async def test_sync_fallback_execute_uses_thread_pool() -> None:
     mock_sync_result.fetchall.return_value = [(1,), (2,)]
     mock_sync_result.rowcount = 2
 
-    mock_sync_conn = MagicMock()
-    mock_sync_conn.execute.return_value = mock_sync_result
+    async def fake_run_sync(fn):
+        mock_sync_conn = MagicMock()
+        mock_sync_conn.execute.return_value = mock_sync_result
+        return fn(mock_sync_conn)
 
     mock_conn = AsyncMock()
-    mock_conn.sync_connection = mock_sync_conn
+    mock_conn.run_sync = fake_run_sync
 
     rs = await spec.execute(mock_conn, "SELECT id FROM t")
     assert isinstance(rs, AsyncResultSet)
@@ -117,11 +119,13 @@ async def test_sync_fallback_fetch_data_with_limit() -> None:
     mock_sync_result = MagicMock()
     mock_sync_result.fetchmany.return_value = [(1,)]
 
-    mock_sync_conn = MagicMock()
-    mock_sync_conn.execute.return_value = mock_sync_result
+    async def fake_run_sync(fn):
+        mock_sync_conn = MagicMock()
+        mock_sync_conn.execute.return_value = mock_sync_result
+        return fn(mock_sync_conn)
 
     mock_conn = AsyncMock()
-    mock_conn.sync_connection = mock_sync_conn
+    mock_conn.run_sync = fake_run_sync
 
     rows = await spec.fetch_data(mock_conn, "SELECT id FROM t", limit=5)
     assert rows == [(1,)]

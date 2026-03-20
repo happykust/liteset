@@ -74,3 +74,32 @@ async def test_has_true(mock_redis):
     mock_redis.exists = AsyncMock(return_value=1)
     mgr = AsyncCacheManager(mock_redis)
     assert await mgr.has("x") is True
+
+
+async def test_clear_prefix(mock_redis):
+    from unittest.mock import MagicMock
+
+    mock_pipe = MagicMock()
+    mock_pipe.delete = MagicMock()  # sync mock to avoid coroutine warnings
+    mock_pipe.execute = AsyncMock()
+    mock_pipe.__aenter__ = AsyncMock(return_value=mock_pipe)
+    mock_pipe.__aexit__ = AsyncMock(return_value=False)
+    mock_redis.pipeline = lambda transaction=False: mock_pipe
+
+    async def fake_scan_iter(match=""):
+        for k in [b"prefix:a", b"prefix:b"]:
+            yield k
+
+    mock_redis.scan_iter = fake_scan_iter
+
+    mgr = AsyncCacheManager(mock_redis)
+    count = await mgr.clear_prefix("prefix:")
+    assert count == 2
+    assert mock_pipe.delete.call_count == 2
+
+
+async def test_close(mock_redis):
+    mock_redis.aclose = AsyncMock()
+    mgr = AsyncCacheManager(mock_redis)
+    await mgr.close()
+    mock_redis.aclose.assert_called_once()

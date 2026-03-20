@@ -22,6 +22,8 @@ from typing import Any, TypeVar
 
 T = TypeVar("T")
 
+_CLEAR_PREFIX_BATCH_SIZE = 100
+
 
 class AsyncCacheManager:
     """Async cache manager wrapping a redis.asyncio client."""
@@ -59,9 +61,29 @@ class AsyncCacheManager:
         return value
 
     async def clear_prefix(self, prefix: str) -> int:
-        """Delete all keys matching prefix*. Returns count deleted."""
+        """Delete all keys matching prefix*. Returns count deleted.
+
+        Uses pipeline to batch deletes for efficiency.
+        """
         count = 0
+        batch: list[Any] = []
         async for key in self._redis.scan_iter(match=f"{prefix}*"):
-            await self._redis.delete(key)
-            count += 1
+            batch.append(key)
+            if len(batch) >= _CLEAR_PREFIX_BATCH_SIZE:
+                async with self._redis.pipeline(transaction=False) as pipe:
+                    for k in batch:
+                        pipe.delete(k)
+                    await pipe.execute()
+                count += len(batch)
+                batch.clear()
+        if batch:
+            async with self._redis.pipeline(transaction=False) as pipe:
+                for k in batch:
+                    pipe.delete(k)
+                await pipe.execute()
+            count += len(batch)
         return count
+
+    async def close(self) -> None:
+        """Close the underlying Redis connection."""
+        await self._redis.aclose()

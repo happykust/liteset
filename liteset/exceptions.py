@@ -21,9 +21,12 @@ Ref: superset/exceptions.py, superset/views/error_handling.py
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from litestar import Request, Response
+
+logger = logging.getLogger(__name__)
 
 
 class LitesetException(Exception):
@@ -31,6 +34,7 @@ class LitesetException(Exception):
 
     status_code: int = 500
     message: str = "An unexpected error occurred"
+    extra: dict[str, Any] = {}
 
     def __init__(
         self,
@@ -54,7 +58,7 @@ class LitesetException(Exception):
             "message": self.message,
             "error_type": self.error_type,
             "level": "error",
-            "extra": getattr(self, "extra", {}),
+            "extra": self.extra,
         }
 
 
@@ -85,11 +89,6 @@ class LitesetNotFoundError(LitesetException):
 class LitesetTimeoutException(LitesetException):
     status_code = 504
     message = "Request timed out"
-
-
-class LitesetForbiddenError(LitesetException):
-    status_code = 403
-    message = "Action is forbidden"
 
 
 # --- Command-layer exceptions (replaces liteset/commands/base.py::CommandException) ---
@@ -169,7 +168,8 @@ def generic_exception_handler(request: Request, exc: Exception) -> Response:
     """Catch-all for unhandled exceptions.
 
     Preserves status_code from Litestar HTTP exceptions (404, 405, etc.)
-    while wrapping them in SIP-40 format.
+    while wrapping them in SIP-40 format. Logs unhandled non-HTTP
+    exceptions for production diagnostics.
     """
     from litestar.exceptions import HTTPException
 
@@ -188,6 +188,7 @@ def generic_exception_handler(request: Request, exc: Exception) -> Response:
             },
             status_code=exc.status_code,
         )
+    logger.exception("Unhandled exception on %s %s", request.method, request.url)
     return Response(
         content={
             "errors": [

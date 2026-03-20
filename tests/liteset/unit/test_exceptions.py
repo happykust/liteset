@@ -31,6 +31,7 @@ from liteset.exceptions import (
     LitesetValidationException,
     ObjectNotFoundError,
     UpdateFailedError,
+    generic_exception_handler,
     liteset_exception_handler,
 )
 
@@ -123,3 +124,37 @@ async def test_handler_returns_sip40_json():
         assert data["errors"][0]["message"] == "access denied"
         assert data["errors"][0]["level"] == "error"
         assert "message" in data  # legacy compat field
+
+
+async def test_generic_handler_returns_500_for_unknown():
+    @get("/boom")
+    async def boom_route() -> None:
+        raise RuntimeError("unexpected")
+
+    app = Litestar(
+        route_handlers=[boom_route],
+        exception_handlers={Exception: generic_exception_handler},
+    )
+    async with AsyncTestClient(app=app) as client:
+        resp = await client.get("/boom")
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["errors"][0]["error_type"] == "UNKNOWN_ERROR"
+
+
+async def test_generic_handler_preserves_http_404():
+    @get("/missing")
+    async def missing_route() -> None:
+        from litestar.exceptions import NotFoundException
+
+        raise NotFoundException(detail="not here")
+
+    app = Litestar(
+        route_handlers=[missing_route],
+        exception_handlers={Exception: generic_exception_handler},
+    )
+    async with AsyncTestClient(app=app) as client:
+        resp = await client.get("/missing")
+        assert resp.status_code == 404
+        data = resp.json()
+        assert data["errors"][0]["message"] == "not here"

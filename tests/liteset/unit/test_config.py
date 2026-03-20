@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from liteset.config import LitesetSettings
+from liteset.config import LitesetSettings, _superset_config_cache
 
 
 def test_default_settings() -> None:
@@ -87,6 +87,14 @@ def test_from_superset_config_missing_secret_key(tmp_path: Path) -> None:
     config_file.write_text('SQLALCHEMY_DATABASE_URI = "postgresql://u:p@host/db"\n')
     with pytest.raises(ValueError, match="SECRET_KEY not found"):
         LitesetSettings.from_superset_config(str(config_file))
+
+
+@pytest.fixture(autouse=True)
+def _clear_config_cache():
+    """Clear cached superset config between tests."""
+    _superset_config_cache.clear()
+    yield
+    _superset_config_cache.clear()
 
 
 def test_superset_config_source_auto_loads(monkeypatch, tmp_path):

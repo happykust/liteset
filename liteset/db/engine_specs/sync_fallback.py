@@ -16,7 +16,6 @@
 # under the License.
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -146,10 +145,7 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
         query: str,
         parameters: dict[str, Any] | None = None,
     ) -> AsyncResultSet:
-        loop = asyncio.get_running_loop()
-
-        def _run() -> AsyncResultSet:
-            sync_conn = conn.sync_connection
+        def _run(sync_conn: Connection) -> AsyncResultSet:
             result = sync_conn.execute(text(query), parameters or {})
             columns = list(result.keys()) if result.returns_rows else []
             data = (
@@ -163,7 +159,7 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
                 row_count=result.rowcount if result.rowcount >= 0 else len(data),
             )
 
-        return await loop.run_in_executor(_sync_db_pool, _run)
+        return await conn.run_sync(_run)
 
     @classmethod
     async def fetch_data(
@@ -172,16 +168,13 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
         query: str,
         limit: int | None = None,
     ) -> list[tuple[Any, ...]]:
-        loop = asyncio.get_running_loop()
-
-        def _run() -> list[tuple[Any, ...]]:
-            sync_conn = conn.sync_connection
+        def _run(sync_conn: Connection) -> list[tuple[Any, ...]]:
             result = sync_conn.execute(text(query))
             if limit is not None:
                 return [tuple(row) for row in result.fetchmany(limit)]
             return [tuple(row) for row in result.fetchall()]
 
-        return await loop.run_in_executor(_sync_db_pool, _run)
+        return await conn.run_sync(_run)
 
     @classmethod
     def extract_errors(cls, ex: Exception) -> list[dict[str, Any]]:

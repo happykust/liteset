@@ -55,30 +55,40 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
 }
 
 
+_superset_config_cache: dict[str, dict[str, Any]] = {}
+
+
 class SupersetConfigSettingsSource(PydanticBaseSettingsSource):
     """Read settings from superset_config.py as a Pydantic settings source.
 
     Priority: env vars > superset_config.py > defaults.
+    Caches loaded values per config path to avoid re-executing the
+    config file on every LitesetSettings() construction.
     """
 
     def __init__(self, settings_cls: type[BaseSettings]) -> None:
         super().__init__(settings_cls)
-        self._values: dict[str, Any] = {}
-        self._load()
+        self._values: dict[str, Any] = self._load()
 
-    def _load(self) -> None:
-        path = os.environ.get("SUPERSET_CONFIG_PATH")
+    @staticmethod
+    def _load() -> dict[str, Any]:
+        path = os.environ.get("SUPERSET_CONFIG_PATH", "")
         if not path or not Path(path).exists():
-            return
+            return {}
+        if path in _superset_config_cache:
+            return _superset_config_cache[path]
         spec = importlib.util.spec_from_file_location("superset_config", path)
         if spec is None or spec.loader is None:
-            return
+            return {}
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        values: dict[str, Any] = {}
         for sup_key, lit_key in _SUPERSET_TO_LITESET.items():
             val = getattr(module, sup_key, None)
             if val is not None:
-                self._values[lit_key] = val
+                values[lit_key] = val
+        _superset_config_cache[path] = values
+        return values
 
     def get_field_value(
         self, field: FieldInfo, field_name: str

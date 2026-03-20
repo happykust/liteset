@@ -27,7 +27,12 @@ T = TypeVar("T")
 
 
 async def provide_async_session(state: State) -> AsyncGenerator[AsyncSession, None]:
-    """Provide an AsyncSession with auto-commit/rollback."""
+    """Provide an AsyncSession with auto-commit/rollback.
+
+    Commits on success, rolls back on exception. Read-only requests
+    incur a no-op commit (harmless). This simplifies the Strangler Fig
+    phase where every handler shares one session dependency.
+    """
     async with state.session_factory() as session:
         try:
             yield session
@@ -38,7 +43,11 @@ async def provide_async_session(state: State) -> AsyncGenerator[AsyncSession, No
 
 
 class RequestCache:
-    """Per-request cache, replaces flask.g for memoization."""
+    """Per-request cache, replaces flask.g for memoization.
+
+    Not concurrency-safe — designed for single-task-per-request usage
+    within Litestar's request lifecycle. Do not share across tasks.
+    """
 
     def __init__(self) -> None:
         self._store: dict[str, Any] = {}

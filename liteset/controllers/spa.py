@@ -26,7 +26,7 @@ from litestar.datastructures import State
 from litestar.exceptions import NotFoundException
 from litestar.response import Template
 
-SPA_ROUTE_PREFIXES: set[str] = {
+SPA_ROUTE_PREFIXES: frozenset[str] = frozenset({
     "explore",
     "dashboard",
     "superset",
@@ -42,7 +42,7 @@ SPA_ROUTE_PREFIXES: set[str] = {
     "users",
     "roles",
     "logmodelview",
-}
+})
 
 
 class SPAController(Controller):
