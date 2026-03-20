@@ -166,7 +166,28 @@ def liteset_exception_handler(
 
 
 def generic_exception_handler(request: Request, exc: Exception) -> Response:
-    """Catch-all for unhandled exceptions."""
+    """Catch-all for unhandled exceptions.
+
+    Preserves status_code from Litestar HTTP exceptions (404, 405, etc.)
+    while wrapping them in SIP-40 format.
+    """
+    from litestar.exceptions import HTTPException
+
+    if isinstance(exc, HTTPException):
+        return Response(
+            content={
+                "errors": [
+                    {
+                        "message": exc.detail,
+                        "error_type": type(exc).__name__,
+                        "level": "error",
+                        "extra": {},
+                    }
+                ],
+                "message": exc.detail,
+            },
+            status_code=exc.status_code,
+        )
     return Response(
         content={
             "errors": [

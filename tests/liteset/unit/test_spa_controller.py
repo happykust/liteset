@@ -4,7 +4,7 @@ from litestar.testing import AsyncTestClient
 
 from liteset.app import create_app
 from liteset.config import LitesetSettings
-from liteset.controllers.spa import SPA_ROUTES
+from liteset.controllers.spa import SPA_ROUTE_PREFIXES
 
 
 @pytest.fixture
@@ -46,5 +46,17 @@ async def test_spa_route_with_path_param(app: Litestar):
         assert resp.status_code == 200
 
 
-async def test_spa_routes_list_is_not_empty():
-    assert len(SPA_ROUTES) > 0
+async def test_known_spa_route_200(app: Litestar):
+    async with AsyncTestClient(app=app) as client:
+        resp = await client.get("/superset/welcome/")
+        assert resp.status_code == 200
+
+
+async def test_unknown_prefix_404(app: Litestar):
+    async with AsyncTestClient(app=app) as client:
+        resp = await client.get("/unknown/path/")
+        assert resp.status_code == 404
+
+
+def test_spa_route_prefixes_not_empty():
+    assert len(SPA_ROUTE_PREFIXES) > 0

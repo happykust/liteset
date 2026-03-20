@@ -17,50 +17,48 @@
 """SPA HTML shell controller.
 
 Renders the HTML page that bootstraps the React frontend.
+Uses a catch-all route with prefix guard instead of hardcoded routes.
 """
 from __future__ import annotations
 
 from litestar import Controller, get
 from litestar.datastructures import State
+from litestar.exceptions import NotFoundException
 from litestar.response import Template
 
-SPA_ROUTES: list[str] = [
-    "/superset/welcome/",
-    "/explore/",
-    "/dashboard/list/",
-    "/dashboard/{pk:int}/",
-    "/superset/sqllab/",
-    "/chart/list/",
-    "/superset/profile/{username:str}/",
-    "/superset/dashboard/{slug:str}/",
-    "/alert/list/",
-    "/report/list/",
-    "/database/list/",
-    "/dataset/list/",
-    "/savedquery/list/",
-    "/csstemplate/list/",
-    "/annotationlayer/list/",
-    "/rowlevelsecurity/list/",
-    "/superset/tags/",
-    # FAB-style legacy routes (Flask-AppBuilder admin views)
-    "/users/list/",
-    "/users/add",
-    "/users/{pk:int}/edit",
-    "/roles/list/",
-    "/roles/add",
-    "/roles/{pk:int}/edit",
-    "/logmodelview/list/",
-]
+SPA_ROUTE_PREFIXES: set[str] = {
+    "explore",
+    "dashboard",
+    "superset",
+    "chart",
+    "alert",
+    "report",
+    "database",
+    "dataset",
+    "savedquery",
+    "csstemplate",
+    "annotationlayer",
+    "rowlevelsecurity",
+    "users",
+    "roles",
+    "logmodelview",
+}
 
 
 class SPAController(Controller):
     path = "/"
 
     @get(
-        SPA_ROUTES,
+        "/{path:path}",
         opt={"exclude_from_auth": True},
     )
-    async def spa_page(self, state: State) -> Template:
+    async def spa_page(self, state: State, path: str = "") -> Template:
+        # Extract the first path segment to match against known prefixes
+        first_segment = path.strip("/").split("/")[0] if path.strip("/") else ""
+
+        if first_segment not in SPA_ROUTE_PREFIXES:
+            raise NotFoundException(detail=f"Unknown route: /{path}")
+
         settings = state.settings
         return Template(
             template_name="spa.html",
