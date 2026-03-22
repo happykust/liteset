@@ -115,8 +115,29 @@ class LitesetSettings(BaseSettings):
     cors_allow_origins: list[str] = []
     log_level: str = "INFO"
     production: bool = False
-    cache_redis_url: str = ""
     cache_default_ttl: int = 300
+
+    # Redis (used for auth cache and general caching)
+    redis_url: str = ""
+    csrf_enabled: bool = True
+    csrf_cookie_name: str = "csrf_access_token"
+    csrf_header_name: str = "X-CSRFToken"
+    session_cookie_name: str = "session"
+
+    # Auth role names
+    auth_role_public: str = "Public"
+    auth_role_admin: str = "Admin"
+    guest_role_name: str = "Guest"
+
+    # DASHBOARD_RBAC feature flag
+    dashboard_rbac: bool = False
+
+    # Embedded dashboards (guest tokens)
+    embedded_superset: bool = False
+    guest_token_jwt_secret: str = ""
+    guest_token_jwt_algo: str = "HS256"  # noqa: S105
+    guest_token_jwt_exp_seconds: int = 3600
+    guest_token_header_name: str = "Authorization"  # noqa: S105
 
     @field_validator("secret_key")
     @classmethod
