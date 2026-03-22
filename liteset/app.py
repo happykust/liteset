@@ -33,19 +33,22 @@ from litestar.template.config import TemplateConfig
 from sqlalchemy.engine import make_url
 
 from liteset.config import LitesetSettings
+from liteset.controllers.security import SecurityController
 from liteset.controllers.spa import SPAController
 from liteset.db.session import (
     create_db_engine,
     create_session_factory,
     dispose_engine,
 )
-from liteset.dependencies import provide_async_session, provide_request_cache
+from liteset.dependencies import get_current_user, provide_async_session, provide_request_cache
 from liteset.exceptions import (
     generic_exception_handler,
     liteset_exception_handler,
     LitesetException,
 )
 from liteset.logging import configure_logging
+from liteset.middleware.auth import LitesetAuthMiddleware
+from liteset.middleware.csrf import create_csrf_config
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +71,7 @@ def _make_manifest_lookup(manifest: dict[str, Any], asset_type: str) -> Any:
     return lookup
 
 
-@get("/api/v1/health")
+@get("/api/v1/health", opt={"exclude_from_auth": True})
 async def health_check() -> dict[str, str]:
     return {"status": "OK"}
 
@@ -79,6 +82,21 @@ async def on_startup(app: Litestar) -> None:
     engine = create_db_engine(settings.sqlalchemy_database_uri)
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
+
+    # Initialize Redis for auth user cache
+    if settings.redis_url:
+        try:
+            from redis.asyncio import Redis
+            app.state.redis = Redis.from_url(
+                settings.redis_url, decode_responses=True
+            )
+            logger.info("Redis connected for auth cache")
+        except Exception:
+            logger.warning("Failed to connect to Redis — auth cache disabled")
+            app.state.redis = None
+    else:
+        app.state.redis = None
+
     logger.info(
         "Liteset started with DB: %s",
         make_url(settings.sqlalchemy_database_uri).render_as_string(hide_password=True),
@@ -89,6 +107,9 @@ async def on_shutdown(app: Litestar) -> None:
     if hasattr(app.state, "engine"):
         await dispose_engine(app.state.engine)
         logger.info("Database engine disposed")
+    if hasattr(app.state, "redis") and app.state.redis is not None:
+        await app.state.redis.close()
+        logger.info("Redis connection closed")
 
 
 def create_app(
@@ -99,7 +120,7 @@ def create_app(
         # secret_key is resolved at runtime from env vars or superset_config.py
         settings = LitesetSettings()  # type: ignore[call-arg]
 
-    route_handlers: list[Any] = [health_check, SPAController]
+    route_handlers: list[Any] = [health_check, SPAController, SecurityController]
     startup_hooks: list[Any] = [on_startup]
 
     if enable_flask_fallback:
@@ -146,12 +167,19 @@ def create_app(
         ]
     )
 
-    # TODO(liteset/data-layer): register AuthMiddleware after auth
-    #   methods are implemented: middleware=[LitesetAuthMiddleware]
-    # TODO(liteset/data-layer): add current_user dependency
-    #   "current_user": Provide(get_current_user)
-    # TODO(liteset/data-layer): add CSRFConfig after session system
-    #   csrf_config=CSRFConfig(secret=settings.secret_key, ...)
+    # Build CSRF config
+    csrf_config = None
+    if settings.csrf_enabled:
+        secret_key = settings.secret_key
+        if hasattr(secret_key, "get_secret_value"):
+            secret_key = secret_key.get_secret_value()
+        csrf_config = create_csrf_config(
+            secret=secret_key,
+            cookie_name=settings.csrf_cookie_name,
+            header_name=settings.csrf_header_name,
+            exclude_paths=["/api/v1/health", "/api/v1/security/csrf_token/"],
+        )
+
     # TODO(liteset/cleanup): add security headers middleware
     #   (CSP, HSTS, X-Frame-Options) — replaces flask-talisman
 
@@ -163,7 +191,10 @@ def create_app(
                 provide_request_cache,
                 use_cache=True,
             ),
+            "current_user": Provide(get_current_user, sync_to_thread=False),
         },
+        middleware=[LitesetAuthMiddleware],
+        csrf_config=csrf_config,
         on_startup=startup_hooks,
         on_shutdown=[on_shutdown],
         exception_handlers={

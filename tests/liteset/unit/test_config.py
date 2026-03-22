@@ -10,7 +10,7 @@ from liteset.config import LitesetSettings, _superset_config_cache
 
 def test_default_settings() -> None:
     settings = LitesetSettings(secret_key="test-key-long-enough")
-    assert settings.secret_key == "test-key-long-enough"
+    assert settings.secret_key.get_secret_value() == "test-key-long-enough"
     # Default URI should be async sqlite
     assert settings.sqlalchemy_database_uri == "sqlite+aiosqlite:///superset.db"
     assert settings.host == "0.0.0.0"
@@ -51,7 +51,7 @@ def test_from_superset_config(tmp_path: Path) -> None:
         """)
     )
     settings = LitesetSettings.from_superset_config(str(config_file))
-    assert settings.secret_key == "superset-secret-long-enough"
+    assert settings.secret_key.get_secret_value() == "superset-secret-long-enough"
     assert settings.sqlalchemy_database_uri == "postgresql+asyncpg://user:pass@localhost/superset"
 
 
@@ -106,7 +106,7 @@ def test_superset_config_source_auto_loads(monkeypatch, tmp_path):
     )
     monkeypatch.setenv("SUPERSET_CONFIG_PATH", str(config_file))
     settings = LitesetSettings()
-    assert settings.secret_key == "auto-loaded-secret-key"
+    assert settings.secret_key.get_secret_value() == "auto-loaded-secret-key"
     assert "asyncpg" in settings.sqlalchemy_database_uri
 
 
@@ -116,11 +116,11 @@ def test_env_overrides_superset_config(monkeypatch, tmp_path):
     monkeypatch.setenv("SUPERSET_CONFIG_PATH", str(config_file))
     monkeypatch.setenv("LITESET_SECRET_KEY", "from-env-override-key")
     settings = LitesetSettings()
-    assert settings.secret_key == "from-env-override-key"
+    assert settings.secret_key.get_secret_value() == "from-env-override-key"
 
 
 def test_no_superset_config_uses_defaults(monkeypatch):
     monkeypatch.delenv("SUPERSET_CONFIG_PATH", raising=False)
     monkeypatch.setenv("LITESET_SECRET_KEY", "fallback-secret-key")
     settings = LitesetSettings()
-    assert settings.secret_key == "fallback-secret-key"
+    assert settings.secret_key.get_secret_value() == "fallback-secret-key"
