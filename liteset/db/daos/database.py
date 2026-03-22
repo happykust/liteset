@@ -80,9 +80,7 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
         database_id: int,
     ) -> dict[str, list[Any]]:
         """Get charts, dashboards, and sqllab tab states related to a database."""
-        dataset_stmt = select(SqlaTable.id).where(
-            SqlaTable.database_id == database_id
-        )
+        dataset_stmt = select(SqlaTable.id).where(SqlaTable.database_id == database_id)
         dataset_result = await self.session.execute(dataset_stmt)
         dataset_ids = list(dataset_result.scalars().all())
 

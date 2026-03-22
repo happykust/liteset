@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from sqlalchemy import delete as sa_delete, inspect, select
+from sqlalchemy import CursorResult, delete as sa_delete, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -45,7 +45,8 @@ class BaseAsyncDAO(Generic[T]):
                     "use a custom query instead of find_by_ids"
                 )
             cls._pk_column_cache[cls.model_cls] = getattr(
-                cls.model_cls, pk_cols[0].name,
+                cls.model_cls,
+                pk_cols[0].name,
             )
         return cls._pk_column_cache[cls.model_cls]
 
@@ -105,5 +106,5 @@ class BaseAsyncDAO(Generic[T]):
             return 0
         pk_col = self._get_pk_column()
         stmt = sa_delete(self.model_cls).where(pk_col.in_(ids))
-        result = await self.session.execute(stmt)
+        result: CursorResult[Any] = await self.session.execute(stmt)  # type: ignore[assignment]
         return result.rowcount

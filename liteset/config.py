@@ -21,20 +21,17 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import field_validator
+from pydantic import field_validator, SecretStr
 from pydantic.fields import FieldInfo
-from pydantic.functional_validators import AfterValidator
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
-from typing_extensions import Annotated
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
-
-def _validate_secret_key(v: str) -> str:
-    if len(v) < 16:
-        raise ValueError("secret_key must be at least 16 characters long")
-    return v
-
-
-SecretKeyStr = Annotated[str, AfterValidator(_validate_secret_key)]
+# Minimum 16 characters for secret key (validated via field_validator below).
+# SecretStr masks the value in repr/logs to prevent accidental exposure.
+SecretKeyStr = SecretStr
 
 _SYNC_TO_ASYNC_DRIVERS = {
     "postgresql://": "postgresql+asyncpg://",
@@ -110,7 +107,7 @@ class LitesetSettings(BaseSettings):
 
     secret_key: SecretKeyStr
     sqlalchemy_database_uri: str = "sqlite+aiosqlite:///superset.db"
-    host: str = "0.0.0.0"
+    host: str = "0.0.0.0"  # noqa: S104
     port: int = 8088
     debug: bool = False
     static_assets_prefix: str = ""
@@ -120,6 +117,13 @@ class LitesetSettings(BaseSettings):
     production: bool = False
     cache_redis_url: str = ""
     cache_default_ttl: int = 300
+
+    @field_validator("secret_key")
+    @classmethod
+    def validate_secret_key_length(cls, v: SecretStr) -> SecretStr:
+        if len(v.get_secret_value()) < 16:
+            raise ValueError("secret_key must be at least 16 characters long")
+        return v
 
     @field_validator("sqlalchemy_database_uri")
     @classmethod
@@ -147,10 +151,11 @@ class LitesetSettings(BaseSettings):
         )
 
     @classmethod
-    def from_superset_config(
-        cls, config_path: str | None = None
-    ) -> LitesetSettings:
-        """Load settings from superset_config.py (deprecated: use SUPERSET_CONFIG_PATH env var)."""
+    def from_superset_config(cls, config_path: str | None = None) -> LitesetSettings:
+        """Load settings from superset_config.py.
+
+        Deprecated: use SUPERSET_CONFIG_PATH env var.
+        """
         path = config_path or os.environ.get("SUPERSET_CONFIG_PATH")
         if not path or not Path(path).exists():
             raise FileNotFoundError(

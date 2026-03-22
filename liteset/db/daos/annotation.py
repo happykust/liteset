@@ -43,13 +43,11 @@ class AsyncAnnotationLayerDAO(BaseAsyncDAO[AnnotationLayer]):
     ) -> bool:
         """Check if annotation layer(s) have any annotations."""
         if isinstance(model_id, list):
-            stmt = select(Annotation.id).where(
-                Annotation.layer_id.in_(model_id)
-            ).limit(1)
+            stmt = (
+                select(Annotation.id).where(Annotation.layer_id.in_(model_id)).limit(1)
+            )
         else:
-            stmt = select(Annotation.id).where(
-                Annotation.layer_id == model_id
-            ).limit(1)
+            stmt = select(Annotation.id).where(Annotation.layer_id == model_id).limit(1)
         result = await self.session.execute(stmt)
         return result.scalars().first() is not None
 

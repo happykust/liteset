@@ -15,12 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 """Flask WSGI fallback for Strangler Fig migration."""
+
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
-from litestar import Litestar, asgi
+from litestar import asgi, Litestar
 
 if TYPE_CHECKING:
     from litestar.types import Receive, Scope, Send
@@ -34,6 +35,7 @@ async def init_flask_fallback(app: Litestar) -> None:
     Eager init avoids race conditions from lazy global init.
     """
     from asgiref.wsgi import WsgiToAsgi
+
     from superset.app import create_app as create_flask_app
 
     logger.info("Initializing Flask fallback for non-migrated routes")
@@ -41,13 +43,11 @@ async def init_flask_fallback(app: Litestar) -> None:
     app.state.flask_asgi = WsgiToAsgi(flask_app)
 
 
-def create_flask_fallback():
+def create_flask_fallback() -> Any:
     """Create ASGI mount that delegates to Flask via app.state."""
 
     @asgi("/", is_mount=True, copy_scope=True)
-    async def flask_fallback(
-        scope: "Scope", receive: "Receive", send: "Send"
-    ) -> None:
+    async def flask_fallback(scope: "Scope", receive: "Receive", send: "Send") -> None:
         flask_asgi = scope["app"].state.flask_asgi
         await flask_asgi(scope, receive, send)
 

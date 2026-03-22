@@ -55,9 +55,7 @@ class RequestCache:
     def __init__(self) -> None:
         self._store: dict[str, Any] = {}
 
-    async def get_or_set(
-        self, key: str, factory: Callable[[], Awaitable[T]]
-    ) -> T:
+    async def get_or_set(self, key: str, factory: Callable[[], Awaitable[T]]) -> T:
         if key not in self._store:
             self._store[key] = await factory()
         return self._store[key]
@@ -69,7 +67,7 @@ class RequestCache:
         self._store[key] = value
 
 
-async def provide_request_cache(request: Request) -> RequestCache:
+async def provide_request_cache(request: Request[Any, Any, Any]) -> RequestCache:
     """Per-request cache scoped to request lifecycle."""
     if not hasattr(request.state, "_cache"):
         request.state._cache = RequestCache()
@@ -79,15 +77,15 @@ async def provide_request_cache(request: Request) -> RequestCache:
 # --- flask.g user helper replacements ---
 
 
-def get_current_user(request: Request) -> Any:
+def get_current_user(request: Request[Any, Any, Any]) -> Any:
     return getattr(request, "user", None)
 
 
-def get_user_id(request: Request) -> int | None:
+def get_user_id(request: Request[Any, Any, Any]) -> int | None:
     user = get_current_user(request)
     return getattr(user, "id", None) if user else None
 
 
-def get_username(request: Request) -> str | None:
+def get_username(request: Request[Any, Any, Any]) -> str | None:
     user = get_current_user(request)
     return getattr(user, "username", None) if user else None

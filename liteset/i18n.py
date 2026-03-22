@@ -19,6 +19,7 @@
 Provides gettext() and lazy_gettext() compatible with Superset's
 translation patterns but without Flask dependency.
 """
+
 from __future__ import annotations
 
 import contextvars

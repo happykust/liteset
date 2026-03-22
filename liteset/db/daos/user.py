@@ -44,10 +44,10 @@ class AsyncUserDAO:
                 from superset.extensions import security_manager
 
                 self._user_model = security_manager.user_model
-            except ImportError:
+            except ImportError as err:
                 raise RuntimeError(
                     "User model not available. Pass user_model to constructor."
-                )
+                ) from err
         return self._user_model
 
     async def get_by_id(self, user_id: int) -> Any | None:

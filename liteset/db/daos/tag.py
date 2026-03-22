@@ -16,8 +16,6 @@
 # under the License.
 from __future__ import annotations
 
-from typing import Any
-
 from sqlalchemy import delete, select
 
 from liteset.db.base_dao import BaseAsyncDAO
@@ -42,6 +40,7 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
     async def get_by_name(self, name: str, type_name: str = "custom") -> Tag:
         """Get tag by name, creating it if it doesn't exist."""
         from superset.tags.models import TagType
+
         tag_type = TagType[type_name] if isinstance(type_name, str) else type_name
         tag = await self.find_one_or_none(name=name, type=tag_type)
         if tag:
@@ -52,22 +51,32 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         return tag
 
     async def create_custom_tagged_objects(
-        self, object_type: str, object_id: int, tag_names: list[str],
+        self,
+        object_type: str,
+        object_id: int,
+        tag_names: list[str],
     ) -> None:
         """Create TaggedObject entries for the given tag names."""
         from superset.tags.models import ObjectType
+
         obj_type = ObjectType[object_type]
         for name in tag_names:
             tag = await self.get_by_name(name, "custom")
-            existing = await self._find_tagged_object(obj_type.name, object_id, tag.id)
+            tag_id: int = tag.id  # type: ignore[assignment]
+            existing = await self._find_tagged_object(obj_type.name, object_id, tag_id)
             if not existing:
                 tagged = TaggedObject(
-                    tag_id=tag.id, object_id=object_id, object_type=obj_type,
+                    tag_id=tag_id,
+                    object_id=object_id,
+                    object_type=obj_type,
                 )
                 self.session.add(tagged)
 
     async def _find_tagged_object(
-        self, object_type: str, object_id: int, tag_id: int,
+        self,
+        object_type: str,
+        object_id: int,
+        tag_id: int,
     ) -> TaggedObject | None:
         stmt = select(TaggedObject).where(
             TaggedObject.object_type == object_type,
@@ -78,13 +87,19 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         return result.scalars().one_or_none()
 
     async def find_tagged_object(
-        self, object_type: str, object_id: int, tag_id: int,
+        self,
+        object_type: str,
+        object_id: int,
+        tag_id: int,
     ) -> TaggedObject | None:
         """Find a specific tagged object entry."""
         return await self._find_tagged_object(object_type, object_id, tag_id)
 
     async def delete_tagged_object(
-        self, object_type: str, object_id: int, tag_name: str,
+        self,
+        object_type: str,
+        object_id: int,
+        tag_name: str,
     ) -> None:
         """Delete a tagged object by tag name."""
         tag = await self.find_by_name(tag_name)
@@ -107,27 +122,32 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
             await self.session.execute(
                 delete(TaggedObject).where(TaggedObject.tag_id.in_(tag_ids))
             )
-            await self.session.execute(
-                delete(Tag).where(Tag.id.in_(tag_ids))
-            )
+            await self.session.execute(delete(Tag).where(Tag.id.in_(tag_ids)))
 
     async def get_tagged_objects_by_tag_names(
-        self, tag_names: list[str], obj_types: list[str] | None = None,
+        self,
+        tag_names: list[str],
+        obj_types: list[str] | None = None,
     ) -> list[TaggedObject]:
         """Get tagged objects by tag names with optional type filter."""
         tags = await self.find_by_names(tag_names)
-        tag_ids = [t.id for t in tags]
+        tag_ids: list[int] = [t.id for t in tags]  # type: ignore[misc]
         return await self.get_tagged_objects_by_tag_ids(tag_ids, obj_types)
 
     async def create_tag_relationship(
-        self, objects_to_tag: list[tuple[str, int]], tag: Tag,
+        self,
+        objects_to_tag: list[tuple[str, int]],
+        tag: Tag,
     ) -> None:
         """Create TaggedObject entries linking objects to a tag."""
+        tag_id: int = tag.id  # type: ignore[assignment]
         for obj_type, obj_id in objects_to_tag:
-            existing = await self._find_tagged_object(obj_type, obj_id, tag.id)
+            existing = await self._find_tagged_object(obj_type, obj_id, tag_id)
             if not existing:
                 tagged = TaggedObject(
-                    tag_id=tag.id, object_id=obj_id, object_type=obj_type,
+                    tag_id=tag_id,
+                    object_id=obj_id,
+                    object_type=obj_type,
                 )
                 self.session.add(tagged)
 
@@ -164,7 +184,8 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
             return True
 
         stmt = user_favorite_tag_table.insert().values(
-            tag_id=tag_id, user_id=user_id,
+            tag_id=tag_id,
+            user_id=user_id,
         )
         await self.session.execute(stmt)
         return True

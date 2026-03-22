@@ -19,6 +19,7 @@
 Maps to Superset exceptions for frontend compatibility.
 Ref: superset/exceptions.py, superset/views/error_handling.py
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,7 +30,7 @@ from litestar import MediaType, Request, Response
 logger = logging.getLogger(__name__)
 
 
-class LitesetException(Exception):
+class LitesetException(Exception):  # noqa: N818
     """Base exception for all Liteset errors."""
 
     status_code: int = 500
@@ -113,9 +114,7 @@ class CommandInvalidError(CommandException):
 class ObjectNotFoundError(CommandException):
     status_code = 404
 
-    def __init__(
-        self, object_type: str, object_id: str | int | None = None
-    ) -> None:
+    def __init__(self, object_type: str, object_id: str | int | None = None) -> None:
         msg = f"{object_type} "
         if object_id is not None:
             msg += f'"{object_id}" '
@@ -152,8 +151,8 @@ class ImportFailedError(CommandException):
 
 
 def liteset_exception_handler(
-    request: Request, exc: LitesetException
-) -> Response:
+    request: Request[Any, Any, Any], exc: LitesetException
+) -> Response[Any]:
     """SIP-40 compatible error response handler."""
     from liteset.schemas.base import ErrorResponse, SupersetErrorDetail
 
@@ -168,7 +167,9 @@ def liteset_exception_handler(
     )
 
 
-def generic_exception_handler(request: Request, exc: Exception) -> Response:
+def generic_exception_handler(
+    request: Request[Any, Any, Any], exc: Exception
+) -> Response[Any]:
     """Catch-all for unhandled exceptions.
 
     Preserves status_code from Litestar HTTP exceptions (404, 405, etc.)

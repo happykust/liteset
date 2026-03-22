@@ -15,10 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 """Accept-Language locale middleware."""
+
 from __future__ import annotations
 
 from litestar.middleware import AbstractMiddleware
-from litestar.types import ASGIApp, Receive, Scope, Send
+from litestar.types import Receive, Scope, Send
 
 from liteset.i18n import _current_locale, set_locale
 
@@ -26,13 +27,12 @@ from liteset.i18n import _current_locale, set_locale
 class LocaleMiddleware(AbstractMiddleware):
     """Parse Accept-Language header and set locale per-request."""
 
-    async def __call__(
-        self, scope: Scope, receive: Receive, send: Send
-    ) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         token = None
         if scope["type"] == "http":
             headers = dict(scope.get("headers", []))
-            accept = headers.get(b"accept-language", b"en").decode("utf-8", errors="replace")
+            raw = headers.get(b"accept-language", b"en")
+            accept = raw.decode("utf-8", errors="replace")
             locale = _parse_accept_language(accept)
             token = set_locale(locale)
         try:

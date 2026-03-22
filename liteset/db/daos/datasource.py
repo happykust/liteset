@@ -23,7 +23,6 @@ from sqlalchemy.orm import DeclarativeBase
 
 from superset.connectors.sqla.models import SqlaTable
 
-
 # Mapping of datasource type strings to model classes
 _DATASOURCE_TYPE_MAP: dict[str, type[DeclarativeBase]] = {
     "table": SqlaTable,

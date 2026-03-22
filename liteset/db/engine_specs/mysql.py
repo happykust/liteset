@@ -38,8 +38,7 @@ class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
             "INTERVAL (HOUR({col})*60*60 + MINUTE({col})*60 + SECOND({col})) SECOND)"
         ),
         "PT1M": (
-            "DATE_ADD(DATE({col}), "
-            "INTERVAL (HOUR({col})*60 + MINUTE({col})) MINUTE)"
+            "DATE_ADD(DATE({col}), INTERVAL (HOUR({col})*60 + MINUTE({col})) MINUTE)"
         ),
         "PT1H": "DATE_ADD(DATE({col}), INTERVAL HOUR({col}) HOUR)",
         "P1D": "DATE({col})",

@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """Native async engine spec for Trino using aiotrino driver."""
+
 from __future__ import annotations
 
 import re
@@ -47,7 +48,8 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
     _custom_errors: list[tuple[re.Pattern[str], str]] = [
         (
             re.compile(
-                r"line (?P<line>\d+):(?P<col>\d+): Column '(?P<column>.+?)' cannot be resolved"
+                r"line (?P<line>\d+):(?P<col>\d+): "
+                r"Column '(?P<column>.+?)' cannot be resolved"
             ),
             "Column '{column}' cannot be resolved (line {line}:{col})",
         ),

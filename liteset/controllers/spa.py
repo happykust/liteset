@@ -17,51 +17,54 @@
 """SPA HTML shell controller.
 
 Renders the HTML page that bootstraps the React frontend.
-Uses a catch-all route with prefix guard instead of hardcoded routes.
+Uses explicit prefix-based routes to avoid intercepting un-migrated
+API endpoints that must fall through to the Flask ASGI fallback mount.
 """
+
 from __future__ import annotations
 
 from litestar import Controller, get
 from litestar.datastructures import State
-from litestar.exceptions import NotFoundException
 from litestar.response import Template
 
-SPA_ROUTE_PREFIXES: frozenset[str] = frozenset({
-    "explore",
-    "dashboard",
-    "superset",
-    "chart",
-    "alert",
-    "report",
-    "database",
-    "dataset",
-    "savedquery",
-    "csstemplate",
-    "annotationlayer",
-    "rowlevelsecurity",
-    "users",
-    "roles",
-    "logmodelview",
-})
+SPA_ROUTE_PREFIXES: frozenset[str] = frozenset(
+    {
+        "explore",
+        "dashboard",
+        "superset",
+        "chart",
+        "alert",
+        "report",
+        "database",
+        "dataset",
+        "savedquery",
+        "csstemplate",
+        "annotationlayer",
+        "rowlevelsecurity",
+        "users",
+        "roles",
+        "logmodelview",
+    }
+)
+
+# Explicit route paths: each prefix gets both /{prefix} and /{prefix}/{path:path}.
+# Un-matched paths (API, static, un-migrated endpoints) are NOT intercepted
+# and fall through to the Flask ASGI fallback mount during Strangler Fig coexistence.
+_SPA_PATHS: list[str] = (
+    ["/"]
+    + [f"/{prefix}/{{path:path}}" for prefix in SPA_ROUTE_PREFIXES]
+    + [f"/{prefix}" for prefix in SPA_ROUTE_PREFIXES]
+)
 
 
 class SPAController(Controller):
     path = "/"
 
     @get(
-        ["/", "/{path:path}"],
-        opt={"exclude_from_auth": True},
+        _SPA_PATHS,
+        exclude_from_auth=True,
     )
     async def spa_page(self, state: State, path: str = "") -> Template:
-        # Root "/" redirects to welcome page; other routes check prefix
-        first_segment = path.strip("/").split("/")[0] if path.strip("/") else ""
-
-        if not first_segment:
-            # Bare "/" — serve the welcome/landing SPA page
-            pass
-        elif first_segment not in SPA_ROUTE_PREFIXES:
-            raise NotFoundException(detail=f"Unknown route: /{path}")
-
         settings = state.settings
         return Template(
             template_name="spa.html",

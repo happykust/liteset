@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """Rison query parameter decoder for Superset API compatibility."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -23,7 +24,7 @@ import prison
 from litestar.connection import Request
 
 
-async def provide_rison_query(request: Request) -> dict[str, Any] | None:
+async def provide_rison_query(request: Request[Any, Any, Any]) -> dict[str, Any] | None:
     """Decode Rison-encoded 'q' query parameter.
 
     Frontend sends: GET /api/v1/chart/?q=(filters:!(...),page:0,page_size:25)

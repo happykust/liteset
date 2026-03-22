@@ -16,11 +16,10 @@
 # under the License.
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import CursorResult, delete, select
 
 from liteset.db.base_dao import BaseAsyncDAO
 from superset.reports.models import (
@@ -29,6 +28,7 @@ from superset.reports.models import (
     ReportSchedule,
     ReportState,
 )
+from superset.utils.json import dumps
 
 
 class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
@@ -85,7 +85,7 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
         for recipient in recipients_data:
             config = recipient.get("recipient_config_json", "")
             if isinstance(config, dict):
-                config = json.dumps(config)
+                config = dumps(config)
             rec = ReportRecipients(
                 type=recipient["type"],
                 recipient_config_json=config,
@@ -117,7 +117,7 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
             for recipient in recipients_data:
                 config = recipient.get("recipient_config_json", "")
                 if isinstance(config, dict):
-                    config = json.dumps(config)
+                    config = dumps(config)
                 rec = ReportRecipients(
                     type=recipient["type"],
                     recipient_config_json=config,
@@ -171,7 +171,7 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
         report_schedule: ReportSchedule,
     ) -> ReportExecutionLog | None:
         """Find last error notification log, but only if no non-error logs since."""
-        from superset.reports.notifications.exceptions import (
+        from superset.daos.report import (
             REPORT_SCHEDULE_ERROR_NOTIFICATION_MARKER,
         )
 
@@ -214,13 +214,17 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
             return []
         return await self.find_all([ReportSchedule.chart_id.in_(chart_ids)])
 
-    async def find_by_dashboard_ids(self, dashboard_ids: list[int]) -> list[ReportSchedule]:
+    async def find_by_dashboard_ids(
+        self, dashboard_ids: list[int]
+    ) -> list[ReportSchedule]:
         """Find report schedules linked to any of the given dashboards."""
         if not dashboard_ids:
             return []
         return await self.find_all([ReportSchedule.dashboard_id.in_(dashboard_ids)])
 
-    async def find_by_database_ids(self, database_ids: list[int]) -> list[ReportSchedule]:
+    async def find_by_database_ids(
+        self, database_ids: list[int]
+    ) -> list[ReportSchedule]:
         """Find report schedules linked to any of the given databases."""
         if not database_ids:
             return []
@@ -265,7 +269,7 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
             ReportExecutionLog.report_schedule_id == report_schedule.id,
             ReportExecutionLog.end_dttm < from_date,
         )
-        result = await self.session.execute(stmt)
+        result: CursorResult[Any] = await self.session.execute(stmt)  # type: ignore[assignment]
         return result.rowcount
 
 
