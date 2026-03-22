@@ -48,6 +48,10 @@ class FavoriteMixin:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def is_favorited_by(self, obj_id: int, user_id: int) -> bool:
+        """Check if a single object is favorited by the user."""
+        return obj_id in await self.favorited_ids([obj_id], user_id)
+
     async def add_favorite(self, obj_id: int, user_id: int) -> None:
         """Add an object to user's favorites (idempotent)."""
         existing = await self.favorited_ids([obj_id], user_id)
@@ -60,6 +64,7 @@ class FavoriteMixin:
             dttm=datetime.now(tz=timezone.utc),
         )
         self.session.add(fav)
+        await self.session.flush()
 
     async def remove_favorite(self, obj_id: int, user_id: int) -> None:
         """Remove an object from user's favorites."""

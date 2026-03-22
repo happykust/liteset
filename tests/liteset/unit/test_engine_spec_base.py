@@ -17,10 +17,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncConnection
 
 from liteset.db.engine_specs.base import AsyncResultSet, BaseAsyncEngineSpec
 
@@ -28,14 +26,18 @@ from liteset.db.engine_specs.base import AsyncResultSet, BaseAsyncEngineSpec
 def _make_concrete(cls: type) -> type:
     """Add concrete execute/fetch_data to a BaseAsyncEngineSpec subclass."""
     if "execute" not in cls.__dict__:
+
         @classmethod  # type: ignore[misc]
         async def execute(c, conn, query, parameters=None):
             return await c._default_execute(conn, query, parameters)
+
         cls.execute = execute
     if "fetch_data" not in cls.__dict__:
+
         @classmethod  # type: ignore[misc]
         async def fetch_data(c, conn, query, limit=None):
             return await c._default_fetch_data(conn, query, limit)
+
         cls.fetch_data = fetch_data
     return cls
 
@@ -142,6 +144,7 @@ def test_cannot_instantiate_base_directly() -> None:
         # Attempting to create a subclass without execute/fetch_data
         class IncompleteSpec(BaseAsyncEngineSpec):
             pass
+
         IncompleteSpec()
 
 
@@ -178,7 +181,9 @@ async def test_fetch_data_returns_rows() -> None:
     engine = create_async_engine("sqlite+aiosqlite://")
     async with engine.begin() as conn:
         await conn.execute(sa_text("CREATE TABLE test_t2 (id INTEGER, val TEXT)"))
-        await conn.execute(sa_text("INSERT INTO test_t2 VALUES (1, 'x'), (2, 'y'), (3, 'z')"))
+        await conn.execute(
+            sa_text("INSERT INTO test_t2 VALUES (1, 'x'), (2, 'y'), (3, 'z')")
+        )
     async with engine.connect() as conn:
         rows = await ConcreteSpec.fetch_data(conn, "SELECT * FROM test_t2 ORDER BY id")
         assert len(rows) == 3

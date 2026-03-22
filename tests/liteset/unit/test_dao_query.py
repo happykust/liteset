@@ -15,13 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 """Tests for AsyncQueryDAO using simplified test models."""
+
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
-import json
-
 from sqlalchemy import Column, DateTime, Float, Integer, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
@@ -45,6 +45,7 @@ class FakeQuery(Base):
 
     def set_extra_json_key(self, key: str, value: object) -> None:
         import json as _json
+
         data = _json.loads(self.extra_json or "{}")
         data[key] = value
         self.extra_json = _json.dumps(data)
@@ -110,24 +111,28 @@ async def async_session():
 
 async def test_create_query(async_session: AsyncSession) -> None:
     dao = FakeQueryDAO(async_session)
-    q = await dao.create({
-        "client_id": "abc-123",
-        "user_id": 1,
-        "status": "running",
-        "changed_on": datetime.now(tz=timezone.utc),
-    })
+    q = await dao.create(
+        {
+            "client_id": "abc-123",
+            "user_id": 1,
+            "status": "running",
+            "changed_on": datetime.now(tz=timezone.utc),
+        }
+    )
     await async_session.flush()
     assert q.id is not None
 
 
 async def test_stop_query(async_session: AsyncSession) -> None:
     dao = FakeQueryDAO(async_session)
-    await dao.create({
-        "client_id": "stop-me",
-        "user_id": 1,
-        "status": "running",
-        "changed_on": datetime.now(tz=timezone.utc),
-    })
+    await dao.create(
+        {
+            "client_id": "stop-me",
+            "user_id": 1,
+            "status": "running",
+            "changed_on": datetime.now(tz=timezone.utc),
+        }
+    )
     await async_session.flush()
 
     stopped = await dao.stop_query("stop-me")
@@ -144,12 +149,14 @@ async def test_stop_query_not_found(async_session: AsyncSession) -> None:
 
 async def test_stop_query_already_stopped(async_session: AsyncSession) -> None:
     dao = FakeQueryDAO(async_session)
-    await dao.create({
-        "client_id": "done",
-        "user_id": 1,
-        "status": "success",
-        "changed_on": datetime.now(tz=timezone.utc),
-    })
+    await dao.create(
+        {
+            "client_id": "done",
+            "user_id": 1,
+            "status": "success",
+            "changed_on": datetime.now(tz=timezone.utc),
+        }
+    )
     await async_session.flush()
 
     result = await dao.stop_query("done")
@@ -162,18 +169,22 @@ async def test_get_queries_changed_after(async_session: AsyncSession) -> None:
     old_time = datetime(2020, 1, 1)
     new_time = datetime(2025, 6, 1)
 
-    await dao.create({
-        "client_id": "old",
-        "user_id": 1,
-        "status": "success",
-        "changed_on": old_time,
-    })
-    await dao.create({
-        "client_id": "new",
-        "user_id": 1,
-        "status": "running",
-        "changed_on": new_time,
-    })
+    await dao.create(
+        {
+            "client_id": "old",
+            "user_id": 1,
+            "status": "success",
+            "changed_on": old_time,
+        }
+    )
+    await dao.create(
+        {
+            "client_id": "new",
+            "user_id": 1,
+            "status": "running",
+            "changed_on": new_time,
+        }
+    )
     await async_session.flush()
 
     # Query for changes after 2024-01-01
@@ -196,20 +207,25 @@ async def test_saved_query_crud(async_session: AsyncSession) -> None:
 
 async def test_save_metadata(async_session: AsyncSession) -> None:
     dao = FakeQueryDAO(async_session)
-    q = await dao.create({
-        "client_id": "meta-1",
-        "user_id": 1,
-        "status": "success",
-        "changed_on": datetime.now(tz=timezone.utc),
-    })
+    q = await dao.create(
+        {
+            "client_id": "meta-1",
+            "user_id": 1,
+            "status": "success",
+            "changed_on": datetime.now(tz=timezone.utc),
+        }
+    )
     await async_session.flush()
 
-    await dao.save_metadata(q, {
-        "columns": [
-            {"name": "id", "type": "INTEGER"},
-            {"column_name": "already_named", "type": "TEXT"},
-        ],
-    })
+    await dao.save_metadata(
+        q,
+        {
+            "columns": [
+                {"name": "id", "type": "INTEGER"},
+                {"column_name": "already_named", "type": "TEXT"},
+            ],
+        },
+    )
     await async_session.flush()
 
     data = json.loads(q.extra_json)

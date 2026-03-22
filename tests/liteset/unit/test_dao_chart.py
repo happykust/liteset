@@ -20,6 +20,7 @@ We use test-local models instead of real superset models because
 superset requires Flask/werkzeug which is not available in liteset's
 test environment.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -69,9 +70,7 @@ class FakeChartDAO(BaseAsyncDAO[FakeChart]):
             return None
         return await self.find_one_or_none(uuid=str(id_or_uuid))
 
-    async def favorited_ids(
-        self, chart_ids: list[int], user_id: int
-    ) -> list[int]:
+    async def favorited_ids(self, chart_ids: list[int], user_id: int) -> list[int]:
         if not chart_ids:
             return []
         from sqlalchemy import select

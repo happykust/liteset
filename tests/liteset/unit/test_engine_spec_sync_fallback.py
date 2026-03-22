@@ -26,11 +26,10 @@ from liteset.db.engine_specs.clickhouse import AsyncClickHouseEngineSpec
 from liteset.db.engine_specs.mysql import AsyncMySQLEngineSpec
 from liteset.db.engine_specs.postgres import AsyncPostgresEngineSpec
 from liteset.db.engine_specs.sync_fallback import (
-    SyncFallbackEngineSpec,
     _is_overridden,
     make_async_spec,
+    SyncFallbackEngineSpec,
 )
-
 
 # --- _is_overridden tests ---
 
@@ -345,7 +344,9 @@ async def test_get_columns_type_error_fallback() -> None:
         # We need to mock that
         mock_sync_conn = MagicMock()
         # Patch sqlalchemy.inspect for this context
-        with patch("liteset.db.engine_specs.sync_fallback.inspect", return_value=mock_inspector):
+        with patch(
+            "liteset.db.engine_specs.sync_fallback.inspect", return_value=mock_inspector
+        ):
             return fn(mock_sync_conn)
 
     mock_conn.run_sync = fake_run_sync
@@ -370,7 +371,10 @@ def test_registry_raises_for_unknown_engine() -> None:
     fake_superset_mod = MagicMock()
     fake_superset_mod.load_engine_specs.return_value = []
 
-    with patch.dict("sys.modules", {"superset": MagicMock(), "superset.db_engine_specs": fake_superset_mod}):
+    with patch.dict(
+        "sys.modules",
+        {"superset": MagicMock(), "superset.db_engine_specs": fake_superset_mod},
+    ):
         with pytest.raises(ValueError, match="No async engine spec found"):
             get_async_engine_spec("totally_unknown_db")
 
@@ -394,7 +398,10 @@ def test_registry_creates_fallback_for_sync_spec() -> None:
     fake_superset_mod = MagicMock()
     fake_superset_mod.load_engine_specs.return_value = [MockSyncSpec]
 
-    with patch.dict("sys.modules", {"superset": MagicMock(), "superset.db_engine_specs": fake_superset_mod}):
+    with patch.dict(
+        "sys.modules",
+        {"superset": MagicMock(), "superset.db_engine_specs": fake_superset_mod},
+    ):
         spec = get_async_engine_spec("mssql")
         assert spec.engine == "mssql"
         assert issubclass(spec, SyncFallbackEngineSpec)

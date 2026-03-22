@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-from litestar import Litestar, get
+from litestar import get, Litestar
 from litestar.testing import AsyncTestClient
 
 from liteset.exceptions import (
@@ -23,7 +23,9 @@ from liteset.exceptions import (
     CreateFailedError,
     DeleteFailedError,
     ForbiddenError,
+    generic_exception_handler,
     ImportFailedError,
+    liteset_exception_handler,
     LitesetException,
     LitesetNotFoundError,
     LitesetSecurityException,
@@ -31,8 +33,6 @@ from liteset.exceptions import (
     LitesetValidationException,
     ObjectNotFoundError,
     UpdateFailedError,
-    generic_exception_handler,
-    liteset_exception_handler,
 )
 
 

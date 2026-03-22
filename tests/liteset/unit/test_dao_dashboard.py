@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """Tests for AsyncDashboardDAO using simplified test models."""
+
 from __future__ import annotations
 
 import json
@@ -22,7 +23,7 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import Column, DateTime, Integer, String, Text, Boolean
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -66,11 +67,15 @@ class FakeEmbeddedDashboard(Base):
 class FakeEmbeddedDashboardDAO(BaseAsyncDAO[FakeEmbeddedDashboard]):
     model_cls = FakeEmbeddedDashboard
 
-    async def find_by_dashboard_id(self, dashboard_id: int) -> FakeEmbeddedDashboard | None:
+    async def find_by_dashboard_id(
+        self, dashboard_id: int
+    ) -> FakeEmbeddedDashboard | None:
         return await self.find_one_or_none(dashboard_id=dashboard_id)
 
     async def upsert(
-        self, dashboard_id: int, allowed_domains: str,
+        self,
+        dashboard_id: int,
+        allowed_domains: str,
     ) -> FakeEmbeddedDashboard:
         existing = await self.find_by_dashboard_id(dashboard_id)
         if existing:
@@ -136,9 +141,7 @@ class FakeDashboardDAO(BaseAsyncDAO[FakeDashboard]):
         result = await self.session.execute(stmt)
         return result.scalars().one_or_none() is None
 
-    async def set_dash_metadata(
-        self, dashboard: FakeDashboard, data: dict
-    ) -> None:
+    async def set_dash_metadata(self, dashboard: FakeDashboard, data: dict) -> None:
         md = {}
         if dashboard.json_metadata:
             try:
@@ -194,7 +197,9 @@ class FakeDashboardDAO(BaseAsyncDAO[FakeDashboard]):
         return changed_on.replace(microsecond=0)
 
     async def update_native_filters_config(
-        self, dashboard: FakeDashboard, native_filter_configuration: list[dict],
+        self,
+        dashboard: FakeDashboard,
+        native_filter_configuration: list[dict],
     ) -> None:
         md = {}
         if dashboard.json_metadata:
@@ -206,7 +211,9 @@ class FakeDashboardDAO(BaseAsyncDAO[FakeDashboard]):
         dashboard.json_metadata = json.dumps(md)
 
     async def update_colors_config(
-        self, dashboard: FakeDashboard, data: dict,
+        self,
+        dashboard: FakeDashboard,
+        data: dict,
     ) -> None:
         md = {}
         if dashboard.json_metadata:
@@ -214,8 +221,13 @@ class FakeDashboardDAO(BaseAsyncDAO[FakeDashboard]):
                 md = json.loads(dashboard.json_metadata)
             except (json.JSONDecodeError, TypeError):
                 pass
-        for key in ("color_namespace", "color_scheme", "label_colors",
-                    "shared_label_colors", "color_scheme_domain"):
+        for key in (
+            "color_namespace",
+            "color_scheme",
+            "label_colors",
+            "shared_label_colors",
+            "color_scheme_domain",
+        ):
             if key in data:
                 md[key] = data[key]
         dashboard.json_metadata = json.dumps(md)
@@ -231,7 +243,9 @@ async def async_session():
 
 async def test_create_dashboard(async_session: AsyncSession) -> None:
     dao = FakeDashboardDAO(async_session)
-    dash = await dao.create({"dashboard_title": "Test Dash", "changed_on": datetime.now()})
+    dash = await dao.create(
+        {"dashboard_title": "Test Dash", "changed_on": datetime.now()}
+    )
     await async_session.flush()
     assert dash.id is not None
 
@@ -247,11 +261,13 @@ async def test_get_by_id_or_slug_by_id(async_session: AsyncSession) -> None:
 
 async def test_get_by_id_or_slug_by_slug(async_session: AsyncSession) -> None:
     dao = FakeDashboardDAO(async_session)
-    await dao.create({
-        "dashboard_title": "Slugged",
-        "slug": "my-dash",
-        "changed_on": datetime.now(),
-    })
+    await dao.create(
+        {
+            "dashboard_title": "Slugged",
+            "slug": "my-dash",
+            "changed_on": datetime.now(),
+        }
+    )
     await async_session.flush()
     found = await dao.get_by_id_or_slug("my-dash")
     assert found is not None
@@ -261,11 +277,13 @@ async def test_get_by_id_or_slug_by_slug(async_session: AsyncSession) -> None:
 async def test_get_by_id_or_slug_by_uuid(async_session: AsyncSession) -> None:
     dao = FakeDashboardDAO(async_session)
     dash_uuid = str(uuid.uuid4())
-    await dao.create({
-        "dashboard_title": "UUID Dash",
-        "uuid": dash_uuid,
-        "changed_on": datetime.now(),
-    })
+    await dao.create(
+        {
+            "dashboard_title": "UUID Dash",
+            "uuid": dash_uuid,
+            "changed_on": datetime.now(),
+        }
+    )
     await async_session.flush()
     found = await dao.get_by_id_or_slug(dash_uuid)
     assert found is not None
@@ -275,11 +293,13 @@ async def test_get_by_id_or_slug_by_uuid(async_session: AsyncSession) -> None:
 async def test_validate_slug_uniqueness(async_session: AsyncSession) -> None:
     dao = FakeDashboardDAO(async_session)
     assert await dao.validate_slug_uniqueness("new-slug") is True
-    await dao.create({
-        "dashboard_title": "D",
-        "slug": "taken-slug",
-        "changed_on": datetime.now(),
-    })
+    await dao.create(
+        {
+            "dashboard_title": "D",
+            "slug": "taken-slug",
+            "changed_on": datetime.now(),
+        }
+    )
     await async_session.flush()
     assert await dao.validate_slug_uniqueness("taken-slug") is False
 
@@ -291,16 +311,20 @@ async def test_validate_slug_uniqueness_empty(async_session: AsyncSession) -> No
 
 async def test_validate_update_slug_uniqueness(async_session: AsyncSession) -> None:
     dao = FakeDashboardDAO(async_session)
-    d1 = await dao.create({
-        "dashboard_title": "D1",
-        "slug": "slug-a",
-        "changed_on": datetime.now(),
-    })
-    d2 = await dao.create({
-        "dashboard_title": "D2",
-        "slug": "slug-b",
-        "changed_on": datetime.now(),
-    })
+    d1 = await dao.create(
+        {
+            "dashboard_title": "D1",
+            "slug": "slug-a",
+            "changed_on": datetime.now(),
+        }
+    )
+    d2 = await dao.create(
+        {
+            "dashboard_title": "D2",
+            "slug": "slug-b",
+            "changed_on": datetime.now(),
+        }
+    )
     await async_session.flush()
 
     # d1 can keep its own slug
@@ -313,16 +337,21 @@ async def test_validate_update_slug_uniqueness(async_session: AsyncSession) -> N
 
 async def test_set_dash_metadata(async_session: AsyncSession) -> None:
     dao = FakeDashboardDAO(async_session)
-    dash = await dao.create({
-        "dashboard_title": "Meta",
-        "changed_on": datetime.now(),
-    })
+    dash = await dao.create(
+        {
+            "dashboard_title": "Meta",
+            "changed_on": datetime.now(),
+        }
+    )
     await async_session.flush()
 
-    await dao.set_dash_metadata(dash, {
-        "color_scheme": "supersetColors",
-        "refresh_frequency": 30,
-    })
+    await dao.set_dash_metadata(
+        dash,
+        {
+            "color_scheme": "supersetColors",
+            "refresh_frequency": 30,
+        },
+    )
 
     md = json.loads(dash.json_metadata)
     assert md["color_scheme"] == "supersetColors"
@@ -331,11 +360,13 @@ async def test_set_dash_metadata(async_session: AsyncSession) -> None:
 
 async def test_set_dash_metadata_merges(async_session: AsyncSession) -> None:
     dao = FakeDashboardDAO(async_session)
-    dash = await dao.create({
-        "dashboard_title": "Merge",
-        "json_metadata": json.dumps({"existing_key": "value"}),
-        "changed_on": datetime.now(),
-    })
+    dash = await dao.create(
+        {
+            "dashboard_title": "Merge",
+            "json_metadata": json.dumps({"existing_key": "value"}),
+            "changed_on": datetime.now(),
+        }
+    )
     await async_session.flush()
 
     await dao.set_dash_metadata(dash, {"color_scheme": "blue"})
@@ -384,18 +415,23 @@ async def test_get_dashboard_changed_on(async_session: AsyncSession) -> None:
 
 async def test_copy_dashboard(async_session: AsyncSession) -> None:
     dao = FakeDashboardDAO(async_session)
-    original = await dao.create({
-        "dashboard_title": "Original",
-        "slug": "orig",
-        "published": True,
-        "changed_on": datetime.now(),
-    })
+    original = await dao.create(
+        {
+            "dashboard_title": "Original",
+            "slug": "orig",
+            "published": True,
+            "changed_on": datetime.now(),
+        }
+    )
     await async_session.flush()
 
-    copy = await dao.copy_dashboard(original, {
-        "dashboard_title": "Copy",
-        "slug": "copy-slug",
-    })
+    copy = await dao.copy_dashboard(
+        original,
+        {
+            "dashboard_title": "Copy",
+            "slug": "copy-slug",
+        },
+    )
     await async_session.flush()
 
     assert copy.dashboard_title == "Copy"
@@ -427,11 +463,13 @@ async def test_get_dashboard_changed_on_tz_naive(async_session: AsyncSession) ->
 
 async def test_update_native_filters_config(async_session: AsyncSession) -> None:
     dao = FakeDashboardDAO(async_session)
-    dash = await dao.create({
-        "dashboard_title": "Filters",
-        "json_metadata": json.dumps({"existing": "value"}),
-        "changed_on": datetime.now(tz=timezone.utc),
-    })
+    dash = await dao.create(
+        {
+            "dashboard_title": "Filters",
+            "json_metadata": json.dumps({"existing": "value"}),
+            "changed_on": datetime.now(tz=timezone.utc),
+        }
+    )
     await async_session.flush()
 
     await dao.update_native_filters_config(dash, [{"id": "f1", "targets": []}])
@@ -442,17 +480,22 @@ async def test_update_native_filters_config(async_session: AsyncSession) -> None
 
 async def test_update_colors_config(async_session: AsyncSession) -> None:
     dao = FakeDashboardDAO(async_session)
-    dash = await dao.create({
-        "dashboard_title": "Colors",
-        "changed_on": datetime.now(tz=timezone.utc),
-    })
+    dash = await dao.create(
+        {
+            "dashboard_title": "Colors",
+            "changed_on": datetime.now(tz=timezone.utc),
+        }
+    )
     await async_session.flush()
 
-    await dao.update_colors_config(dash, {
-        "color_scheme": "supersetColors",
-        "label_colors": {"label1": "#ff0000"},
-        "irrelevant_key": "ignored",
-    })
+    await dao.update_colors_config(
+        dash,
+        {
+            "color_scheme": "supersetColors",
+            "label_colors": {"label1": "#ff0000"},
+            "irrelevant_key": "ignored",
+        },
+    )
     md = json.loads(dash.json_metadata)
     assert md["color_scheme"] == "supersetColors"
     assert md["label_colors"] == {"label1": "#ff0000"}
@@ -479,6 +522,7 @@ async def test_embedded_upsert_update(async_session: AsyncSession) -> None:
 
     # Only one record should exist
     from sqlalchemy import select
+
     stmt = select(FakeEmbeddedDashboard).where(FakeEmbeddedDashboard.dashboard_id == 42)
     result = await async_session.execute(stmt)
     assert len(list(result.scalars().all())) == 1

@@ -1,17 +1,16 @@
 """Tests for GuestUser and guest token creation/validation."""
+
 from __future__ import annotations
 
 import time
 
 import jwt
-import pytest
 
 from liteset.security.guest import (
-    GuestUser,
     create_guest_access_token,
+    GuestUser,
     parse_guest_token,
 )
-
 
 SECRET_KEY = "test-secret-key-at-least-16-chars"
 
@@ -126,20 +125,24 @@ def test_guest_user_roles_empty():
 def test_validate_guest_token_resources_valid():
     from liteset.security.guest import validate_guest_token_resources
 
-    errors = validate_guest_token_resources([
-        {"type": "dashboard", "id": "uuid-1"},
-        {"type": "chart", "id": "uuid-2"},
-    ])
+    errors = validate_guest_token_resources(
+        [
+            {"type": "dashboard", "id": "uuid-1"},
+            {"type": "chart", "id": "uuid-2"},
+        ]
+    )
     assert errors == []
 
 
 def test_validate_guest_token_resources_invalid():
     from liteset.security.guest import validate_guest_token_resources
 
-    errors = validate_guest_token_resources([
-        {"type": "invalid_type", "id": "uuid-1"},
-        {"id": "missing-type"},
-        {"type": "dashboard"},
-        "not-a-dict",
-    ])
+    errors = validate_guest_token_resources(
+        [
+            {"type": "invalid_type", "id": "uuid-1"},
+            {"id": "missing-type"},
+            {"type": "dashboard"},
+            "not-a-dict",
+        ]
+    )
     assert len(errors) == 4

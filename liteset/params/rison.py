@@ -40,5 +40,5 @@ async def provide_rison_query(request: Request[Any, Any, Any]) -> dict[str, Any]
 
         raise LitesetValidationException(
             message=f"Invalid Rison query parameter: {ex}",
-            extra={"raw_value": raw},
+            extra={"raw_value": raw[:200] if raw else ""},
         ) from ex

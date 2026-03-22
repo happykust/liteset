@@ -1,15 +1,16 @@
 """Tests for AsyncSecurityDAO — async queries against FAB tables."""
+
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import Column, Integer, String, Table, ForeignKey, insert
+from sqlalchemy import Column, ForeignKey, insert, Integer, String, Table
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 from liteset.security.dao import AsyncSecurityDAO
 
-
 # --- Minimal FAB-compatible models for testing ---
+
 
 class Base(DeclarativeBase):
     pass
@@ -106,40 +107,83 @@ async def populated_session():
 
     # Populate via raw inserts to avoid lazy-load issues
     async with engine.begin() as conn:
-        await conn.execute(insert(FakePermission).values([
-            {"id": 1, "name": "can_read"},
-            {"id": 2, "name": "can_write"},
-        ]))
-        await conn.execute(insert(FakeViewMenu).values([
-            {"id": 1, "name": "Chart"},
-            {"id": 2, "name": "Dashboard"},
-        ]))
-        await conn.execute(insert(FakePermissionView).values([
-            {"id": 1, "permission_id": 1, "view_menu_id": 1},
-            {"id": 2, "permission_id": 2, "view_menu_id": 1},
-            {"id": 3, "permission_id": 1, "view_menu_id": 2},
-        ]))
-        await conn.execute(insert(FakeRole).values([
-            {"id": 1, "name": "Admin"},
-            {"id": 2, "name": "Viewer"},
-        ]))
-        await conn.execute(insert(FakeUser).values([
-            {"id": 1, "username": "admin", "email": "admin@test.com", "active": 1},
-            {"id": 2, "username": "viewer", "email": "viewer@test.com", "active": 1},
-            {"id": 3, "username": "inactive", "email": "inactive@test.com", "active": 0},
-        ]))
+        await conn.execute(
+            insert(FakePermission).values(
+                [
+                    {"id": 1, "name": "can_read"},
+                    {"id": 2, "name": "can_write"},
+                ]
+            )
+        )
+        await conn.execute(
+            insert(FakeViewMenu).values(
+                [
+                    {"id": 1, "name": "Chart"},
+                    {"id": 2, "name": "Dashboard"},
+                ]
+            )
+        )
+        await conn.execute(
+            insert(FakePermissionView).values(
+                [
+                    {"id": 1, "permission_id": 1, "view_menu_id": 1},
+                    {"id": 2, "permission_id": 2, "view_menu_id": 1},
+                    {"id": 3, "permission_id": 1, "view_menu_id": 2},
+                ]
+            )
+        )
+        await conn.execute(
+            insert(FakeRole).values(
+                [
+                    {"id": 1, "name": "Admin"},
+                    {"id": 2, "name": "Viewer"},
+                ]
+            )
+        )
+        await conn.execute(
+            insert(FakeUser).values(
+                [
+                    {
+                        "id": 1,
+                        "username": "admin",
+                        "email": "admin@test.com",
+                        "active": 1,
+                    },
+                    {
+                        "id": 2,
+                        "username": "viewer",
+                        "email": "viewer@test.com",
+                        "active": 1,
+                    },
+                    {
+                        "id": 3,
+                        "username": "inactive",
+                        "email": "inactive@test.com",
+                        "active": 0,
+                    },
+                ]
+            )
+        )
         # User-role associations
-        await conn.execute(insert(ab_user_role).values([
-            {"id": 1, "user_id": 1, "role_id": 1},
-            {"id": 2, "user_id": 2, "role_id": 2},
-        ]))
+        await conn.execute(
+            insert(ab_user_role).values(
+                [
+                    {"id": 1, "user_id": 1, "role_id": 1},
+                    {"id": 2, "user_id": 2, "role_id": 2},
+                ]
+            )
+        )
         # Permission-view-role associations
-        await conn.execute(insert(ab_permission_view_role).values([
-            {"id": 1, "permission_view_id": 1, "role_id": 1},
-            {"id": 2, "permission_view_id": 2, "role_id": 1},
-            {"id": 3, "permission_view_id": 3, "role_id": 1},
-            {"id": 4, "permission_view_id": 1, "role_id": 2},
-        ]))
+        await conn.execute(
+            insert(ab_permission_view_role).values(
+                [
+                    {"id": 1, "permission_view_id": 1, "role_id": 1},
+                    {"id": 2, "permission_view_id": 2, "role_id": 1},
+                    {"id": 3, "permission_view_id": 3, "role_id": 1},
+                    {"id": 4, "permission_view_id": 1, "role_id": 2},
+                ]
+            )
+        )
 
     async with AsyncSession(engine, expire_on_commit=False) as session:
         yield session
@@ -219,6 +263,7 @@ async def test_get_all_permissions_for_user(populated_session):
 
 # --- Group RBAC tests ---
 
+
 @pytest.fixture
 async def group_session():
     """DB with group tables populated for group RBAC testing."""
@@ -228,40 +273,85 @@ async def group_session():
 
     async with engine.begin() as conn:
         # Base data: permissions, views, roles, users
-        await conn.execute(insert(FakePermission).values([
-            {"id": 1, "name": "can_read"},
-            {"id": 2, "name": "can_write"},
-        ]))
-        await conn.execute(insert(FakeViewMenu).values([
-            {"id": 1, "name": "Chart"},
-            {"id": 2, "name": "Dashboard"},
-        ]))
-        await conn.execute(insert(FakePermissionView).values([
-            {"id": 1, "permission_id": 1, "view_menu_id": 1},  # can_read Chart
-            {"id": 2, "permission_id": 2, "view_menu_id": 2},  # can_write Dashboard
-        ]))
-        await conn.execute(insert(FakeRole).values([
-            {"id": 1, "name": "GroupRole"},
-        ]))
-        await conn.execute(insert(FakeUser).values([
-            {"id": 1, "username": "groupuser", "email": "gu@test.com", "active": 1},
-        ]))
+        await conn.execute(
+            insert(FakePermission).values(
+                [
+                    {"id": 1, "name": "can_read"},
+                    {"id": 2, "name": "can_write"},
+                ]
+            )
+        )
+        await conn.execute(
+            insert(FakeViewMenu).values(
+                [
+                    {"id": 1, "name": "Chart"},
+                    {"id": 2, "name": "Dashboard"},
+                ]
+            )
+        )
+        await conn.execute(
+            insert(FakePermissionView).values(
+                [
+                    {"id": 1, "permission_id": 1, "view_menu_id": 1},  # can_read Chart
+                    {
+                        "id": 2,
+                        "permission_id": 2,
+                        "view_menu_id": 2,
+                    },  # can_write Dashboard
+                ]
+            )
+        )
+        await conn.execute(
+            insert(FakeRole).values(
+                [
+                    {"id": 1, "name": "GroupRole"},
+                ]
+            )
+        )
+        await conn.execute(
+            insert(FakeUser).values(
+                [
+                    {
+                        "id": 1,
+                        "username": "groupuser",
+                        "email": "gu@test.com",
+                        "active": 1,
+                    },
+                ]
+            )
+        )
         # No direct role assignment — user gets perms only via group
         # GroupRole has can_read Chart and can_write Dashboard
-        await conn.execute(insert(ab_permission_view_role).values([
-            {"id": 1, "permission_view_id": 1, "role_id": 1},
-            {"id": 2, "permission_view_id": 2, "role_id": 1},
-        ]))
+        await conn.execute(
+            insert(ab_permission_view_role).values(
+                [
+                    {"id": 1, "permission_view_id": 1, "role_id": 1},
+                    {"id": 2, "permission_view_id": 2, "role_id": 1},
+                ]
+            )
+        )
         # Group: "TeamA" → GroupRole; user 1 in TeamA
-        await conn.execute(insert(ab_group).values([
-            {"id": 1, "name": "TeamA"},
-        ]))
-        await conn.execute(insert(ab_user_group).values([
-            {"id": 1, "user_id": 1, "group_id": 1},
-        ]))
-        await conn.execute(insert(ab_group_role).values([
-            {"id": 1, "group_id": 1, "role_id": 1},
-        ]))
+        await conn.execute(
+            insert(ab_group).values(
+                [
+                    {"id": 1, "name": "TeamA"},
+                ]
+            )
+        )
+        await conn.execute(
+            insert(ab_user_group).values(
+                [
+                    {"id": 1, "user_id": 1, "group_id": 1},
+                ]
+            )
+        )
+        await conn.execute(
+            insert(ab_group_role).values(
+                [
+                    {"id": 1, "group_id": 1, "role_id": 1},
+                ]
+            )
+        )
 
     async with AsyncSession(engine, expire_on_commit=False) as session:
         yield session

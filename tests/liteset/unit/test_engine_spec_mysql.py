@@ -65,9 +65,7 @@ async def test_fetch_data_with_limit() -> None:
     mock_conn = AsyncMock()
     mock_conn.execute.return_value = mock_result
 
-    rows = await AsyncMySQLEngineSpec.fetch_data(
-        mock_conn, "SELECT id FROM t", limit=5
-    )
+    rows = await AsyncMySQLEngineSpec.fetch_data(mock_conn, "SELECT id FROM t", limit=5)
     assert rows == [(1,)]
     mock_result.fetchmany.assert_called_once_with(5)
 

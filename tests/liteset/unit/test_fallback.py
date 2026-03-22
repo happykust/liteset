@@ -1,5 +1,4 @@
-import pytest
-from litestar import Litestar, get
+from litestar import get, Litestar
 from litestar.testing import AsyncTestClient
 
 

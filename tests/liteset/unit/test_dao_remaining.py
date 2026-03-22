@@ -15,13 +15,14 @@
 # specific language governing permissions and limitations
 # under the License.
 """Tests for remaining async DAOs using simplified test models."""
+
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import Boolean, Column, DateTime, Integer, LargeBinary, String, delete
+from sqlalchemy import Boolean, Column, DateTime, delete, Integer, LargeBinary, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -94,18 +95,26 @@ class FakeKeyValueDAO(BaseAsyncDAO[FakeKeyValue]):
     async def create_entry(
         self, resource: str, value: bytes, expires_on: datetime | None = None
     ) -> FakeKeyValue:
-        return await self.create({
-            "resource": resource,
-            "value": value,
-            "expires_on": expires_on,
-        })
+        return await self.create(
+            {
+                "resource": resource,
+                "value": value,
+                "expires_on": expires_on,
+            }
+        )
 
     async def upsert_entry(
-        self, resource: str, entry_id: int, value: bytes, expires_on: datetime | None = None
+        self,
+        resource: str,
+        entry_id: int,
+        value: bytes,
+        expires_on: datetime | None = None,
     ) -> FakeKeyValue:
         existing = await self.get_entry(resource, entry_id)
         if existing:
-            return await self.update(existing, {"value": value, "expires_on": expires_on})
+            return await self.update(
+                existing, {"value": value, "expires_on": expires_on}
+            )
         return await self.create_entry(resource, value, expires_on)
 
     async def delete_expired_entries(self, resource: str) -> None:
@@ -222,6 +231,7 @@ class FakeSecurityDAO(BaseAsyncDAO[FakeRLS]):
 
 # ============ Fixtures ============
 
+
 @pytest.fixture
 async def async_session():
     from tests.liteset.conftest import create_test_session
@@ -231,6 +241,7 @@ async def async_session():
 
 
 # ============ Tests ============
+
 
 # --- CssTemplate ---
 async def test_css_template_crud(async_session: AsyncSession) -> None:
@@ -316,7 +327,9 @@ async def test_kv_delete_expired_entries(async_session: AsyncSession) -> None:
     # Expired entry
     await dao.create_entry("cache", b"old", expires_on=now - timedelta(hours=1))
     # Valid entry
-    valid = await dao.create_entry("cache", b"fresh", expires_on=now + timedelta(hours=1))
+    valid = await dao.create_entry(
+        "cache", b"fresh", expires_on=now + timedelta(hours=1)
+    )
     # No expiry entry
     no_exp = await dao.create_entry("cache", b"forever", expires_on=None)
     await async_session.flush()
@@ -339,9 +352,23 @@ async def test_kv_delete_expired_entries(async_session: AsyncSession) -> None:
 # --- Log ---
 async def test_log_recent_activity(async_session: AsyncSession) -> None:
     dao = FakeLogDAO(async_session)
-    await dao.create({"user_id": 1, "action": "dashboard_view", "dttm": datetime.now(tz=timezone.utc)})
-    await dao.create({"user_id": 1, "action": "chart_view", "dttm": datetime.now(tz=timezone.utc)})
-    await dao.create({"user_id": 2, "action": "dashboard_view", "dttm": datetime.now(tz=timezone.utc)})
+    await dao.create(
+        {
+            "user_id": 1,
+            "action": "dashboard_view",
+            "dttm": datetime.now(tz=timezone.utc),
+        }
+    )
+    await dao.create(
+        {"user_id": 1, "action": "chart_view", "dttm": datetime.now(tz=timezone.utc)}
+    )
+    await dao.create(
+        {
+            "user_id": 2,
+            "action": "dashboard_view",
+            "dttm": datetime.now(tz=timezone.utc),
+        }
+    )
     await async_session.flush()
 
     results = await dao.get_recent_activity(
@@ -356,15 +383,21 @@ async def test_log_recent_activity(async_session: AsyncSession) -> None:
 async def test_log_pagination(async_session: AsyncSession) -> None:
     dao = FakeLogDAO(async_session)
     for i in range(10):
-        await dao.create({
-            "user_id": 1,
-            "action": "view",
-            "dttm": datetime.now(tz=timezone.utc) - timedelta(minutes=i * 1),
-        })
+        await dao.create(
+            {
+                "user_id": 1,
+                "action": "view",
+                "dttm": datetime.now(tz=timezone.utc) - timedelta(minutes=i * 1),
+            }
+        )
     await async_session.flush()
 
-    page0 = await dao.get_recent_activity(user_id=1, actions=["view"], page=0, page_size=3)
-    page1 = await dao.get_recent_activity(user_id=1, actions=["view"], page=1, page_size=3)
+    page0 = await dao.get_recent_activity(
+        user_id=1, actions=["view"], page=0, page_size=3
+    )
+    page1 = await dao.get_recent_activity(
+        user_id=1, actions=["view"], page=1, page_size=3
+    )
     assert len(page0) == 3
     assert len(page1) == 3
 
@@ -396,11 +429,13 @@ async def test_theme_find_system_default(async_session: AsyncSession) -> None:
 
 async def test_theme_find_system_default_fallback(async_session: AsyncSession) -> None:
     dao = FakeThemeDAO(async_session)
-    await dao.create({
-        "theme_name": "THEME_DEFAULT",
-        "is_system": True,
-        "is_system_default": False,
-    })
+    await dao.create(
+        {
+            "theme_name": "THEME_DEFAULT",
+            "is_system": True,
+            "is_system_default": False,
+        }
+    )
     await async_session.flush()
 
     found = await dao.find_system_default()
@@ -434,7 +469,9 @@ async def test_user_set_avatar(async_session: AsyncSession) -> None:
 async def test_kv_get_entry_expired_returns_none(async_session: AsyncSession) -> None:
     dao = FakeKeyValueDAO(async_session)
     now = datetime.now(tz=timezone.utc)
-    entry = await dao.create_entry("cache", b"expired", expires_on=now - timedelta(hours=1))
+    entry = await dao.create_entry(
+        "cache", b"expired", expires_on=now - timedelta(hours=1)
+    )
     await async_session.flush()
 
     found = await dao.get_entry("cache", entry.id)
@@ -444,7 +481,9 @@ async def test_kv_get_entry_expired_returns_none(async_session: AsyncSession) ->
 async def test_kv_get_entry_not_expired(async_session: AsyncSession) -> None:
     dao = FakeKeyValueDAO(async_session)
     now = datetime.now(tz=timezone.utc)
-    entry = await dao.create_entry("cache", b"valid", expires_on=now + timedelta(hours=1))
+    entry = await dao.create_entry(
+        "cache", b"valid", expires_on=now + timedelta(hours=1)
+    )
     await async_session.flush()
 
     found = await dao.get_entry("cache", entry.id)
@@ -472,7 +511,9 @@ class FakeEmbeddedDashboard(Base):
 class FakeEmbeddedDashboardDAO(BaseAsyncDAO[FakeEmbeddedDashboard]):
     model_cls = FakeEmbeddedDashboard
 
-    async def find_by_dashboard_id(self, dashboard_id: int) -> FakeEmbeddedDashboard | None:
+    async def find_by_dashboard_id(
+        self, dashboard_id: int
+    ) -> FakeEmbeddedDashboard | None:
         return await self.find_one_or_none(dashboard_id=dashboard_id)
 
     async def find_by_uuid(self, uuid_str: str) -> FakeEmbeddedDashboard | None:
@@ -483,7 +524,9 @@ class FakeEmbeddedDashboardDAO(BaseAsyncDAO[FakeEmbeddedDashboard]):
         return await self.find_one_or_none(uuid=uuid_str)
 
 
-async def test_embedded_dashboard_find_by_dashboard_id(async_session: AsyncSession) -> None:
+async def test_embedded_dashboard_find_by_dashboard_id(
+    async_session: AsyncSession,
+) -> None:
     dao = FakeEmbeddedDashboardDAO(async_session)
     ed = FakeEmbeddedDashboard(dashboard_id=42)
     async_session.add(ed)
@@ -522,6 +565,7 @@ class FakeSSHTunnelDAO:
 
     async def get_by_database_id(self, database_id: int) -> FakeSSHTunnel | None:
         from sqlalchemy import select
+
         stmt = select(FakeSSHTunnel).where(FakeSSHTunnel.database_id == database_id)
         result = await self.session.execute(stmt)
         return result.scalars().one_or_none()

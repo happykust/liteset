@@ -1,4 +1,5 @@
 """Tests for AuthMiddleware — cookie, JWT, and API key authentication."""
+
 from __future__ import annotations
 
 import json
@@ -15,10 +16,7 @@ from litestar.testing import AsyncTestClient
 from liteset.middleware.auth import (
     CachedUser,
     LitesetAuthMiddleware,
-    UnauthenticatedUser,
-    _CachedRole,
 )
-
 
 SECRET_KEY = "test-secret-key-at-least-16-chars"
 
@@ -60,6 +58,7 @@ def _make_settings(**overrides):
     defaults = {
         "secret_key": MagicMock(get_secret_value=MagicMock(return_value=SECRET_KEY)),
         "session_cookie_name": "session",
+        "session_max_age": 86400,
         "embedded_superset": False,
         "guest_token_jwt_secret": "",
         "guest_token_jwt_algo": "HS256",
@@ -79,11 +78,13 @@ def mock_session_factory():
 
 @pytest.fixture
 def app(mock_session_factory):
-    state = State({
-        "settings": _make_settings(),
-        "session_factory": mock_session_factory,
-        "redis": None,
-    })
+    state = State(
+        {
+            "settings": _make_settings(),
+            "session_factory": mock_session_factory,
+            "redis": None,
+        }
+    )
     return Litestar(
         route_handlers=[protected_route, public_route],
         middleware=[LitesetAuthMiddleware],
@@ -91,10 +92,12 @@ def app(mock_session_factory):
     )
 
 
-async def test_unauthenticated_returns_401(app):
+async def test_unauthenticated_returns_anonymous_user(app):
+    """Unauthenticated requests return anonymous user — RBAC guards handle denial."""
     async with AsyncTestClient(app=app) as client:
         resp = await client.get("/protected")
-        assert resp.status_code == 401
+        assert resp.status_code == 200
+        assert resp.json()["username"] == "anon"
 
 
 async def test_public_route_no_auth_needed(app):
@@ -121,22 +124,26 @@ async def test_cookie_auth_success(app, mock_session_factory):
             assert resp.json()["username"] == "admin"
 
 
-async def test_invalid_cookie_returns_401(app):
+async def test_invalid_cookie_returns_anonymous(app):
+    """Invalid cookies result in anonymous user (RBAC guards handle denial)."""
     async with AsyncTestClient(app=app) as client:
         resp = await client.get(
             "/protected",
             cookies={"session": "invalid-cookie-data"},
         )
-        assert resp.status_code == 401
+        assert resp.status_code == 200
+        assert resp.json()["username"] == "anon"
 
 
 async def test_jwt_auth_requires_embedded_superset_flag(mock_session_factory):
     """JWT auth should be rejected when embedded_superset is disabled."""
-    state = State({
-        "settings": _make_settings(embedded_superset=False),
-        "session_factory": mock_session_factory,
-        "redis": None,
-    })
+    state = State(
+        {
+            "settings": _make_settings(embedded_superset=False),
+            "session_factory": mock_session_factory,
+            "redis": None,
+        }
+    )
     app = Litestar(
         route_handlers=[protected_route, public_route],
         middleware=[LitesetAuthMiddleware],
@@ -147,17 +154,21 @@ async def test_jwt_auth_requires_embedded_superset_flag(mock_session_factory):
             "/protected",
             headers={"Authorization": "Bearer some.jwt.token"},
         )
-        assert resp.status_code == 401
+        # JWT rejected → falls through to anonymous user
+        assert resp.status_code == 200
+        assert resp.json()["username"] == "anon"
 
 
 async def test_jwt_auth_success_with_embedded_flag(mock_session_factory):
     """JWT auth should work when embedded_superset is enabled."""
     mock_guest_user = MockUser(id=0, username="guest")
-    state = State({
-        "settings": _make_settings(embedded_superset=True),
-        "session_factory": mock_session_factory,
-        "redis": None,
-    })
+    state = State(
+        {
+            "settings": _make_settings(embedded_superset=True),
+            "session_factory": mock_session_factory,
+            "redis": None,
+        }
+    )
     app = Litestar(
         route_handlers=[protected_route, public_route],
         middleware=[LitesetAuthMiddleware],
@@ -182,10 +193,13 @@ async def test_jwt_no_bearer_prefix_ignored(app):
             "/protected",
             headers={"Authorization": "Basic dXNlcjpwYXNz"},
         )
-        assert resp.status_code == 401
+        # Non-Bearer auth → falls through to anonymous user
+        assert resp.status_code == 200
+        assert resp.json()["username"] == "anon"
 
 
 # --- CachedUser tests ---
+
 
 def test_cached_user_from_dict_with_roles():
     data = {
@@ -219,17 +233,24 @@ def test_cached_user_from_dict_invalid():
 async def test_redis_cache_rejects_inactive_user(mock_session_factory):
     """Deactivated users in Redis cache should be rejected."""
     mock_redis = AsyncMock()
-    cached_data = json.dumps({
-        "id": 3, "username": "inactive", "email": "x@x.com",
-        "active": 0, "roles": [],
-    })
+    cached_data = json.dumps(
+        {
+            "id": 3,
+            "username": "inactive",
+            "email": "x@x.com",
+            "active": 0,
+            "roles": [],
+        }
+    )
     mock_redis.get = AsyncMock(return_value=cached_data)
 
-    state = State({
-        "settings": _make_settings(),
-        "session_factory": mock_session_factory,
-        "redis": mock_redis,
-    })
+    state = State(
+        {
+            "settings": _make_settings(),
+            "session_factory": mock_session_factory,
+            "redis": mock_redis,
+        }
+    )
     app = Litestar(
         route_handlers=[protected_route, public_route],
         middleware=[LitesetAuthMiddleware],
@@ -238,29 +259,39 @@ async def test_redis_cache_rejects_inactive_user(mock_session_factory):
 
     # Also mock DB fallback to return None (user inactive)
     with patch.object(
-        LitesetAuthMiddleware, "_resolve_user_from_db",
+        LitesetAuthMiddleware,
+        "_resolve_user_from_db",
         return_value=None,
     ):
         async with AsyncTestClient(app=app) as client:
             cookie = _make_session_cookie(3)
             resp = await client.get("/protected", cookies={"session": cookie})
-            assert resp.status_code == 401
+            # Inactive user → falls through to anonymous user
+            assert resp.status_code == 200
+            assert resp.json()["username"] == "anon"
 
 
 async def test_redis_cache_preserves_roles(mock_session_factory):
     """Cached users should retain their roles for permission checks."""
     mock_redis = AsyncMock()
-    cached_data = json.dumps({
-        "id": 1, "username": "admin", "email": "admin@test.com",
-        "active": 1, "roles": [{"id": 1, "name": "Admin"}],
-    })
+    cached_data = json.dumps(
+        {
+            "id": 1,
+            "username": "admin",
+            "email": "admin@test.com",
+            "active": 1,
+            "roles": [{"id": 1, "name": "Admin"}],
+        }
+    )
     mock_redis.get = AsyncMock(return_value=cached_data)
 
-    state = State({
-        "settings": _make_settings(),
-        "session_factory": mock_session_factory,
-        "redis": mock_redis,
-    })
+    state = State(
+        {
+            "settings": _make_settings(),
+            "session_factory": mock_session_factory,
+            "redis": mock_redis,
+        }
+    )
     app = Litestar(
         route_handlers=[protected_route, public_route],
         middleware=[LitesetAuthMiddleware],

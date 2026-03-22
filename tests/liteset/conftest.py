@@ -19,12 +19,12 @@
 
 Run liteset tests with: uv run pytest tests/liteset/
 """
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 

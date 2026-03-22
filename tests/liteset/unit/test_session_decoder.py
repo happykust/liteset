@@ -1,12 +1,10 @@
 """Tests for FlaskSessionDecoder — itsdangerous cookie decoding."""
+
 from __future__ import annotations
 
-import pytest
 from itsdangerous import URLSafeTimedSerializer
 
-
 from liteset.security.session_decoder import FlaskSessionDecoder
-
 
 SECRET_KEY = "test-secret-key-at-least-16-chars"
 
@@ -88,9 +86,7 @@ def test_decode_with_max_age():
 def test_decode_with_custom_salt():
     custom_salt = "custom-salt"
     decoder = FlaskSessionDecoder(secret_key=SECRET_KEY, salt=custom_salt)
-    cookie = _create_flask_session_cookie(
-        {"_user_id": "1"}, salt=custom_salt
-    )
+    cookie = _create_flask_session_cookie({"_user_id": "1"}, salt=custom_salt)
     payload = decoder.decode(cookie)
     assert payload is not None
     assert payload["_user_id"] == "1"

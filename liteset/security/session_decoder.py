@@ -21,6 +21,7 @@ created by Flask/Flask-Login. This allows Litestar's AuthMiddleware
 to authenticate users who logged in through the Flask frontend without
 requiring a separate login flow.
 """
+
 from __future__ import annotations
 
 import logging
@@ -62,9 +63,7 @@ class FlaskSessionDecoder:
         if not cookie_value:
             return None
         try:
-            payload = self._serializer.loads(
-                cookie_value, max_age=self._max_age
-            )
+            payload = self._serializer.loads(cookie_value, max_age=self._max_age)
             if isinstance(payload, dict):
                 return payload
             logger.warning("Session payload is not a dict: %s", type(payload))

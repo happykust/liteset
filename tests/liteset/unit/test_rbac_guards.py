@@ -1,9 +1,9 @@
-import pytest
 from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 
+import pytest
 from litestar.connection import ASGIConnection
-from litestar.exceptions import PermissionDeniedException
+from litestar.exceptions import NotAuthorizedException, PermissionDeniedException
 
 from liteset.guards.rbac import has_permissions, require_permission
 
@@ -12,7 +12,9 @@ from liteset.guards.rbac import has_permissions, require_permission
 class MockUser:
     username: str = "admin"
     is_authenticated: bool = True
-    permissions: set = field(default_factory=lambda: {"can_read_Chart", "can_write_Chart"})
+    permissions: set = field(
+        default_factory=lambda: {"can_read_Chart", "can_write_Chart"}
+    )
 
 
 @dataclass
@@ -39,17 +41,21 @@ def test_has_permissions_true():
     user = MockUser()
     assert has_permissions(user, {"can_read_Chart"}) is True
 
+
 def test_has_permissions_false():
     user = MockLimitedUser()
     assert has_permissions(user, {"can_write_Chart"}) is False
+
 
 def test_has_permissions_multiple():
     user = MockUser()
     assert has_permissions(user, {"can_read_Chart", "can_write_Chart"}) is True
 
+
 def test_has_permissions_empty_required():
     user = MockLimitedUser()
     assert has_permissions(user, set()) is True
+
 
 def test_require_permission_returns_callable():
     guard = require_permission("can_read", "Chart")
@@ -75,5 +81,5 @@ def test_require_permission_denies_unauthenticated_user():
     guard = require_permission("can_read", "Chart")
     conn = _make_mock_connection(MockAnonymousUser())
     handler = MagicMock()
-    with pytest.raises(PermissionDeniedException, match="Not authenticated"):
+    with pytest.raises(NotAuthorizedException, match="Not authenticated"):
         guard(conn, handler)

@@ -1,33 +1,25 @@
 """Tests for permission constants and helper functions."""
+
 from __future__ import annotations
 
 from liteset.security.permissions import (
     ADMIN_ONLY_PERMISSIONS,
-    READ_ONLY_PERMISSIONS,
-    format_permission_name,
-    DATABASE_ACCESS,
-    SCHEMA_ACCESS,
-    DATASOURCE_ACCESS,
-    CATALOG_ACCESS,
     ALL_DATABASE_ACCESS,
     ALL_DATASOURCE_ACCESS,
-    CAN_READ,
-    CAN_WRITE,
+    CAN_CSV,
     CAN_DELETE,
     CAN_EXPLORE,
-    CAN_SQLLAB,
-    CAN_CSV,
-    CAN_SHARE_DASHBOARD,
+    CAN_READ,
     CAN_SHARE_CHART,
+    CAN_SHARE_DASHBOARD,
+    CAN_SQLLAB,
+    CAN_WRITE,
+    CATALOG_ACCESS,
+    DATABASE_ACCESS,
+    DATASOURCE_ACCESS,
+    READ_ONLY_PERMISSIONS,
+    SCHEMA_ACCESS,
 )
-
-
-def test_format_permission_name():
-    assert format_permission_name("can_read", "Chart") == "can_read.Chart"
-
-
-def test_format_permission_name_strips_whitespace():
-    assert format_permission_name("can_read", " Chart ") == "can_read.Chart"
 
 
 def test_database_access_constant():

@@ -49,6 +49,20 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "CORS_ALLOW_ORIGINS": "cors_allow_origins",
     "GLOBAL_ASYNC_QUERIES": "global_async_queries",
     "STATIC_ASSETS_PREFIX": "static_assets_prefix",
+    # Phase 4: query processing and SqlLab config
+    "ROW_LIMIT": "row_limit",
+    "SAMPLES_ROW_LIMIT": "samples_row_limit",
+    "CACHE_DEFAULT_TIMEOUT": "cache_default_timeout",
+    "DATA_CACHE_CONFIG": "data_cache_config",
+    "SQL_MAX_ROW": "sql_max_row",
+    "DISPLAY_MAX_ROW": "display_max_row",
+    "DEFAULT_SQLLAB_LIMIT": "default_sqllab_limit",
+    "CSV_EXPORT": "csv_export",
+    "EXCEL_EXPORT": "excel_export",
+    "PERMANENT_SESSION_LIFETIME": "session_max_age",
+    "CACHE_CONFIG": "cache_config",
+    "QUERY_CACHE_CONFIG": "query_cache_config",
+    "FEATURE_FLAGS": "feature_flags",
 }
 
 
@@ -115,7 +129,24 @@ class LitesetSettings(BaseSettings):
     cors_allow_origins: list[str] = []
     log_level: str = "INFO"
     production: bool = False
-    cache_default_ttl: int = 300
+    # Query processing (used by AsyncQueryContextProcessor)
+    row_limit: int = 50000
+    samples_row_limit: int = 1000
+    cache_default_timeout: int = 300
+    csv_export: dict[str, Any] = {}
+    excel_export: dict[str, Any] = {}
+    data_cache_config: dict[str, Any] = {}
+    cache_config: dict[str, Any] = {}
+    query_cache_config: dict[str, Any] = {}
+    enable_explore_json_csrf_protection: bool = False
+    sqllab_ctas_no_limit: bool = False
+    sql_max_row: int = 100000
+    display_max_row: int = 10000
+    sqllab_default_dbid: int | None = None
+    default_sqllab_limit: int = 1000
+
+    # Session cookie max age (seconds), applied to FlaskSessionDecoder
+    session_max_age: int = 86400
 
     # Redis (used for auth cache and general caching)
     redis_url: str = ""
@@ -129,6 +160,9 @@ class LitesetSettings(BaseSettings):
     auth_role_admin: str = "Admin"
     guest_role_name: str = "Guest"
 
+    # Feature flags dict (mirrors Superset's FEATURE_FLAGS)
+    feature_flags: dict[str, bool] = {}
+
     # DASHBOARD_RBAC feature flag
     dashboard_rbac: bool = False
 
@@ -138,6 +172,7 @@ class LitesetSettings(BaseSettings):
     guest_token_jwt_algo: str = "HS256"  # noqa: S105
     guest_token_jwt_exp_seconds: int = 3600
     guest_token_header_name: str = "Authorization"  # noqa: S105
+    guest_token_validator_hook: Any | None = None
 
     @field_validator("secret_key")
     @classmethod

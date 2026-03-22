@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-from liteset.i18n import LazyString, gettext, lazy_gettext, set_locale
+from liteset.i18n import gettext, lazy_gettext, LazyString, set_locale
 
 
 def test_gettext_default():

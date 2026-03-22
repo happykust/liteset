@@ -20,11 +20,20 @@ from typing import Any
 
 import msgspec
 
+# NOTE on mutable defaults in msgspec.Struct:
+# Unlike regular Python classes, msgspec.Struct safely handles mutable
+# default values (= {}, = []). Each instance receives its own copy.
+# This is an intentional design decision by msgspec — using dict/list
+# literals as defaults is the idiomatic pattern and does NOT suffer from
+# the classic Python mutable-default gotcha. See:
+# https://jcristharif.com/msgspec/structs.html#default-values
 
-class ApiResponse(msgspec.Struct):
+
+class ApiResponse(msgspec.Struct, omit_defaults=True):
     result: Any = None
     id: int | str | None = None
     message: str | None = None
+    last_modified_time: float | None = None
 
 
 class ApiListResponse(msgspec.Struct):
@@ -35,6 +44,58 @@ class ApiListResponse(msgspec.Struct):
     list_columns: list[str] = []
     order_columns: list[str] = []
     description_columns: dict[str, str] = {}
+
+
+class InfoColumnMeta(msgspec.Struct, omit_defaults=True):
+    """Column metadata returned by /_info."""
+
+    column_name: str
+    type: str = "unknown"
+    nullable: bool = True
+
+
+class InfoResponse(msgspec.Struct, omit_defaults=True):
+    """GET /_info — API metadata for frontend."""
+
+    permissions: list[str] = []
+    add_columns: list[InfoColumnMeta] = []
+    edit_columns: list[InfoColumnMeta] = []
+    filters: dict[str, list[dict[str, str]]] = {}
+
+
+class RelatedResultItem(msgspec.Struct):
+    value: int | str
+    text: str
+
+
+class RelatedResponse(msgspec.Struct):
+    """GET /related/{column_name} — dropdown values."""
+
+    count: int = 0
+    result: list[RelatedResultItem] = []
+
+
+class DistinctResultItem(msgspec.Struct):
+    text: str
+    value: Any = None
+
+
+class DistinctResponse(msgspec.Struct):
+    """GET /distinct/{column_name} — filter dropdown values."""
+
+    count: int = 0
+    result: list[DistinctResultItem] = []
+
+
+class FavoriteStatusItem(msgspec.Struct):
+    id: int
+    value: bool
+
+
+class FavoriteStatusResponse(msgspec.Struct):
+    """GET /favorite_status/ — batch favorite check."""
+
+    result: list[FavoriteStatusItem] = []
 
 
 class SupersetErrorDetail(msgspec.Struct):

@@ -21,14 +21,20 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
+import json as _json
+import logging
 
 from liteset.db.base_dao import BaseAsyncDAO
 from liteset.db.daos.favorites_mixin import FavoriteMixin
+from liteset.utils.json import dumps, loads
 from superset.models.core import FavStarClassName
 from superset.models.dashboard import Dashboard
 from superset.models.embedded_dashboard import EmbeddedDashboard
 from superset.models.slice import Slice
-from superset.utils.json import dumps, loads
+
+logger = logging.getLogger(__name__)
 
 
 class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
@@ -184,7 +190,13 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         data: dict[str, Any],
         current_user: Any | None = None,
     ) -> Dashboard:
-        """Create a copy of a dashboard including its slices."""
+        """Create a copy of a dashboard including its slices.
+
+        When ``duplicate_slices`` is True in *data*, each slice is cloned
+        (new Slice row with a fresh ID) and ``position_json`` is updated
+        so that chartId references point to the newly created slice IDs.
+        This mirrors the Superset ``DashboardDAO.copy_dashboard`` behaviour.
+        """
         dash = Dashboard()
         dash.dashboard_title = data.get(
             "dashboard_title", original_dash.dashboard_title
@@ -192,13 +204,62 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         dash.description = data.get("description", original_dash.description)
         dash.css = data.get("css", original_dash.css)
         dash.position_json = original_dash.position_json
-        dash.json_metadata = original_dash.json_metadata
+        dash.json_metadata = data.get("json_metadata", original_dash.json_metadata)
         dash.published = original_dash.published
         dash.owners = [current_user] if current_user else []
 
         # Explicitly load lazy relationship to avoid MissingGreenlet in async context
         await self.session.refresh(original_dash, attribute_names=["slices"])
-        if original_dash.slices:
+
+        duplicate_slices = data.get("duplicate_slices", False)
+
+        if original_dash.slices and duplicate_slices:
+            # Clone each slice and build old_id -> new_id mapping
+            old_to_new: dict[int, int] = {}
+            new_slices: list[Slice] = []
+            for orig_slice in original_dash.slices:
+                cloned = Slice(
+                    slice_name=orig_slice.slice_name,
+                    viz_type=orig_slice.viz_type,
+                    datasource_id=orig_slice.datasource_id,
+                    datasource_type=orig_slice.datasource_type,
+                    params=orig_slice.params,
+                    query_context=getattr(orig_slice, "query_context", None),
+                    description=getattr(orig_slice, "description", None),
+                    cache_timeout=getattr(orig_slice, "cache_timeout", None),
+                )
+                if current_user is not None:
+                    cloned.created_by_fk = getattr(current_user, "id", None)
+                    cloned.changed_by_fk = getattr(current_user, "id", None)
+                    cloned.owners = [current_user]
+                self.session.add(cloned)
+                await self.session.flush()  # assigns cloned.id
+                old_to_new[orig_slice.id] = cloned.id
+                new_slices.append(cloned)
+
+            dash.slices = new_slices
+
+            # Update chartId references in position_json
+            if dash.position_json:
+                try:
+                    positions = _json.loads(dash.position_json)
+                    for value in positions.values():
+                        if not isinstance(value, dict):
+                            continue
+                        meta = value.get("meta", {})
+                        old_chart_id = meta.get("chartId")
+                        if old_chart_id and old_chart_id in old_to_new:
+                            meta["chartId"] = old_to_new[old_chart_id]
+                    dash.position_json = _json.dumps(
+                        positions, separators=(",", ":"), sort_keys=True
+                    )
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "Could not update position_json chartId references "
+                        "during dashboard copy"
+                    )
+        elif original_dash.slices:
+            # No duplication — share the same slice references
             dash.slices = list(original_dash.slices)
 
         self.session.add(dash)
@@ -236,7 +297,10 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
             return []
         from superset.connectors.sqla.models import SqlaTable
 
-        stmt = select(SqlaTable).where(SqlaTable.id.in_(datasource_ids))
+        stmt = select(SqlaTable).where(SqlaTable.id.in_(datasource_ids)).options(
+            selectinload(SqlaTable.database),
+            selectinload(SqlaTable.columns),
+        )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -307,6 +371,7 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
             "label_colors",
             "shared_label_colors",
             "color_scheme_domain",
+            "map_label_colors",
         ):
             if key in data:
                 md[key] = data[key]

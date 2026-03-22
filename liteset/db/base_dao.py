@@ -16,9 +16,10 @@
 # under the License.
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Generic, TypeVar
 
-from sqlalchemy import CursorResult, delete as sa_delete, inspect, select
+from sqlalchemy import CursorResult, delete as sa_delete, func, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -53,18 +54,34 @@ class BaseAsyncDAO(Generic[T]):
     async def find_by_id(self, model_id: int | str) -> T | None:
         return await self.session.get(self.model_cls, model_id)
 
-    async def find_by_ids(self, model_ids: list[int | str]) -> list[T]:
+    async def find_by_ids(self, model_ids: Sequence[int | str]) -> list[T]:
         pk_col = self._get_pk_column()
         stmt = select(self.model_cls).where(pk_col.in_(model_ids))
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def find_all(self, filters: list[Any] | None = None) -> list[T]:
+    async def find_all(
+        self,
+        filters: list[Any] | None = None,
+        page: int = 0,
+        page_size: int = 0,
+    ) -> list[T]:
         stmt = select(self.model_cls)
         if filters:
             stmt = stmt.where(*filters)
+        if page_size > 0:
+            stmt = stmt.order_by(self._get_pk_column())
+            stmt = stmt.offset(page * page_size).limit(page_size)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def count(self, filters: list[Any] | None = None) -> int:
+        """Return total record count (for pagination metadata)."""
+        stmt = select(func.count()).select_from(self.model_cls)
+        if filters:
+            stmt = stmt.where(*filters)
+        result = await self.session.scalar(stmt)
+        return result or 0
 
     async def find_one_or_none(self, **filter_by: Any) -> T | None:
         stmt = select(self.model_cls).filter_by(**filter_by)

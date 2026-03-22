@@ -18,6 +18,7 @@
 
 Replaces Flask-WTF CSRF protection with Litestar's built-in CSRFConfig.
 """
+
 from __future__ import annotations
 
 from litestar.config.csrf import CSRFConfig

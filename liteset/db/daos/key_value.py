@@ -103,10 +103,100 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
             return True
         return False
 
+    # ------------------------------------------------------------------
+    # High-level string-keyed API for filter state / permalinks
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_resource_key(resource: str, resource_id: int, key: str) -> str:
+        """Compose a unique resource string from resource type, id, and key."""
+        return f"{resource}:{resource_id}:{key}"
+
+    async def set_value(
+        self,
+        resource: str,
+        resource_id: int,
+        key: str,
+        value: str,
+    ) -> None:
+        """Store a string value keyed by (resource, resource_id, key)."""
+        rkey = self._make_resource_key(resource, resource_id, key)
+        stmt = (
+            select(KeyValueEntry)
+            .where(
+                KeyValueEntry.resource == rkey,
+                or_(
+                    KeyValueEntry.expires_on.is_(None),
+                    KeyValueEntry.expires_on > datetime.now(tz=timezone.utc),
+                ),
+            )
+            .with_for_update()
+        )
+        result = await self.session.execute(stmt)
+        existing = result.scalars().one_or_none()
+        if existing:
+            existing.value = value.encode("utf-8")  # type: ignore[assignment]
+        else:
+            entry = KeyValueEntry(
+                resource=rkey,
+                value=value.encode("utf-8"),
+            )
+            self.session.add(entry)
+        await self.session.flush()
+
+    async def get_value(
+        self,
+        resource: str,
+        resource_id: int,
+        key: str,
+    ) -> str | None:
+        """Retrieve a string value by (resource, resource_id, key)."""
+        rkey = self._make_resource_key(resource, resource_id, key)
+        stmt = select(KeyValueEntry).where(
+            KeyValueEntry.resource == rkey,
+            or_(
+                KeyValueEntry.expires_on.is_(None),
+                KeyValueEntry.expires_on > datetime.now(tz=timezone.utc),
+            ),
+        )
+        result = await self.session.execute(stmt)
+        entry = result.scalars().one_or_none()
+        if entry is None:
+            return None
+        return entry.value.decode("utf-8")
+
+    async def delete_value(
+        self,
+        resource: str,
+        resource_id: int,
+        key: str,
+    ) -> bool:
+        """Delete a value by (resource, resource_id, key). Returns True if deleted."""
+        rkey = self._make_resource_key(resource, resource_id, key)
+        stmt = select(KeyValueEntry).where(
+            KeyValueEntry.resource == rkey,
+            or_(
+                KeyValueEntry.expires_on.is_(None),
+                KeyValueEntry.expires_on > datetime.now(tz=timezone.utc),
+            ),
+        )
+        result = await self.session.execute(stmt)
+        entry = result.scalars().one_or_none()
+        if entry:
+            await self.session.delete(entry)
+            await self.session.flush()
+            return True
+        return False
+
     async def delete_expired_entries(self, resource: str) -> None:
-        """Delete all expired entries for a resource."""
+        """Delete all expired entries for a resource.
+
+        Composite keys are stored as ``"resource:id:key"``, so we use
+        a LIKE prefix match instead of exact equality.
+        """
+        escaped = resource.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         stmt = delete(KeyValueEntry).where(
-            KeyValueEntry.resource == resource,
+            KeyValueEntry.resource.like(f"{escaped}:%"),
             KeyValueEntry.expires_on <= datetime.now(tz=timezone.utc),
         )
         await self.session.execute(stmt)

@@ -22,6 +22,7 @@ and Row Level Security rules.
 
 Feature flag: EMBEDDED_SUPERSET must be enabled.
 """
+
 from __future__ import annotations
 
 import logging
@@ -57,17 +58,30 @@ class GuestUser:
     roles: list[Any] = field(default_factory=list)
     resources: list[dict[str, Any]] = field(default_factory=list)
     rls_rules: list[dict[str, Any]] = field(default_factory=list)
+    permissions: set[str] = field(default_factory=set)
 
     @classmethod
     def from_token_payload(cls, payload: dict[str, Any]) -> GuestUser:
         """Create a GuestUser from a decoded JWT payload."""
         user_info = payload.get("user", {})
+        resources = payload.get("resources", [])
+
+        # Derive permissions from resource types
+        permissions: set[str] = set()
+        for resource in resources:
+            res_type = resource.get("type", "") if isinstance(resource, dict) else ""
+            if res_type == "dashboard":
+                permissions.update({"can_read_Dashboard", "can_read_Chart"})
+            elif res_type == "chart":
+                permissions.add("can_read_Chart")
+
         return cls(
             username=user_info.get("username", "guest"),
             first_name=user_info.get("first_name", ""),
             last_name=user_info.get("last_name", ""),
-            resources=payload.get("resources", []),
+            resources=resources,
             rls_rules=payload.get("rls_rules", []),
+            permissions=permissions,
         )
 
 

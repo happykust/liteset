@@ -1,12 +1,16 @@
 """Tests for current_user dependency activation."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
-from liteset.dependencies import get_current_user, get_user_id, get_username
+from liteset.dependencies import (
+    get_current_user,
+    get_user_id,
+    get_username,
+    provide_security_manager,
+)
 from liteset.middleware.auth import UnauthenticatedUser
 
 
@@ -58,3 +62,19 @@ def test_get_current_user_unauthenticated():
     request.user = UnauthenticatedUser()
     user = get_current_user(request)
     assert user.is_authenticated is False
+
+
+async def test_provide_security_manager_passes_settings():
+    """SecurityManager DI should pass config settings from LitesetSettings."""
+    session = AsyncMock()
+    state = MagicMock()
+    state.settings.auth_role_admin = "SuperAdmin"
+    state.settings.auth_role_public = "Viewer"
+    state.settings.guest_role_name = "EmbedGuest"
+    state.settings.dashboard_rbac = True
+
+    sm = await provide_security_manager(session, state)
+    assert sm._admin_role_name == "SuperAdmin"
+    assert sm._public_role_name == "Viewer"
+    assert sm._guest_role_name == "EmbedGuest"
+    assert sm._dashboard_rbac_enabled is True
