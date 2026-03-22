@@ -20,7 +20,7 @@ from collections.abc import Callable
 from typing import Any
 
 from litestar.connection import ASGIConnection
-from litestar.exceptions import PermissionDeniedException
+from litestar.exceptions import NotAuthorizedException, PermissionDeniedException
 from litestar.handlers import BaseRouteHandler
 
 GuardFn = Callable[[ASGIConnection[Any, Any, Any, Any], BaseRouteHandler], None]
@@ -39,7 +39,7 @@ def require_permission(action: str, resource: str) -> GuardFn:
     ) -> None:
         user = connection.user
         if not getattr(user, "is_authenticated", False):
-            raise PermissionDeniedException(detail="Not authenticated")
+            raise NotAuthorizedException(detail="Not authenticated")
         if not has_permissions(user, {permission_name}):
             raise PermissionDeniedException(
                 detail=f"Missing permission: {permission_name}"

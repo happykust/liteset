@@ -25,6 +25,7 @@ mypy: FAB models are injected as ``type`` (no generic parameter), so
 attribute access (.id, .name, .roles, etc.) triggers attr-defined errors.
 These are safe — the actual models always have these attributes.
 """
+
 # mypy: disable-error-code="attr-defined, var-annotated"
 from __future__ import annotations
 
@@ -67,6 +68,7 @@ class AsyncSecurityDAO:
     def user_model(self) -> type:
         if self._user_model is None:
             from flask_appbuilder.security.sqla.models import User
+
             self._user_model = User
         return self._user_model
 
@@ -74,6 +76,7 @@ class AsyncSecurityDAO:
     def role_model(self) -> type:
         if self._role_model is None:
             from flask_appbuilder.security.sqla.models import Role
+
             self._role_model = Role
         return self._role_model
 
@@ -81,6 +84,7 @@ class AsyncSecurityDAO:
     def permission_model(self) -> type:
         if self._permission_model is None:
             from flask_appbuilder.security.sqla.models import Permission
+
             self._permission_model = Permission
         return self._permission_model
 
@@ -88,6 +92,7 @@ class AsyncSecurityDAO:
     def view_menu_model(self) -> type:
         if self._view_menu_model is None:
             from flask_appbuilder.security.sqla.models import ViewMenu
+
             self._view_menu_model = ViewMenu
         return self._view_menu_model
 
@@ -95,6 +100,7 @@ class AsyncSecurityDAO:
     def permission_view_model(self) -> type:
         if self._permission_view_model is None:
             from flask_appbuilder.security.sqla.models import PermissionView
+
             self._permission_view_model = PermissionView
         return self._permission_view_model
 
@@ -175,9 +181,7 @@ class AsyncSecurityDAO:
         result = await self.session.execute(stmt)
         return result.scalars().first() is not None
 
-    async def get_all_permissions_for_user(
-        self, user_id: int
-    ) -> set[tuple[str, str]]:
+    async def get_all_permissions_for_user(self, user_id: int) -> set[tuple[str, str]]:
         """Get all (permission_name, view_menu_name) tuples for a user.
 
         Traverses: user -> roles -> permission_views -> permission + view_menu.

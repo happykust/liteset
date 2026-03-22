@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from liteset.config import LitesetSettings, _superset_config_cache
+from liteset.config import _superset_config_cache, LitesetSettings
 
 
 def test_default_settings() -> None:
@@ -23,7 +23,10 @@ def test_async_uri_conversion_postgresql() -> None:
         secret_key="test-key-long-enough",
         sqlalchemy_database_uri="postgresql://user:pass@localhost/db",
     )
-    assert settings.sqlalchemy_database_uri == "postgresql+asyncpg://user:pass@localhost/db"
+    assert (
+        settings.sqlalchemy_database_uri
+        == "postgresql+asyncpg://user:pass@localhost/db"
+    )
 
 
 def test_async_uri_conversion_psycopg2() -> None:
@@ -31,7 +34,10 @@ def test_async_uri_conversion_psycopg2() -> None:
         secret_key="test-key-long-enough",
         sqlalchemy_database_uri="postgresql+psycopg2://user:pass@localhost/db",
     )
-    assert settings.sqlalchemy_database_uri == "postgresql+asyncpg://user:pass@localhost/db"
+    assert (
+        settings.sqlalchemy_database_uri
+        == "postgresql+asyncpg://user:pass@localhost/db"
+    )
 
 
 def test_async_uri_no_conversion_already_async() -> None:
@@ -52,7 +58,10 @@ def test_from_superset_config(tmp_path: Path) -> None:
     )
     settings = LitesetSettings.from_superset_config(str(config_file))
     assert settings.secret_key.get_secret_value() == "superset-secret-long-enough"
-    assert settings.sqlalchemy_database_uri == "postgresql+asyncpg://user:pass@localhost/superset"
+    assert (
+        settings.sqlalchemy_database_uri
+        == "postgresql+asyncpg://user:pass@localhost/superset"
+    )
 
 
 def test_secret_key_rejects_short_value() -> None:

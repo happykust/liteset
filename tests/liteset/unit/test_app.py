@@ -27,7 +27,9 @@ async def test_health_endpoint(app):
         assert resp.json() == {"status": "OK"}
 
 
-@pytest.mark.skip(reason="OpenAPI path requires auth exclusion — deferred to liteset/cleanup")
+@pytest.mark.skip(
+    reason="OpenAPI path requires auth exclusion — deferred to liteset/cleanup"
+)
 async def test_openapi_available(app):
     async with AsyncTestClient(app=app) as client:
         resp = await client.get("/swagger/v1/openapi.json")
@@ -47,9 +49,7 @@ async def test_static_routes_have_unique_names(app):
 
 async def test_app_has_auth_middleware(app):
     """App should have LitesetAuthMiddleware registered."""
-    assert any(
-        "LitesetAuthMiddleware" in str(m) for m in app.middleware
-    )
+    assert any("LitesetAuthMiddleware" in str(m) for m in app.middleware)
 
 
 async def test_app_has_security_controller(app):

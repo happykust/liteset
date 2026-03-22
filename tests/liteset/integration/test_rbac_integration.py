@@ -15,12 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 """Integration tests for RBAC guards with Litestar routing."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 import pytest
-from litestar import Litestar, get
+from litestar import get, Litestar
 from litestar.connection import ASGIConnection
 from litestar.middleware import AbstractAuthenticationMiddleware, AuthenticationResult
 from litestar.testing import AsyncTestClient
@@ -68,7 +69,7 @@ async def create_chart() -> dict[str, str]:
     return {"result": "created"}
 
 
-@pytest.fixture()
+@pytest.fixture
 def guarded_app() -> Litestar:
     return Litestar(
         route_handlers=[list_charts, create_chart],
@@ -101,7 +102,7 @@ async def test_viewer_cannot_write(guarded_app: Litestar) -> None:
         assert resp.status_code == 403
 
 
-async def test_anonymous_forbidden(guarded_app: Litestar) -> None:
+async def test_anonymous_unauthorized(guarded_app: Litestar) -> None:
     async with AsyncTestClient(app=guarded_app) as client:
         resp = await client.get("/charts", headers={"x-test-role": "anonymous"})
-        assert resp.status_code == 403
+        assert resp.status_code == 401

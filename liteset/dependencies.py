@@ -89,3 +89,22 @@ def get_user_id(request: Request[Any, Any, Any]) -> int | None:
 def get_username(request: Request[Any, Any, Any]) -> str | None:
     user = get_current_user(request)
     return getattr(user, "username", None) if user else None
+
+
+async def provide_security_manager(
+    session: AsyncSession,
+    state: State,
+) -> Any:
+    """Provide AsyncSecurityManager scoped to the request session."""
+    from liteset.security.dao import AsyncSecurityDAO
+    from liteset.security.manager import AsyncSecurityManager
+
+    dao = AsyncSecurityDAO(session)
+    settings = state.settings
+    return AsyncSecurityManager(
+        dao=dao,
+        admin_role_name=settings.auth_role_admin,
+        public_role_name=settings.auth_role_public,
+        guest_role_name=settings.guest_role_name,
+        dashboard_rbac_enabled=settings.dashboard_rbac,
+    )

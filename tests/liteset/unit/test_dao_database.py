@@ -15,10 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 """Tests for AsyncDatabaseDAO using simplified test models."""
+
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import Column, ForeignKey, Integer, String, select
+from sqlalchemy import Column, ForeignKey, Integer, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 

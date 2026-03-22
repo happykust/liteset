@@ -16,6 +16,7 @@
 # under the License.
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
@@ -65,6 +66,7 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
     async def stop_query(self, client_id: str) -> Query | None:
         """Stop a running query by client_id.
 
+        Calls cancel_query driver before setting STOPPED status.
         Returns the query if found and stopped, None if not found.
         """
         query = await self.find_one_or_none(client_id=client_id)
@@ -80,6 +82,22 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
         }
         if query.status in terminal_states:
             return query
+
+        # Attempt to cancel the query via the SQL Lab cancel mechanism
+        try:
+            from superset.sql_lab import cancel_query
+
+            await asyncio.to_thread(cancel_query, query)
+        except ImportError:
+            pass
+        except Exception as ex:  # noqa: BLE001
+            if isinstance(ex, (KeyboardInterrupt, SystemExit)):
+                raise
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Failed to cancel query %s: %s", client_id, ex,
+            )
 
         query.status = QueryStatus.STOPPED  # type: ignore[assignment]
         query.end_time = datetime.now(tz=timezone.utc).timestamp()  # type: ignore[assignment]

@@ -40,7 +40,12 @@ from liteset.db.session import (
     create_session_factory,
     dispose_engine,
 )
-from liteset.dependencies import get_current_user, provide_async_session, provide_request_cache
+from liteset.dependencies import (
+    get_current_user,
+    provide_async_session,
+    provide_request_cache,
+    provide_security_manager,
+)
 from liteset.exceptions import (
     generic_exception_handler,
     liteset_exception_handler,
@@ -87,9 +92,8 @@ async def on_startup(app: Litestar) -> None:
     if settings.redis_url:
         try:
             from redis.asyncio import Redis
-            app.state.redis = Redis.from_url(
-                settings.redis_url, decode_responses=True
-            )
+
+            app.state.redis = Redis.from_url(settings.redis_url, decode_responses=True)
             logger.info("Redis connected for auth cache")
         except Exception:
             logger.warning("Failed to connect to Redis — auth cache disabled")
@@ -120,7 +124,82 @@ def create_app(
         # secret_key is resolved at runtime from env vars or superset_config.py
         settings = LitesetSettings()  # type: ignore[call-arg]
 
-    route_handlers: list[Any] = [health_check, SPAController, SecurityController]
+    # Import core API controllers (Phase 4)
+    from liteset.controllers.chart import ChartController
+    from liteset.controllers.dashboard import DashboardController
+    from liteset.controllers.dashboard_filter_state import (
+        DashboardFilterStateController,
+    )
+    from liteset.controllers.database import DatabaseController
+    from liteset.controllers.dataset import DatasetController
+    from liteset.controllers.query import QueryController
+    from liteset.controllers.saved_query import SavedQueryController
+    from liteset.controllers.sqllab import SqlLabController
+    from liteset.controllers.sqllab_permalink import SqlLabPermalinkController
+
+    # Import remaining API controllers (Phase 5)
+    from liteset.controllers.advanced_data_type import AdvancedDataTypeController
+    from liteset.controllers.annotation import AnnotationController
+    from liteset.controllers.annotation_layer import AnnotationLayerController
+    from liteset.controllers.async_event import AsyncEventsController
+    from liteset.controllers.available_domains import AvailableDomainsController
+    from liteset.controllers.cache import CacheController
+    from liteset.controllers.css_template import CssTemplateController
+    from liteset.controllers.embedded_dashboard import EmbeddedDashboardController
+    from liteset.controllers.explore import ExploreController
+    from liteset.controllers.explore_form_data import ExploreFormDataController
+    from liteset.controllers.explore_permalink import ExplorePermalinkController
+    from liteset.controllers.import_export import ImportExportController
+    # LegacyApiController deferred — its /api/v1 path prefix overlaps
+    # with existing controllers. Will be added with path aliases in Phase 7.
+    # from liteset.controllers.legacy_api import LegacyApiController
+    from liteset.controllers.log import LogController
+    from liteset.controllers.report import ReportScheduleController
+    from liteset.controllers.report_log import ReportExecutionLogController
+    from liteset.controllers.rls import RLSController
+    from liteset.controllers.tag import TagController
+    from liteset.controllers.theme import ThemeController
+    from liteset.controllers.user import UserController, UserRegistrationsController
+    from liteset.controllers.user_me import CurrentUserController
+
+    route_handlers: list[Any] = [
+        health_check,
+        SPAController,
+        SecurityController,
+        # Phase 4: core API
+        ChartController,
+        DashboardController,
+        DashboardFilterStateController,
+        DatabaseController,
+        DatasetController,
+        QueryController,
+        SavedQueryController,
+        SqlLabController,
+        SqlLabPermalinkController,
+        # Phase 5: remaining API
+        AnnotationLayerController,
+        AnnotationController,
+        CssTemplateController,
+        AvailableDomainsController,
+        AdvancedDataTypeController,
+        ExploreController,
+        ExploreFormDataController,
+        ExplorePermalinkController,
+        ReportScheduleController,
+        ReportExecutionLogController,
+        LogController,
+        CurrentUserController,
+        UserController,
+        UserRegistrationsController,
+        TagController,
+        ThemeController,
+        EmbeddedDashboardController,
+        CacheController,
+        AsyncEventsController,
+        RLSController,
+        ImportExportController,
+        # LegacyApiController,  # deferred — path overlap (see import)
+    ]
     startup_hooks: list[Any] = [on_startup]
 
     if enable_flask_fallback:
@@ -192,6 +271,7 @@ def create_app(
                 use_cache=True,
             ),
             "current_user": Provide(get_current_user, sync_to_thread=False),
+            "security_manager": Provide(provide_security_manager),
         },
         middleware=[LitesetAuthMiddleware],
         csrf_config=csrf_config,

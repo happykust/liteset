@@ -16,9 +16,82 @@
 # under the License.
 from __future__ import annotations
 
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from liteset.db.base_dao import BaseAsyncDAO
 from superset.connectors.sqla.models import RowLevelSecurityFilter
 
 
 class AsyncSecurityDAO(BaseAsyncDAO[RowLevelSecurityFilter]):
     model_cls = RowLevelSecurityFilter
+
+
+class AsyncRoleDAO:
+    """Async DAO for FAB Role model.
+
+    Uses lazy imports for the FAB Role model to avoid triggering the
+    Flask import chain at module level.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def search(
+        self,
+        name_filter: str | None = None,
+        order_column: str = "id",
+        order_direction: str = "asc",
+        page: int = 0,
+        page_size: int = 10,
+    ) -> tuple[list[Any], int]:
+        """Search roles with optional name filter and pagination.
+
+        Returns:
+            Tuple of (roles list, total count).
+        """
+        try:
+            from flask_appbuilder.security.sqla.models import Role
+        except (ImportError, ModuleNotFoundError):
+            return [], 0
+
+        from sqlalchemy import func, select
+        from sqlalchemy.orm import selectinload
+
+        # Base query
+        stmt = select(Role)
+        count_stmt = select(func.count()).select_from(Role)
+
+        # Apply name filter (case-insensitive substring match)
+        if name_filter:
+            from liteset.controllers.base import _escape_like
+
+            escaped = _escape_like(name_filter)
+            stmt = stmt.where(Role.name.ilike(f"%{escaped}%"))
+            count_stmt = count_stmt.where(Role.name.ilike(f"%{escaped}%"))
+
+        # Count
+        total = await self.session.scalar(count_stmt) or 0
+
+        # Ordering — only allow known columns
+        order_col = getattr(Role, order_column, Role.id)
+        if order_direction == "desc":
+            stmt = stmt.order_by(order_col.desc())
+        else:
+            stmt = stmt.order_by(order_col.asc())
+
+        # Eager load relationships to avoid implicit IO
+        stmt = stmt.options(
+            selectinload(Role.permissions),
+            selectinload(Role.user),
+        )
+
+        # Pagination
+        if page_size > 0:
+            stmt = stmt.offset(page * page_size).limit(page_size)
+
+        result = await self.session.execute(stmt)
+        roles = list(result.scalars().unique().all())
+
+        return roles, total

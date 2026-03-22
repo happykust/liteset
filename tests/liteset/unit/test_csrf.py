@@ -1,7 +1,7 @@
 """Tests for CSRF configuration and token endpoint."""
+
 from __future__ import annotations
 
-import pytest
 from litestar import Litestar
 from litestar.testing import AsyncTestClient
 

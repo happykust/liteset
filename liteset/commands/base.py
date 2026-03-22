@@ -25,6 +25,14 @@ T = TypeVar("T")
 
 
 class AsyncBaseCommand(ABC, Generic[T]):
+    """Base class for all async commands (business logic layer).
+
+    Transaction management: Commands call session.flush() (not commit).
+    The provide_async_session dependency (Phase 1) wraps each HTTP request
+    in a transaction — commit on success, rollback on any exception.
+    Commands MUST NOT call session.commit() or session.rollback() directly.
+    """
+
     @abstractmethod
     async def validate(self) -> None: ...
 

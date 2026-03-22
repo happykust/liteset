@@ -46,9 +46,7 @@ def test_trino_table_not_found_error():
 
 
 def test_trino_adjust_engine_params():
-    uri, args = AsyncTrinoEngineSpec.adjust_engine_params(
-        "trino://host:8080/catalog"
-    )
+    uri, args = AsyncTrinoEngineSpec.adjust_engine_params("trino://host:8080/catalog")
     assert args["http_scheme"] == "https"
 
 
@@ -61,8 +59,6 @@ def test_trino_adjust_engine_params_preserves():
 
 
 def test_trino_fallback_error():
-    errors = AsyncTrinoEngineSpec.extract_errors(
-        RuntimeError("something unknown")
-    )
+    errors = AsyncTrinoEngineSpec.extract_errors(RuntimeError("something unknown"))
     assert errors[0]["message"] == "something unknown"
     assert errors[0]["error_type"] == "RuntimeError"

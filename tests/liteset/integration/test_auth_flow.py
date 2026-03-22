@@ -3,6 +3,7 @@
 Tests the full auth chain: middleware -> session decoder / JWT -> DAO -> user.
 Uses in-memory SQLite with real FAB-compatible table schemas.
 """
+
 from __future__ import annotations
 
 import json
@@ -16,8 +17,8 @@ from litestar import get, Litestar
 from litestar.connection import Request
 from litestar.datastructures import State
 from litestar.testing import AsyncTestClient
-from sqlalchemy import Column, ForeignKey, Integer, String, Table, insert
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import Column, ForeignKey, insert, Integer, String, Table
+from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 from liteset.controllers.security import SecurityController
@@ -25,11 +26,11 @@ from liteset.middleware.auth import LitesetAuthMiddleware
 from liteset.security.dao import AsyncSecurityDAO
 from liteset.security.guest import create_guest_access_token, GuestUser
 
-
 SECRET_KEY = "integration-test-secret-key-32chr"
 
 
 # --- Minimal FAB schema (prefixed to avoid pytest collection) ---
+
 
 class Base(DeclarativeBase):
     pass
@@ -96,6 +97,7 @@ class FabPermissionView(Base):
 
 # --- Mock data classes ---
 
+
 @dataclass
 class MockRole:
     id: int = 1
@@ -125,6 +127,7 @@ class MockDashboard:
 
 # --- Fixtures ---
 
+
 @pytest.fixture
 async def db_engine():
     engine = create_async_engine("sqlite+aiosqlite://")
@@ -132,31 +135,74 @@ async def db_engine():
         await conn.run_sync(Base.metadata.create_all)
 
     async with engine.begin() as conn:
-        await conn.execute(insert(FabRole).values([
-            {"id": 1, "name": "Admin"},
-            {"id": 2, "name": "Gamma"},
-        ]))
-        await conn.execute(insert(FabUser).values([
-            {"id": 1, "username": "admin", "email": "admin@test.com", "active": 1},
-            {"id": 2, "username": "gamma", "email": "gamma@test.com", "active": 1},
-            {"id": 3, "username": "inactive", "email": "inactive@test.com", "active": 0},
-        ]))
-        await conn.execute(insert(FabPermission).values([
-            {"id": 1, "name": "can_read"},
-        ]))
-        await conn.execute(insert(FabViewMenu).values([
-            {"id": 1, "name": "Chart"},
-        ]))
-        await conn.execute(insert(FabPermissionView).values([
-            {"id": 1, "permission_id": 1, "view_menu_id": 1},
-        ]))
-        await conn.execute(insert(_ab_user_role).values([
-            {"id": 1, "user_id": 1, "role_id": 1},
-            {"id": 2, "user_id": 2, "role_id": 2},
-        ]))
-        await conn.execute(insert(_ab_permission_view_role).values([
-            {"id": 1, "permission_view_id": 1, "role_id": 2},
-        ]))
+        await conn.execute(
+            insert(FabRole).values(
+                [
+                    {"id": 1, "name": "Admin"},
+                    {"id": 2, "name": "Gamma"},
+                ]
+            )
+        )
+        await conn.execute(
+            insert(FabUser).values(
+                [
+                    {
+                        "id": 1,
+                        "username": "admin",
+                        "email": "admin@test.com",
+                        "active": 1,
+                    },
+                    {
+                        "id": 2,
+                        "username": "gamma",
+                        "email": "gamma@test.com",
+                        "active": 1,
+                    },
+                    {
+                        "id": 3,
+                        "username": "inactive",
+                        "email": "inactive@test.com",
+                        "active": 0,
+                    },
+                ]
+            )
+        )
+        await conn.execute(
+            insert(FabPermission).values(
+                [
+                    {"id": 1, "name": "can_read"},
+                ]
+            )
+        )
+        await conn.execute(
+            insert(FabViewMenu).values(
+                [
+                    {"id": 1, "name": "Chart"},
+                ]
+            )
+        )
+        await conn.execute(
+            insert(FabPermissionView).values(
+                [
+                    {"id": 1, "permission_id": 1, "view_menu_id": 1},
+                ]
+            )
+        )
+        await conn.execute(
+            insert(_ab_user_role).values(
+                [
+                    {"id": 1, "user_id": 1, "role_id": 1},
+                    {"id": 2, "user_id": 2, "role_id": 2},
+                ]
+            )
+        )
+        await conn.execute(
+            insert(_ab_permission_view_role).values(
+                [
+                    {"id": 1, "permission_view_id": 1, "role_id": 2},
+                ]
+            )
+        )
 
     yield engine
     await engine.dispose()
@@ -179,6 +225,7 @@ async def whoami(request: Request[Any, Any, Any]) -> dict[str, Any]:
 
 # --- Tests ---
 
+
 async def test_cookie_auth_full_flow(db_engine):
     """Test full cookie auth flow: cookie -> decode -> DB lookup -> user."""
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
@@ -198,23 +245,24 @@ async def test_cookie_auth_full_flow(db_engine):
                 return user
         return None
 
-    with patch.object(
-        LitesetAuthMiddleware, "_resolve_user_from_db", mock_resolve
-    ):
+    with patch.object(LitesetAuthMiddleware, "_resolve_user_from_db", mock_resolve):
         app = Litestar(
             route_handlers=[whoami],
             middleware=[LitesetAuthMiddleware],
-            state=State({
-                "settings": MagicMock(
-                    secret_key=MagicMock(
-                        get_secret_value=MagicMock(return_value=SECRET_KEY)
+            state=State(
+                {
+                    "settings": MagicMock(
+                        secret_key=MagicMock(
+                            get_secret_value=MagicMock(return_value=SECRET_KEY)
+                        ),
+                        session_cookie_name="session",
+                        session_max_age=86400,
+                        embedded_superset=False,
                     ),
-                    session_cookie_name="session",
-                    embedded_superset=False,
-                ),
-                "session_factory": session_factory,
-                "redis": None,
-            }),
+                    "session_factory": session_factory,
+                    "redis": None,
+                }
+            ),
         )
 
         async with AsyncTestClient(app=app) as client:
@@ -247,23 +295,24 @@ async def test_inactive_user_rejected(db_engine):
                 return user
         return None
 
-    with patch.object(
-        LitesetAuthMiddleware, "_resolve_user_from_db", mock_resolve
-    ):
+    with patch.object(LitesetAuthMiddleware, "_resolve_user_from_db", mock_resolve):
         app = Litestar(
             route_handlers=[whoami],
             middleware=[LitesetAuthMiddleware],
-            state=State({
-                "settings": MagicMock(
-                    secret_key=MagicMock(
-                        get_secret_value=MagicMock(return_value=SECRET_KEY)
+            state=State(
+                {
+                    "settings": MagicMock(
+                        secret_key=MagicMock(
+                            get_secret_value=MagicMock(return_value=SECRET_KEY)
+                        ),
+                        session_cookie_name="session",
+                        session_max_age=86400,
+                        embedded_superset=False,
                     ),
-                    session_cookie_name="session",
-                    embedded_superset=False,
-                ),
-                "session_factory": session_factory,
-                "redis": None,
-            }),
+                    "session_factory": session_factory,
+                    "redis": None,
+                }
+            ),
         )
 
         async with AsyncTestClient(app=app) as client:
@@ -272,7 +321,16 @@ async def test_inactive_user_rejected(db_engine):
                 "/api/v1/test/whoami",
                 cookies={"session": cookie},
             )
-            assert resp.status_code == 401
+            # Inactive user → _resolve_user_from_db returns None → middleware
+            # falls through to UnauthenticatedUser (anonymous). The whoami
+            # endpoint has no RBAC guard so it still returns 200, but the
+            # resolved user must be anonymous: no username and not authenticated.
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data.get("username") is None, (
+                "Inactive user must not be resolved; expected anonymous user "
+                f"but got username={data.get('username')!r}"
+            )
 
 
 async def test_csrf_token_endpoint():
@@ -299,7 +357,11 @@ async def test_guest_token_flow():
     )
     guest = GuestUser.from_token_payload(
         {
-            "user": {"username": "embed_user", "first_name": "Embed", "last_name": "User"},
+            "user": {
+                "username": "embed_user",
+                "first_name": "Embed",
+                "last_name": "User",
+            },
             "resources": [{"type": "dashboard", "id": "dash-uuid-123"}],
             "rls_rules": [{"clause": "org_id = 42"}],
         }
@@ -313,30 +375,35 @@ async def test_guest_token_flow():
 async def test_redis_cache_hit():
     """Test that Redis cache hit returns CachedUser with roles."""
     mock_redis = AsyncMock()
-    cached_user_data = json.dumps({
-        "id": 1,
-        "username": "cached_admin",
-        "email": "admin@test.com",
-        "active": 1,
-        "is_authenticated": True,
-        "roles": [{"id": 1, "name": "Admin"}],
-    })
+    cached_user_data = json.dumps(
+        {
+            "id": 1,
+            "username": "cached_admin",
+            "email": "admin@test.com",
+            "active": 1,
+            "is_authenticated": True,
+            "roles": [{"id": 1, "name": "Admin"}],
+        }
+    )
     mock_redis.get = AsyncMock(return_value=cached_user_data)
 
     app = Litestar(
         route_handlers=[whoami],
         middleware=[LitesetAuthMiddleware],
-        state=State({
-            "settings": MagicMock(
-                secret_key=MagicMock(
-                    get_secret_value=MagicMock(return_value=SECRET_KEY)
+        state=State(
+            {
+                "settings": MagicMock(
+                    secret_key=MagicMock(
+                        get_secret_value=MagicMock(return_value=SECRET_KEY)
+                    ),
+                    session_cookie_name="session",
+                    session_max_age=86400,
+                    embedded_superset=False,
                 ),
-                session_cookie_name="session",
-                embedded_superset=False,
-            ),
-            "session_factory": MagicMock(),
-            "redis": mock_redis,
-        }),
+                "session_factory": MagicMock(),
+                "redis": mock_redis,
+            }
+        ),
     )
 
     async with AsyncTestClient(app=app) as client:
@@ -354,33 +421,39 @@ async def test_redis_cache_hit():
 async def test_redis_cache_rejects_inactive():
     """Deactivated users in Redis cache should be rejected."""
     mock_redis = AsyncMock()
-    cached_user_data = json.dumps({
-        "id": 3,
-        "username": "inactive",
-        "email": "x@x.com",
-        "active": 0,
-        "roles": [],
-    })
+    cached_user_data = json.dumps(
+        {
+            "id": 3,
+            "username": "inactive",
+            "email": "x@x.com",
+            "active": 0,
+            "roles": [],
+        }
+    )
     mock_redis.get = AsyncMock(return_value=cached_user_data)
 
     app = Litestar(
         route_handlers=[whoami],
         middleware=[LitesetAuthMiddleware],
-        state=State({
-            "settings": MagicMock(
-                secret_key=MagicMock(
-                    get_secret_value=MagicMock(return_value=SECRET_KEY)
+        state=State(
+            {
+                "settings": MagicMock(
+                    secret_key=MagicMock(
+                        get_secret_value=MagicMock(return_value=SECRET_KEY)
+                    ),
+                    session_cookie_name="session",
+                    session_max_age=86400,
+                    embedded_superset=False,
                 ),
-                session_cookie_name="session",
-                embedded_superset=False,
-            ),
-            "session_factory": MagicMock(),
-            "redis": mock_redis,
-        }),
+                "session_factory": MagicMock(),
+                "redis": mock_redis,
+            }
+        ),
     )
 
     with patch.object(
-        LitesetAuthMiddleware, "_resolve_user_from_db",
+        LitesetAuthMiddleware,
+        "_resolve_user_from_db",
         return_value=None,
     ):
         async with AsyncTestClient(app=app) as client:
@@ -389,7 +462,9 @@ async def test_redis_cache_rejects_inactive():
                 "/api/v1/test/whoami",
                 cookies={"session": cookie},
             )
-            assert resp.status_code == 401
+            # Inactive cached user → falls through to anonymous user
+            assert resp.status_code == 200
+            assert resp.json().get("username", "") != "inactive"
 
 
 async def test_redis_cache_invalidation():
@@ -524,12 +599,14 @@ async def test_guest_token_with_invalid_resources():
     """Guest tokens with invalid resource entries should fail validation."""
     from liteset.security.guest import validate_guest_token_resources
 
-    errors = validate_guest_token_resources([
-        {"type": "dashboard", "id": "valid-uuid"},
-        {"type": "invalid_type", "id": "some-id"},
-        {"id": "missing-type"},
-        {"type": "dashboard"},
-    ])
+    errors = validate_guest_token_resources(
+        [
+            {"type": "dashboard", "id": "valid-uuid"},
+            {"type": "invalid_type", "id": "some-id"},
+            {"id": "missing-type"},
+            {"type": "dashboard"},
+        ]
+    )
     assert len(errors) == 3
 
 

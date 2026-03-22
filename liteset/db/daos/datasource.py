@@ -18,8 +18,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, selectinload
 
 from superset.connectors.sqla.models import SqlaTable
 
@@ -52,4 +53,15 @@ class AsyncDatasourceDAO:
         model_cls = _DATASOURCE_TYPE_MAP.get(datasource_type)
         if model_cls is None:
             raise ValueError(f"Unknown datasource type: {datasource_type}")
+        if model_cls is SqlaTable:
+            stmt = (
+                select(SqlaTable)
+                .where(SqlaTable.id == datasource_id)
+                .options(
+                    selectinload(SqlaTable.database),
+                    selectinload(SqlaTable.columns),
+                )
+            )
+            result = await self.session.execute(stmt)
+            return result.scalars().one_or_none()
         return await self.session.get(model_cls, datasource_id)

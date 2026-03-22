@@ -15,12 +15,23 @@
 # specific language governing permissions and limitations
 # under the License.
 """Tests for AsyncReportScheduleDAO using simplified test models."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, delete, select
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    delete,
+    ForeignKey,
+    Integer,
+    select,
+    String,
+    Text,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -140,7 +151,9 @@ class FakeReportDAO(BaseAsyncDAO[FakeReport]):
     async def find_active(self) -> list[FakeReport]:
         return await self.find_all([FakeReport.active.is_(True)])
 
-    async def find_last_success_log(self, report: FakeReport) -> FakeExecutionLog | None:
+    async def find_last_success_log(
+        self, report: FakeReport
+    ) -> FakeExecutionLog | None:
         stmt = (
             select(FakeExecutionLog)
             .where(
@@ -286,9 +299,7 @@ async def test_create_with_recipients(async_session: AsyncSession) -> None:
     )
     await async_session.flush()
 
-    stmt = select(FakeRecipient).where(
-        FakeRecipient.report_schedule_id == report.id
-    )
+    stmt = select(FakeRecipient).where(FakeRecipient.report_schedule_id == report.id)
     result = await async_session.execute(stmt)
     recipients = list(result.scalars().all())
     assert len(recipients) == 2
@@ -373,7 +384,9 @@ async def test_find_last_entered_working_log(async_session: AsyncSession) -> Non
     assert result.state == "Working"
 
 
-async def test_find_last_entered_working_log_excludes_errors(async_session: AsyncSession) -> None:
+async def test_find_last_entered_working_log_excludes_errors(
+    async_session: AsyncSession,
+) -> None:
     dao = FakeReportDAO(async_session)
     report = await dao.create({"name": "R", "type": "report", "active": True})
     await async_session.flush()
@@ -392,7 +405,9 @@ async def test_find_last_entered_working_log_excludes_errors(async_session: Asyn
     assert result is None
 
 
-async def test_find_last_error_notification_no_errors(async_session: AsyncSession) -> None:
+async def test_find_last_error_notification_no_errors(
+    async_session: AsyncSession,
+) -> None:
     dao = FakeReportDAO(async_session)
     report = await dao.create({"name": "R", "type": "report"})
     await async_session.flush()
@@ -409,7 +424,9 @@ async def test_find_last_error_notification_no_errors(async_session: AsyncSessio
     assert result is None
 
 
-async def test_find_last_error_notification_error_without_recovery(async_session: AsyncSession) -> None:
+async def test_find_last_error_notification_error_without_recovery(
+    async_session: AsyncSession,
+) -> None:
     dao = FakeReportDAO(async_session)
     report = await dao.create({"name": "R", "type": "report"})
     await async_session.flush()
@@ -428,7 +445,9 @@ async def test_find_last_error_notification_error_without_recovery(async_session
     assert result.state == "error"
 
 
-async def test_find_last_error_notification_error_with_recovery(async_session: AsyncSession) -> None:
+async def test_find_last_error_notification_error_with_recovery(
+    async_session: AsyncSession,
+) -> None:
     dao = FakeReportDAO(async_session)
     report = await dao.create({"name": "R", "type": "report"})
     await async_session.flush()
@@ -523,14 +542,20 @@ async def test_find_by_database_ids(async_session: AsyncSession) -> None:
 
 async def test_find_by_extra_metadata(async_session: AsyncSession) -> None:
     dao = FakeReportDAO(async_session)
-    await dao.create({
-        "name": "R1", "type": "report",
-        "extra_json": '{"dashboard_slug": "my-dash"}',
-    })
-    await dao.create({
-        "name": "R2", "type": "report",
-        "extra_json": '{"dashboard_slug": "other"}',
-    })
+    await dao.create(
+        {
+            "name": "R1",
+            "type": "report",
+            "extra_json": '{"dashboard_slug": "my-dash"}',
+        }
+    )
+    await dao.create(
+        {
+            "name": "R2",
+            "type": "report",
+            "extra_json": '{"dashboard_slug": "other"}',
+        }
+    )
     await async_session.flush()
 
     results = await dao.find_by_extra_metadata("my-dash")
@@ -540,26 +565,43 @@ async def test_find_by_extra_metadata(async_session: AsyncSession) -> None:
 
 async def test_validate_unique_creation_method(async_session: AsyncSession) -> None:
     dao = FakeReportDAO(async_session)
-    r = await dao.create({
-        "name": "R1", "type": "report",
-        "dashboard_id": 5, "chart_id": 10,
-    })
+    r = await dao.create(
+        {
+            "name": "R1",
+            "type": "report",
+            "dashboard_id": 5,
+            "chart_id": 10,
+        }
+    )
     await async_session.flush()
 
     # Same combo should fail
-    assert await dao.validate_unique_creation_method(
-        dashboard_id=5, chart_id=10,
-    ) is False
+    assert (
+        await dao.validate_unique_creation_method(
+            dashboard_id=5,
+            chart_id=10,
+        )
+        is False
+    )
 
     # Same combo but excluding self should pass
-    assert await dao.validate_unique_creation_method(
-        dashboard_id=5, chart_id=10, report_id=r.id,
-    ) is True
+    assert (
+        await dao.validate_unique_creation_method(
+            dashboard_id=5,
+            chart_id=10,
+            report_id=r.id,
+        )
+        is True
+    )
 
     # Different combo should pass
-    assert await dao.validate_unique_creation_method(
-        dashboard_id=5, chart_id=99,
-    ) is True
+    assert (
+        await dao.validate_unique_creation_method(
+            dashboard_id=5,
+            chart_id=99,
+        )
+        is True
+    )
 
     # No conditions should always pass
     assert await dao.validate_unique_creation_method() is True

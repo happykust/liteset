@@ -20,10 +20,13 @@ Reads from the same ab_* tables as Flask-AppBuilder but via AsyncSession.
 Zero database migration needed. Used by AuthMiddleware (short-lived session)
 and by controllers/guards (request-scoped session from DI).
 """
+
 from __future__ import annotations
 
 import logging
 from typing import Any, TYPE_CHECKING
+
+from sqlalchemy import select
 
 from liteset.exceptions import LitesetSecurityException
 from liteset.security.permissions import (
@@ -60,6 +63,8 @@ class AsyncSecurityManager:
     All DB queries go through AsyncSecurityDAO.
     """
 
+    _rls_warned: bool = False
+
     def __init__(
         self,
         dao: AsyncSecurityDAO,
@@ -75,12 +80,21 @@ class AsyncSecurityManager:
         self._guest_role_name = guest_role_name
         self._dashboard_rbac_enabled = dashboard_rbac_enabled
 
+    async def find_user_by_id(self, user_id: int) -> Any | None:
+        """Find a user by primary key (ab_user table)."""
+        return await self.dao.get_user_by_id(user_id)
+
+    async def find_role_by_id(self, role_id: int) -> Any | None:
+        """Find a role by primary key (ab_role table)."""
+        role_model: Any = self.dao.role_model
+        stmt: Any = select(role_model).where(role_model.id == role_id)
+        result = await self.dao.session.execute(stmt)
+        return result.scalars().one_or_none()
+
     def is_admin(self, user: Any) -> bool:
         """Check if user has the Admin role."""
         roles = getattr(user, "roles", [])
-        return any(
-            getattr(r, "name", None) == self._admin_role_name for r in roles
-        )
+        return any(getattr(r, "name", None) == self._admin_role_name for r in roles)
 
     async def has_access(
         self,
@@ -95,6 +109,11 @@ class AsyncSecurityManager:
         """
         if self.is_admin(user):
             return True
+        # Fast path: check pre-resolved permissions (CachedUser, GuestUser)
+        user_perms = getattr(user, "permissions", None)
+        if isinstance(user_perms, (set, frozenset)):
+            return f"{permission_name}_{view_name}" in user_perms
+        # Slow path: DAO query for ORM users
         role_ids = [r.id for r in getattr(user, "roles", [])]
         if not role_ids:
             return False
@@ -139,19 +158,35 @@ class AsyncSecurityManager:
             if dashboard is not None:
                 if not await self.has_guest_access(dashboard, user=user):
                     error = self.get_dashboard_access_error_object(dashboard)
-                    raise LitesetSecurityException(
-                        message=error["message"]
-                    )
+                    raise LitesetSecurityException(message=error["message"])
                 return
             if chart is not None:
-                chart_dashboard = getattr(chart, "dashboard", None)
-                if chart_dashboard and not await self.has_guest_access(
-                    chart_dashboard, user=user
-                ):
+                chart_dashboards = getattr(chart, "dashboards", None) or []
+                if not chart_dashboards:
+                    raise LitesetSecurityException(
+                        message=(
+                            "Guest access denied: chart is not"
+                            " associated with any dashboard"
+                        )
+                    )
+                has_access = False
+                for d in chart_dashboards:
+                    if await self.has_guest_access(d, user=user):
+                        has_access = True
+                        break
+                if not has_access:
                     raise LitesetSecurityException(
                         message="Guest access denied to chart"
                     )
                 return
+            # Deny guest access to custom query contexts entirely.
+            # TODO(liteset/remaining-api): implement query_context_modified()
+            # helper that compares submitted QC against the saved chart QC,
+            # then allow unmodified contexts through for guest chart-data.
+            if query_context is not None:
+                raise LitesetSecurityException(
+                    message="Guest users cannot submit custom query contexts",
+                )
             # Guest users cannot access databases, datasources, or queries
             raise LitesetSecurityException(
                 message="Guest users can only access embedded dashboards"
@@ -164,23 +199,17 @@ class AsyncSecurityManager:
                     f"{getattr(database, 'perm', '')}"
                 )
             if catalog is not None:
-                if not await self.can_access_catalog(
-                    database, catalog, user=user
-                ):
+                if not await self.can_access_catalog(database, catalog, user=user):
                     raise LitesetSecurityException(
                         message=f"Access denied to catalog: {catalog}"
                     )
                 if schema is not None:
-                    if not await self.can_access_schema(
-                        database, schema, user=user
-                    ):
+                    if not await self.can_access_schema(database, schema, user=user):
                         raise LitesetSecurityException(
                             message=f"Access denied to schema: {schema}"
                         )
             elif schema is not None:
-                if not await self.can_access_schema(
-                    database, schema, user=user
-                ):
+                if not await self.can_access_schema(database, schema, user=user):
                     raise LitesetSecurityException(
                         message=f"Access denied to schema: {schema}"
                     )
@@ -189,27 +218,30 @@ class AsyncSecurityManager:
         if datasource is not None:
             if not await self.can_access_datasource(datasource, user=user):
                 error = self.get_datasource_access_error_object(datasource)
-                raise LitesetSecurityException(
-                    message=error["message"]
-                )
+                raise LitesetSecurityException(message=error["message"])
             return
 
         if dashboard is not None:
             if not await self.can_access_dashboard(dashboard, user=user):
                 error = self.get_dashboard_access_error_object(dashboard)
-                raise LitesetSecurityException(
-                    message=error["message"]
-                )
+                raise LitesetSecurityException(message=error["message"])
             return
 
         if chart is not None:
             if not await self.can_access_chart(chart, user=user):
-                raise LitesetSecurityException(
-                    message="Access denied to chart"
-                )
+                raise LitesetSecurityException(message="Access denied to chart")
             return
 
         if query is not None:
+            # Check ownership first — query creator always has access
+            created_by = getattr(query, "created_by_fk", None) or getattr(
+                query, "user_id", None
+            )
+            if created_by and created_by == getattr(user, "id", None):
+                return
+            # TODO(liteset/remaining-api): implement SQL table extraction and
+            # per-table access check. Full implementation requires the Jinja
+            # template processor and SQL parser — both are remaining-api scope.
             datasource = getattr(query, "datasource", None)
             if datasource and not await self.can_access_datasource(
                 datasource, user=user
@@ -217,6 +249,14 @@ class AsyncSecurityManager:
                 raise LitesetSecurityException(
                     message="Access denied to query datasource"
                 )
+            elif not datasource:
+                database = getattr(query, "database", None)
+                if database and not await self.can_access_database(
+                    database, user=user
+                ):
+                    raise LitesetSecurityException(
+                        message="Access denied to query database"
+                    )
             return
 
         if query_context is not None:
@@ -229,15 +269,15 @@ class AsyncSecurityManager:
                 )
             return
 
-    async def can_access_database(
-        self, database: Any, *, user: Any
-    ) -> bool:
+    async def can_access_database(self, database: Any, *, user: Any) -> bool:
         """Check if user can access a database."""
         if self.is_admin(user):
             return True
         if await self.has_access(
-            ALL_DATABASE_ACCESS, ALL_DATABASE_ACCESS, user=user
+            ALL_DATASOURCE_ACCESS, ALL_DATASOURCE_ACCESS, user=user
         ):
+            return True
+        if await self.has_access(ALL_DATABASE_ACCESS, ALL_DATABASE_ACCESS, user=user):
             return True
         perm = getattr(database, "perm", None)
         if perm and await self.has_access(DATABASE_ACCESS, perm, user=user):
@@ -258,9 +298,7 @@ class AsyncSecurityManager:
         schema_perm = f"[{db_name}].[{schema}]"
         return await self.has_access(SCHEMA_ACCESS, schema_perm, user=user)
 
-    async def can_access_datasource(
-        self, datasource: Any, *, user: Any
-    ) -> bool:
+    async def can_access_datasource(self, datasource: Any, *, user: Any) -> bool:
         """Check if user can access a datasource."""
         if self.is_admin(user):
             return True
@@ -274,14 +312,10 @@ class AsyncSecurityManager:
         database = getattr(datasource, "database", None)
         schema = getattr(datasource, "schema", None)
         if database and schema:
-            return await self.can_access_schema(
-                database, schema, user=user
-            )
+            return await self.can_access_schema(database, schema, user=user)
         return False
 
-    async def can_access_dashboard(
-        self, dashboard: Any, *, user: Any
-    ) -> bool:
+    async def can_access_dashboard(self, dashboard: Any, *, user: Any) -> bool:
         """Check if user can access a dashboard."""
         if self.is_admin(user):
             return True
@@ -294,26 +328,42 @@ class AsyncSecurityManager:
 
         dashboard_roles = getattr(dashboard, "roles", [])
         if self._dashboard_rbac_enabled and dashboard_roles:
+            if not getattr(dashboard, "published", False):
+                return False
             user_role_ids = {r.id for r in getattr(user, "roles", [])}
             dashboard_role_ids = {r.id for r in dashboard_roles}
             return bool(user_role_ids & dashboard_role_ids)
 
-        if await self.has_access("can_read", "Dashboard", user=user):
-            if getattr(dashboard, "published", False):
+        # Non-RBAC: check datasource-based access
+        # Prefer dashboard.datasources (M2M property) over iterating slices
+        datasources = getattr(dashboard, "datasources", None)
+        if datasources is not None:
+            if not datasources:
+                return True  # Empty dashboard is accessible to all authenticated users
+            for ds in datasources:
+                if await self.can_access_datasource(ds, user=user):
+                    return True
+            return False
+        # Fallback: iterate slices
+        slices = getattr(dashboard, "slices", [])
+        if not slices:
+            return True
+        for slc in slices:
+            datasource = getattr(slc, "datasource", None)
+            if datasource and await self.can_access_datasource(datasource, user=user):
                 return True
-            return await self.has_access("can_write", "Dashboard", user=user)
         return False
 
     def is_owner(self, resource: Any, user: Any) -> bool:
-        """Check if user is an owner of the resource."""
-        owners = getattr(resource, "owners", [])
-        user_id = getattr(user, "id", None)
+        """Check if user is an owner of the resource (owners M2M only)."""
+        if isinstance(user, int):
+            user_id = user
+        else:
+            user_id = getattr(user, "id", None)
         if user_id is None:
             return False
-        if any(getattr(o, "id", None) == user_id for o in owners):
-            return True
-        created_by = getattr(resource, "created_by_fk", None)
-        return created_by == user_id
+        owners = getattr(resource, "owners", [])
+        return any(getattr(o, "id", None) == user_id for o in owners)
 
     async def get_schemas_accessible_by_user(
         self,
@@ -339,9 +389,7 @@ class AsyncSecurityManager:
                 accessible.append(schema)
         return accessible
 
-    async def get_datasources_accessible_by_user(
-        self, *, user: Any
-    ) -> list[str]:
+    async def get_datasources_accessible_by_user(self, *, user: Any) -> list[str]:
         """Get datasource perm strings the user can access.
 
         Returns perm strings (e.g. "[db].[schema].[table]"), not ORM objects.
@@ -356,22 +404,34 @@ class AsyncSecurityManager:
             if perm_name == DATASOURCE_ACCESS
         ]
 
-    async def get_rls_filters(
-        self, table: Any, *, user: Any
-    ) -> list[Any]:
+    async def get_rls_filters(self, table: Any, *, user: Any) -> list[Any]:
         """Get Row Level Security filters for a table.
 
         Stub — always returns []. Full implementation requires
         RowLevelSecurityFilter model queries and clause generation.
-        Tracked: TODO(liteset/core-api) — implement RLS filter resolution.
+        Tracked: TODO(liteset/remaining-api) — implement RLS filter resolution.
         """
         if self.is_admin(user):
             return []
+        if not AsyncSecurityManager._rls_warned:
+            logger.warning(
+                "RLS is not yet implemented in Liteset. "
+                "Row-level security rules are NOT being applied. "
+                "Tracked: TODO(liteset/remaining-api)"
+            )
+            AsyncSecurityManager._rls_warned = True
         return []
 
-    async def invalidate_user_cache(
-        self, redis: Redis, user: Any
-    ) -> None:
+    async def get_rls_cache_key(self, datasource: Any) -> str:
+        """Return cache key component representing active RLS filters.
+
+        Stub — returns empty string (no RLS differentiation).
+        Full implementation requires get_rls_filters() to be complete.
+        Tracked: TODO(liteset/remaining-api) — implement real RLS cache key.
+        """
+        return ""
+
+    async def invalidate_user_cache(self, redis: Redis, user: Any) -> None:
         """Invalidate Redis auth cache for a user."""
         keys = [
             f"auth:user:{user.id}",
@@ -388,19 +448,20 @@ class AsyncSecurityManager:
         return f"[{database_name}].(id:{database_id})"
 
     @staticmethod
-    def get_schema_perm(database: Any, schema: str) -> str:
-        """Format schema permission string: [db_name].[schema_name]."""
+    def get_schema_perm(database: Any, schema: str, catalog: str | None = None) -> str:
+        """Format schema permission string.
+
+        Returns ``[db].[catalog].[schema]`` or ``[db].[schema]``.
+        """
         db_name = getattr(database, "database_name", str(database))
+        if catalog:
+            return f"[{db_name}].[{catalog}].[{schema}]"
         return f"[{db_name}].[{schema}]"
 
     @staticmethod
-    def get_dataset_perm(
-        datasource_name: str, schema: str | None, database: str
-    ) -> str:
-        """Format dataset permission string."""
-        if schema:
-            return f"[{database}].[{schema}].[{datasource_name}]"
-        return f"[{database}]..[{datasource_name}]"
+    def get_dataset_perm(database_name: str, dataset_name: str, dataset_id: int) -> str:
+        """Format dataset permission string: [db_name].[dataset_name](id:N)."""
+        return f"[{database_name}].[{dataset_name}](id:{dataset_id})"
 
     @staticmethod
     def get_catalog_perm(database_name: str, catalog: str) -> str:
@@ -423,11 +484,33 @@ class AsyncSecurityManager:
 
     async def can_access_all_queries(self, *, user: Any) -> bool:
         """Check if user has the all_query_access permission."""
-        return await self.has_access(
-            ALL_QUERY_ACCESS, ALL_QUERY_ACCESS, user=user
-        )
+        return await self.has_access(ALL_QUERY_ACCESS, ALL_QUERY_ACCESS, user=user)
 
-    # --- List-filtering methods ---
+    # --- List-filtering methods (ID-based, for object-level filters) ---
+
+    async def get_accessible_datasource_ids(self, user: Any) -> list[int] | None:
+        """Return list of datasource IDs user can access, or None if not implemented.
+
+        None signals that the caller should fall back to permissive behaviour
+        (no filtering).  Full implementation requires resolving every
+        datasource perm string back to a model ID, which is remaining-api scope.
+
+        TODO(liteset/remaining-api): implement full datasource access resolution.
+        """
+        return None
+
+    async def get_accessible_database_ids(self, user: Any) -> list[int] | None:
+        """Return list of database IDs user can access, or None if not implemented.
+
+        None signals that the caller should fall back to permissive behaviour
+        (no filtering).  Full implementation requires resolving every
+        database perm string back to a model ID, which is remaining-api scope.
+
+        TODO(liteset/remaining-api): implement full database access resolution.
+        """
+        return None
+
+    # --- List-filtering methods (perm-string-based) ---
 
     async def get_accessible_databases(self, *, user: Any) -> list[str]:
         """Get database perm strings the user can access.
@@ -486,8 +569,7 @@ class AsyncSecurityManager:
         """Return a SupersetError-compatible dict for datasource access denial."""
         return {
             "message": (
-                f"Access denied to datasource: "
-                f"{getattr(datasource, 'perm', '')}"
+                f"Access denied to datasource: {getattr(datasource, 'perm', '')}"
             ),
             "error_type": "DATASOURCE_SECURITY_ACCESS_ERROR",
             "level": "warning",
@@ -533,11 +615,25 @@ class AsyncSecurityManager:
 
     # --- Ownership checks ---
 
-    def raise_for_ownership(self, resource: Any, *, user: Any) -> None:
-        """Raise LitesetSecurityException if user is not owner or admin."""
-        if self.is_admin(user):
+    async def raise_for_ownership(
+        self,
+        resource: Any,
+        user_id: int | None,
+    ) -> None:
+        """Raise LitesetSecurityException if user is not owner and not admin.
+
+        Admin users bypass the ownership check entirely, mirroring
+        Superset's ``raise_for_ownership()`` behaviour.
+        """
+        if user_id is None:
+            raise LitesetSecurityException(
+                message="Authentication required to modify this resource."
+            )
+        # Fetch user to check admin role
+        user = await self.find_user_by_id(user_id)
+        if user is not None and self.is_admin(user):
             return
-        if self.is_owner(resource, user):
+        if self.is_owner(resource, user_id):
             return
         raise LitesetSecurityException(
             message="You don't have permission to edit this resource. "
@@ -557,11 +653,22 @@ class AsyncSecurityManager:
         if not self.is_guest_user(user):
             return False
         resources = getattr(user, "resources", [])
-        dashboard_id = str(getattr(dashboard, "uuid", getattr(dashboard, "id", "")))
-        return any(
-            r.get("type") == "dashboard" and str(r.get("id")) == dashboard_id
-            for r in resources
-        )
+        # Check integer ID first (matches Superset priority)
+        dashboard_id = getattr(dashboard, "id", None)
+        if dashboard_id is not None:
+            for r in resources:
+                if r.get("type") == "dashboard" and str(r.get("id")) == str(
+                    dashboard_id
+                ):
+                    return True
+        # Then check UUID from embedded config
+        embedded = getattr(dashboard, "embedded", None)
+        if embedded:
+            embedded_uuid = str(embedded[0].uuid)
+            for r in resources:
+                if r.get("type") == "dashboard" and str(r.get("id")) == embedded_uuid:
+                    return True
+        return False
 
     # --- Anonymous/Public user ---
 
@@ -591,12 +698,10 @@ class AsyncSecurityManager:
             return True
         if self.is_owner(chart, user):
             return True
-        if not await self.has_access("can_read", "Chart", user=user):
-            return False
         datasource = getattr(chart, "datasource", None)
         if datasource:
             return await self.can_access_datasource(datasource, user=user)
-        return True
+        return False
 
     # --- Guest token management ---
 

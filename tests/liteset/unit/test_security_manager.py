@@ -1,9 +1,11 @@
 """Tests for AsyncSecurityManager — async security checks."""
+
 from __future__ import annotations
 
-import pytest
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from liteset.security.manager import AsyncSecurityManager
 
@@ -69,7 +71,9 @@ async def test_has_access_non_admin_checks_dao(manager, mock_dao):
     mock_dao.has_permission_view.return_value = True
     result = await manager.has_access("can_read", "Chart", user=gamma_user)
     assert result is True
-    mock_dao.has_permission_view.assert_called_once()
+    mock_dao.has_permission_view.assert_called_once_with(
+        "can_read", "Chart", role_ids=[2]
+    )
 
 
 async def test_has_access_denied(manager, mock_dao):
@@ -108,10 +112,15 @@ async def test_is_owner_false(manager):
 
 
 async def test_is_owner_created_by(manager):
+    """T3-9: is_owner checks owners M2M only, not created_by_fk."""
     user = MockUser(id=5)
     resource = MagicMock()
     resource.owners = []
     resource.created_by_fk = 5
+    # created_by_fk is no longer checked — only owners M2M
+    assert manager.is_owner(resource, user) is False
+    # With user in owners list, it should return True
+    resource.owners = [MockUser(id=5)]
     assert manager.is_owner(resource, user) is True
 
 
@@ -181,29 +190,40 @@ async def test_invalidate_user_cache(manager):
     )
 
 
-async def test_raise_for_ownership_admin_passes(manager):
+async def test_raise_for_ownership_admin_passes(manager, mock_dao):
     admin_user = MockUser(roles=[MockRole()])
+    mock_dao.get_user_by_id.return_value = admin_user
     resource = MagicMock()
     # Should not raise for admin
-    manager.raise_for_ownership(resource, user=admin_user)
+    await manager.raise_for_ownership(resource, admin_user.id)
 
 
-async def test_raise_for_ownership_owner_passes(manager):
+async def test_raise_for_ownership_owner_passes(manager, mock_dao):
     user = MockUser(id=5, roles=[MockGammaRole()])
+    mock_dao.get_user_by_id.return_value = user
     resource = MagicMock()
     resource.owners = [MagicMock(id=5)]
-    manager.raise_for_ownership(resource, user=user)
+    await manager.raise_for_ownership(resource, user.id)
 
 
-async def test_raise_for_ownership_denied(manager):
+async def test_raise_for_ownership_denied(manager, mock_dao):
     from liteset.exceptions import LitesetSecurityException
 
     user = MockUser(id=99, roles=[MockGammaRole()])
+    mock_dao.get_user_by_id.return_value = user
     resource = MagicMock()
     resource.owners = [MagicMock(id=5)]
     resource.created_by_fk = None
     with pytest.raises(LitesetSecurityException):
-        manager.raise_for_ownership(resource, user=user)
+        await manager.raise_for_ownership(resource, user.id)
+
+
+async def test_raise_for_ownership_unauthenticated(manager):
+    from liteset.exceptions import LitesetSecurityException
+
+    resource = MagicMock()
+    with pytest.raises(LitesetSecurityException, match="Authentication required"):
+        await manager.raise_for_ownership(resource, None)
 
 
 async def test_can_access_chart_admin(manager, mock_dao):
@@ -232,6 +252,7 @@ async def test_can_access_chart_denied(manager, mock_dao):
 
 
 # --- Guest user + raise_for_access tests ---
+
 
 @dataclass
 class MockGuestUser:
@@ -271,6 +292,7 @@ async def test_raise_for_access_guest_query_denied(manager, mock_dao):
 
 # --- Guest token manager methods ---
 
+
 def test_create_guest_access_token_via_manager():
     token = AsyncSecurityManager.create_guest_access_token(
         secret_key="test-secret-key-at-least-16-chars",
@@ -308,3 +330,173 @@ def test_get_guest_user_from_request_not_guest(manager):
     request.user = MockUser()
     result = manager.get_guest_user_from_request(request)
     assert result is None
+
+
+# --- Guest chart access tests (C1 fix) ---
+
+
+async def test_guest_denied_chart_without_dashboard(manager, mock_dao):
+    """Guest user accessing a chart not associated with any dashboard should be denied."""
+    from liteset.exceptions import LitesetSecurityException
+
+    guest = MockGuestUser(resources=[{"type": "dashboard", "id": "abc-123"}])
+    chart = MagicMock()
+    chart.dashboards = []
+    with pytest.raises(
+        LitesetSecurityException, match="not associated with any dashboard"
+    ):
+        await manager.raise_for_access(user=guest, chart=chart)
+
+
+async def test_guest_denied_chart_wrong_dashboard(manager, mock_dao):
+    """Guest user accessing a chart whose dashboard is not in their resources."""
+    from liteset.exceptions import LitesetSecurityException
+
+    guest = MockGuestUser(resources=[{"type": "dashboard", "id": "abc-123"}])
+    dashboard = MagicMock()
+    dashboard.uuid = "different-uuid"
+    dashboard.id = 999
+    chart = MagicMock()
+    chart.dashboards = [dashboard]
+    with pytest.raises(LitesetSecurityException, match="Guest access denied to chart"):
+        await manager.raise_for_access(user=guest, chart=chart)
+
+
+async def test_guest_allowed_chart_with_dashboard(manager, mock_dao):
+    """Guest user can access a chart whose dashboard is in their resources."""
+    guest = MockGuestUser(resources=[{"type": "dashboard", "id": "42"}])
+    dashboard = MagicMock()
+    dashboard.id = 42
+    dashboard.embedded = None
+    chart = MagicMock()
+    chart.dashboards = [dashboard]
+    # Should not raise
+    await manager.raise_for_access(user=guest, chart=chart)
+
+
+# ---------------------------------------------------------------------------
+# NEW-T10: has_access() with user without roles (early return False)
+# ---------------------------------------------------------------------------
+
+
+async def test_has_access_no_roles_returns_false(manager, mock_dao):
+    """User with empty roles returns False without calling DAO."""
+    user_no_roles = MockUser(roles=[])
+    result = await manager.has_access("can_read", "Chart", user=user_no_roles)
+    assert result is False
+    mock_dao.has_permission_view.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# NEW-T4: can_access_dashboard non-RBAC path (datasource-based)
+# ---------------------------------------------------------------------------
+
+
+async def test_can_access_dashboard_non_rbac_with_datasource_access(mock_dao):
+    """Non-RBAC path: user with datasource access can access the dashboard."""
+    mgr = AsyncSecurityManager(
+        dao=mock_dao, admin_role_name="Admin", dashboard_rbac_enabled=False
+    )
+    gamma_user = MockUser(id=50, roles=[MockGammaRole()])
+
+    ds = MagicMock()
+    ds.perm = "[db].[table](id:1)"
+    dashboard = MagicMock()
+    dashboard.owners = []
+    dashboard.roles = []
+    dashboard.datasources = [ds]
+
+    # Grant datasource access
+    mock_dao.has_permission_view.return_value = True
+    result = await mgr.can_access_dashboard(dashboard, user=gamma_user)
+    assert result is True
+
+
+async def test_can_access_dashboard_non_rbac_no_datasource_access(mock_dao):
+    """Non-RBAC path: user without datasource access is denied."""
+    mgr = AsyncSecurityManager(
+        dao=mock_dao, admin_role_name="Admin", dashboard_rbac_enabled=False
+    )
+    gamma_user = MockUser(id=50, roles=[MockGammaRole()])
+
+    ds = MagicMock()
+    ds.perm = "[db].[table](id:1)"
+    ds.database = None
+    ds.schema = None
+    dashboard = MagicMock()
+    dashboard.owners = []
+    dashboard.roles = []
+    dashboard.datasources = [ds]
+
+    mock_dao.has_permission_view.return_value = False
+    result = await mgr.can_access_dashboard(dashboard, user=gamma_user)
+    assert result is False
+
+
+async def test_can_access_dashboard_non_rbac_empty_datasources(mock_dao):
+    """Non-RBAC path: dashboard with no datasources is accessible to all authenticated."""
+    mgr = AsyncSecurityManager(
+        dao=mock_dao, admin_role_name="Admin", dashboard_rbac_enabled=False
+    )
+    gamma_user = MockUser(id=50, roles=[MockGammaRole()])
+
+    dashboard = MagicMock()
+    dashboard.owners = []
+    dashboard.roles = []
+    dashboard.datasources = []
+
+    result = await mgr.can_access_dashboard(dashboard, user=gamma_user)
+    assert result is True
+
+
+# ---------------------------------------------------------------------------
+# TST-I1: Unpublished RBAC dashboard — access denied
+# ---------------------------------------------------------------------------
+
+
+async def test_can_access_dashboard_rbac_unpublished_denied(mock_dao):
+    """RBAC enabled + published=False -> access denied even with matching roles."""
+    mgr = AsyncSecurityManager(
+        dao=mock_dao, admin_role_name="Admin", dashboard_rbac_enabled=True
+    )
+    gamma_user = MockUser(id=50, roles=[MockGammaRole()])
+
+    dashboard = MagicMock()
+    dashboard.owners = []
+    dashboard.published = False
+    dashboard.roles = [MockGammaRole()]  # matching role
+
+    result = await mgr.can_access_dashboard(dashboard, user=gamma_user)
+    assert result is False
+
+
+async def test_can_access_dashboard_rbac_published_matching_role(mock_dao):
+    """RBAC enabled + published=True + matching role -> access granted."""
+    mgr = AsyncSecurityManager(
+        dao=mock_dao, admin_role_name="Admin", dashboard_rbac_enabled=True
+    )
+    gamma_user = MockUser(id=50, roles=[MockGammaRole()])
+
+    dashboard = MagicMock()
+    dashboard.owners = []
+    dashboard.published = True
+    dashboard.roles = [MockGammaRole()]
+
+    result = await mgr.can_access_dashboard(dashboard, user=gamma_user)
+    assert result is True
+
+
+async def test_can_access_dashboard_rbac_published_no_matching_role(mock_dao):
+    """RBAC enabled + published=True + no matching role -> access denied."""
+    mgr = AsyncSecurityManager(
+        dao=mock_dao, admin_role_name="Admin", dashboard_rbac_enabled=True
+    )
+    gamma_user = MockUser(id=50, roles=[MockGammaRole()])
+
+    dashboard = MagicMock()
+    dashboard.owners = []
+    dashboard.published = True
+    dashboard.roles = [MockPublicRole()]  # different role
+
+    result = await mgr.can_access_dashboard(dashboard, user=gamma_user)
+    assert result is False

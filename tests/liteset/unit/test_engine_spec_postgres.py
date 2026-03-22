@@ -77,9 +77,7 @@ async def test_fetch_data() -> None:
     mock_conn = AsyncMock()
     mock_conn.execute.return_value = mock_result
 
-    rows = await AsyncPostgresEngineSpec.fetch_data(
-        mock_conn, "SELECT * FROM users"
-    )
+    rows = await AsyncPostgresEngineSpec.fetch_data(mock_conn, "SELECT * FROM users")
     assert rows == [(1, "alice"), (2, "bob")]
 
 

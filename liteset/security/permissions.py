@@ -19,6 +19,7 @@
 Mirrors superset/security/permissions.py constants without importing
 from superset, ensuring liteset can operate independently.
 """
+
 from __future__ import annotations
 
 # --- Access type constants ---
@@ -58,43 +59,34 @@ LOG_VIEW: str = "Log"
 TAG_VIEW: str = "Tag"
 
 # --- Permission sets ---
-ADMIN_ONLY_PERMISSIONS: frozenset[str] = frozenset({
-    CAN_GRANT_ACCESS,
-    CAN_OVERRIDE_ROLE_PERMISSIONS,
-    CAN_APPROVE,
-    "can_sync_druid_source",
-    "menu_access",
-    "can_this_form_post",
-    "can_this_form_get",
-    "resetmypassword",
-    "resetpasswords",
-    "userinfoedit",
-    "all_datasource_access",
-    "all_database_access",
-    "all_query_access",
-})
+ADMIN_ONLY_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        CAN_GRANT_ACCESS,
+        CAN_OVERRIDE_ROLE_PERMISSIONS,
+        CAN_APPROVE,
+        "can_sync_druid_source",
+        "menu_access",
+        "can_this_form_post",
+        "can_this_form_get",
+        "resetmypassword",
+        "resetpasswords",
+        "userinfoedit",
+        "all_datasource_access",
+        "all_database_access",
+        "all_query_access",
+    }
+)
 
-READ_ONLY_PERMISSIONS: frozenset[str] = frozenset({
-    CAN_READ,
-    "can_get",
-    "can_info",
-    "can_list",
-    "can_show",
-    CAN_CSV,
-    CAN_EXPLORE,
-    CAN_SHARE_DASHBOARD,
-    CAN_SHARE_CHART,
-})
-
-
-def format_permission_name(action: str, resource: str) -> str:
-    """Format a permission name from action and resource.
-
-    Args:
-        action: The permission action (e.g., "can_read").
-        resource: The resource/view menu name (e.g., "Chart").
-
-    Returns:
-        Formatted permission string: "action.resource".
-    """
-    return f"{action.strip()}.{resource.strip()}"
+READ_ONLY_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        CAN_READ,
+        "can_get",
+        "can_info",
+        "can_list",
+        "can_show",
+        CAN_CSV,
+        CAN_EXPLORE,
+        CAN_SHARE_DASHBOARD,
+        CAN_SHARE_CHART,
+    }
+)

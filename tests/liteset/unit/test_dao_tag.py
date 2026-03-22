@@ -15,10 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 """Tests for AsyncTagDAO using simplified test models."""
+
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import Column, ForeignKey, Integer, String, Table, delete, select
+from sqlalchemy import Column, delete, ForeignKey, Integer, select, String, Table
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -75,7 +76,10 @@ class FakeTagDAO(BaseAsyncDAO[FakeTag]):
         return tag
 
     async def _find_tagged_object(
-        self, object_type: str, object_id: int, tag_id: int,
+        self,
+        object_type: str,
+        object_id: int,
+        tag_id: int,
     ) -> FakeTaggedObject | None:
         stmt = select(FakeTaggedObject).where(
             FakeTaggedObject.object_type == object_type,
@@ -86,24 +90,35 @@ class FakeTagDAO(BaseAsyncDAO[FakeTag]):
         return result.scalars().one_or_none()
 
     async def find_tagged_object(
-        self, object_type: str, object_id: int, tag_id: int,
+        self,
+        object_type: str,
+        object_id: int,
+        tag_id: int,
     ) -> FakeTaggedObject | None:
         return await self._find_tagged_object(object_type, object_id, tag_id)
 
     async def create_custom_tagged_objects(
-        self, object_type: str, object_id: int, tag_names: list[str],
+        self,
+        object_type: str,
+        object_id: int,
+        tag_names: list[str],
     ) -> None:
         for name in tag_names:
             tag = await self.get_by_name(name, "custom")
             existing = await self._find_tagged_object(object_type, object_id, tag.id)
             if not existing:
                 tagged = FakeTaggedObject(
-                    tag_id=tag.id, object_id=object_id, object_type=object_type,
+                    tag_id=tag.id,
+                    object_id=object_id,
+                    object_type=object_type,
                 )
                 self.session.add(tagged)
 
     async def delete_tagged_object(
-        self, object_type: str, object_id: int, tag_name: str,
+        self,
+        object_type: str,
+        object_id: int,
+        tag_name: str,
     ) -> None:
         tag = await self.find_by_name(tag_name)
         if not tag:
@@ -124,25 +139,29 @@ class FakeTagDAO(BaseAsyncDAO[FakeTag]):
             await self.session.execute(
                 delete(FakeTaggedObject).where(FakeTaggedObject.tag_id.in_(tag_ids))
             )
-            await self.session.execute(
-                delete(FakeTag).where(FakeTag.id.in_(tag_ids))
-            )
+            await self.session.execute(delete(FakeTag).where(FakeTag.id.in_(tag_ids)))
 
     async def get_tagged_objects_by_tag_names(
-        self, tag_names: list[str], obj_types: list[str] | None = None,
+        self,
+        tag_names: list[str],
+        obj_types: list[str] | None = None,
     ) -> list[FakeTaggedObject]:
         tags = await self.find_by_names(tag_names)
         tag_ids = [t.id for t in tags]
         return await self.get_tagged_objects_by_tag_ids(tag_ids, obj_types)
 
     async def create_tag_relationship(
-        self, objects_to_tag: list[tuple[str, int]], tag: FakeTag,
+        self,
+        objects_to_tag: list[tuple[str, int]],
+        tag: FakeTag,
     ) -> None:
         for obj_type, obj_id in objects_to_tag:
             existing = await self._find_tagged_object(obj_type, obj_id, tag.id)
             if not existing:
                 tagged = FakeTaggedObject(
-                    tag_id=tag.id, object_id=obj_id, object_type=obj_type,
+                    tag_id=tag.id,
+                    object_id=obj_id,
+                    object_type=obj_type,
                 )
                 self.session.add(tagged)
 
@@ -237,9 +256,7 @@ async def test_get_tagged_objects_filtered_by_type(async_session: AsyncSession) 
     async_session.add_all([to1, to2])
     await async_session.flush()
 
-    results = await dao.get_tagged_objects_by_tag_ids(
-        [tag.id], obj_types=["chart"]
-    )
+    results = await dao.get_tagged_objects_by_tag_ids([tag.id], obj_types=["chart"])
     assert len(results) == 1
     assert results[0].object_type == "chart"
 
@@ -427,7 +444,9 @@ async def test_get_tagged_objects_by_tag_names(async_session: AsyncSession) -> N
     results = await dao.get_tagged_objects_by_tag_names(["name-tag"])
     assert len(results) == 1
 
-    results2 = await dao.get_tagged_objects_by_tag_names(["name-tag"], obj_types=["dashboard"])
+    results2 = await dao.get_tagged_objects_by_tag_names(
+        ["name-tag"], obj_types=["dashboard"]
+    )
     assert len(results2) == 0
 
 
@@ -437,7 +456,8 @@ async def test_create_tag_relationship(async_session: AsyncSession) -> None:
     await async_session.flush()
 
     await dao.create_tag_relationship(
-        [("chart", 1), ("dashboard", 2)], tag,
+        [("chart", 1), ("dashboard", 2)],
+        tag,
     )
     await async_session.flush()
 

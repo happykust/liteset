@@ -18,16 +18,18 @@
 
 from __future__ import annotations
 
-from litestar.middleware import AbstractMiddleware
-from litestar.types import Receive, Scope, Send
+from litestar.middleware.base import ASGIMiddleware
+from litestar.types import ASGIApp, Receive, Scope, Send
 
 from liteset.i18n import _current_locale, set_locale
 
 
-class LocaleMiddleware(AbstractMiddleware):
+class LocaleMiddleware(ASGIMiddleware):
     """Parse Accept-Language header and set locale per-request."""
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+    async def handle(
+        self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp
+    ) -> None:
         token = None
         if scope["type"] == "http":
             headers = dict(scope.get("headers", []))
@@ -36,7 +38,7 @@ class LocaleMiddleware(AbstractMiddleware):
             locale = _parse_accept_language(accept)
             token = set_locale(locale)
         try:
-            await self.app(scope, receive, send)
+            await next_app(scope, receive, send)
         finally:
             if token is not None:
                 _current_locale.reset(token)

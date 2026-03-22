@@ -15,12 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 """Tests for AsyncDatasetDAO using simplified test models."""
+
 from __future__ import annotations
 
-from datetime import datetime
-
 import pytest
-from sqlalchemy import Column, ForeignKey, Integer, String, select
+from sqlalchemy import Column, ForeignKey, Integer, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -44,8 +43,12 @@ class FakeDataset(Base):
     schema = Column(String(255), nullable=True)
     catalog = Column(String(256), nullable=True)
     database_id = Column(Integer, ForeignKey("test_databases.id"), nullable=False)
-    columns = relationship("FakeColumn", back_populates="dataset", cascade="all, delete-orphan")
-    metrics = relationship("FakeMetric", back_populates="dataset", cascade="all, delete-orphan")
+    columns = relationship(
+        "FakeColumn", back_populates="dataset", cascade="all, delete-orphan"
+    )
+    metrics = relationship(
+        "FakeMetric", back_populates="dataset", cascade="all, delete-orphan"
+    )
 
 
 class FakeColumn(Base):
@@ -178,18 +181,24 @@ async def test_db(async_session: AsyncSession) -> FakeDatabase:
     return db
 
 
-async def test_create_dataset(async_session: AsyncSession, test_db: FakeDatabase) -> None:
+async def test_create_dataset(
+    async_session: AsyncSession, test_db: FakeDatabase
+) -> None:
     dao = FakeDatasetDAO(async_session)
-    ds = await dao.create({
-        "table_name": "events",
-        "database_id": test_db.id,
-    })
+    ds = await dao.create(
+        {
+            "table_name": "events",
+            "database_id": test_db.id,
+        }
+    )
     await async_session.flush()
     assert ds.id is not None
     assert ds.table_name == "events"
 
 
-async def test_get_database_by_id(async_session: AsyncSession, test_db: FakeDatabase) -> None:
+async def test_get_database_by_id(
+    async_session: AsyncSession, test_db: FakeDatabase
+) -> None:
     dao = FakeDatasetDAO(async_session)
     found = await dao.get_database_by_id(test_db.id)
     assert found is not None
@@ -288,10 +297,13 @@ async def test_update_columns_add_and_remove(
     await async_session.flush()
 
     # Update: keep c1 (renamed), remove c2, add c3
-    await dao.update_columns(ds, [
-        {"id": c1.id, "column_name": "col1_renamed"},
-        {"column_name": "col3"},
-    ])
+    await dao.update_columns(
+        ds,
+        [
+            {"id": c1.id, "column_name": "col1_renamed"},
+            {"column_name": "col3"},
+        ],
+    )
     await async_session.flush()
 
     stmt = select(FakeColumn).where(FakeColumn.table_id == ds.id)

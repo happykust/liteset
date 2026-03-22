@@ -96,7 +96,9 @@ async def test_get_table_names_with_schema() -> None:
 async def test_get_table_names_rejects_invalid_schema() -> None:
     mock_conn = AsyncMock()
     with pytest.raises(ValueError, match="Invalid schema identifier"):
-        await AsyncClickHouseEngineSpec.get_table_names(mock_conn, schema="'; DROP TABLE --")
+        await AsyncClickHouseEngineSpec.get_table_names(
+            mock_conn, schema="'; DROP TABLE --"
+        )
 
 
 def test_adjust_engine_params_defaults() -> None:

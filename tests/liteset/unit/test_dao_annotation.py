@@ -15,10 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 """Tests for AsyncAnnotationLayerDAO and AsyncAnnotationDAO."""
+
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import Column, ForeignKey, Integer, String, select
+from sqlalchemy import Column, ForeignKey, Integer, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -56,13 +57,17 @@ class FakeAnnotationLayerDAO(BaseAsyncDAO[FakeAnnotationLayer]):
 
     async def has_annotations(self, model_id: int | list[int]) -> bool:
         if isinstance(model_id, list):
-            stmt = select(FakeAnnotation.id).where(
-                FakeAnnotation.layer_id.in_(model_id)
-            ).limit(1)
+            stmt = (
+                select(FakeAnnotation.id)
+                .where(FakeAnnotation.layer_id.in_(model_id))
+                .limit(1)
+            )
         else:
-            stmt = select(FakeAnnotation.id).where(
-                FakeAnnotation.layer_id == model_id
-            ).limit(1)
+            stmt = (
+                select(FakeAnnotation.id)
+                .where(FakeAnnotation.layer_id == model_id)
+                .limit(1)
+            )
         result = await self.session.execute(stmt)
         return result.scalars().first() is not None
 
@@ -152,5 +157,7 @@ async def test_annotation_uniqueness(async_session: AsyncSession) -> None:
     await async_session.flush()
 
     assert await ann_dao.validate_update_uniqueness(layer.id, "Existing") is False
-    assert await ann_dao.validate_update_uniqueness(layer.id, "Existing", ann.id) is True
+    assert (
+        await ann_dao.validate_update_uniqueness(layer.id, "Existing", ann.id) is True
+    )
     assert await ann_dao.validate_update_uniqueness(layer.id, "New") is True

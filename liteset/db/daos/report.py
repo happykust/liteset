@@ -22,13 +22,13 @@ from typing import Any
 from sqlalchemy import CursorResult, delete, select
 
 from liteset.db.base_dao import BaseAsyncDAO
+from liteset.utils.json import dumps
 from superset.reports.models import (
     ReportExecutionLog,
     ReportRecipients,
     ReportSchedule,
     ReportState,
 )
-from superset.utils.json import dumps
 
 
 class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):

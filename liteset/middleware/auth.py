@@ -20,6 +20,7 @@ Supports cookie session (Flask itsdangerous), JWT Bearer (guest tokens),
 and API key authentication. Redis user cache with TTL 60s reduces DB
 pool pressure.
 """
+
 from __future__ import annotations
 
 import json  # noqa: TID251
@@ -28,7 +29,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from litestar.connection import ASGIConnection
-from litestar.exceptions import NotAuthorizedException
 from litestar.middleware import AbstractAuthenticationMiddleware, AuthenticationResult
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,7 @@ _USER_CACHE_TTL: int = 60  # seconds
 @dataclass
 class UnauthenticatedUser:
     """Placeholder for unauthenticated requests (public routes)."""
+
     is_authenticated: bool = False
 
 
@@ -49,12 +50,14 @@ class CachedUser:
     Provides the same attribute interface as ORM User objects so that
     downstream code (SecurityManager, guards) works uniformly.
     """
+
     id: int
     username: str
     email: str = ""
     active: int = 1
     is_authenticated: bool = True
     roles: list[Any] = field(default_factory=list)
+    permissions: set[str] = field(default_factory=set)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CachedUser | None:
@@ -73,12 +76,14 @@ class CachedUser:
                 for r in data.get("roles", [])
                 if isinstance(r, dict) and "id" in r and "name" in r
             ],
+            permissions=set(data.get("permissions", [])),
         )
 
 
 @dataclass
 class _CachedRole:
     """Lightweight role for CachedUser — supports .id and .name access."""
+
     id: int
     name: str
 
@@ -121,7 +126,10 @@ class LitesetAuthMiddleware(AbstractAuthenticationMiddleware):
         if user:
             return AuthenticationResult(user=user, auth="api_key")
 
-        raise NotAuthorizedException(detail="Not authenticated")
+        # Return anonymous user — let RBAC guards handle denial at route level.
+        # This allows public routes (health checks, SPA assets, public dashboards)
+        # to work without authentication.
+        return AuthenticationResult(user=UnauthenticatedUser(), auth=None)
 
     async def _authenticate_cookie(
         self, connection: ASGIConnection[Any, Any, Any, Any]
@@ -175,8 +183,10 @@ class LitesetAuthMiddleware(AbstractAuthenticationMiddleware):
 
         decoder = getattr(connection.app.state, "_session_decoder", None)
         if decoder is None:
-            secret_key = _get_secret_key(connection.app.state.settings)
-            decoder = FlaskSessionDecoder(secret_key=secret_key)
+            settings = connection.app.state.settings
+            secret_key = _get_secret_key(settings)
+            max_age = getattr(settings, "session_max_age", None)
+            decoder = FlaskSessionDecoder(secret_key=secret_key, max_age=max_age)
             connection.app.state._session_decoder = decoder
         return decoder
 
@@ -215,8 +225,12 @@ class LitesetAuthMiddleware(AbstractAuthenticationMiddleware):
         self,
         connection: ASGIConnection[Any, Any, Any, Any],
         user_id: int,
-    ) -> Any | None:
-        """Resolve user from DB via a short-lived session."""
+    ) -> CachedUser | None:
+        """Resolve user from DB via a short-lived session.
+
+        Returns a CachedUser with pre-resolved permissions so that RBAC
+        guards can check ``user.permissions`` without extra DB queries.
+        """
         from liteset.security.dao import AsyncSecurityDAO
 
         session_factory = connection.app.state.session_factory
@@ -229,8 +243,19 @@ class LitesetAuthMiddleware(AbstractAuthenticationMiddleware):
             active = getattr(user, "active", None)
             if active is not None and not active:
                 return None
-            return user
-        return None
+            perm_tuples = await dao.get_all_permissions_for_user_with_groups(user_id)
+            permissions = {f"{action}_{resource}" for action, resource in perm_tuples}
+            return CachedUser(
+                id=user.id,
+                username=user.username,
+                email=getattr(user, "email", ""),
+                active=getattr(user, "active", 1),
+                roles=[
+                    _CachedRole(id=r.id, name=r.name)
+                    for r in getattr(user, "roles", [])
+                ],
+                permissions=permissions,
+            )
 
     async def _resolve_guest_from_jwt(
         self,
@@ -254,9 +279,7 @@ class LitesetAuthMiddleware(AbstractAuthenticationMiddleware):
             return None
         return GuestUser.from_token_payload(payload)
 
-    async def _get_cached_user(
-        self, redis: Any, cache_key: str
-    ) -> CachedUser | None:
+    async def _get_cached_user(self, redis: Any, cache_key: str) -> CachedUser | None:
         """Try to load user from Redis cache.
 
         Returns a CachedUser dataclass with the same attribute interface
@@ -288,14 +311,17 @@ class LitesetAuthMiddleware(AbstractAuthenticationMiddleware):
             for r in getattr(user, "roles", [])
             if hasattr(r, "id") and hasattr(r, "name")
         ]
-        user_data = json.dumps({
-            "id": user.id,
-            "username": user.username,
-            "email": getattr(user, "email", ""),
-            "active": getattr(user, "active", 1),
-            "is_authenticated": True,
-            "roles": roles,
-        })
+        user_data = json.dumps(
+            {
+                "id": user.id,
+                "username": user.username,
+                "email": getattr(user, "email", ""),
+                "active": getattr(user, "active", 1),
+                "is_authenticated": True,
+                "roles": roles,
+                "permissions": list(getattr(user, "permissions", set())),
+            }
+        )
         await redis.set(
             f"auth:user:{user.id}",
             user_data,
@@ -307,10 +333,13 @@ class LitesetAuthMiddleware(AbstractAuthenticationMiddleware):
         """Set Sentry user context after successful auth."""
         try:
             import sentry_sdk
-            sentry_sdk.set_user({
-                "id": str(getattr(user, "id", "")),
-                "email": getattr(user, "email", ""),
-                "username": getattr(user, "username", ""),
-            })
+
+            sentry_sdk.set_user(
+                {
+                    "id": str(getattr(user, "id", "")),
+                    "email": getattr(user, "email", ""),
+                    "username": getattr(user, "username", ""),
+                }
+            )
         except ImportError:
             pass
