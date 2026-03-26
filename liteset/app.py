@@ -101,6 +101,27 @@ async def on_startup(app: Litestar) -> None:
     else:
         app.state.redis = None
 
+    # Initialize active WebSocket connections tracker
+    app.state.active_websockets = {}
+
+    # Start periodic channel cleanup if Redis is available
+    if app.state.redis is not None:
+        import asyncio
+        from liteset.async_events.manager import AsyncEventManager
+
+        async def periodic_cleanup(manager: AsyncEventManager) -> None:
+            """Background loop that cleans up stale channel streams."""
+            while True:
+                await asyncio.sleep(120)
+                try:
+                    await manager.cleanup_stale_channels(max_idle_seconds=120)
+                    await manager.cleanup_global_stream()
+                except Exception:
+                    logger.exception("Error during channel cleanup")
+
+        manager = AsyncEventManager(redis=app.state.redis)
+        app.state.cleanup_task = asyncio.create_task(periodic_cleanup(manager))
+
     logger.info(
         "Liteset started with DB: %s",
         make_url(settings.sqlalchemy_database_uri).render_as_string(hide_password=True),
@@ -108,6 +129,25 @@ async def on_startup(app: Litestar) -> None:
 
 
 async def on_shutdown(app: Litestar) -> None:
+    import asyncio
+
+    # Cancel cleanup task
+    cleanup_task = getattr(app.state, "cleanup_task", None)
+    if cleanup_task and not cleanup_task.done():
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+
+    # Close all active WebSocket connections
+    active_ws = getattr(app.state, "active_websockets", {})
+    for ws in list(active_ws.keys()):
+        try:
+            await ws.close(code=1001, reason="Server shutting down")
+        except Exception:
+            pass
+
     if hasattr(app.state, "engine"):
         await dispose_engine(app.state.engine)
         logger.info("Database engine disposed")
@@ -141,7 +181,7 @@ def create_app(
     from liteset.controllers.advanced_data_type import AdvancedDataTypeController
     from liteset.controllers.annotation import AnnotationController
     from liteset.controllers.annotation_layer import AnnotationLayerController
-    from liteset.controllers.async_event import AsyncEventsController
+    from liteset.controllers.async_event import AsyncEventController
     from liteset.controllers.available_domains import AvailableDomainsController
     from liteset.controllers.cache import CacheController
     from liteset.controllers.css_template import CssTemplateController
@@ -161,6 +201,9 @@ def create_app(
     from liteset.controllers.theme import ThemeController
     from liteset.controllers.user import UserController, UserRegistrationsController
     from liteset.controllers.user_me import CurrentUserController
+
+    # Import WebSocket handler (Phase 6)
+    from liteset.websocket.events import AsyncQueryWebSocket
 
     route_handlers: list[Any] = [
         health_check,
@@ -195,10 +238,12 @@ def create_app(
         ThemeController,
         EmbeddedDashboardController,
         CacheController,
-        AsyncEventsController,
+        AsyncEventController,
         RLSController,
         ImportExportController,
         # LegacyApiController,  # deferred — path overlap (see import)
+        # Phase 6: WebSocket
+        AsyncQueryWebSocket,
     ]
     startup_hooks: list[Any] = [on_startup]
 
@@ -246,6 +291,12 @@ def create_app(
         ]
     )
 
+    # Event manager DI provider (Phase 6: WebSocket)
+    from liteset.async_events import manager as _aem_mod
+
+    async def provide_event_manager(state: State) -> Any:
+        return _aem_mod.AsyncEventManager(redis=state.redis)
+
     # Build CSRF config
     csrf_config = None
     if settings.csrf_enabled:
@@ -272,6 +323,7 @@ def create_app(
             ),
             "current_user": Provide(get_current_user, sync_to_thread=False),
             "security_manager": Provide(provide_security_manager),
+            "event_manager": Provide(provide_event_manager),
         },
         middleware=[LitesetAuthMiddleware],
         csrf_config=csrf_config,
