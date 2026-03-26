@@ -14,51 +14,66 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async events controller — poll for async job results."""
+"""Polling REST API for async query events.
 
+Preserves the existing frontend polling mechanism. The frontend calls
+``GET /api/v1/async_event/?last_id=X`` at 500ms intervals to check
+for completed async query results. This controller is the async
+equivalent of Flask's ``AsyncEventsRestApi``.
+
+The WebSocket endpoint (liteset/websocket/events.py) provides real-time
+delivery as an alternative, but this polling endpoint is preserved for
+full backward compatibility with the existing frontend.
+"""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from litestar import Controller, get
-from litestar.connection import Request
-from litestar.datastructures import State
 
-from liteset.typing import UserProtocol
+from liteset.async_events.manager import AsyncEventManager
+
+logger = logging.getLogger(__name__)
 
 
-class AsyncEventsController(Controller):
+class AsyncEventController(Controller):
+    """REST controller for polling async query events."""
+
     path = "/api/v1/async_event"
-    tags = ["Async Events"]
 
     @get("/")
-    async def poll_events(
+    async def get_events(
         self,
-        request: Request[Any, Any, Any],
-        current_user: UserProtocol,
-        state: State,
+        event_manager: AsyncEventManager,
+        current_user: Any,
+        last_id: str | None = None,
     ) -> dict[str, Any]:
-        """GET /api/v1/async_event/ — poll async job events."""
-        # Check GLOBAL_ASYNC_QUERIES feature flag
-        feature_flags: dict[str, Any] = getattr(
-            getattr(state, "settings", None), "feature_flags", {}
-        )
-        if not feature_flags.get("GLOBAL_ASYNC_QUERIES", False):
-            return {"result": []}
+        """Poll for async events since the given last_id.
 
-        last_id: str = request.query_params.get("last_id", "0-0")
+        ---
+        summary: Get async events
+        description: >
+            Returns async query events for the current user's channel.
+            Pass ``last_id`` to get only events after that ID.
+        parameters:
+          - name: last_id
+            in: query
+            required: false
+            schema:
+              type: string
+        responses:
+          200:
+            description: List of events
+        """
+        # The channel_id is derived from the user's session.
+        # In the original Flask implementation, channel_id is stored in the
+        # user's session. Here we derive it from the user ID for simplicity,
+        # matching the WebSocket channel pattern.
+        channel_id = f"user-{current_user.id}"
 
-        redis: Any = getattr(state, "redis", None)
-        if redis is None:
-            return {"result": []}
-
-        from liteset.async_events.manager import AsyncEventManager
-
-        manager = AsyncEventManager(redis)
-
-        channel = f"user_{current_user.id}"
-        events = await manager.read_events(
-            channel=channel,
+        events = await event_manager.read_events(
+            channel_id=channel_id,
             last_id=last_id,
         )
 
