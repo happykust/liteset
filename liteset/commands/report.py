@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from liteset.db.daos.report import AsyncReportScheduleDAO
-    from superset.reports.models import ReportSchedule
+    from liteset.models.reports import ReportSchedule
 
 
 class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):

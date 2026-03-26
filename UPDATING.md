@@ -22,6 +22,73 @@ under the License.
 This file documents any backwards-incompatible changes in Superset and
 assists people when migrating to a new version.
 
+## Liteset Migration (Flask -> Litestar)
+
+### Breaking Changes
+
+1. **Server**: Gunicorn replaced with Uvicorn. Update deployment commands:
+   - Before: `gunicorn -w 4 -b 0.0.0.0:8088 "superset.app:create_app()"`
+   - After: `uvicorn liteset.app:create_app --factory --host 0.0.0.0 --port 8088 --workers 4 --loop uvloop`
+
+2. **Configuration**: `superset_config.py` is still supported but deprecated.
+   New configuration via environment variables with `LITESET_` prefix or `.env` file.
+
+3. **Docker**: `superset-websocket` service removed. WebSocket is now built into the main application.
+   Update `docker-compose.yml` to remove the `superset-websocket` service.
+
+4. **Celery**: Task paths changed from `superset.tasks.*` to `liteset.tasks.*`.
+   Update `CELERYBEAT_SCHEDULE` in configuration. Both old and new paths accepted during transition.
+
+5. **Python API**: All imports changed from `superset.*` to `liteset.*`.
+   - `superset.models.*` -> `liteset.models.*`
+   - `superset.tasks.*` -> `liteset.tasks.*`
+
+6. **Database URI**: Async drivers used at runtime (asyncpg instead of psycopg2).
+   Alembic migrations still use psycopg2 (sync). Configure `LITESET_SQLALCHEMY_DATABASE_URI`
+   with either sync or async URI — the application converts automatically.
+
+7. **CLI**: `superset` CLI command deprecated. Use `liteset` instead.
+   - `superset runserver` -> `liteset runserver`
+   - `superset db upgrade` -> `liteset db upgrade`
+
+8. **Dependencies**: Flask and all Flask extensions removed. If you have custom middleware
+   or extensions that depend on Flask, they must be rewritten for Litestar.
+
+### Configuration Migration
+
+| `superset_config.py` setting | Environment variable | Notes |
+|---|---|---|
+| `SECRET_KEY` | `LITESET_SECRET_KEY` | Required. Must be 16+ bytes |
+| `SQLALCHEMY_DATABASE_URI` | `LITESET_SQLALCHEMY_DATABASE_URI` | Use `postgresql+asyncpg://` for runtime |
+| `ROW_LIMIT` | `LITESET_ROW_LIMIT` | Default: 50000 |
+| `CACHE_DEFAULT_TIMEOUT` | `LITESET_CACHE_DEFAULT_TTL` | Renamed from TIMEOUT to TTL |
+| `WTF_CSRF_ENABLED` | `LITESET_CSRF_ENABLED` | WTF prefix removed |
+| `FEATURE_FLAGS` | `LITESET_FEATURE_FLAGS` | JSON-encoded string |
+| `REDIS_URL` | `LITESET_REDIS_URL` | Used for cache, async events, Celery |
+| `MAPBOX_API_KEY` | `LITESET_MAPBOX_API_KEY` | Unchanged semantics |
+| `ENABLE_PROXY_FIX` | `LITESET_ENABLE_PROXY_FIX` | For reverse proxy deployments |
+| `CORS_ORIGINS` | `LITESET_CORS_ALLOW_ORIGINS` | JSON array |
+
+All settings can also be set in a `.env` file loaded by Pydantic Settings.
+
+### Rollback Procedure
+
+If issues are found after deploying Liteset:
+
+1. **Docker image rollback**: Keep the last Flask-based Docker image tagged as
+   `superset:flask-last`. Change the image tag in `docker-compose.yml`.
+
+2. **Database compatibility**: The database schema is fully backward-compatible.
+   No schema changes in the cleanup phase. Same PostgreSQL database works with both versions.
+
+3. **Alembic version**: The `alembic_version` table is unchanged. Both versions use
+   the same migration revision chain.
+
+4. **Celery tasks**: During transition, both `superset.tasks.*` and `liteset.tasks.*`
+   paths work via alias mechanism.
+
+5. **Redis**: Async event streams and cache entries are compatible. Same key format.
+
 ## 6.0.0
 - [33055](https://github.com/apache/superset/pull/33055): Upgrades Flask-AppBuilder to 5.0.0. The AUTH_OID authentication type has been deprecated and is no longer available as an option in Flask-AppBuilder. OpenID (OID) is considered a deprecated authentication protocol - if you are using AUTH_OID, you will need to migrate to an alternative authentication method such as OAuth, LDAP, or database authentication before upgrading.
 - [34871](https://github.com/apache/superset/pull/34871): Fixed Jest test hanging issue from Ant Design v5 upgrade. MessageChannel is now mocked in test environment to prevent rc-overflow from causing Jest to hang. Test environment only - no production impact.

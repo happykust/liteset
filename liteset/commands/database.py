@@ -35,7 +35,7 @@ from liteset.utils import mask_uri_password
 
 if TYPE_CHECKING:
     from liteset.db.daos.database import AsyncDatabaseDAO
-    from superset.models.core import Database
+    from liteset.models.core import Database
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +164,7 @@ class DeleteDatabaseCommand(AsyncBaseCommand[None]):
             )
         has_datasets = False
         try:
-            from superset.connectors.sqla.models import SqlaTable
+            from liteset.models.connectors import SqlaTable
         except (ImportError, ModuleNotFoundError):
             SqlaTable = None  # type: ignore[assignment,misc]
         if SqlaTable is not None:

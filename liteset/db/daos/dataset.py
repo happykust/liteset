@@ -22,10 +22,10 @@ from typing import Any
 from sqlalchemy import delete, select
 
 from liteset.db.base_dao import BaseAsyncDAO
-from superset.connectors.sqla.models import SqlaTable, SqlMetric, TableColumn
-from superset.models.core import Database
-from superset.models.dashboard import Dashboard, dashboard_slices
-from superset.models.slice import Slice
+from liteset.models.connectors import SqlaTable, SqlMetric, TableColumn
+from liteset.models.core import Database
+from liteset.models.dashboard import Dashboard, dashboard_slices
+from liteset.models.slice import Slice
 
 
 class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):

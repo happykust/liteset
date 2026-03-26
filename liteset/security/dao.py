@@ -18,8 +18,8 @@
 
 Queries ab_user, ab_role, ab_permission, ab_view_menu,
 ab_permission_view, ab_user_role, and ab_permission_view_role
-using AsyncSession. Models are imported from flask_appbuilder at
-runtime, or injected via constructor for testing.
+using AsyncSession. Models are imported from liteset.models.security,
+or injected via constructor for testing.
 
 mypy: FAB models are injected as ``type`` (no generic parameter), so
 attribute access (.id, .name, .roles, etc.) triggers attr-defined errors.
@@ -67,7 +67,7 @@ class AsyncSecurityDAO:
     @property
     def user_model(self) -> type:
         if self._user_model is None:
-            from flask_appbuilder.security.sqla.models import User
+            from liteset.models.security import User
 
             self._user_model = User
         return self._user_model
@@ -75,7 +75,7 @@ class AsyncSecurityDAO:
     @property
     def role_model(self) -> type:
         if self._role_model is None:
-            from flask_appbuilder.security.sqla.models import Role
+            from liteset.models.security import Role
 
             self._role_model = Role
         return self._role_model
@@ -83,7 +83,7 @@ class AsyncSecurityDAO:
     @property
     def permission_model(self) -> type:
         if self._permission_model is None:
-            from flask_appbuilder.security.sqla.models import Permission
+            from liteset.models.security import Permission
 
             self._permission_model = Permission
         return self._permission_model
@@ -91,7 +91,7 @@ class AsyncSecurityDAO:
     @property
     def view_menu_model(self) -> type:
         if self._view_menu_model is None:
-            from flask_appbuilder.security.sqla.models import ViewMenu
+            from liteset.models.security import ViewMenu
 
             self._view_menu_model = ViewMenu
         return self._view_menu_model
@@ -99,7 +99,7 @@ class AsyncSecurityDAO:
     @property
     def permission_view_model(self) -> type:
         if self._permission_view_model is None:
-            from flask_appbuilder.security.sqla.models import PermissionView
+            from liteset.models.security import PermissionView
 
             self._permission_view_model = PermissionView
         return self._permission_view_model

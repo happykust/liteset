@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from liteset.db.base_dao import BaseAsyncDAO
-from superset.models.core import CssTemplate
+from liteset.models.core import CssTemplate
 
 
 class AsyncCssTemplateDAO(BaseAsyncDAO[CssTemplate]):

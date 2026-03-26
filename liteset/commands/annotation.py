@@ -27,7 +27,7 @@ from liteset.exceptions import CommandInvalidError, ObjectNotFoundError
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from superset.models.annotations import Annotation, AnnotationLayer
+    from liteset.models.annotations import Annotation, AnnotationLayer
 
 
 # ---------------------------------------------------------------------------

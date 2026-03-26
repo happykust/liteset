@@ -32,7 +32,7 @@ from liteset.utils import mask_uri_password
 if TYPE_CHECKING:
     from liteset.db.daos.query import AsyncQueryDAO, AsyncSavedQueryDAO
     from liteset.typing import CRUDDAOProtocol
-    from superset.models.sql_lab import SavedQuery
+    from liteset.models.sql_lab import SavedQuery
 
 
 class StopQueryCommand(AsyncBaseCommand[None]):
@@ -167,7 +167,7 @@ class CreateSavedQueryCommand(AsyncBaseCommand["SavedQuery"]):
             raise CommandInvalidError("sql is required")
 
     async def run(self) -> "SavedQuery":
-        from superset.models.sql_lab import SavedQuery
+        from liteset.models.sql_lab import SavedQuery
 
         query = SavedQuery(**self._data)
         if self._user_id is not None:

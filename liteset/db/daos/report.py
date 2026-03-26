@@ -23,7 +23,7 @@ from sqlalchemy import CursorResult, delete, select
 
 from liteset.db.base_dao import BaseAsyncDAO
 from liteset.utils.json import dumps
-from superset.reports.models import (
+from liteset.models.reports import (
     ReportExecutionLog,
     ReportRecipients,
     ReportSchedule,

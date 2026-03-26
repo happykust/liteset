@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from liteset.db.daos.chart import AsyncChartDAO
-    from superset.models.slice import Slice
+    from liteset.models.slice import Slice
 
 
 class CreateChartCommand(AsyncBaseCommand["Slice"]):
@@ -78,7 +78,7 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
         # Validate dashboard access if dashboard IDs are provided
         dashboard_ids = self._data.get("dashboards", [])
         if dashboard_ids and self._security_manager is not None:
-            from superset.models.dashboard import Dashboard
+            from liteset.models.dashboard import Dashboard
 
             user = (
                 await self._security_manager.find_user_by_id(self._user_id)
@@ -102,7 +102,7 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
     async def run(self) -> "Slice":
         from datetime import datetime, timezone
 
-        from superset.models.slice import Slice
+        from liteset.models.slice import Slice
 
         # Filter out relationship fields to avoid passing raw IDs to model constructor
         create_data = {
@@ -185,7 +185,7 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
         # Validate dashboard access if dashboard IDs are provided
         dashboard_ids = self._data.get("dashboards", [])
         if dashboard_ids and self._security_manager is not None:
-            from superset.models.dashboard import Dashboard
+            from liteset.models.dashboard import Dashboard
 
             # Get existing dashboard IDs
             existing_dashboard_ids = {d.id for d in self._chart.dashboards} if hasattr(self._chart, 'dashboards') and self._chart.dashboards else set()
@@ -435,7 +435,7 @@ class ImportChartsCommand(AsyncImportModelsCommand):
         if not file_name.startswith("charts/"):
             return
 
-        from superset.models.slice import Slice
+        from liteset.models.slice import Slice
 
         chart = Slice(
             slice_name=content.get("slice_name", ""),
@@ -461,7 +461,7 @@ class ImportChartsCommand(AsyncImportModelsCommand):
     ) -> None:
         """Import a database from the bundle (dependency of datasets)."""
         try:
-            from superset.models.core import Database
+            from liteset.models.core import Database
 
             db = Database(
                 database_name=content.get("database_name", ""),
@@ -490,7 +490,7 @@ class ImportChartsCommand(AsyncImportModelsCommand):
     ) -> None:
         """Import a dataset from the bundle (dependency of charts)."""
         try:
-            from superset.connectors.sqla.models import SqlaTable
+            from liteset.models.connectors import SqlaTable
 
             dataset = SqlaTable(
                 table_name=content.get("table_name", ""),

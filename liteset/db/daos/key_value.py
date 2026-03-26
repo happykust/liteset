@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, or_, select
 
 from liteset.db.base_dao import BaseAsyncDAO
-from superset.key_value.models import KeyValueEntry
+from liteset.models.key_value import KeyValueEntry
 
 
 class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):

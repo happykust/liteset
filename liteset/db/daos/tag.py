@@ -19,7 +19,7 @@ from __future__ import annotations
 from sqlalchemy import delete, select
 
 from liteset.db.base_dao import BaseAsyncDAO
-from superset.tags.models import Tag, TaggedObject, user_favorite_tag_table
+from liteset.models.tags import Tag, TaggedObject, user_favorite_tag_table
 
 
 class AsyncTagDAO(BaseAsyncDAO[Tag]):
@@ -39,7 +39,7 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
 
     async def get_by_name(self, name: str, type_name: str = "custom") -> Tag:
         """Get tag by name, creating it if it doesn't exist."""
-        from superset.tags.models import TagType
+        from liteset.models.tags import TagType
 
         tag_type = TagType[type_name] if isinstance(type_name, str) else type_name
         tag = await self.find_one_or_none(name=name, type=tag_type)
@@ -57,7 +57,7 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         tag_names: list[str],
     ) -> None:
         """Create TaggedObject entries for the given tag names."""
-        from superset.tags.models import ObjectType
+        from liteset.models.tags import ObjectType
 
         obj_type = ObjectType[object_type]
         for name in tag_names:

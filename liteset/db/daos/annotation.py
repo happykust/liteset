@@ -19,7 +19,7 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from liteset.db.base_dao import BaseAsyncDAO
-from superset.models.annotations import Annotation, AnnotationLayer
+from liteset.models.annotations import Annotation, AnnotationLayer
 
 
 class AsyncAnnotationLayerDAO(BaseAsyncDAO[AnnotationLayer]):

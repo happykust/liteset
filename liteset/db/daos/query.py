@@ -24,7 +24,7 @@ from sqlalchemy import select
 
 from liteset.db.base_dao import BaseAsyncDAO
 from superset.common.db_query_status import QueryStatus
-from superset.models.sql_lab import Query, SavedQuery
+from liteset.models.sql_lab import Query, SavedQuery
 
 
 class AsyncQueryDAO(BaseAsyncDAO[Query]):

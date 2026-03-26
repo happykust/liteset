@@ -20,8 +20,8 @@ from uuid import UUID
 
 from liteset.db.base_dao import BaseAsyncDAO
 from liteset.db.daos.favorites_mixin import FavoriteMixin
-from superset.models.core import FavStarClassName
-from superset.models.slice import Slice
+from liteset.models.core import FavStarClassName
+from liteset.models.slice import Slice
 
 
 class AsyncChartDAO(FavoriteMixin, BaseAsyncDAO[Slice]):

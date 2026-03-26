@@ -29,10 +29,10 @@ import logging
 from liteset.db.base_dao import BaseAsyncDAO
 from liteset.db.daos.favorites_mixin import FavoriteMixin
 from liteset.utils.json import dumps, loads
-from superset.models.core import FavStarClassName
-from superset.models.dashboard import Dashboard
-from superset.models.embedded_dashboard import EmbeddedDashboard
-from superset.models.slice import Slice
+from liteset.models.core import FavStarClassName
+from liteset.models.dashboard import Dashboard
+from liteset.models.embedded_dashboard import EmbeddedDashboard
+from liteset.models.slice import Slice
 
 logger = logging.getLogger(__name__)
 
@@ -295,7 +295,7 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         }
         if not datasource_ids:
             return []
-        from superset.connectors.sqla.models import SqlaTable
+        from liteset.models.connectors import SqlaTable
 
         stmt = select(SqlaTable).where(SqlaTable.id.in_(datasource_ids)).options(
             selectinload(SqlaTable.database),

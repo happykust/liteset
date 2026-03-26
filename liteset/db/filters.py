@@ -58,7 +58,7 @@ async def chart_access_filters(
         return []
 
     try:
-        from superset.models.slice import Slice
+        from liteset.models.slice import Slice
 
         return [Slice.datasource_id.in_(accessible_datasource_ids)]
     except (ImportError, ModuleNotFoundError):
@@ -78,7 +78,7 @@ async def dashboard_access_filters(
         return []
 
     try:
-        from superset.models.dashboard import Dashboard
+        from liteset.models.dashboard import Dashboard
     except (ImportError, ModuleNotFoundError):
         return []
 
@@ -115,7 +115,7 @@ async def dataset_access_filters(
         return []
 
     try:
-        from superset.connectors.sqla.models import SqlaTable
+        from liteset.models.connectors import SqlaTable
 
         return [SqlaTable.database_id.in_(accessible_db_ids)]
     except (ImportError, ModuleNotFoundError):
@@ -143,14 +143,14 @@ async def query_access_filters(
     user_id = getattr(user, "id", None)
     if user_id is None:
         try:
-            from superset.models.sql_lab import Query
+            from liteset.models.sql_lab import Query
 
             return [Query.user_id == -1]  # No access
         except (ImportError, ModuleNotFoundError):
             return []
 
     try:
-        from superset.models.sql_lab import Query
+        from liteset.models.sql_lab import Query
 
         return [Query.user_id == user_id]
     except (ImportError, ModuleNotFoundError):
@@ -178,14 +178,14 @@ async def saved_query_access_filters(
     user_id = getattr(user, "id", None)
     if user_id is None:
         try:
-            from superset.models.sql_lab import SavedQuery
+            from liteset.models.sql_lab import SavedQuery
 
             return [SavedQuery.created_by_fk == -1]
         except (ImportError, ModuleNotFoundError):
             return []
 
     try:
-        from superset.models.sql_lab import SavedQuery
+        from liteset.models.sql_lab import SavedQuery
 
         return [SavedQuery.created_by_fk == user_id]
     except (ImportError, ModuleNotFoundError):

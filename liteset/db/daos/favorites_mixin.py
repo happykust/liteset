@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, select
 
-from superset.models.core import FavStar, FavStarClassName
+from liteset.models.core import FavStar, FavStarClassName
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession

@@ -156,7 +156,7 @@ async def test_create_saved_query_success(mock_query_dao):
     with patch.dict(
         "sys.modules",
         {
-            "superset.models.sql_lab": MagicMock(SavedQuery=mock_saved_query_cls),
+            "liteset.models.sql_lab": MagicMock(SavedQuery=mock_saved_query_cls),
         },
     ):
         cmd = CreateSavedQueryCommand(

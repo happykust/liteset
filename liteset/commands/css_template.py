@@ -23,7 +23,7 @@ from liteset.commands.base import AsyncBaseCommand
 from liteset.exceptions import CommandInvalidError, ObjectNotFoundError
 
 if TYPE_CHECKING:
-    from superset.models.core import CssTemplate
+    from liteset.models.core import CssTemplate
 
 
 class CreateCssTemplateCommand(AsyncBaseCommand["CssTemplate"]):

@@ -22,11 +22,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from liteset.db.base_dao import BaseAsyncDAO
-from superset.connectors.sqla.models import SqlaTable
-from superset.models.core import Database
-from superset.models.dashboard import Dashboard, dashboard_slices
-from superset.models.slice import Slice
-from superset.models.sql_lab import TabState
+from liteset.models.connectors import SqlaTable
+from liteset.models.core import Database
+from liteset.models.dashboard import Dashboard, dashboard_slices
+from liteset.models.slice import Slice
+from liteset.models.sql_lab import TabState
 
 
 class AsyncDatabaseDAO(BaseAsyncDAO[Database]):

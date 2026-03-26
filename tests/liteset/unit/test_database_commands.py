@@ -162,7 +162,7 @@ async def test_delete_database_not_found(mock_dao):
 
 async def test_delete_database_success(mock_dao, mock_database):
     mock_dao.find_by_id = AsyncMock(return_value=mock_database)
-    mock_dao.has_dependent_datasets = AsyncMock(return_value=False)
+    mock_dao.session.scalar = AsyncMock(return_value=0)
     mock_dao.find_report_schedules_by_database_id = AsyncMock(return_value=[])
     cmd = DeleteDatabaseCommand(dao=mock_dao, database_id=1)
     await cmd.validate()
@@ -418,7 +418,7 @@ async def test_delete_non_owner_raises_forbidden(mock_dao, mock_database):
 
 async def test_delete_with_dependent_datasets_raises(mock_dao, mock_database):
     mock_dao.find_by_id = AsyncMock(return_value=mock_database)
-    mock_dao.has_dependent_datasets = AsyncMock(return_value=True)
+    mock_dao.session.scalar = AsyncMock(return_value=3)
     cmd = DeleteDatabaseCommand(dao=mock_dao, database_id=1)
     with pytest.raises(CommandInvalidError, match="dependent dataset"):
         await cmd.validate()
@@ -501,7 +501,7 @@ async def test_create_database_allows_postgresql_uri(mock_dao):
 async def test_delete_database_with_report_schedules_raises(mock_dao, mock_database):
     """DeleteDatabaseCommand blocks deletion when report schedules exist."""
     mock_dao.find_by_id = AsyncMock(return_value=mock_database)
-    mock_dao.has_dependent_datasets = AsyncMock(return_value=False)
+    mock_dao.session.scalar = AsyncMock(return_value=0)
     mock_dao.find_report_schedules_by_database_id = AsyncMock(
         return_value=[MagicMock()]
     )

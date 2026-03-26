@@ -14,7 +14,7 @@ def app():
         sqlalchemy_database_uri="sqlite+aiosqlite://",
         cors_allow_origins=["*"],
     )
-    return create_app(settings=settings, enable_flask_fallback=False)
+    return create_app(settings=settings)
 
 
 @pytest.mark.parametrize(

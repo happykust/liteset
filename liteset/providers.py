@@ -144,7 +144,7 @@ def provide_report_execution_log_dao(session: AsyncSession) -> Any:
 
 def provide_rls_dao(session: AsyncSession) -> Any:
     from liteset.db.base_dao import BaseAsyncDAO
-    from superset.connectors.sqla.models import RowLevelSecurityFilter
+    from liteset.models.connectors import RowLevelSecurityFilter
 
     class AsyncRLSDAO(BaseAsyncDAO[RowLevelSecurityFilter]):
         model_cls = RowLevelSecurityFilter

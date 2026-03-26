@@ -21,7 +21,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from liteset.db.base_dao import BaseAsyncDAO
-from superset.connectors.sqla.models import RowLevelSecurityFilter
+from liteset.models.connectors import RowLevelSecurityFilter
 
 
 class AsyncSecurityDAO(BaseAsyncDAO[RowLevelSecurityFilter]):
@@ -51,10 +51,7 @@ class AsyncRoleDAO:
         Returns:
             Tuple of (roles list, total count).
         """
-        try:
-            from flask_appbuilder.security.sqla.models import Role
-        except (ImportError, ModuleNotFoundError):
-            return [], 0
+        from liteset.models.security import Role
 
         from sqlalchemy import func, select
         from sqlalchemy.orm import selectinload

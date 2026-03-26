@@ -158,7 +158,6 @@ async def on_shutdown(app: Litestar) -> None:
 
 def create_app(
     settings: LitesetSettings | None = None,
-    enable_flask_fallback: bool = True,
 ) -> Litestar:
     if settings is None:
         # secret_key is resolved at runtime from env vars or superset_config.py
@@ -246,15 +245,6 @@ def create_app(
         AsyncQueryWebSocket,
     ]
     startup_hooks: list[Any] = [on_startup]
-
-    if enable_flask_fallback:
-        try:
-            from liteset.fallback import create_flask_fallback, init_flask_fallback
-
-            route_handlers.append(create_flask_fallback())
-            startup_hooks.append(init_flask_fallback)
-        except ImportError:
-            logger.warning("Flask fallback not available")
 
     assets_dir = _PROJECT_ROOT / "superset" / "static" / "assets"
     appbuilder_dir = _PROJECT_ROOT / "superset" / "static" / "appbuilder"

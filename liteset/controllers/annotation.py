@@ -71,7 +71,7 @@ class AnnotationController(Controller):
         if not layer:
             raise ObjectNotFoundError("AnnotationLayer", layer_pk)
 
-        from superset.models.annotations import Annotation
+        from liteset.models.annotations import Annotation
 
         page, page_size = extract_pagination(rison_params)
         layer_filter = [Annotation.layer_id == layer_pk]

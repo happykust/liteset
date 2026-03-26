@@ -39,8 +39,8 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from liteset.db.daos.dashboard import AsyncDashboardDAO, AsyncEmbeddedDashboardDAO
-    from superset.models.dashboard import Dashboard
-    from superset.models.embedded_dashboard import EmbeddedDashboard
+    from liteset.models.dashboard import Dashboard
+    from liteset.models.embedded_dashboard import EmbeddedDashboard
 
 
 class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
@@ -64,7 +64,7 @@ class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
                 raise CommandInvalidError(f"slug '{slug}' already exists")
 
     async def run(self) -> "Dashboard":
-        from superset.models.dashboard import Dashboard
+        from liteset.models.dashboard import Dashboard
 
         dashboard = Dashboard(
             **{
@@ -534,7 +534,7 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
         if not file_name.startswith("dashboards/"):
             return
 
-        from superset.models.dashboard import Dashboard
+        from liteset.models.dashboard import Dashboard
 
         dashboard = Dashboard(
             dashboard_title=content.get("dashboard_title", ""),
@@ -559,7 +559,7 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
     ) -> None:
         """Import a database from the bundle (dependency of datasets)."""
         try:
-            from superset.models.core import Database
+            from liteset.models.core import Database
 
             db = Database(
                 database_name=content.get("database_name", ""),
@@ -588,7 +588,7 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
     ) -> None:
         """Import a dataset from the bundle (dependency of charts)."""
         try:
-            from superset.connectors.sqla.models import SqlaTable
+            from liteset.models.connectors import SqlaTable
 
             dataset = SqlaTable(
                 table_name=content.get("table_name", ""),
@@ -618,7 +618,7 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
     ) -> None:
         """Import a chart from the bundle (dependency of dashboards)."""
         try:
-            from superset.models.slice import Slice
+            from liteset.models.slice import Slice
 
             chart = Slice(
                 slice_name=content.get("slice_name", ""),

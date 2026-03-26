@@ -32,7 +32,7 @@ class AsyncQueryContext:
     Processed by AsyncQueryContextProcessor.get_payload().
     """
 
-    datasource: Any  # BaseDatasource (from superset.connectors.sqla.models)
+    datasource: Any  # BaseDatasource (from liteset.models.connectors)
     queries: list[AsyncQueryObject] = field(default_factory=list)
     form_data: dict[str, Any] = field(default_factory=dict)
     force: bool = False

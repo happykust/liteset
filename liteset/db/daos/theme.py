@@ -21,7 +21,7 @@ from uuid import UUID
 from sqlalchemy import select
 
 from liteset.db.base_dao import BaseAsyncDAO
-from superset.models.core import Theme
+from liteset.models.core import Theme
 
 
 class AsyncThemeDAO(BaseAsyncDAO[Theme]):

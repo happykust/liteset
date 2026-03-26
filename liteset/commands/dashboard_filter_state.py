@@ -43,7 +43,7 @@ async def _check_dashboard_access(
     """
     # Load the ORM model via lazy import (may fail in minimal envs)
     try:
-        from superset.models.dashboard import Dashboard  # noqa: TID253
+        from liteset.models.dashboard import Dashboard  # noqa: TID253
     except (ImportError, ModuleNotFoundError):
         # If superset models are unavailable (e.g. test env without full
         # superset stack), fall back to a basic permission check.

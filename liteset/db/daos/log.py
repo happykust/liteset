@@ -19,7 +19,7 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from liteset.db.base_dao import BaseAsyncDAO
-from superset.models.core import Log
+from liteset.models.core import Log
 
 
 class AsyncLogDAO(BaseAsyncDAO[Log]):

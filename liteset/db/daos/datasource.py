@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, selectinload
 
-from superset.connectors.sqla.models import SqlaTable
+from liteset.models.connectors import SqlaTable
 
 # Mapping of datasource type strings to model classes
 _DATASOURCE_TYPE_MAP: dict[str, type[DeclarativeBase]] = {

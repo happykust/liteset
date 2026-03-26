@@ -38,7 +38,7 @@ if TYPE_CHECKING:
         AsyncDatasetDAO,
         AsyncDatasetMetricDAO,
     )
-    from superset.connectors.sqla.models import SqlaTable
+    from liteset.models.connectors import SqlaTable
 
 
 class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
@@ -118,7 +118,7 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                     raise CommandInvalidError("Access denied: insufficient SQL access")
 
     async def run(self) -> "SqlaTable":
-        from superset.connectors.sqla.models import SqlaTable
+        from liteset.models.connectors import SqlaTable
 
         # Resolve catalog: use provided value or fall back to database default
         catalog = self._data.get("catalog")
@@ -368,7 +368,7 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             )
 
     async def run(self) -> "SqlaTable":
-        from superset.connectors.sqla.models import SqlaTable, SqlMetric, TableColumn
+        from liteset.models.connectors import SqlaTable, SqlMetric, TableColumn
 
         assert self._source is not None
         source_sql = getattr(self._source, "sql", None)
@@ -478,7 +478,7 @@ class GetOrCreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             raise CommandInvalidError("database is required")
 
     async def run(self) -> "SqlaTable":
-        from superset.connectors.sqla.models import SqlaTable
+        from liteset.models.connectors import SqlaTable
 
         existing = await self._dao.find_one_or_none(
             table_name=self._data["table_name"],
@@ -584,7 +584,7 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                 "database_id is required (provide database_id or database_uuid in export)"
             )
 
-        from superset.connectors.sqla.models import SqlaTable
+        from liteset.models.connectors import SqlaTable
 
         dataset = SqlaTable(
             table_name=content.get("table_name", ""),

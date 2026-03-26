@@ -29,6 +29,7 @@ x-superset-volumes: &superset-volumes
   # /app/pythonpath_docker will be appended to the PYTHONPATH in the final container
   - ./docker:/app/docker
   - ./superset:/app/superset
+  - ./liteset:/app/liteset
   - ./superset-frontend:/app/superset-frontend
   - superset_home:/app/superset_home
   - ./tests:/app/tests
@@ -94,12 +95,10 @@ services:
     build:
       <<: *common-build
     container_name: superset_app
-    command: ["/app/docker/docker-bootstrap.sh", "app"]
+    command: ["uvicorn", "liteset.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8088", "--workers", "4", "--loop", "uvloop", "--reload"]
     restart: unless-stopped
     ports:
       - 8088:8088
-      # When in cypress-mode ->
-      - 8081:8081
     extra_hosts:
       - "host.docker.internal:host-gateway"
     user: *superset-user
@@ -107,39 +106,8 @@ services:
       superset-init:
         condition: service_completed_successfully
     volumes: *superset-volumes
-
-  superset-websocket:
-    container_name: superset_websocket
-    build: ./superset-websocket
-    ports:
-      - 8080:8080
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      - redis
-    # Mount everything in superset-websocket into container and
-    # then exclude node_modules and dist with bogus volume mount.
-    # This is necessary because host and container need to have
-    # their own, separate versions of these files. .dockerignore
-    # does not seem to work when starting the service through
-    # docker compose.
-    #
-    # For example, node_modules may contain libs with native bindings.
-    # Those bindings need to be compiled for each OS and the container
-    # OS is not necessarily the same as host OS.
-    volumes:
-      - ./superset-websocket:/home/superset-websocket
-      - /home/superset-websocket/node_modules
-      - /home/superset-websocket/dist
-
-      # Mounting a config file that contains a dummy secret required to boot up.
-      # do not use this docker compose in production
-      - ./docker/superset-websocket/config.json:/home/superset-websocket/config.json
     environment:
-      - PORT=8080
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_SSL=false
+      LITESET_SQLALCHEMY_DATABASE_URI: postgresql+asyncpg://superset:superset@db:5432/superset
 
   superset-init:
     build:
@@ -211,7 +179,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD-SHELL", "celery -A superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME"]
+      test: ["CMD-SHELL", "celery -A liteset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME"]
     # Bump memory limit if processing selenium / thumbnails on superset-worker
     # mem_limit: 2038m
     # mem_reservation: 128M

@@ -70,7 +70,7 @@ class AsyncUserDAO:
             extra_attributes[0].avatar_url = avatar_url
         else:
             try:
-                from superset.models.user_attributes import UserAttribute
+                from liteset.models.user import UserAttribute
 
                 attr = UserAttribute(
                     user_id=user.id,
