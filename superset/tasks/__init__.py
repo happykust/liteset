@@ -14,3 +14,8 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""Superset Celery task modules.
+
+Replaces ``superset/tasks/`` with superset import paths while preserving
+backward-compatible task names via :func:`celery_app.register_task_aliases`.
+"""

@@ -14,126 +14,83 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""Alembic environment configuration for Superset.
+
+Uses psycopg2 (sync driver) for migrations. Runtime uses asyncpg.
+Dual-driver strategy:
+- Runtime:    postgresql+asyncpg://
+- Migrations: postgresql+psycopg2://
+"""
+from __future__ import annotations
+
 import logging
-import time
-from logging.config import fileConfig
+import os
 
 from alembic import context
-from alembic.operations.ops import MigrationScript
-from alembic.runtime.migration import MigrationContext
-from flask import current_app
-from flask_appbuilder import Model
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import create_engine, pool
 
-# this is the Alembic Config object, which provides
-# access to the values within the .ini file in use.
-config = context.config
-
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
-if not current_app.config["ALEMBIC_SKIP_LOG_CONFIG"]:
-    # Skip loading logger config if the user has this config set
-    fileConfig(config.config_file_name)
 logger = logging.getLogger("alembic.env")
 
-DATABASE_URI = current_app.config["SQLALCHEMY_DATABASE_URI"]
-if "sqlite" in DATABASE_URI:
-    logger.warning(
-        "SQLite Database support for metadata databases will \
-        be removed in a future version of Superset."
+# Import superset model metadata for autogenerate support
+import superset.models.annotations  # noqa: F401
+import superset.models.cache  # noqa: F401
+import superset.models.connectors  # noqa: F401
+import superset.models.core  # noqa: F401
+import superset.models.dashboard  # noqa: F401
+import superset.models.dynamic_plugins  # noqa: F401
+import superset.models.embedded_dashboard  # noqa: F401
+import superset.models.key_value  # noqa: F401
+import superset.models.reports  # noqa: F401
+import superset.models.security  # noqa: F401
+import superset.models.slice  # noqa: F401
+import superset.models.sql_lab  # noqa: F401
+import superset.models.tags  # noqa: F401
+import superset.models.user  # noqa: F401
+from superset.models.helpers import Base
+
+target_metadata = Base.metadata
+
+_ASYNC_TO_SYNC_DRIVERS = {
+    "postgresql+asyncpg://": "postgresql+psycopg2://",
+    "mysql+asyncmy://": "mysql+pymysql://",
+    "sqlite+aiosqlite://": "sqlite://",
+}
+
+
+def _get_sync_url() -> str:
+    url = os.environ.get(
+        "LITESET_SQLALCHEMY_DATABASE_URI",
+        context.config.get_main_option("sqlalchemy.url", ""),
     )
-# Escape % chars in the database URI to avoid interpolation errors in ConfigParser
-escaped_uri = DATABASE_URI.replace("%", "%%")
-config.set_main_option("sqlalchemy.url", escaped_uri)
-target_metadata = Model.metadata  # pylint: disable=no-member
-
-
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
-
-
-def print_duration(start_time: float) -> None:
-    logger.info(
-        "Migration scripts completed. Duration: %s",
-        time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time)),
-    )
+    for async_prefix, sync_prefix in _ASYNC_TO_SYNC_DRIVERS.items():
+        if url.startswith(async_prefix):
+            url = url.replace(async_prefix, sync_prefix, 1)
+            break
+    return url
 
 
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode.
-
-    This configures the context with just a URL
-    and not an Engine, though an Engine is acceptable
-    here as well.  By skipping the Engine creation
-    we don't even need a DBAPI to be available.
-
-    Calls to context.execute() here emit the given string to the
-    script output.
-
-    """
-    start_time = time.time()
-    logger.info("Starting the migration scripts.")
-
-    url = config.get_main_option("sqlalchemy.url")
-    context.configure(url=url)
-
+    url = _get_sync_url()
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
     with context.begin_transaction():
         context.run_migrations()
-    print_duration(start_time)
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
-
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
-    """
-
-    start_time = time.time()
-    logger.info("Starting the migration scripts.")
-
-    # this callback is used to prevent an auto-migration from being generated
-    # when there are no changes to the schema
-    # reference: https://alembic.sqlalchemy.org/en/latest/cookbook.html
-    def process_revision_directives(  # pylint: disable=redefined-outer-name, unused-argument
-        context: MigrationContext, revision: str, directives: list[MigrationScript]
-    ) -> None:
-        if getattr(config.cmd_opts, "autogenerate", False):
-            script = directives[0]
-            if script.upgrade_ops.is_empty():
-                directives[:] = []
-                logger.info("No changes in schema detected.")
-
-    engine = engine_from_config(
-        config.get_section(config.config_ini_section),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-
-    connection = engine.connect()
-    kwargs = {}
-    if engine.name in ("sqlite", "mysql"):
-        kwargs = {"transaction_per_migration": True, "transactional_ddl": True}
-    if configure_args := current_app.extensions["migrate"].configure_args:
-        kwargs.update(configure_args)
-
-    context.configure(
-        connection=connection,
-        target_metadata=target_metadata,
-        # compare_type=True,
-        process_revision_directives=process_revision_directives,
-        **kwargs,
-    )
-
-    try:
+    url = _get_sync_url()
+    connectable = create_engine(url, poolclass=pool.NullPool)
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+        )
         with context.begin_transaction():
             context.run_migrations()
-        print_duration(start_time)
-    finally:
-        connection.close()
 
 
 if context.is_offline_mode():

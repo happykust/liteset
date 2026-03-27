@@ -14,18 +14,30 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-from datetime import datetime
+"""Cache key tracking model.
 
-from flask_appbuilder import Model
+Pure SQLAlchemy -- no Flask dependencies.
+"""
+from __future__ import annotations
+
 from sqlalchemy import Column, DateTime, Integer, String
 
+from superset.models.helpers import Base
 
-class CacheKey(Model):  # pylint: disable=too-few-public-methods
-    """Stores cache key records for the superset visualization."""
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
+
+
+class CacheKey(Base):
+    """Tracks cache keys for invalidation purposes."""
 
     __tablename__ = "cache_keys"
+
     id = Column(Integer, primary_key=True)
     cache_key = Column(String(256), nullable=False)
     cache_timeout = Column(Integer, nullable=True)
-    datasource_uid = Column(String(64), nullable=False, index=True)
-    created_on = Column(DateTime, default=datetime.now, nullable=True)
+    datasource_uid = Column(
+        String(64), nullable=False, index=True
+    )
+    created_on = Column(DateTime)

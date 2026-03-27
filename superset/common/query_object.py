@@ -14,427 +14,126 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-# pylint: disable=invalid-name
+"""Async QueryObject — describes a single query within a QueryContext."""
+
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime
-from pprint import pformat
-from typing import Any, NamedTuple, TYPE_CHECKING
+from typing import Any
 
-from flask import g
-from flask_babel import gettext as _
-from jinja2.exceptions import TemplateError
-from pandas import DataFrame
+import msgspec.structs
 
-from superset import feature_flag_manager
-from superset.common.chart_data import ChartDataResultType
-from superset.exceptions import (
-    InvalidPostProcessingError,
-    QueryClauseValidationException,
-    QueryObjectValidationError,
-)
-from superset.extensions import event_logger
-from superset.sql.parse import sanitize_clause
-from superset.superset_typing import Column, Metric, OrderBy
-from superset.utils import json, pandas_postprocessing
-from superset.utils.core import (
-    DTTM_ALIAS,
-    find_duplicates,
-    get_column_names,
-    get_metric_names,
-    is_adhoc_metric,
-    QueryObjectFilterClause,
-)
-from superset.utils.hashing import md5_sha_from_dict
-from superset.utils.json import json_int_dttm_ser
-
-if TYPE_CHECKING:
-    from superset.connectors.sqla.models import BaseDatasource
+from superset.exceptions import QueryObjectValidationError
+from superset.utils.feature_flags import feature_flag_manager
+from superset.utils.jinja import get_template_processor
+from superset.utils.sql import sanitize_clause
 
 logger = logging.getLogger(__name__)
 
-# TODO: Type Metrics dictionary with TypedDict when it becomes a vanilla python type
-#  https://github.com/python/mypy/issues/5288
 
+@dataclass
+class AsyncQueryObject:
+    """Describes a single query to execute against a datasource.
 
-class DeprecatedField(NamedTuple):
-    old_name: str
-    new_name: str
-
-
-DEPRECATED_FIELDS = (
-    DeprecatedField(old_name="granularity_sqla", new_name="granularity"),
-    DeprecatedField(old_name="groupby", new_name="columns"),
-    DeprecatedField(old_name="timeseries_limit", new_name="series_limit"),
-    DeprecatedField(old_name="timeseries_limit_metric", new_name="series_limit_metric"),
-)
-
-DEPRECATED_EXTRAS_FIELDS = (
-    DeprecatedField(old_name="where", new_name="where"),
-    DeprecatedField(old_name="having", new_name="having"),
-)
-
-
-class QueryObject:  # pylint: disable=too-many-instance-attributes
-    """
-    The query objects are constructed on the client.
+    Mirrors superset.common.query_object.QueryObject fields for
+    API contract compatibility. Does not depend on Flask.
     """
 
-    annotation_layers: list[dict[str, Any]]
-    applied_time_extras: dict[str, str]
-    apply_fetch_values_predicate: bool
-    columns: list[Column]
-    datasource: BaseDatasource | None
-    extras: dict[str, Any]
-    filter: list[QueryObjectFilterClause]
-    from_dttm: datetime | None
-    granularity: str | None
-    inner_from_dttm: datetime | None
-    inner_to_dttm: datetime | None
-    is_rowcount: bool
-    is_timeseries: bool
-    metrics: list[Metric] | None
-    order_desc: bool
-    orderby: list[OrderBy]
-    post_processing: list[dict[str, Any]]
-    result_type: ChartDataResultType | None
-    row_limit: int | None
-    row_offset: int
-    series_columns: list[Column]
-    series_limit: int
-    series_limit_metric: Metric | None
-    time_offsets: list[str]
-    time_shift: str | None
-    time_range: str | None
-    to_dttm: datetime | None
-
-    def __init__(  # pylint: disable=too-many-locals, too-many-arguments
-        self,
-        *,
-        annotation_layers: list[dict[str, Any]] | None = None,
-        applied_time_extras: dict[str, str] | None = None,
-        apply_fetch_values_predicate: bool = False,
-        columns: list[Column] | None = None,
-        datasource: BaseDatasource | None = None,
-        extras: dict[str, Any] | None = None,
-        filters: list[QueryObjectFilterClause] | None = None,
-        granularity: str | None = None,
-        is_rowcount: bool = False,
-        is_timeseries: bool | None = None,
-        metrics: list[Metric] | None = None,
-        order_desc: bool = True,
-        orderby: list[OrderBy] | None = None,
-        post_processing: list[dict[str, Any] | None] | None = None,
-        row_limit: int | None = None,
-        row_offset: int | None = None,
-        series_columns: list[Column] | None = None,
-        series_limit: int = 0,
-        series_limit_metric: Metric | None = None,
-        group_others_when_limit_reached: bool = False,
-        time_range: str | None = None,
-        time_shift: str | None = None,
-        **kwargs: Any,
-    ):
-        self._set_annotation_layers(annotation_layers)
-        self.applied_time_extras = applied_time_extras or {}
-        self.apply_fetch_values_predicate = apply_fetch_values_predicate or False
-        self.columns = columns or []
-        self.datasource = datasource
-        self.extras = extras or {}
-        self.filter = filters or []
-        self.granularity = granularity
-        self.is_rowcount = is_rowcount
-        self._set_is_timeseries(is_timeseries)
-        self._set_metrics(metrics)
-        self.order_desc = order_desc
-        self.orderby = orderby or []
-        self._set_post_processing(post_processing)
-        self.row_limit = row_limit
-        self.row_offset = row_offset or 0
-        self._init_series_columns(series_columns, metrics, is_timeseries)
-        self.series_limit = series_limit
-        self.series_limit_metric = series_limit_metric
-        self.group_others_when_limit_reached = group_others_when_limit_reached
-        self.time_range = time_range
-        self.time_shift = time_shift
-        self.from_dttm = kwargs.get("from_dttm")
-        self.to_dttm = kwargs.get("to_dttm")
-        self.result_type = kwargs.get("result_type")
-        self.time_offsets = kwargs.get("time_offsets", [])
-        self.inner_from_dttm = kwargs.get("inner_from_dttm")
-        self.inner_to_dttm = kwargs.get("inner_to_dttm")
-        self._rename_deprecated_fields(kwargs)
-        self._move_deprecated_extra_fields(kwargs)
-
-    def _set_annotation_layers(
-        self, annotation_layers: list[dict[str, Any]] | None
-    ) -> None:
-        self.annotation_layers = [
-            layer
-            for layer in (annotation_layers or [])
-            # formula annotations don't affect the payload, hence can be dropped
-            if layer["annotationType"] != "FORMULA"
-        ]
-
-    def _set_is_timeseries(self, is_timeseries: bool | None) -> None:
-        # is_timeseries is True if time column is in either columns or groupby
-        # (both are dimensions)
-        self.is_timeseries = (
-            is_timeseries if is_timeseries is not None else DTTM_ALIAS in self.columns
-        )
-
-    def _set_metrics(self, metrics: list[Metric] | None = None) -> None:
-        # Support metric reference/definition in the format of
-        #   1. 'metric_name'   - name of predefined metric
-        #   2. { label: 'label_name' }  - legacy format for a predefined metric
-        #   3. { expressionType: 'SIMPLE' | 'SQL', ... } - adhoc metric
-        def is_str_or_adhoc(metric: Metric) -> bool:
-            return isinstance(metric, str) or is_adhoc_metric(metric)
-
-        self.metrics = metrics and [
-            x if is_str_or_adhoc(x) else x["label"]  # type: ignore
-            for x in metrics
-        ]
-
-    def _set_post_processing(
-        self, post_processing: list[dict[str, Any] | None] | None
-    ) -> None:
-        post_processing = post_processing or []
-        self.post_processing = [post_proc for post_proc in post_processing if post_proc]
-
-    def _init_series_columns(
-        self,
-        series_columns: list[Column] | None,
-        metrics: list[Metric] | None,
-        is_timeseries: bool | None,
-    ) -> None:
-        if series_columns:
-            self.series_columns = series_columns
-        elif is_timeseries and metrics:
-            self.series_columns = self.columns
-        else:
-            self.series_columns = []
-
-    def _rename_deprecated_fields(self, kwargs: dict[str, Any]) -> None:
-        # rename deprecated fields
-        for field in DEPRECATED_FIELDS:
-            if field.old_name in kwargs:
-                logger.warning(
-                    "The field `%s` is deprecated, please use `%s` instead.",
-                    field.old_name,
-                    field.new_name,
-                )
-                value = kwargs[field.old_name]
-                if value:
-                    if hasattr(self, field.new_name):
-                        logger.warning(
-                            "The field `%s` is already populated, "
-                            "replacing value with contents from `%s`.",
-                            field.new_name,
-                            field.old_name,
-                        )
-                    setattr(self, field.new_name, value)
-
-    def _move_deprecated_extra_fields(self, kwargs: dict[str, Any]) -> None:
-        # move deprecated extras fields to extras
-        for field in DEPRECATED_EXTRAS_FIELDS:
-            if field.old_name in kwargs:
-                logger.warning(
-                    "The field `%s` is deprecated and should "
-                    "be passed to `extras` via the `%s` property.",
-                    field.old_name,
-                    field.new_name,
-                )
-                value = kwargs[field.old_name]
-                if value:
-                    if hasattr(self.extras, field.new_name):
-                        logger.warning(
-                            "The field `%s` is already populated in "
-                            "`extras`, replacing value with contents "
-                            "from `%s`.",
-                            field.new_name,
-                            field.old_name,
-                        )
-                    self.extras[field.new_name] = value
-
-    @property
-    def metric_names(self) -> list[str]:
-        """Return metrics names (labels), coerce adhoc metrics to strings."""
-        return get_metric_names(
-            self.metrics or [],
-            (
-                self.datasource.verbose_map
-                if self.datasource and hasattr(self.datasource, "verbose_map")
-                else None
-            ),
-        )
-
-    @property
-    def column_names(self) -> list[str]:
-        """Return column names (labels). Gives priority to groupbys if both groupbys
-        and metrics are non-empty, otherwise returns column labels."""
-        return get_column_names(self.columns)
-
-    def validate(
-        self, raise_exceptions: bool | None = True
-    ) -> QueryObjectValidationError | None:
-        """Validate query object"""
-        try:
-            self._validate_there_are_no_missing_series()
-            self._validate_no_have_duplicate_labels()
-            self._validate_time_offsets()
-            self._sanitize_filters()
-            return None
-        except QueryObjectValidationError as ex:
-            if raise_exceptions:
-                raise
-            return ex
-
-    def _validate_no_have_duplicate_labels(self) -> None:
-        all_labels = self.metric_names + self.column_names
-        if len(set(all_labels)) < len(all_labels):
-            dup_labels = find_duplicates(all_labels)
-            raise QueryObjectValidationError(
-                _(
-                    "Duplicate column/metric labels: %(labels)s. Please make "
-                    "sure all columns and metrics have a unique label.",
-                    labels=", ".join(f'"{x}"' for x in dup_labels),
-                )
-            )
-
-    def _validate_time_offsets(self) -> None:
-        """Validate time_offsets configuration"""
-        if not self.time_offsets:
-            return
-
-        for offset in self.time_offsets:
-            # Check if this is a date range offset (YYYY-MM-DD : YYYY-MM-DD format)
-            if self._is_valid_date_range(offset):
-                if not feature_flag_manager.is_feature_enabled(
-                    "DATE_RANGE_TIMESHIFTS_ENABLED"
-                ):
-                    raise QueryObjectValidationError(
-                        "Date range timeshifts are not enabled. "
-                        "Please contact your administrator to enable the "
-                        "DATE_RANGE_TIMESHIFTS_ENABLED feature flag."
-                    )
-
-    def _is_valid_date_range(self, date_range: str) -> bool:
-        """Check if string is a valid date range in YYYY-MM-DD : YYYY-MM-DD format"""
-        try:
-            # Attempt to parse the string as a date range in the format
-            # YYYY-MM-DD:YYYY-MM-DD
-            start_date, end_date = date_range.split(":")
-            datetime.strptime(start_date.strip(), "%Y-%m-%d")
-            datetime.strptime(end_date.strip(), "%Y-%m-%d")
-            return True
-        except ValueError:
-            # If parsing fails, it's not a valid date range in the format
-            # YYYY-MM-DD:YYYY-MM-DD
-            return False
-
-    def _sanitize_filters(self) -> None:
-        from superset.jinja_context import get_template_processor
-
-        for param in ("where", "having"):
-            clause = self.extras.get(param)
-            if clause and self.datasource:
-                try:
-                    database = self.datasource.database
-                    processor = get_template_processor(database=database)
-                    try:
-                        clause = processor.process_template(clause, force=True)
-                    except TemplateError as ex:
-                        raise QueryObjectValidationError(
-                            _(
-                                "Error in jinja expression in WHERE clause: %(msg)s",
-                                msg=ex.message,
-                            )
-                        ) from ex
-                    engine = database.db_engine_spec.engine
-                    sanitized_clause = sanitize_clause(clause, engine)
-                    if sanitized_clause != clause:
-                        self.extras[param] = sanitized_clause
-                except QueryClauseValidationException as ex:
-                    raise QueryObjectValidationError(ex.message) from ex
-
-    def _validate_there_are_no_missing_series(self) -> None:
-        missing_series = [col for col in self.series_columns if col not in self.columns]
-        if missing_series:
-            raise QueryObjectValidationError(
-                _(
-                    "The following entries in `series_columns` are missing "
-                    "in `columns`: %(columns)s. ",
-                    columns=", ".join(f'"{x}"' for x in missing_series),
-                )
-            )
+    datasource: dict[str, Any]
+    columns: list[Any] = field(default_factory=list)
+    metrics: list[Any] = field(default_factory=list)
+    orderby: list[tuple[Any, bool]] = field(default_factory=list)
+    filters: list[dict[str, Any]] = field(default_factory=list)
+    extras: dict[str, Any] = field(default_factory=dict)
+    time_range: str | None = None
+    time_shift: str | None = None
+    granularity: str | None = None
+    row_limit: int | None = None
+    row_offset: int = 0
+    from_dttm: datetime | str | None = None
+    to_dttm: datetime | str | None = None
+    inner_from_dttm: datetime | str | None = None
+    inner_to_dttm: datetime | str | None = None
+    order_desc: bool = True
+    post_processing: list[dict[str, Any]] = field(default_factory=list)
+    annotation_layers: list[dict[str, Any]] = field(default_factory=list)
+    series_columns: list[str] = field(default_factory=list)
+    series_limit: int = 0
+    series_limit_metric: Any | None = None
+    is_timeseries: bool = False
+    result_type: str | None = None
+    applied_time_extras: dict[str, str] = field(default_factory=dict)
+    apply_fetch_values_predicate: bool = False
+    is_rowcount: bool = False
+    time_offsets: list[str] = field(default_factory=list)
+    group_others_when_limit_reached: bool = False
+    granularity_sqla: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        query_object_dict = {
-            "apply_fetch_values_predicate": self.apply_fetch_values_predicate,
+        """Serialize to dict matching Superset's QueryObject.to_dict().
+
+        Excludes volatile fields (time_range, post_processing, annotation_layers,
+        time_offsets, result_type, apply_fetch_values_predicate) — those are only
+        included conditionally in cache_key().
+        """
+        return {
             "columns": self.columns,
-            "extras": self.extras,
-            "filter": self.filter,
-            "from_dttm": self.from_dttm,
-            "granularity": self.granularity,
-            "inner_from_dttm": self.inner_from_dttm,
-            "inner_to_dttm": self.inner_to_dttm,
-            "is_rowcount": self.is_rowcount,
-            "is_timeseries": self.is_timeseries,
             "metrics": self.metrics,
-            "order_desc": self.order_desc,
             "orderby": self.orderby,
+            "filter": self.filters,
+            "extras": self.extras,
+            "time_shift": self.time_shift,
+            "granularity": self.granularity,
             "row_limit": self.row_limit,
             "row_offset": self.row_offset,
+            "from_dttm": self.from_dttm,
+            "to_dttm": self.to_dttm,
+            "inner_from_dttm": self.inner_from_dttm,
+            "inner_to_dttm": self.inner_to_dttm,
+            "order_desc": self.order_desc,
             "series_columns": self.series_columns,
             "series_limit": self.series_limit,
             "series_limit_metric": self.series_limit_metric,
+            "is_timeseries": self.is_timeseries,
+            "applied_time_extras": self.applied_time_extras,
+            "apply_fetch_values_predicate": self.apply_fetch_values_predicate,
+            "is_rowcount": self.is_rowcount,
             "group_others_when_limit_reached": self.group_others_when_limit_reached,
-            "to_dttm": self.to_dttm,
-            "time_shift": self.time_shift,
         }
-        return query_object_dict
 
-    def __repr__(self) -> str:
-        # we use `print` or `logging` output QueryObject
-        return json.dumps(
-            self.to_dict(),
-            sort_keys=True,
-            default=str,
-        )
+    def cache_key(self) -> dict[str, Any]:
+        """Return a dict suitable for cache-key computation.
 
-    def cache_key(self, **extra: Any) -> str:  # noqa: C901
+        Matches Superset's QueryObject.cache_key() structure:
+        - Starts from to_dict() (volatile fields already excluded)
+        - Removes from_dttm, to_dttm, datasource
+        - Conditionally removes apply_fetch_values_predicate when False
+        - Conditionally adds result_type, time_range, post_processing,
+          time_offsets when truthy
+        - Includes filtered annotation_layers (9 specific fields per layer)
         """
-        The cache key is made out of the key/values from to_dict(), plus any
-        other key/values in `extra`
-        We remove datetime bounds that are hard values, and replace them with
-        the use-provided inputs to bounds, which may be time-relative (as in
-        "5 days ago" or "now").
-        """
-        cache_dict = self.to_dict()
-        cache_dict.update(extra)
-
-        # TODO: the below KVs can all be cleaned up and moved to `to_dict()` at some
-        #  predetermined point in time when orgs are aware that the previously
-        #  cached results will be invalidated.
+        base = self.to_dict()
+        # Remove volatile datetime bounds and datasource
+        for key in ("from_dttm", "to_dttm", "datasource"):
+            base.pop(key, None)
+        # Conditionally remove apply_fetch_values_predicate when False
         if not self.apply_fetch_values_predicate:
-            del cache_dict["apply_fetch_values_predicate"]
-        if self.datasource:
-            cache_dict["datasource"] = self.datasource.uid
+            base.pop("apply_fetch_values_predicate", None)
+        else:
+            base["apply_fetch_values_predicate"] = True
+        # Conditionally add fields when truthy
         if self.result_type:
-            cache_dict["result_type"] = self.result_type
+            base["result_type"] = self.result_type
         if self.time_range:
-            cache_dict["time_range"] = self.time_range
+            base["time_range"] = self.time_range
         if self.post_processing:
-            cache_dict["post_processing"] = self.post_processing
+            base["post_processing"] = self.post_processing
         if self.time_offsets:
-            cache_dict["time_offsets"] = self.time_offsets
-
-        for k in ["from_dttm", "to_dttm"]:
-            del cache_dict[k]
-
-        annotation_fields = [
+            base["time_offsets"] = self.time_offsets
+        # Include filtered annotation_layers (specific fields only)
+        _ANNOTATION_CACHE_FIELDS = {
             "annotationType",
             "descriptionColumns",
             "intervalEndColumn",
@@ -444,62 +143,218 @@ class QueryObject:  # pylint: disable=too-many-instance-attributes
             "timeColumn",
             "titleColumn",
             "value",
-        ]
-        annotation_layers = [
-            {field: layer[field] for field in annotation_fields if field in layer}
-            for layer in self.annotation_layers
-        ]
-        # only add to key if there are annotations present that affect the payload
-        if annotation_layers:
-            cache_dict["annotation_layers"] = annotation_layers
+        }
+        if self.annotation_layers:
+            base["annotation_layers"] = [
+                {k: v for k, v in layer.items() if k in _ANNOTATION_CACHE_FIELDS}
+                if isinstance(layer, dict)
+                else layer
+                for layer in self.annotation_layers
+            ]
+        return base
 
-        # Add an impersonation key to cache if impersonation is enabled on the db
-        # or if the CACHE_QUERY_BY_USER flag is on
-        try:
-            database = self.datasource.database  # type: ignore
-            if (
-                feature_flag_manager.is_feature_enabled("CACHE_IMPERSONATION")
-                and database.impersonate_user
-            ) or feature_flag_manager.is_feature_enabled("CACHE_QUERY_BY_USER"):
-                if key := database.db_engine_spec.get_impersonation_key(
-                    getattr(g, "user", None)
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    def validate(self) -> None:
+        """Run all sub-validators; raise *QueryObjectValidationError* on failure.
+
+        Order matches Superset's QueryObject.validate().
+        """
+        self._validate_there_are_no_missing_series()
+        self._validate_no_have_duplicate_labels()
+        self._validate_time_offsets()
+        self._sanitize_filters()
+
+    def _sanitize_filters(self, datasource: Any | None = None) -> None:
+        """Sanitize ``extras.where`` and ``extras.having`` via *sanitize_clause*.
+
+        When a datasource is provided, processes Jinja templates and passes
+        the engine to sanitize_clause for engine-specific escaping.
+        """
+        engine: str | None = None
+        template_processor = None
+        if datasource is not None:
+            engine = getattr(getattr(datasource, "database", None), "backend", None)
+            template_processor = get_template_processor(datasource)
+        for clause_key in ("where", "having"):
+            clause = self.extras.get(clause_key, "")
+            if clause:
+                try:
+                    if template_processor is not None:
+                        clause = template_processor.process_template(clause)
+                    sanitize_clause(clause, engine=engine or "postgresql")
+                    self.extras[clause_key] = clause
+                except QueryObjectValidationError:
+                    raise
+                except Exception as ex:
+                    raise QueryObjectValidationError(
+                        f"Unsafe SQL in extras.{clause_key}: {ex}"
+                    ) from ex
+
+    def _validate_no_have_duplicate_labels(self) -> None:
+        """Check that column / metric labels are unique."""
+        labels: list[str] = []
+        for col in self.columns:
+            if isinstance(col, dict):
+                label = col.get("label") or col.get("sqlExpression") or str(col)
+            else:
+                label = str(col)
+            labels.append(label)
+        for metric in self.metrics:
+            if isinstance(metric, dict):
+                label = metric.get("label") or str(metric)
+            else:
+                label = str(metric)
+            labels.append(label)
+
+        seen: set[str] = set()
+        for label in labels:
+            if label in seen:
+                raise QueryObjectValidationError(f"Duplicate label found: {label}")
+            seen.add(label)
+
+    def _validate_time_offsets(self) -> None:
+        """Validate that all *time_offsets* items are strings.
+
+        Also checks the DATE_RANGE_TIMESHIFTS_ENABLED feature flag for
+        date-range style offsets.
+        """
+        for offset in self.time_offsets:
+            if not isinstance(offset, str):
+                raise QueryObjectValidationError(
+                    f"time_offsets must contain strings, got {type(offset).__name__}"
+                )
+            # A date range offset contains " : " as separator
+            # (e.g. "2021-01-01 : 2021-12-31")
+            if " : " in offset:
+                if not feature_flag_manager.is_feature_enabled(
+                    "DATE_RANGE_TIMESHIFTS_ENABLED"
                 ):
-                    logger.debug(
-                        "Adding impersonation key to QueryObject cache dict: %s", key
+                    raise QueryObjectValidationError(
+                        "Date range time shifts are not enabled"
                     )
 
-                    cache_dict["impersonation_key"] = key
-        except AttributeError:
-            # datasource or database do not exist
-            pass
+    def _validate_there_are_no_missing_series(self) -> None:
+        """Check that every *series_columns* entry exists in *columns*."""
+        if not self.series_columns:
+            return
+        col_labels: set[str] = set()
+        for col in self.columns:
+            if isinstance(col, dict):
+                col_labels.add(col.get("label") or col.get("sqlExpression") or str(col))
+            else:
+                col_labels.add(str(col))
+        for sc in self.series_columns:
+            if sc not in col_labels:
+                raise QueryObjectValidationError(
+                    f"series_columns entry '{sc}' not found in columns"
+                )
 
-        return md5_sha_from_dict(cache_dict, default=json_int_dttm_ser, ignore_nan=True)
-
-    def exec_post_processing(self, df: DataFrame) -> DataFrame:
-        """
-        Perform post processing operations on DataFrame.
-
-        :param df: DataFrame returned from database model.
-        :return: new DataFrame to which all post processing operations have been
-                 applied
-        :raises QueryObjectValidationError: If the post processing operation
-                 is incorrect
-        """
-        logger.debug("post_processing: \n %s", pformat(self.post_processing))
-        with event_logger.log_context(f"{self.__class__.__name__}.post_processing"):
-            for post_process in self.post_processing:
-                operation = post_process.get("operation")
-                if not operation:
-                    raise InvalidPostProcessingError(
-                        _("`operation` property of post processing object undefined")
-                    )
-                if not hasattr(pandas_postprocessing, operation):
-                    raise InvalidPostProcessingError(
-                        _(
-                            "Unsupported post processing operation: %(operation)s",
-                            type=operation,
-                        )
-                    )
-                options = post_process.get("options", {})
-                df = getattr(pandas_postprocessing, operation)(df, **options)
-            return df
+    @classmethod
+    def from_request(cls, q: Any, datasource_ref: dict[str, Any]) -> AsyncQueryObject:
+        """Create from a dict or ChartDataQueryObject schema struct."""
+        if isinstance(q, dict):
+            return cls(
+                datasource=datasource_ref,
+                columns=q.get("columns", []),
+                metrics=q.get("metrics", []),
+                filters=q.get("filters") or q.get("filter", []),
+                extras=q.get("extras", {}),
+                orderby=q.get("orderby", []),
+                row_limit=q.get("row_limit"),
+                row_offset=q.get("row_offset", 0),
+                time_range=q.get("time_range"),
+                time_shift=q.get("time_shift"),
+                granularity=q.get("granularity"),
+                order_desc=q.get("order_desc", True),
+                post_processing=q.get("post_processing", []),
+                annotation_layers=q.get("annotation_layers", []),
+                series_columns=q.get("series_columns", []),
+                series_limit=q.get("series_limit", 0),
+                series_limit_metric=q.get("series_limit_metric"),
+                is_timeseries=q.get("is_timeseries", False),
+                result_type=q.get("result_type"),
+                applied_time_extras=q.get("applied_time_extras", {}),
+                apply_fetch_values_predicate=q.get(
+                    "apply_fetch_values_predicate", False
+                ),
+                is_rowcount=q.get("is_rowcount", False),
+                time_offsets=q.get("time_offsets", []),
+                group_others_when_limit_reached=q.get(
+                    "group_others_when_limit_reached", False
+                ),
+                from_dttm=q.get("from_dttm"),
+                to_dttm=q.get("to_dttm"),
+                granularity_sqla=q.get("granularity_sqla"),
+            )
+        return cls(
+            datasource=datasource_ref,
+            columns=list(q.columns),
+            metrics=[
+                m
+                if isinstance(m, str)
+                else msgspec.structs.asdict(m)
+                if isinstance(m, msgspec.Struct)
+                else vars(m)
+                if hasattr(m, "__dict__")
+                else m
+                for m in q.metrics
+            ],
+            filters=(
+                [{"col": f.col, "op": f.op, "val": f.val} for f in q.filters]
+                if hasattr(q, "filters")
+                else []
+            ),
+            extras=(
+                msgspec.structs.asdict(q.extras)
+                if hasattr(q, "extras")
+                and q.extras is not None
+                and isinstance(q.extras, msgspec.Struct)
+                else vars(q.extras)
+                if hasattr(q, "extras")
+                and q.extras is not None
+                and hasattr(q.extras, "__dict__")
+                and not isinstance(q.extras, dict)
+                else getattr(q, "extras", {}) or {}
+            ),
+            orderby=list(getattr(q, "orderby", [])),
+            row_limit=q.row_limit,
+            row_offset=getattr(q, "row_offset", 0),
+            time_range=q.time_range,
+            time_shift=getattr(q, "time_shift", None),
+            granularity=q.granularity,
+            order_desc=q.order_desc,
+            post_processing=(
+                [
+                    {"operation": p.operation, "options": p.options}
+                    for p in q.post_processing
+                ]
+                if hasattr(q, "post_processing")
+                else []
+            ),
+            annotation_layers=(
+                [
+                    msgspec.structs.asdict(a) if isinstance(a, msgspec.Struct) else a
+                    for a in getattr(q, "annotation_layers", [])
+                ]
+            ),
+            series_columns=list(getattr(q, "series_columns", [])),
+            series_limit=getattr(q, "series_limit", 0),
+            series_limit_metric=getattr(q, "series_limit_metric", None),
+            is_timeseries=getattr(q, "is_timeseries", False),
+            result_type=getattr(q, "result_type", None),
+            applied_time_extras=dict(getattr(q, "applied_time_extras", {})),
+            apply_fetch_values_predicate=getattr(
+                q, "apply_fetch_values_predicate", False
+            ),
+            is_rowcount=getattr(q, "is_rowcount", False),
+            time_offsets=list(getattr(q, "time_offsets", [])),
+            group_others_when_limit_reached=getattr(
+                q, "group_others_when_limit_reached", False
+            ),
+            from_dttm=getattr(q, "from_dttm", None),
+            to_dttm=getattr(q, "to_dttm", None),
+            granularity_sqla=getattr(q, "granularity_sqla", None),
+        )

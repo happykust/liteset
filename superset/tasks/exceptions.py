@@ -14,15 +14,22 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""Task-specific exceptions for Superset.
 
-from flask_babel import lazy_gettext as _
+Replaces ``superset/tasks/exceptions.py``.
+"""
+from __future__ import annotations
 
 from superset.exceptions import SupersetException
 
 
 class ExecutorNotFoundError(SupersetException):
-    message = _("Scheduled task executor not found")
+    """Raised when no valid executor user is found for a scheduled task."""
+
+    message = "Scheduled task executor not found"
 
 
 class InvalidExecutorError(SupersetException):
-    message = _("Invalid executor type")
+    """Raised when the executor type is not valid."""
+
+    message = "Invalid executor type"

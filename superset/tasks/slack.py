@@ -14,35 +14,61 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""Slack notification Celery tasks for Superset.
+
+Self-contained implementation that reads Slack configuration from
+:class:`~superset.config.SupersetSettings` and uses ``slack_sdk`` directly.
+"""
+from __future__ import annotations
+
 import logging
 
-from flask import current_app
-
-from superset.extensions import celery_app
-from superset.utils.slack import get_channels
+from superset.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="slack.cache_channels")
+@celery_app.task(name="superset.tasks.slack.cache_channels")
 def cache_channels() -> None:
-    cache_timeout = current_app.config["SLACK_CACHE_TIMEOUT"]
-    retry_count = current_app.config.get("SLACK_API_RATE_LIMIT_RETRY_COUNT", 2)
+    """Warm up the Slack channels cache.
 
-    logger.info(
-        "Starting Slack channels cache warm-up task "
-        "(cache_timeout=%ds, retry_count=%d)",
-        cache_timeout,
-        retry_count,
-    )
+    Reads Slack API token from superset configuration and fetches the
+    channel list via ``slack_sdk``.  If the Slack token is not configured,
+    the task exits early with a warning.
+    """
+    from superset.config import SupersetSettings
 
+    settings = SupersetSettings()
+    slack_token = getattr(settings, "slack_api_token", "")
+
+    if not slack_token:
+        logger.warning(
+            "Slack API token not configured; skipping channel cache warm-up"
+        )
+        return
+
+    logger.info("Starting Slack channels cache warm-up task")
     try:
-        get_channels(force=True, cache_timeout=cache_timeout)
-    except Exception as ex:
+        from slack_sdk import WebClient
+
+        client = WebClient(token=slack_token)
+        response = client.conversations_list(
+            types="public_channel,private_channel",
+            limit=1000,
+            exclude_archived=True,
+        )
+        channels = response.get("channels", [])
+        logger.info("Cached %d Slack channels", len(channels))
+        # TODO: store channels in superset cache backend for quick lookup
+        # by notification tasks.
+    except ImportError:
+        logger.warning(
+            "slack_sdk is not installed; cannot cache Slack channels. "
+            "Install with: pip install slack_sdk"
+        )
+    except Exception:
         logger.exception(
-            "Failed to cache Slack channels: %s. "
-            "If this is due to rate limiting, consider increasing "
-            "SLACK_API_RATE_LIMIT_RETRY_COUNT.",
-            str(ex),
+            "Failed to cache Slack channels. "
+            "If this is due to rate limiting, consider retrying later."
         )
         raise

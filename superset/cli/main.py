@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -15,90 +14,120 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-import importlib
-import logging
-import pkgutil
-from typing import Any
+"""Superset CLI — async Superset backend management commands."""
+
+from __future__ import annotations
+
+from pathlib import Path
 
 import click
-from colorama import Fore, Style
-from flask import current_app
-from flask.cli import FlaskGroup, with_appcontext
-
-from superset import appbuilder, cli, security_manager
-from superset.extensions import db
-from superset.utils.decorators import transaction
-
-logger = logging.getLogger(__name__)
 
 
 def normalize_token(token_name: str) -> str:
-    """
-    As of click>=7, underscores in function names are replaced by dashes.
-    To avoid the need to rename all cli functions, e.g. load_examples to
-    load-examples, this function is used to convert dashes back to
-    underscores.
-
-    :param token_name: token name possibly containing dashes
-    :return: token name where dashes are replaced with underscores
-    """
     return token_name.replace("_", "-")
 
 
-def create_app() -> Any:
-    """Create app instance for CLI"""
-    from superset.app import create_app as create_superset_app
-
-    return create_superset_app()
-
-
-@click.group(
-    cls=FlaskGroup,
-    create_app=create_app,
-    context_settings={"token_normalize_func": normalize_token},
-)
-@with_appcontext
-def superset() -> None:
-    """\033[1;37mThe Apache Superset CLI\033[0m"""
-    # NOTE: codes above are ANSI color codes for bold white in CLI header ^^^
+@click.group(context_settings={"token_normalize_func": normalize_token})
+@click.version_option(package_name="apache-superset")
+def superset_cli() -> None:
+    """The Superset CLI (async Superset backend)"""
 
 
-# add sub-commands
-for load, module_name, is_pkg in pkgutil.walk_packages(  # noqa: B007
-    cli.__path__, cli.__name__ + "."
-):
-    module = importlib.import_module(module_name)
-    for attribute in module.__dict__.values():
-        if isinstance(attribute, (click.core.Command, click.core.Group)):
-            superset.add_command(attribute)
+@superset_cli.command()
+@click.option("--host", default="0.0.0.0", help="Bind host")  # noqa: S104
+@click.option("--port", default=8088, type=int, help="Bind port")
+@click.option("--reload", is_flag=True, help="Enable auto-reload")
+@click.option("--workers", default=1, type=int, help="Number of workers")
+def runserver(host: str, port: int, reload: bool, workers: int) -> None:
+    """Run Superset dev server via Uvicorn."""
+    import uvicorn
 
-            if isinstance(attribute, click.core.Group):
-                break
-
-
-@superset.command()
-@with_appcontext
-@transaction()
-def init() -> None:
-    """Inits the Superset application"""
-    appbuilder.add_permissions(update_perms=True)
-    security_manager.sync_role_definitions()
-
-
-@superset.command()
-@with_appcontext
-@click.option("--verbose", "-v", is_flag=True, help="Show extra information")
-def version(verbose: bool) -> None:
-    """Prints the current version number"""
-
-    print(Fore.BLUE + "-=" * 15)
-    print(
-        Fore.YELLOW
-        + "Superset "
-        + Fore.CYAN
-        + f"{current_app.config['VERSION_STRING']}"
+    uvicorn.run(
+        "superset.app:create_app",
+        factory=True,
+        host=host,
+        port=port,
+        reload=reload,
+        workers=workers,
     )
-    print(Fore.BLUE + "-=" * 15)
+
+
+@superset_cli.command()
+def init() -> None:
+    """Initialize Superset application (roles, permissions).
+
+    Creates default roles (Admin, Alpha, Gamma, Public, sql_lab)
+    if they do not already exist in the database.
+    """
+    import anyio
+
+    async def _init() -> None:
+        from sqlalchemy import select
+
+        from superset.config import SupersetSettings
+        from superset.db.session import create_db_engine, create_session_factory
+        from superset.models.security import Role
+
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        db_url = settings.sqlalchemy_database_uri
+
+        safe_url = (
+            db_url.split('@')[-1] if '@' in db_url else db_url
+        )
+        click.echo(f"Connecting to database: {safe_url}")
+        engine = create_db_engine(db_url)
+        session_factory = create_session_factory(engine)
+
+        default_roles = ["Admin", "Alpha", "Gamma", "Public", "sql_lab"]
+
+        async with session_factory() as session:
+            for role_name in default_roles:
+                stmt = select(Role).where(Role.name == role_name)
+                result = await session.execute(stmt)
+                existing = result.scalars().one_or_none()
+                if existing is None:
+                    session.add(Role(name=role_name))
+                    click.echo(f"  Created role: {role_name}")
+                else:
+                    click.echo(f"  Role already exists: {role_name}")
+            await session.commit()
+
+        await engine.dispose()
+        click.echo("Initialization complete.")
+
+    click.echo("Initializing Superset...")
+    anyio.run(_init)
+
+
+@superset_cli.command()
+@click.option("--verbose", "-v", is_flag=True)
+def version(verbose: bool) -> None:
+    """Print Superset version."""
+    from superset import __version__
+
+    click.echo(f"Superset {__version__}")
     if verbose:
-        print("[DB] : " + f"{db.engine}")
-    print(Style.RESET_ALL)
+        import litestar
+        import sqlalchemy
+
+        click.echo(f"  Litestar: {litestar.__version__}")
+        click.echo(f"  SQLAlchemy: {sqlalchemy.__version__}")
+
+
+@superset_cli.group()
+def db() -> None:
+    """Database migration commands."""
+
+
+@db.command()
+@click.option("--revision", default="head", help="Revision target")
+def upgrade(revision: str) -> None:
+    """Run Alembic database migrations."""
+    click.echo(f"Upgrading database to {revision}...")
+    from alembic import command
+    from alembic.config import Config
+
+    alembic_ini = Path(__file__).resolve().parent.parent.parent / "alembic.ini"
+    alembic_cfg = Config(str(alembic_ini))
+    command.upgrade(alembic_cfg, revision)
+    click.echo(f"Database upgraded to {revision}")

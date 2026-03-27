@@ -14,6 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""Pandas post-processing namespace for superset.
+
+All implementations are self-contained within this package and have no
+dependency on the ``superset`` package.
+"""
 from superset.utils.pandas_postprocessing.aggregate import aggregate
 from superset.utils.pandas_postprocessing.boxplot import boxplot
 from superset.utils.pandas_postprocessing.compare import compare

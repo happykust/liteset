@@ -14,17 +14,33 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+from __future__ import annotations
+
+import contextlib
 import logging
-from typing import Optional, Union
+from typing import Iterator, Optional, Union
 
 import pandas as pd
-from flask_babel import gettext as _
 from pandas import DataFrame
 
 from superset.exceptions import InvalidPostProcessingError
-from superset.utils.core import DTTM_ALIAS
-from superset.utils.decorators import suppress_logging
+from superset.utils.pandas_postprocessing._constants import DTTM_ALIAS
 from superset.utils.pandas_postprocessing.utils import PROPHET_TIME_GRAIN_MAP
+
+
+@contextlib.contextmanager
+def _suppress_logging(
+    logger_name: str | None = None,
+    new_level: int = logging.CRITICAL,
+) -> Iterator[None]:
+    """Context manager to suppress logging during the execution of code block."""
+    target_logger = logging.getLogger(logger_name)
+    original_level = target_logger.getEffectiveLevel()
+    target_logger.setLevel(new_level)
+    try:
+        yield
+    finally:
+        target_logger.setLevel(original_level)
 
 
 def _prophet_parse_seasonality(
@@ -49,20 +65,16 @@ def _prophet_fit_and_predict(  # pylint: disable=too-many-arguments
     periods: int,
     freq: str,
 ) -> DataFrame:
-    """
-    Fit a prophet model and return a DataFrame with predicted results.
-    """
+    """Fit a prophet model and return a DataFrame with predicted results."""
     try:
-        # `prophet` complains about `plotly` not being installed
-        with suppress_logging("prophet.plot"):
-            # pylint: disable=import-outside-toplevel
-            from prophet import Prophet
+        with _suppress_logging("prophet.plot"):
+            from prophet import Prophet  # pylint: disable=import-outside-toplevel
 
         prophet_logger = logging.getLogger("prophet.plot")
         prophet_logger.setLevel(logging.CRITICAL)
         prophet_logger.setLevel(logging.NOTSET)
     except ModuleNotFoundError as ex:
-        raise InvalidPostProcessingError(_("`prophet` package not installed")) from ex
+        raise InvalidPostProcessingError("`prophet` package not installed") from ex
     model = Prophet(
         interval_width=confidence_interval,
         yearly_seasonality=yearly_seasonality,
@@ -89,53 +101,26 @@ def prophet(  # pylint: disable=too-many-arguments
 ) -> DataFrame:
     """
     Add forecasts to each series in a timeseries dataframe, along with confidence
-    intervals for the prediction. For each series, the operation creates three
-    new columns with the column name suffixed with the following values:
-
-    - `__yhat`: the forecast for the given date
-    - `__yhat_lower`: the lower bound of the forecast for the given date
-    - `__yhat_upper`: the upper bound of the forecast for the given date
-
-
-    :param df: DataFrame containing all-numeric data (temporal column ignored)
-    :param time_grain: Time grain used to specify time period increments in prediction
-    :param periods: Time periods (in units of `time_grain`) to predict into the future
-    :param confidence_interval: Width of predicted confidence interval
-    :param yearly_seasonality: Should yearly seasonality be applied.
-           An integer value will specify Fourier order of seasonality.
-    :param weekly_seasonality: Should weekly seasonality be applied.
-           An integer value will specify Fourier order of seasonality, `None` will
-           automatically detect seasonality.
-    :param daily_seasonality: Should daily seasonality be applied.
-           An integer value will specify Fourier order of seasonality, `None` will
-           automatically detect seasonality.
-    :param index: the name of the column containing the x-axis data
-    :return: DataFrame with contributions, with temporal column at beginning if present
+    intervals for the prediction.
     """
     index = index or DTTM_ALIAS
-    # validate inputs
     if not time_grain:
-        raise InvalidPostProcessingError(_("Time grain missing"))
+        raise InvalidPostProcessingError("Time grain missing")
     if time_grain not in PROPHET_TIME_GRAIN_MAP:
         raise InvalidPostProcessingError(
-            _(
-                "Unsupported time grain: %(time_grain)s",
-                time_grain=time_grain,
-            )
+            f"Unsupported time grain: {time_grain}"
         )
     freq = PROPHET_TIME_GRAIN_MAP[time_grain]
-    # check type at runtime due to marshmallow schema not being able to handle
-    # union types
     if not isinstance(periods, int) or periods < 0:
-        raise InvalidPostProcessingError(_("Periods must be a whole number"))
+        raise InvalidPostProcessingError("Periods must be a whole number")
     if not confidence_interval or confidence_interval <= 0 or confidence_interval >= 1:
         raise InvalidPostProcessingError(
-            _("Confidence interval must be between 0 and 1 (exclusive)")
+            "Confidence interval must be between 0 and 1 (exclusive)"
         )
     if index not in df.columns:
-        raise InvalidPostProcessingError(_("DataFrame must include temporal column"))
+        raise InvalidPostProcessingError("DataFrame must include temporal column")
     if len(df.columns) < 2:
-        raise InvalidPostProcessingError(_("DataFrame include at least one series"))
+        raise InvalidPostProcessingError("DataFrame include at least one series")
 
     target_df = DataFrame()
 

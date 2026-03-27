@@ -14,71 +14,59 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-import copy
+"""JSON serialization utilities — superset-local replacement for superset.utils.json."""
+
+from __future__ import annotations
+
+import datetime
 import decimal
-import logging
+import json
+import math
 import uuid
-from datetime import date, datetime, time, timedelta
-from typing import Any, Callable, Dict, Optional, Union
+from datetime import date, time, timedelta
+from typing import Any
 
 import numpy as np
-import pandas as pd
-import simplejson
-from flask_babel.speaklater import LazyString
-from jsonpath_ng import parse
-from simplejson import JSONDecodeError
+import pytz
 
-from superset.constants import PASSWORD_MASK
-from superset.utils.dates import datetime_to_epoch, EPOCH
+# ---------------------------------------------------------------------------
+# Epoch helpers (ported from superset.utils.dates)
+# ---------------------------------------------------------------------------
 
-logging.getLogger("MARKDOWN").setLevel(logging.INFO)
-logger = logging.getLogger(__name__)
+EPOCH = datetime.datetime(1970, 1, 1)
 
 
-class DashboardEncoder(simplejson.JSONEncoder):
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.sort_keys = True
+def datetime_to_epoch(dttm: datetime.datetime) -> float:
+    """Convert datetime to milliseconds since epoch."""
+    if dttm.tzinfo:
+        dttm = dttm.replace(tzinfo=pytz.utc)
+        epoch_with_tz = pytz.utc.localize(EPOCH)
+        return (dttm - epoch_with_tz).total_seconds() * 1000
+    return (dttm - EPOCH).total_seconds() * 1000
 
-    def default(self, o: Any) -> Union[dict[Any, Any], str]:  # type: ignore
-        if isinstance(o, uuid.UUID):
-            return str(o)
-        try:
-            vals = {k: v for k, v in o.__dict__.items() if k != "_sa_instance_state"}
-            return {f"__{o.__class__.__name__}__": vals}
-        except Exception:  # pylint: disable=broad-except
-            if isinstance(o, datetime):
-                return {"__datetime__": o.replace(microsecond=0).isoformat()}
-            return simplejson.JSONEncoder(sort_keys=True).default(o)
+
+# ---------------------------------------------------------------------------
+# base_json_conv  (ported from superset.utils.json)
+# ---------------------------------------------------------------------------
 
 
 def format_timedelta(time_delta: timedelta) -> str:
-    """
-    Ensures negative time deltas are easily interpreted by humans
-
-    >>> td = timedelta(0) - timedelta(days=1, hours=5,minutes=6)
-    >>> str(td)
-    '-2 days, 18:54:00'
-    >>> format_timedelta(td)
-    '-1 day, 5:06:00'
-    """
+    """Ensure negative timedeltas are human-readable."""
     if time_delta < timedelta(0):
         return "-" + str(abs(time_delta))
-
-    # Change this to format positive time deltas the way you want
     return str(time_delta)
 
 
 def base_json_conv(obj: Any) -> Any:  # noqa: C901
     """
-    Tries to convert additional types to JSON compatible forms.
+    Convert additional types to JSON-compatible forms.
+
+    Handles numpy types, memoryview, Decimal, UUID, bytes, timedelta, set, time.
 
     :param obj: The serializable object
     :returns: The JSON compatible form
     :raises TypeError: If the object cannot be serialized
-    :see: https://docs.python.org/3/library/json.html#encoders-and-decoders
     """
-
     if isinstance(obj, memoryview):
         obj = obj.tobytes()
     if isinstance(obj, np.int64):
@@ -91,70 +79,42 @@ def base_json_conv(obj: Any) -> Any:  # noqa: C901
         return list(obj)
     if isinstance(obj, decimal.Decimal):
         return float(obj)
-    if isinstance(obj, (uuid.UUID, time, LazyString)):
+    if isinstance(obj, (uuid.UUID, time)):
         return str(obj)
     if isinstance(obj, timedelta):
         return format_timedelta(obj)
-    if isinstance(obj, pd.DateOffset):
-        offset_attrs = ", ".join(f"{k}={v}" for k, v in obj.kwds.items())
-        return f"DateOffset({offset_attrs})"
     if isinstance(obj, bytes):
         try:
             return obj.decode("utf-8")
-        except Exception:  # pylint: disable=broad-except
+        except Exception:
             try:
                 return obj.decode("utf-16")
-            except Exception:  # pylint: disable=broad-except
+            except Exception:
                 return "[bytes]"
 
     raise TypeError(f"Unserializable object {obj} of type {type(obj)}")
 
 
-def json_iso_dttm_ser(obj: Any, pessimistic: bool = False) -> Any:
-    """
-    A JSON serializer that deals with dates by serializing them to ISO 8601.
-
-        >>> json.dumps({'dttm': datetime(1970, 1, 1)}, default=json_iso_dttm_ser)
-        '{"dttm": "1970-01-01T00:00:00"}'
-
-    :param obj: The serializable object
-    :param pessimistic: Whether to be pessimistic regarding serialization
-    :returns: The JSON compatible form
-    :raises TypeError: If the non-pessimistic object cannot be serialized
-    """
-
-    if isinstance(obj, (datetime, date, pd.Timestamp)):
-        return obj.isoformat()
-
-    try:
-        return base_json_conv(obj)
-    except TypeError:
-        if pessimistic:
-            logger.error("Failed to serialize %s", obj)
-            return f"Unserializable [{type(obj)}]"
-        raise
-
-
-def pessimistic_json_iso_dttm_ser(obj: Any) -> Any:
-    """Proxy to call json_iso_dttm_ser in a pessimistic way
-
-    If one of object is not serializable to json, it will still succeed"""
-    return json_iso_dttm_ser(obj, pessimistic=True)
+# ---------------------------------------------------------------------------
+# json_int_dttm_ser  (ported from superset.utils.json)
+# ---------------------------------------------------------------------------
 
 
 def json_int_dttm_ser(obj: Any) -> Any:
     """
-    A JSON serializer that deals with dates by serializing them to EPOCH.
+    JSON serializer that converts dates to epoch milliseconds.
 
-        >>> json.dumps({'dttm': datetime(1970, 1, 1)}, default=json_int_dttm_ser)
+        >>> json.dumps(
+        ...     {'dttm': datetime.datetime(1970, 1, 1)},
+        ...     default=json_int_dttm_ser,
+        ... )
         '{"dttm": 0.0}'
 
     :param obj: The serializable object
     :returns: The JSON compatible form
     :raises TypeError: If the object cannot be serialized
     """
-
-    if isinstance(obj, (datetime, pd.Timestamp)):
+    if isinstance(obj, datetime.datetime):
         return datetime_to_epoch(obj)
 
     if isinstance(obj, date):
@@ -163,142 +123,46 @@ def json_int_dttm_ser(obj: Any) -> Any:
     return base_json_conv(obj)
 
 
-def json_dumps_w_dates(payload: dict[Any, Any], sort_keys: bool = False) -> str:
-    """Dumps payload to JSON with Datetime objects properly converted"""
-    return dumps(payload, default=json_int_dttm_ser, sort_keys=sort_keys)
+# ---------------------------------------------------------------------------
+# Generic default serializer (used by dumps/loads below)
+# ---------------------------------------------------------------------------
 
 
-def validate_json(obj: Union[bytes, bytearray, str]) -> None:
-    """
-    A JSON Validator that validates an object of bytes, bytes array or string
-    to be in valid JSON format
-
-    :raises SupersetException: if obj is not serializable to JSON
-    :param obj: an object that should be parseable to JSON
-    """
-    if obj:
-        try:
-            loads(obj)
-        except JSONDecodeError as ex:
-            logger.error("JSON is not valid %s", str(ex), exc_info=True)
-            raise
-
-
-def dumps(  # pylint: disable=too-many-arguments
-    obj: Any,
-    default: Optional[Callable[[Any], Any]] = json_iso_dttm_ser,
-    allow_nan: bool = False,
-    ignore_nan: bool = True,
-    sort_keys: bool = False,
-    indent: Union[str, int, None] = None,
-    separators: Union[tuple[str, str], None] = None,
-    cls: Union[type[simplejson.JSONEncoder], None] = None,
-    encoding: Optional[str] = "utf-8",
-) -> str:
-    """
-    Dumps object to compatible JSON format
-
-    :param obj: The serializable object
-    :param default: function that should return a serializable version of obj
-    :param allow_nan: when set to True NaN values will be serialized
-    :param ignore_nan: when set to True nan values will be ignored
-    :param sort_keys: when set to True keys will be sorted
-    :param indent: when set elements and object members will be pretty-printed
-    :param separators: when specified dumps will use (item_separator, key_separator)
-    :param cls: custom `JSONEncoder` subclass
-    :returns: String object in the JSON compatible form
-    """
-
-    results_string = ""
-    dumps_kwargs: Dict[str, Any] = {
-        "default": default,
-        "allow_nan": allow_nan,
-        "ignore_nan": ignore_nan,
-        "sort_keys": sort_keys,
-        "indent": indent,
-        "separators": separators,
-        "cls": cls,
-        "encoding": encoding,
-    }
-    try:
-        results_string = simplejson.dumps(obj, **dumps_kwargs)
-    except UnicodeDecodeError:
-        dumps_kwargs["encoding"] = None
-        results_string = simplejson.dumps(obj, **dumps_kwargs)
-    return results_string
+def _default_serializer(obj: Any) -> Any:
+    """Handle datetime, UUID, Decimal, numpy types, NaN, set, timedelta, time."""
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, set):
+        return list(obj)
+    if isinstance(obj, timedelta):
+        return str(obj)
+    if isinstance(obj, time):
+        return str(obj)
+    if isinstance(obj, datetime.datetime):
+        return obj.isoformat()
+    if isinstance(obj, date):
+        return obj.isoformat()
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+    if isinstance(obj, decimal.Decimal):
+        return float(obj)
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="replace")
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
-def loads(
-    obj: Union[bytes, bytearray, str],
-    encoding: Union[str, None] = None,
-    allow_nan: bool = False,
-    object_hook: Union[Callable[[dict[Any, Any]], Any], None] = None,
-) -> Any:
-    """
-    deserializable instance to a Python object.
-
-    :param obj: The deserializable object
-    :param encoding: determines the encoding used to interpret the obj
-    :param allow_nan: if True it will allow the parser to accept nan values
-    :param object_hook: function that will be called to decode objects values
-    :returns: A Python object deserialized from string
-    """
-    return simplejson.loads(
-        obj,
-        encoding=encoding,
-        allow_nan=allow_nan,
-        object_hook=object_hook,
-    )
+def dumps(obj: Any, **kwargs: Any) -> str:
+    kwargs.setdefault("default", _default_serializer)
+    return json.dumps(obj, **kwargs)
 
 
-def redact_sensitive(
-    payload: dict[str, Any],
-    sensitive_fields: set[str],
-) -> dict[str, Any]:
-    """
-    Redacts sensitive fields from a payload.
-
-    :param payload: The payload to redact
-    :param sensitive_fields: The set of fields to redact, as JSONPath expressions
-    :returns: The redacted payload
-    """
-    redacted_payload = copy.deepcopy(payload)
-
-    for json_path in sensitive_fields:
-        jsonpath_expr = parse(json_path)
-        for match in jsonpath_expr.find(redacted_payload):
-            match.context.value[match.path.fields[0]] = PASSWORD_MASK
-
-    return redacted_payload
-
-
-def reveal_sensitive(
-    old_payload: dict[str, Any],
-    new_payload: dict[str, Any],
-    sensitive_fields: set[str],
-) -> dict[str, Any]:
-    """
-    Reveals sensitive fields from a payload when not modified.
-
-    This allows users to perform deep edits on a payload without having to provide
-    sensitive information. The old payload is sent to the user with any sensitive fields
-    masked, and when the user sends back a modified payload, any fields that were masked
-    are replaced with the original values from the old payload.
-
-    For now this is only used to edit `encrypted_extra` fields in the database.
-
-    :param old_payload: The old payload to reveal
-    :param new_payload: The new payload to reveal
-    :param sensitive_fields: The set of fields to reveal, as JSONPath expressions
-    :returns: The revealed payload
-    """
-    revealed_payload = copy.deepcopy(new_payload)
-
-    for json_path in sensitive_fields:
-        jsonpath_expr = parse(json_path)
-        for match in jsonpath_expr.find(revealed_payload):
-            if match.value == PASSWORD_MASK:
-                old_value = match.full_path.find(old_payload)
-                match.context.value[match.path.fields[0]] = old_value[0].value
-
-    return revealed_payload
+def loads(s: str | bytes, **kwargs: Any) -> Any:
+    return json.loads(s, **kwargs)

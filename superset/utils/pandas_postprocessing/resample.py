@@ -17,7 +17,6 @@
 from typing import Optional, Union
 
 import pandas as pd
-from flask_babel import gettext as _
 
 from superset.exceptions import InvalidPostProcessingError
 from superset.utils.pandas_postprocessing.utils import RESAMPLE_METHOD
@@ -29,21 +28,12 @@ def resample(
     method: str,
     fill_value: Optional[Union[float, int]] = None,
 ) -> pd.DataFrame:
-    """
-    support upsampling in resample
-
-    :param df: DataFrame to resample.
-    :param rule: The offset string representing target conversion.
-    :param method: How to fill the NaN value after resample.
-    :param fill_value: What values do fill missing.
-    :return: DataFrame after resample
-    :raises InvalidPostProcessingError: If the request in incorrect
-    """
+    """Support upsampling in resample."""
     if not isinstance(df.index, pd.DatetimeIndex):
-        raise InvalidPostProcessingError(_("Resample operation requires DatetimeIndex"))
+        raise InvalidPostProcessingError("Resample operation requires DatetimeIndex")
     if method not in RESAMPLE_METHOD:
         raise InvalidPostProcessingError(
-            _("Resample method should be in ") + ", ".join(RESAMPLE_METHOD) + "."
+            "Resample method should be in " + ", ".join(RESAMPLE_METHOD) + "."
         )
 
     if method == "asfreq" and fill_value is not None:

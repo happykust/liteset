@@ -17,7 +17,6 @@
 from typing import Optional
 
 import geohash as geohash_lib
-from flask_babel import gettext as _
 from geopy.point import Point
 from pandas import DataFrame
 
@@ -28,15 +27,7 @@ from superset.utils.pandas_postprocessing.utils import _append_columns
 def geohash_decode(
     df: DataFrame, geohash: str, longitude: str, latitude: str
 ) -> DataFrame:
-    """
-    Decode a geohash column into longitude and latitude
-
-    :param df: DataFrame containing geohash data
-    :param geohash: Name of source column containing geohash location.
-    :param longitude: Name of new column to be created containing longitude.
-    :param latitude: Name of new column to be created containing latitude.
-    :return: DataFrame with decoded longitudes and latitudes
-    """
+    """Decode a geohash column into longitude and latitude."""
     try:
         lonlat_df = DataFrame()
         lonlat_df["latitude"], lonlat_df["longitude"] = zip(
@@ -46,7 +37,7 @@ def geohash_decode(
             df, lonlat_df, {"latitude": latitude, "longitude": longitude}
         )
     except ValueError as ex:
-        raise InvalidPostProcessingError(_("Invalid geohash string")) from ex
+        raise InvalidPostProcessingError("Invalid geohash string") from ex
 
 
 def geohash_encode(
@@ -55,15 +46,7 @@ def geohash_encode(
     longitude: str,
     latitude: str,
 ) -> DataFrame:
-    """
-    Encode longitude and latitude into geohash
-
-    :param df: DataFrame containing longitude and latitude data
-    :param geohash: Name of new column to be created containing geohash location.
-    :param longitude: Name of source column containing longitude.
-    :param latitude: Name of source column containing latitude.
-    :return: DataFrame with decoded longitudes and latitudes
-    """
+    """Encode longitude and latitude into geohash."""
     try:
         encode_df = df[[latitude, longitude]]
         encode_df.columns = ["latitude", "longitude"]
@@ -73,7 +56,7 @@ def geohash_encode(
         )
         return _append_columns(df, encode_df, {"geohash": geohash})
     except ValueError as ex:
-        raise InvalidPostProcessingError(_("Invalid longitude/latitude")) from ex
+        raise InvalidPostProcessingError("Invalid longitude/latitude") from ex
 
 
 def geodetic_parse(
@@ -83,23 +66,9 @@ def geodetic_parse(
     latitude: str,
     altitude: Optional[str] = None,
 ) -> DataFrame:
-    """
-    Parse a column containing a geodetic point string
-    [Geopy](https://geopy.readthedocs.io/en/stable/#geopy.point.Point).
-
-    :param df: DataFrame containing geodetic point data
-    :param geodetic: Name of source column containing geodetic point string.
-    :param longitude: Name of new column to be created containing longitude.
-    :param latitude: Name of new column to be created containing latitude.
-    :param altitude: Name of new column to be created containing altitude.
-    :return: DataFrame with decoded longitudes and latitudes
-    """
+    """Parse a column containing a geodetic point string."""
 
     def _parse_location(location: str) -> tuple[float, float, float]:
-        """
-        Parse a string containing a geodetic point and return latitude, longitude
-        and altitude
-        """
         point = Point(location)
         return point[0], point[1], point[2]
 
@@ -115,4 +84,4 @@ def geodetic_parse(
             columns["altitude"] = altitude
         return _append_columns(df, geodetic_df, columns)
     except ValueError as ex:
-        raise InvalidPostProcessingError(_("Invalid geodetic string")) from ex
+        raise InvalidPostProcessingError("Invalid geodetic string") from ex

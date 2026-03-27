@@ -14,19 +14,27 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-from flask_appbuilder import Model
+"""Dynamic plugin model.
+
+Pure SQLAlchemy -- no Flask dependencies.
+"""
+from __future__ import annotations
+
 from sqlalchemy import Column, Integer, Text
 
-from superset.models.helpers import AuditMixinNullable
+from superset.models.helpers import AuditMixinNullable, Base
+
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
 
 
-class DynamicPlugin(Model, AuditMixinNullable):
+class DynamicPlugin(Base, AuditMixinNullable):
+    """A dynamically loaded visualization plugin."""
+
     __tablename__ = "dynamic_plugin"
+
     id = Column(Integer, primary_key=True)
     name = Column(Text, unique=True, nullable=False)
-    # key corresponds to viz_type from static plugins
     key = Column(Text, unique=True, nullable=False)
     bundle_url = Column(Text, unique=True, nullable=False)
-
-    def __repr__(self) -> str:
-        return str(self.name)

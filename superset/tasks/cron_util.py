@@ -14,30 +14,51 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""Cron expression utilities for Superset.
+
+Replaces ``superset/tasks/cron_util.py``. The window-size config value
+is read from the Superset ``SupersetSettings`` instead of Flask
+``current_app.config``.
+"""
+from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 
 from croniter import croniter
-from flask import current_app
 from pytz import timezone as pytz_timezone, UnknownTimeZoneError
 
 logger = logging.getLogger(__name__)
 
+# Default cron window size in seconds (matches Superset's default of 60).
+_DEFAULT_CRON_WINDOW_SIZE: int = 60
+
 
 def cron_schedule_window(
-    triggered_at: datetime, cron: str, timezone: str
+    triggered_at: datetime,
+    cron: str,
+    timezone: str,
+    window_size: int | None = None,
 ) -> Iterator[datetime]:
-    window_size = current_app.config["ALERT_REPORTS_CRON_WINDOW_SIZE"]
+    """Yield UTC-normalized schedule times within a cron window.
+
+    :param triggered_at: The time the scheduler was triggered.
+    :param cron: A cron expression string.
+    :param timezone: IANA timezone name for the cron schedule.
+    :param window_size: Override for the window size in seconds.
+        Falls back to ``_DEFAULT_CRON_WINDOW_SIZE`` if not supplied.
+    """
+    if window_size is None:
+        window_size = _DEFAULT_CRON_WINDOW_SIZE
+
     try:
         tz = pytz_timezone(timezone)
     except UnknownTimeZoneError:
-        # fallback to default timezone
         tz = pytz_timezone("UTC")
         logger.warning("Timezone %s was invalid. Falling back to 'UTC'", timezone)
+
     utc = pytz_timezone("UTC")
-    # convert the current time to the user's local time for comparison
     time_now = triggered_at.astimezone(tz)
     start_at = time_now - timedelta(seconds=window_size / 2)
     stop_at = time_now + timedelta(seconds=window_size / 2)
@@ -45,5 +66,4 @@ def cron_schedule_window(
     for schedule in crons.all_next(datetime):
         if schedule >= stop_at:
             break
-        # convert schedule back to utc
         yield schedule.astimezone(utc).replace(tzinfo=None)

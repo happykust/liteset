@@ -1,0 +1,533 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pandas as pd
+import pytest
+
+from superset.common.query_context_processor import AsyncQueryContextProcessor
+from superset.common.query_object import AsyncQueryObject
+
+
+@pytest.fixture
+def mock_settings():
+    settings = MagicMock()
+    settings.row_limit = 50000
+    settings.cache_default_timeout = 300
+    settings.csv_export = {}
+    settings.excel_export = {}
+    settings.data_cache_config = {}
+    settings.samples_row_limit = 1000
+    return settings
+
+
+@pytest.fixture
+def mock_security_manager():
+    sm = AsyncMock()
+    sm.get_rls_cache_key = AsyncMock(return_value="")
+    sm.raise_for_access = AsyncMock()
+    return sm
+
+
+@pytest.fixture
+def mock_datasource():
+    ds = MagicMock()
+    ds.uid = "table__1"
+    ds.id = 1
+    ds.type = "table"
+    ds.changed_on = None
+    ds.cache_timeout = None
+    ds.column_names = ["col1", "col2"]
+    ds.get_extra_cache_keys = MagicMock(return_value=[])
+    # Prevent MagicMock auto-creating database.cache_timeout
+    ds.database = MagicMock()
+    ds.database.cache_timeout = None
+    return ds
+
+
+@pytest.fixture
+def mock_user():
+    user = MagicMock()
+    user.username = "test_user"
+    return user
+
+
+@pytest.fixture
+def processor(mock_settings, mock_security_manager, mock_datasource, mock_user):
+    return AsyncQueryContextProcessor(
+        datasource=mock_datasource,
+        settings=mock_settings,
+        security_manager=mock_security_manager,
+        user=mock_user,
+    )
+
+
+async def test_processor_creation(processor):
+    assert processor is not None
+    assert processor._datasource is not None
+
+
+async def test_processor_no_flask_dependency(processor):
+    """Verify no Flask imports leaked into the processor."""
+    assert not hasattr(processor, "_flask_app")
+
+
+async def test_raise_for_access_delegates(processor, mock_security_manager, mock_user):
+    await processor.raise_for_access()
+    mock_security_manager.raise_for_access.assert_awaited_once_with(
+        query_context=processor._query_context,
+        user=mock_user,
+    )
+
+
+async def test_raise_for_access_passes_user_and_query_context(
+    mock_settings, mock_security_manager, mock_datasource
+):
+    """raise_for_access passes both user and query_context to the security manager."""
+    user = MagicMock()
+    user.username = "admin"
+    proc = AsyncQueryContextProcessor(
+        datasource=mock_datasource,
+        settings=mock_settings,
+        security_manager=mock_security_manager,
+        user=user,
+    )
+    await proc.raise_for_access()
+    call_kwargs = mock_security_manager.raise_for_access.call_args.kwargs
+    assert call_kwargs["user"] is user
+    assert "query_context" in call_kwargs
+
+
+async def test_get_cache_key(processor):
+    qo = AsyncQueryObject(datasource={"type": "table", "id": 1})
+    key = await processor._get_cache_key(qo)
+    assert key is not None
+    assert isinstance(key, str)
+    assert len(key) > 0
+
+
+async def test_get_cache_timeout_default(processor):
+    timeout = processor._get_cache_timeout()
+    assert timeout == 300
+
+
+async def test_get_cache_timeout_from_data_config():
+    settings = MagicMock()
+    settings.data_cache_config = {"CACHE_DEFAULT_TIMEOUT": 600}
+    settings.cache_default_timeout = 300
+    ds = MagicMock()
+    ds.cache_timeout = None
+    ds.database = MagicMock()
+    ds.database.cache_timeout = None
+    proc = AsyncQueryContextProcessor(
+        datasource=ds,
+        settings=settings,
+        security_manager=AsyncMock(),
+    )
+    assert proc._get_cache_timeout() == 600
+
+
+async def test_get_annotation_data_empty(processor):
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        annotation_layers=[],
+    )
+    result = await processor.get_annotation_data(qo)
+    assert result == {}
+
+
+async def test_get_native_annotation_data_no_dao(processor):
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        annotation_layers=[{"sourceType": "NATIVE", "value": 1, "name": "test"}],
+    )
+    # No annotation DAO set, should return empty
+    result = await processor.get_native_annotation_data(qo)
+    assert result == {}
+
+
+async def test_get_time_grain_from_extras():
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        extras={"time_grain_sqla": "P1D"},
+    )
+    assert AsyncQueryContextProcessor.get_time_grain(qo) == "P1D"
+
+
+async def test_get_time_grain_from_columns():
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        columns=[{"timeGrain": "P1W", "sqlExpression": "ds"}],
+    )
+    assert AsyncQueryContextProcessor.get_time_grain(qo) == "P1W"
+
+
+async def test_processing_time_offsets_placeholder(processor):
+    qo = AsyncQueryObject(datasource={"type": "table", "id": 1})
+    df = pd.DataFrame({"col": [1, 2, 3]})
+    result = await processor.processing_time_offsets(df, qo)
+    assert "df" in result
+    assert "queries" in result
+    assert "cache_keys" in result
+
+
+async def test_get_payload_multiple_query_objects(
+    mock_settings, mock_security_manager, mock_datasource
+):
+    """get_payload processes multiple query objects and returns results for each."""
+    proc = AsyncQueryContextProcessor(
+        datasource=mock_datasource,
+        settings=mock_settings,
+        security_manager=mock_security_manager,
+    )
+    qo1 = AsyncQueryObject(datasource={"type": "table", "id": 1}, columns=["col1"])
+    qo2 = AsyncQueryObject(datasource={"type": "table", "id": 1}, columns=["col2"])
+
+    mock_result = {"df": pd.DataFrame({"x": [1, 2]}), "query": "SELECT x"}
+    with patch.object(
+        proc, "_get_query_result", new_callable=AsyncMock, return_value=mock_result
+    ):
+        payload = await proc.get_payload([qo1, qo2])
+
+    assert "queries" in payload
+    assert len(payload["queries"]) == 2
+    assert payload["queries"][0]["status"] == "success"
+    assert payload["queries"][1]["status"] == "success"
+    assert payload["queries"][0]["rowcount"] == 2
+
+
+async def test_cache_timeout_from_data_cache_config_override():
+    """data_cache_config CACHE_DEFAULT_TIMEOUT takes precedence over cache_default_timeout."""
+    settings = MagicMock()
+    settings.data_cache_config = {"CACHE_DEFAULT_TIMEOUT": 999}
+    settings.cache_default_timeout = 300
+    ds = MagicMock()
+    ds.cache_timeout = None
+    ds.database = MagicMock()
+    ds.database.cache_timeout = None
+    proc = AsyncQueryContextProcessor(
+        datasource=ds,
+        settings=settings,
+        security_manager=AsyncMock(),
+    )
+    assert proc._get_cache_timeout() == 999
+
+
+async def test_raise_for_access_passes_query_context(
+    mock_settings, mock_security_manager, mock_datasource
+):
+    """raise_for_access delegates with user and query_context."""
+    mock_user = MagicMock()
+    proc = AsyncQueryContextProcessor(
+        datasource=mock_datasource,
+        settings=mock_settings,
+        security_manager=mock_security_manager,
+        user=mock_user,
+    )
+    await proc.raise_for_access()
+    call_kwargs = mock_security_manager.raise_for_access.call_args.kwargs
+    assert call_kwargs["user"] is mock_user
+    assert "query_context" in call_kwargs
+
+
+async def test_get_data_json_format():
+    """get_data with json format returns list of dicts."""
+    df = pd.DataFrame({"a": [1, 2], "b": ["x", "y"]})
+    result = AsyncQueryContextProcessor.get_data(df, result_format="json")
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert result[0] == {"a": 1, "b": "x"}
+
+
+async def test_get_data_csv_format():
+    """get_data with csv format returns a CSV string."""
+    df = pd.DataFrame({"a": [10, 20], "b": ["hello", "world"]})
+    result = AsyncQueryContextProcessor.get_data(df, result_format="csv")
+    assert isinstance(result, str)
+    assert "a,b" in result
+    assert "10,hello" in result
+    assert "20,world" in result
+
+
+async def test_exec_post_processing_empty_list():
+    """_exec_post_processing with no operations returns the DataFrame unchanged."""
+    df = pd.DataFrame({"col": [1, 2, 3]})
+    qo = AsyncQueryObject(datasource={"type": "table", "id": 1}, post_processing=[])
+    result = AsyncQueryContextProcessor._exec_post_processing(df, qo)
+    pd.testing.assert_frame_equal(result, df)
+
+
+async def test_processor_creation_all_optional_params():
+    """Processor accepts all optional constructor parameters."""
+    mock_cache = MagicMock()
+    mock_ann_dao = MagicMock()
+    mock_chart_dao = MagicMock()
+    mock_qc = MagicMock()
+    settings = MagicMock()
+    settings.data_cache_config = {}
+    settings.cache_default_timeout = 300
+    proc = AsyncQueryContextProcessor(
+        datasource=MagicMock(),
+        settings=settings,
+        security_manager=AsyncMock(),
+        cache_manager=mock_cache,
+        annotation_dao=mock_ann_dao,
+        chart_dao=mock_chart_dao,
+        query_context=mock_qc,
+    )
+    assert proc._cache_manager is mock_cache
+    assert proc._annotation_dao is mock_ann_dao
+    assert proc._chart_dao is mock_chart_dao
+    assert proc._query_context is mock_qc
+
+
+async def test_generate_context_cache_key_returns_string(processor):
+    """_generate_context_cache_key returns a string starting with qc-."""
+    key = processor._generate_context_cache_key()
+    assert isinstance(key, str)
+    assert key.startswith("qc-")
+    assert len(key) > 3
+
+
+async def test_force_cached_returns_error_when_not_cached(processor):
+    """force_cached=True returns error when no cached data available."""
+    qo = AsyncQueryObject(datasource={"type": "table", "id": 1})
+    result = await processor.get_df_payload(qo, force_cached=True)
+    assert result["status"] == "failed"
+    assert "not available" in result["error"]
+
+
+async def test_get_query_result_with_mock_datasource(
+    mock_settings, mock_security_manager
+):
+    """_get_query_result calls datasource.query() and returns dict."""
+    ds = MagicMock(spec=["uid", "query", "get_extra_cache_keys", "changed_on"])
+    ds.uid = "table__1"
+    ds.query = MagicMock(
+        return_value=MagicMock(df=pd.DataFrame({"x": [1]}), query="SELECT x")
+    )
+    ds.get_extra_cache_keys = MagicMock(return_value=[])
+    ds.changed_on = None
+
+    proc = AsyncQueryContextProcessor(
+        datasource=ds, settings=mock_settings, security_manager=mock_security_manager
+    )
+    qo = AsyncQueryObject(datasource={"type": "table", "id": 1})
+    result = await proc._get_query_result(qo)
+    assert "df" in result
+    assert len(result["df"]) == 1
+
+
+async def test_cache_hit_returns_cached_data(mock_settings, mock_security_manager):
+    """When cache manager returns data, is_cached=True."""
+    ds = MagicMock()
+    ds.uid = "table__1"
+    ds.get_extra_cache_keys = MagicMock(return_value=[])
+    ds.changed_on = None
+
+    cache = AsyncMock()
+    cached_df = pd.DataFrame({"cached": [1, 2]})
+    cache.get = AsyncMock(return_value=cached_df)
+
+    proc = AsyncQueryContextProcessor(
+        datasource=ds,
+        settings=mock_settings,
+        security_manager=mock_security_manager,
+        cache_manager=cache,
+    )
+    qo = AsyncQueryObject(datasource={"type": "table", "id": 1})
+    result = await proc.get_df_payload(qo)
+    assert result["is_cached"] is True
+    assert len(result["df"]) == 2
+
+
+async def test_get_viz_annotation_data_handles_missing_method(processor):
+    """If chart model has no get_query_context(), raise clear ValueError."""
+    mock_chart = MagicMock(spec=[])  # spec=[] means no attributes
+    mock_chart.id = 42
+    processor._chart_dao = AsyncMock()
+    processor._chart_dao.find_by_id = AsyncMock(return_value=mock_chart)
+
+    with pytest.raises(ValueError, match="does not support get_query_context"):
+        await processor.get_viz_annotation_data(
+            {"name": "test_layer", "value": 42},
+            force=False,
+        )
+
+
+async def test_get_data_xlsx_format():
+    """get_data with xlsx format returns bytes."""
+    df = pd.DataFrame({"col1": [1, 2], "col2": ["a", "b"]})
+    result = AsyncQueryContextProcessor.get_data(df, result_format="xlsx")
+    assert isinstance(result, bytes)
+    assert len(result) > 0
+
+
+async def test_viz_annotation_recursion_depth(mock_settings, mock_security_manager):
+    """get_viz_annotation_data raises at max depth."""
+    ds = MagicMock()
+    ds.uid = "table__1"
+    proc = AsyncQueryContextProcessor(
+        datasource=ds,
+        settings=mock_settings,
+        security_manager=mock_security_manager,
+        chart_dao=AsyncMock(),
+    )
+    with pytest.raises(ValueError, match="recursion depth"):
+        await proc.get_viz_annotation_data(
+            {"value": 1, "name": "test"}, force=False, _depth=2
+        )
+
+
+async def test_ensure_totals_injects_contribution_totals(processor):
+    """_ensure_totals_available injects totals=True into contribution post-processing."""
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        post_processing=[
+            {"operation": "contribution", "options": {}},
+            {"operation": "pivot"},
+        ],
+    )
+    await processor._ensure_totals_available([qo])
+    # The contribution operation should have contribution_totals injected
+    assert qo.post_processing[0]["options"]["contribution_totals"] is True
+    # The pivot operation should be untouched
+    assert "options" not in qo.post_processing[
+        1
+    ] or "contribution_totals" not in qo.post_processing[1].get("options", {})
+
+
+async def test_invalid_column_raises_validation_error(
+    mock_settings, mock_security_manager
+):
+    """get_df_payload raises QueryObjectValidationError for columns not in datasource."""
+    ds = MagicMock()
+    ds.uid = "table__1"
+    ds.type = "table"
+    ds.column_names = ["col1", "col2"]
+    ds.changed_on = None
+    ds.get_extra_cache_keys = MagicMock(return_value=[])
+
+    proc = AsyncQueryContextProcessor(
+        datasource=ds,
+        settings=mock_settings,
+        security_manager=mock_security_manager,
+    )
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        columns=["col1", "nonexistent_col"],
+    )
+
+    with patch(
+        "superset.common.query_context_processor.AsyncQueryContextProcessor.get_df_payload",
+        wraps=proc.get_df_payload,
+    ):
+        # We need the superset imports to be available for this test
+        try:
+            from superset.exceptions import QueryObjectValidationError
+            from superset.utils.core import get_column_names_from_columns
+        except ImportError:
+            pytest.skip("superset.utils.core not available")
+
+        with pytest.raises(QueryObjectValidationError, match="nonexistent_col"):
+            await proc.get_df_payload(qo)
+
+
+def test_query_object_to_dict_uses_filter_key():
+    """to_dict() must produce 'filter' key, not 'filters'."""
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        filters=[{"col": "x", "op": "==", "val": 1}],
+    )
+    d = qo.to_dict()
+    assert "filter" in d
+    assert "filters" not in d
+    assert d["filter"] == [{"col": "x", "op": "==", "val": 1}]
+
+
+def test_validate_sanitizes_where_clause():
+    """validate() delegates extras.where to sanitize_clause."""
+    from superset.common.query_object import QueryObjectValidationError
+
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        extras={"where": "1=1"},
+    )
+
+    def fake_sanitize(clause: str) -> str:
+        raise Exception("Unsafe clause detected")
+
+    with patch("superset.common.query_object.sanitize_clause", fake_sanitize):
+        with pytest.raises(QueryObjectValidationError, match="Unsafe SQL"):
+            qo.validate()
+
+
+def test_validate_rejects_duplicate_labels():
+    """validate() raises on duplicate column/metric labels."""
+    from superset.common.query_object import QueryObjectValidationError
+
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        columns=["revenue", "revenue"],
+    )
+    with pytest.raises(QueryObjectValidationError, match="Duplicate label.*revenue"):
+        qo.validate()
+
+
+# ---------------------------------------------------------------------------
+# NEW-T9: Cache exception paths in QueryContextProcessor
+# ---------------------------------------------------------------------------
+
+
+async def test_cache_get_exception_returns_none(mock_settings, mock_security_manager):
+    """_cache_get returns None when cache.get raises."""
+    ds = MagicMock()
+    ds.uid = "table__1"
+
+    cache = MagicMock()
+    cache.get = MagicMock(side_effect=RuntimeError("redis down"))
+
+    proc = AsyncQueryContextProcessor(
+        datasource=ds,
+        settings=mock_settings,
+        security_manager=mock_security_manager,
+        cache_manager=cache,
+    )
+    result = await proc._cache_get("some-key")
+    assert result is None
+
+
+async def test_cache_set_exception_does_not_propagate(
+    mock_settings, mock_security_manager
+):
+    """_cache_set silently catches exceptions from cache.set."""
+    ds = MagicMock()
+    ds.uid = "table__1"
+
+    cache = MagicMock()
+    cache.set = MagicMock(side_effect=RuntimeError("redis down"))
+
+    proc = AsyncQueryContextProcessor(
+        datasource=ds,
+        settings=mock_settings,
+        security_manager=mock_security_manager,
+        cache_manager=cache,
+    )
+    # Should not raise
+    await proc._cache_set("some-key", {"data": [1]}, 300)

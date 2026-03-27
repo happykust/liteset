@@ -14,73 +14,31 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Generic, TypeVar
 
-from flask_appbuilder.security.sqla.models import User
+from superset.exceptions import CommandException  # noqa: F401 — re-export
 
-from superset.commands.utils import compute_owner_list, populate_owner_list
+T = TypeVar("T")
 
 
-class BaseCommand(ABC):
-    """
-    Base class for all Command like Superset Logic objects
+class AsyncBaseCommand(ABC, Generic[T]):
+    """Base class for all async commands (business logic layer).
+
+    Transaction management: Commands call session.flush() (not commit).
+    The provide_async_session dependency (Phase 1) wraps each HTTP request
+    in a transaction — commit on success, rollback on any exception.
+    Commands MUST NOT call session.commit() or session.rollback() directly.
     """
 
     @abstractmethod
-    def run(self) -> Any:
-        """
-        Run executes the command. Can raise command exceptions
-        :raises: CommandException
-        """
+    async def validate(self) -> None: ...
 
     @abstractmethod
-    def validate(self) -> None:
-        """
-        Validate is normally called by run to validate data.
-        Will raise exception if validation fails
-        :raises: CommandException
-        """
+    async def run(self) -> T: ...
 
-
-class CreateMixin:  # pylint: disable=too-few-public-methods
-    @staticmethod
-    def populate_owners(owner_ids: Optional[list[int]] = None) -> list[User]:
-        """
-        Populate list of owners, defaulting to the current user if `owner_ids` is
-        undefined or empty. If current user is missing in `owner_ids`, current user
-        is added unless belonging to the Admin role.
-
-        :param owner_ids: list of owners by id's
-        :raises OwnersNotFoundValidationError: if at least one owner can't be resolved
-        :returns: Final list of owners
-        """
-        return populate_owner_list(owner_ids, default_to_user=True)
-
-
-class UpdateMixin:
-    @staticmethod
-    def populate_owners(owner_ids: Optional[list[int]] = None) -> list[User]:
-        """
-        Populate list of owners. If current user is missing in `owner_ids`, current user
-        is added unless belonging to the Admin role.
-
-        :param owner_ids: list of owners by id's
-        :raises OwnersNotFoundValidationError: if at least one owner can't be resolved
-        :returns: Final list of owners
-        """
-        return populate_owner_list(owner_ids, default_to_user=False)
-
-    @staticmethod
-    def compute_owners(
-        current_owners: Optional[list[User]],
-        new_owners: Optional[list[int]],
-    ) -> list[User]:
-        """
-        Handle list of owners for update events.
-
-        :param current_owners: list of current owners
-        :param new_owners: list of new owners specified in the update payload
-        :returns: Final list of owners
-        """
-        return compute_owner_list(current_owners, new_owners)
+    async def execute(self) -> T:
+        await self.validate()
+        return await self.run()

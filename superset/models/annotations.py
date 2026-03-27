@@ -14,55 +14,68 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""a collection of Annotation-related models"""
+"""Annotation models: AnnotationLayer, Annotation.
 
-from typing import Any
+Pure SQLAlchemy -- no Flask dependencies.
+"""
+from __future__ import annotations
 
-from flask_appbuilder import Model
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import relationship
 
-from superset.models.helpers import AuditMixinNullable
-from superset.utils.core import MediumText
+from superset.models.helpers import (
+    AuditMixinNullable,
+    Base,
+    MediumText,
+)
+
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
 
 
-class AnnotationLayer(Model, AuditMixinNullable):
-    """A logical namespace for a set of annotations"""
+class AnnotationLayer(Base, AuditMixinNullable):
+    """A logical grouping of annotations."""
 
     __tablename__ = "annotation_layer"
+
     id = Column(Integer, primary_key=True)
     name = Column(String(250))
     descr = Column(Text)
 
-    def __repr__(self) -> str:
-        return str(self.name)
 
-
-class Annotation(Model, AuditMixinNullable):
-    """Time-related annotation"""
+class Annotation(Base, AuditMixinNullable):
+    """A single annotation within a layer."""
 
     __tablename__ = "annotation"
+    __table_args__ = (
+        Index(
+            "ti_dag_state", "layer_id", "start_dttm", "end_dttm"
+        ),
+    )
+
     id = Column(Integer, primary_key=True)
     start_dttm = Column(DateTime)
     end_dttm = Column(DateTime)
-    layer_id = Column(Integer, ForeignKey("annotation_layer.id"), nullable=False)
+    layer_id = Column(
+        Integer, ForeignKey("annotation_layer.id"), nullable=True
+    )
     short_descr = Column(String(500))
     long_descr = Column(Text)
-    layer = relationship(AnnotationLayer, backref="annotation")
     json_metadata = Column(MediumText())
 
-    __table_args__ = (Index("ti_dag_state", layer_id, start_dttm, end_dttm),)
+    # -- relationships --------------------------------------------------------
 
-    @property
-    def data(self) -> dict[str, Any]:
-        return {
-            "layer_id": self.layer_id,
-            "start_dttm": self.start_dttm,
-            "end_dttm": self.end_dttm,
-            "short_descr": self.short_descr,
-            "long_descr": self.long_descr,
-            "layer": self.layer.name if self.layer else None,
-        }
-
-    def __repr__(self) -> str:
-        return str(self.short_descr)
+    layer = relationship(
+        "AnnotationLayer",
+        foreign_keys=[layer_id],
+        backref="annotation",
+    )

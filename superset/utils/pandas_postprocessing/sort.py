@@ -29,16 +29,7 @@ def sort(
     by: Optional[Union[list[str], str]] = None,
     ascending: Union[list[bool], bool] = True,
 ) -> DataFrame:
-    """
-    Sort a DataFrame.
-
-    :param df: DataFrame to sort.
-    :param is_sort_index: Whether by index or value to sort
-    :param by: Name or list of names to sort by.
-    :param ascending: Sort ascending or descending.
-    :return: Sorted DataFrame
-    :raises InvalidPostProcessingError: If the request in incorrect
-    """
+    """Sort a DataFrame."""
     if not is_sort_index and not by:
         return df
 

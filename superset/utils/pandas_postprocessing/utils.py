@@ -20,11 +20,10 @@ from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
-from flask_babel import gettext as _
 from pandas import DataFrame, NamedAgg
 
-from superset.constants import TimeGrain
 from superset.exceptions import InvalidPostProcessingError
+from superset.utils.pandas_postprocessing._constants import TimeGrain
 
 NUMPY_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "average": np.average,
@@ -46,7 +45,7 @@ NUMPY_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "min": np.min,
     "percentile": np.percentile,
     "prod": np.prod,
-    "product": np.product,
+    "product": np.prod,
     "std": np.std,
     "sum": np.sum,
     "var": np.var,
@@ -124,7 +123,7 @@ def validate_column_args(*argnames: str) -> Callable[..., Any]:
                     elem in columns for elem in scalar_to_sequence(options.get(name))
                 ):
                     raise InvalidPostProcessingError(
-                        _("Referenced columns not available in DataFrame.")
+                        "Referenced columns not available in DataFrame."
                     )
             return func(df, **options)
 
@@ -150,17 +149,11 @@ def _get_aggregate_funcs(
         column = agg_obj.get("column", name)
         if column not in df:
             raise InvalidPostProcessingError(
-                _(
-                    "Column referenced by aggregate is undefined: %(column)s",
-                    column=column,
-                )
+                f"Column referenced by aggregate is undefined: {column}"
             )
         if "operator" not in agg_obj:
             raise InvalidPostProcessingError(
-                _(
-                    "Operator undefined for aggregator: %(name)s",
-                    name=name,
-                )
+                f"Operator undefined for aggregator: {name}"
             )
         operator = agg_obj["operator"]
         if callable(operator):
@@ -169,10 +162,7 @@ def _get_aggregate_funcs(
             func = NUMPY_FUNCTIONS.get(operator)
             if not func:
                 raise InvalidPostProcessingError(
-                    _(
-                        "Invalid numpy function: %(operator)s",
-                        operator=operator,
-                    )
+                    f"Invalid numpy function: {operator}"
                 )
             options = agg_obj.get("options", {})
             aggfunc = partial(func, **options)
@@ -185,24 +175,9 @@ def _append_columns(
     base_df: DataFrame, append_df: DataFrame, columns: dict[str, str]
 ) -> DataFrame:
     """
-    Function for adding columns from one DataFrame to another DataFrame. Calls the
-    assign method, which overwrites the original column in `base_df` if the column
-    already exists, and appends the column if the name is not defined.
-
-    Note that! this is a memory-intensive operation.
-
-    :param base_df: DataFrame which to use as the base
-    :param append_df: DataFrame from which to select data.
-    :param columns: columns on which to append, mapping source column to
-           target column. For instance, `{'y': 'y'}` will replace the values in
-           column `y` in `base_df` with the values in `y` in `append_df`,
-           while `{'y': 'y2'}` will add a column `y2` to `base_df` based
-           on values in column `y` in `append_df`, leaving the original column `y`
-           in `base_df` unchanged.
-    :return: new DataFrame with combined data from `base_df` and `append_df`
+    Function for adding columns from one DataFrame to another DataFrame.
     """
     if all(key == value for key, value in columns.items()):
-        # make sure to return a new DataFrame instead of changing the `base_df`.
         _base_df = base_df.copy()
         _base_df.loc[:, columns.keys()] = append_df
         return _base_df

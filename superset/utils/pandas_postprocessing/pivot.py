@@ -16,11 +16,10 @@
 # under the License.
 from typing import Any, Optional
 
-from flask_babel import gettext as _
 from pandas import DataFrame
 
-from superset.constants import NULL_STRING, PandasAxis
 from superset.exceptions import InvalidPostProcessingError
+from superset.utils.pandas_postprocessing._constants import NULL_STRING, PandasAxis
 from superset.utils.pandas_postprocessing.utils import (
     _get_aggregate_funcs,
     validate_column_args,
@@ -40,34 +39,14 @@ def pivot(  # pylint: disable=too-many-arguments
     marginal_distributions: Optional[bool] = None,
     marginal_distribution_name: Optional[str] = None,
 ) -> DataFrame:
-    """
-    Perform a pivot operation on a DataFrame.
-
-    :param df: Object on which pivot operation will be performed
-    :param index: Columns to group by on the table index (=rows)
-    :param columns: Columns to group by on the table columns
-    :param metric_fill_value: Value to replace missing values with
-    :param column_fill_value: Value to replace missing pivot columns with. By default
-           replaces missing values with "<NULL>". Set to `None` to remove columns
-           with missing values.
-    :param drop_missing_columns: Do not include columns whose entries are all missing
-    :param combine_value_with_metric: Display metrics side by side within each column,
-           as opposed to each column being displayed side by side for each metric.
-    :param aggregates: A mapping from aggregate column name to the aggregate
-           config.
-    :param marginal_distributions: Add totals for row/column. Default to False
-    :param marginal_distribution_name: Name of row/column with marginal distribution.
-           Default to 'All'.
-    :return: A pivot table
-    :raises InvalidPostProcessingError: If the request in incorrect
-    """
+    """Perform a pivot operation on a DataFrame."""
     if not index:
         raise InvalidPostProcessingError(
-            _("Pivot operation requires at least one index")
+            "Pivot operation requires at least one index"
         )
     if not aggregates:
         raise InvalidPostProcessingError(
-            _("Pivot operation must include at least one aggregate")
+            "Pivot operation must include at least one aggregate"
         )
 
     if columns and column_fill_value:
@@ -75,14 +54,8 @@ def pivot(  # pylint: disable=too-many-arguments
 
     aggregate_funcs = _get_aggregate_funcs(df, aggregates)
 
-    # TODO (villebro): Pandas 1.0.3 doesn't yet support NamedAgg in pivot_table.
-    #  Remove once/if support is added.
     aggfunc = {na.column: na.aggfunc for na in aggregate_funcs.values()}
 
-    # When dropna = False, the pivot_table function will calculate cartesian-product
-    # for MultiIndex.
-    # https://github.com/apache/superset/issues/15956
-    # https://github.com/pandas-dev/pandas/issues/18030
     series_set = set()
     if not drop_missing_columns and columns:
         for row in df[columns].itertuples():

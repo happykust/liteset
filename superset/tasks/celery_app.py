@@ -14,58 +14,84 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""Celery application factory for Superset.
 
+Replaces ``superset/tasks/celery_app.py``. The Celery app is created
+independently of Litestar (no Flask ``create_app`` call). Signal handlers
+manage async engine disposal in forked worker processes.
 """
-This is the main entrypoint used by Celery workers. As such,
-it needs to call create_app() in order to initialize things properly
-"""
+from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
+from celery import Celery
 from celery.signals import task_postrun, worker_process_init
 
-# Superset framework imports
-from superset import create_app
-from superset.extensions import celery_app, db
+logger = logging.getLogger(__name__)
 
-# Init the Flask app / configure everything
-flask_app = create_app()
-
-# Need to import late, as the celery_app will have been setup by "create_app()"
-# ruff: noqa: E402, F401
-# pylint: disable=wrong-import-position, unused-import
-from . import cache, scheduler
-
-# Export the celery app globally for Celery (as run on the cmd line) to find
-app = celery_app
+celery_app = Celery("superset")
+celery_app.autodiscover_tasks(["superset.tasks"])
 
 
 @worker_process_init.connect
-def reset_db_connection_pool(**kwargs: Any) -> None:  # pylint: disable=unused-argument
-    with flask_app.app_context():
-        # https://docs.sqlalchemy.org/en/14/core/connections.html#engine-disposal
-        db.engine.dispose()
+def reset_db_connection_pool(**kwargs: Any) -> None:
+    """Reset the async DB connection pool in forked worker processes.
+
+    After :func:`os.fork` the parent's connection pool is invalid. We
+    dispose the :class:`~sqlalchemy.ext.asyncio.AsyncEngine` so that
+    each worker creates fresh connections on first use.
+    """
+    # Import lazily -- the engine is only available after app bootstrap.
+    try:
+        from superset.db.session import dispose_engine, get_engine  # noqa: WPS433
+
+        engine = get_engine()
+    except (ImportError, RuntimeError):
+        logger.debug("Engine not available at worker init; skipping disposal")
+        return
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(dispose_engine(engine))
+        else:
+            loop.run_until_complete(dispose_engine(engine))
+    except RuntimeError:
+        asyncio.run(dispose_engine(engine))
 
 
 @task_postrun.connect
-def teardown(  # pylint: disable=unused-argument
-    retval: Any,
-    *args: Any,
-    **kwargs: Any,
-) -> None:
-    """
-    After each Celery task teardown the Flask-SQLAlchemy session.
+def teardown(**kwargs: Any) -> None:
+    """Clean up after each task execution.
 
-    Note for non eagar requests Flask-SQLAlchemy will perform the teardown.
-
-    :param retval: The return value of the task
-    :see: https://docs.celeryq.dev/en/stable/userguide/signals.html#task-postrun
-    :see: https://gist.github.com/twolfson/a1b329e9353f9b575131
+    Session cleanup in superset happens at the DAO layer via
+    ``async_sessionmaker`` scoped sessions, so this is intentionally
+    a no-op placeholder for future use.
     """
 
-    if flask_app.config.get("SQLALCHEMY_COMMIT_ON_TEARDOWN"):
-        if not isinstance(retval, Exception):
-            db.session.commit()  # pylint: disable=consider-using-transaction
 
-    if not flask_app.config.get("CELERY_ALWAYS_EAGER"):
-        db.session.remove()
+def register_task_aliases(app: Celery) -> None:
+    """Map old ``superset.tasks.*`` names to ``superset.tasks.*``.
+
+    This allows existing Celery beat schedules and ``apply_async`` calls
+    that reference the old task names to resolve correctly.
+    """
+    alias_map: dict[str, str] = {
+        "superset.tasks.scheduler.execute": "superset.tasks.scheduler.execute",
+        "superset.tasks.cache.fetch_url": "superset.tasks.cache.fetch_url",
+        "superset.tasks.thumbnails.cache_chart_thumbnail": (
+            "superset.tasks.thumbnails.cache_chart_thumbnail"
+        ),
+        "superset.tasks.thumbnails.cache_dashboard_thumbnail": (
+            "superset.tasks.thumbnails.cache_dashboard_thumbnail"
+        ),
+        "superset.tasks.async_queries.load_chart_data_into_cache": (
+            "superset.tasks.async_queries.load_chart_data_into_cache"
+        ),
+        "superset.tasks.alerts.execute": "superset.tasks.alerts.execute",
+    }
+    for old_name, new_name in alias_map.items():
+        if new_name in app.tasks:
+            app.tasks[old_name] = app.tasks[new_name]

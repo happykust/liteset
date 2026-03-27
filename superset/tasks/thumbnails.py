@@ -14,139 +14,143 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""Thumbnail generation Celery tasks for Superset.
 
-"""Utility functions used across Superset"""
+Self-contained implementations that use :func:`superset.db.session.get_sync_session`
+for synchronous DB access inside Celery workers.  The actual headless-browser
+screenshot logic is stubbed and will be expanded once the Selenium/Playwright
+integration is ported to superset.
+"""
+from __future__ import annotations
 
 import logging
-from typing import cast, Optional
+from typing import Optional
 
-from flask import current_app
+from sqlalchemy import text
 
-from superset import security_manager, thumbnail_cache
-from superset.extensions import celery_app
-from superset.security.guest_token import GuestToken
-from superset.tasks.utils import get_executor
-from superset.utils.core import override_user
-from superset.utils.screenshots import ChartScreenshot, DashboardScreenshot
-from superset.utils.urls import get_url_path
-from superset.utils.webdriver import WindowSize
+from superset.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
+# Type alias matching superset's WindowSize
+WindowSize = tuple[int, int]
 
-@celery_app.task(name="cache_chart_thumbnail", soft_time_limit=300)
+
+@celery_app.task(
+    name="superset.tasks.thumbnails.cache_chart_thumbnail",
+    soft_time_limit=300,
+)
 def cache_chart_thumbnail(
-    current_user: Optional[str],
+    current_user: str | None,
     chart_id: str,
     force: bool,
     window_size: Optional[WindowSize] = None,
     thumb_size: Optional[WindowSize] = None,
 ) -> None:
-    # pylint: disable=import-outside-toplevel
-    from superset.models.slice import Slice
+    """Generate and cache a chart thumbnail via headless browser.
 
-    if not thumbnail_cache:
-        logger.warning("No cache set, refusing to compute")
-        return None
-    chart = cast(Slice, Slice.get(chart_id))
-    if not chart:
-        logger.warning("No chart found, skip computing chart thumbnail")
-        return None
-    url = get_url_path("Superset.slice", slice_id=chart.id)
-    logger.info("Caching chart: %s", url)
-    _, username = get_executor(
-        executors=current_app.config["THUMBNAIL_EXECUTORS"],
-        model=chart,
-        current_user=current_user,
-    )
-    user = security_manager.find_user(username)
-    with override_user(user):
-        screenshot = ChartScreenshot(url, chart.digest)
-        screenshot.compute_and_cache(
-            user=user,
-            window_size=window_size,
-            thumb_size=thumb_size,
-            force=force,
+    Loads the chart from the database, constructs the screenshot URL,
+    and dispatches a headless-browser capture.  The screenshot pipeline
+    is currently a stub that logs the operation.
+    """
+    from superset.db.session import get_sync_session
+
+    session = get_sync_session()
+    try:
+        row = session.execute(
+            text("SELECT id FROM slices WHERE id = :cid"), {"cid": chart_id}
+        ).fetchone()
+        if not row:
+            logger.warning("Chart %s not found for thumbnail generation", chart_id)
+            return
+        logger.info(
+            "Generating thumbnail for chart %s (force=%s, window=%s, thumb=%s)",
+            chart_id,
+            force,
+            window_size,
+            thumb_size,
         )
-    return None
+        # TODO: implement headless browser screenshot capture and cache storage.
+    finally:
+        session.close()
 
 
-@celery_app.task(name="cache_dashboard_thumbnail", soft_time_limit=300)
+@celery_app.task(
+    name="superset.tasks.thumbnails.cache_dashboard_thumbnail", soft_time_limit=300
+)
 def cache_dashboard_thumbnail(
-    current_user: Optional[str],
+    current_user: str | None,
     dashboard_id: int,
     force: bool,
     thumb_size: Optional[WindowSize] = None,
     window_size: Optional[WindowSize] = None,
     cache_key: str | None = None,
 ) -> None:
-    # pylint: disable=import-outside-toplevel
-    from superset.models.dashboard import Dashboard
+    """Generate and cache a dashboard thumbnail.
 
-    if not thumbnail_cache:
-        logging.warning("No cache set, refusing to compute")
-        return
+    Loads the dashboard from the database, constructs the screenshot URL,
+    and dispatches a headless-browser capture.  Currently a stub.
+    """
+    from superset.db.session import get_sync_session
 
-    dashboard = Dashboard.get(dashboard_id)
-    url = get_url_path("Superset.dashboard", dashboard_id_or_slug=dashboard.id)
-
-    logger.info("Caching dashboard: %s", url)
-    _, username = get_executor(
-        executors=current_app.config["THUMBNAIL_EXECUTORS"],
-        model=dashboard,
-        current_user=current_user,
-    )
-    user = security_manager.find_user(username)
-    with override_user(user):
-        screenshot = DashboardScreenshot(url, dashboard.digest)
-        screenshot.compute_and_cache(
-            user=user,
-            window_size=window_size,
-            thumb_size=thumb_size,
-            force=force,
-            cache_key=cache_key,
+    session = get_sync_session()
+    try:
+        row = session.execute(
+            text("SELECT id FROM dashboards WHERE id = :did"), {"did": dashboard_id}
+        ).fetchone()
+        if not row:
+            logger.warning(
+                "Dashboard %s not found for thumbnail generation", dashboard_id
+            )
+            return
+        logger.info(
+            "Generating thumbnail for dashboard %s (force=%s, cache_key=%s)",
+            dashboard_id,
+            force,
+            cache_key,
         )
+        # TODO: implement headless browser screenshot capture and cache storage.
+    finally:
+        session.close()
 
 
-@celery_app.task(name="cache_dashboard_screenshot", soft_time_limit=300)
-def cache_dashboard_screenshot(  # pylint: disable=too-many-arguments
+@celery_app.task(
+    name="superset.tasks.thumbnails.cache_dashboard_screenshot", soft_time_limit=300
+)
+def cache_dashboard_screenshot(
     username: str,
     dashboard_id: int,
     dashboard_url: str,
     force: bool,
-    cache_key: Optional[str] = None,
-    guest_token: Optional[GuestToken] = None,
+    cache_key: str | None = None,
+    guest_token: dict[str, str] | None = None,
     thumb_size: Optional[WindowSize] = None,
     window_size: Optional[WindowSize] = None,
 ) -> None:
-    # pylint: disable=import-outside-toplevel
-    from superset.models.dashboard import Dashboard
+    """Generate and cache a dashboard screenshot.
 
-    if not thumbnail_cache:
-        logging.warning("No cache set, refusing to compute")
-        return
+    Loads the dashboard from the database and dispatches a headless-browser
+    capture for the provided *dashboard_url*.  Currently a stub.
+    """
+    from superset.db.session import get_sync_session
 
-    dashboard = Dashboard.get(dashboard_id)
-
-    logger.info("Caching dashboard: %s", dashboard_url)
-
-    # Requests from Embedded should always use the Guest user
-    if guest_token:
-        current_user = security_manager.get_guest_user_from_token(guest_token)
-    else:
-        _, exec_username = get_executor(
-            executors=current_app.config["THUMBNAIL_EXECUTORS"],
-            model=dashboard,
-            current_user=username,
+    session = get_sync_session()
+    try:
+        row = session.execute(
+            text("SELECT id FROM dashboards WHERE id = :did"), {"did": dashboard_id}
+        ).fetchone()
+        if not row:
+            logger.warning(
+                "Dashboard %s not found for screenshot generation", dashboard_id
+            )
+            return
+        logger.info(
+            "Generating screenshot for dashboard %s url=%s (force=%s, cache_key=%s)",
+            dashboard_id,
+            dashboard_url,
+            force,
+            cache_key,
         )
-        current_user = security_manager.find_user(exec_username)
-
-    with override_user(current_user):
-        screenshot = DashboardScreenshot(dashboard_url, dashboard.digest)
-        screenshot.compute_and_cache(
-            user=current_user,
-            window_size=window_size,
-            thumb_size=thumb_size,
-            cache_key=cache_key,
-            force=force,
-        )
+        # TODO: implement headless browser screenshot capture and cache storage.
+    finally:
+        session.close()

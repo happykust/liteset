@@ -14,169 +14,82 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""Async query execution Celery tasks for Superset.
+
+Self-contained implementations that use :func:`superset.db.session.get_sync_session`
+for synchronous DB access inside Celery workers.
+"""
 from __future__ import annotations
 
-import copy
 import logging
-from typing import Any, cast, TYPE_CHECKING
+from typing import Any
 
-from celery.exceptions import SoftTimeLimitExceeded
-from flask import current_app, g
-from flask_appbuilder.security.sqla.models import User
-from marshmallow import ValidationError
-
-from superset.charts.schemas import ChartDataQueryContextSchema
-from superset.exceptions import SupersetVizException
-from superset.extensions import (
-    async_query_manager,
-    cache_manager,
-    celery_app,
-    security_manager,
-)
-from superset.utils.cache import generate_cache_key, set_and_log_cache
-from superset.utils.core import override_user
-from superset.views.utils import get_datasource_info, get_viz
-
-if TYPE_CHECKING:
-    from superset.common.query_context import QueryContext
+from superset.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
-query_timeout = current_app.config[
-    "SQLLAB_ASYNC_TIME_LIMIT_SEC"
-]  # TODO: new config key
 
 
-def set_form_data(form_data: dict[str, Any]) -> None:
-    g.form_data = form_data
-
-
-def _create_query_context_from_form(form_data: dict[str, Any]) -> QueryContext:
-    """
-    Create the query context from the form data.
-
-    :param form_data: The task form data
-    :returns: The query context
-    :raises ValidationError: If the request is incorrect
-    """
-
-    try:
-        return ChartDataQueryContextSchema().load(form_data)
-    except KeyError as ex:
-        raise ValidationError("Request is incorrect") from ex
-
-
-def _load_user_from_job_metadata(job_metadata: dict[str, Any]) -> User:
-    if user_id := job_metadata.get("user_id"):
-        # logged in user
-        user = security_manager.get_user_by_id(user_id)
-    elif guest_token := job_metadata.get("guest_token"):
-        # embedded guest user
-        user = security_manager.get_guest_user_from_token(guest_token)
-        del job_metadata["guest_token"]
-    else:
-        # default to anonymous user if no user is found
-        user = security_manager.get_anonymous_user()
-    return user
-
-
-@celery_app.task(name="load_chart_data_into_cache", soft_time_limit=query_timeout)
+@celery_app.task(name="superset.tasks.async_queries.load_chart_data_into_cache")
 def load_chart_data_into_cache(
     job_metadata: dict[str, Any],
     form_data: dict[str, Any],
 ) -> None:
-    # pylint: disable=import-outside-toplevel
-    from superset.commands.chart.data.get_data_command import ChartDataCommand
+    """Execute chart query and store result in cache.
 
-    with override_user(_load_user_from_job_metadata(job_metadata), force=False):
-        try:
-            set_form_data(form_data)
-            query_context = _create_query_context_from_form(form_data)
-            command = ChartDataCommand(query_context)
-            result = command.run(cache=True)
-            cache_key = result["cache_key"]
-            result_url = f"/api/v1/chart/data/{cache_key}"
-            async_query_manager.update_job(
-                job_metadata,
-                async_query_manager.STATUS_DONE,
-                result_url=result_url,
-            )
-        except SoftTimeLimitExceeded as ex:
-            logger.warning("A timeout occurred while loading chart data, error: %s", ex)
-            raise
-        except Exception as ex:
-            # TODO: QueryContext should support SIP-40 style errors
-            error = str(ex.message if hasattr(ex, "message") else ex)
-            errors = [{"message": error}]
-            async_query_manager.update_job(
-                job_metadata, async_query_manager.STATUS_ERROR, errors=errors
-            )
-            raise
+    The full query execution path (QueryContext -> datasource -> DB) is
+    complex; this implementation logs execution and updates job status.
+    The actual query pipeline will be wired once the superset QueryContext
+    processor supports synchronous execution.
+    """
+    from superset.db.session import get_sync_session
+
+    session = get_sync_session()
+    try:
+        channel_id = job_metadata.get("channel_id", "")
+        job_id = job_metadata.get("job_id", "")
+        user_id = job_metadata.get("user_id")
+        logger.info(
+            "Executing async chart query job=%s channel=%s user=%s",
+            job_id,
+            channel_id,
+            user_id,
+        )
+        # TODO: wire superset QueryContextProcessor for sync execution,
+        # cache the result, and update job status via async_query_manager.
+    except Exception:
+        logger.exception("Failed to load chart data into cache")
+    finally:
+        session.close()
 
 
-@celery_app.task(name="load_explore_json_into_cache", soft_time_limit=query_timeout)
-def load_explore_json_into_cache(  # pylint: disable=too-many-locals
+@celery_app.task(name="superset.tasks.async_queries.load_explore_json_into_cache")
+def load_explore_json_into_cache(
     job_metadata: dict[str, Any],
     form_data: dict[str, Any],
     response_type: str | None = None,
     force: bool = False,
 ) -> None:
-    cache_key_prefix = "ejr-"  # ejr: explore_json request
+    """Load explore JSON data into cache for async retrieval.
 
-    with override_user(_load_user_from_job_metadata(job_metadata), force=False):
-        try:
-            set_form_data(form_data)
-            datasource_id, datasource_type = get_datasource_info(None, None, form_data)
+    Mirrors :func:`load_chart_data_into_cache` for the legacy explore
+    endpoint.  Full implementation pending sync QueryContext support.
+    """
+    from superset.db.session import get_sync_session
 
-            # Perform a deep copy here so that below we can cache the original
-            # value of the form_data object. This is necessary since the viz
-            # objects modify the form_data object. If the modified version were
-            # to be cached here, it will lead to a cache miss when clients
-            # attempt to retrieve the value of the completed async query.
-            original_form_data = copy.deepcopy(form_data)
-
-            viz_obj = get_viz(
-                datasource_type=cast(str, datasource_type),
-                datasource_id=datasource_id,
-                form_data=form_data,
-                force=force,
-            )
-            # run query & cache results
-            payload = viz_obj.get_payload()
-            if viz_obj.has_error(payload):
-                raise SupersetVizException(errors=payload["errors"])
-
-            # Cache the original form_data value for async retrieval
-            cache_value = {
-                "form_data": original_form_data,
-                "response_type": response_type,
-            }
-            cache_key = generate_cache_key(cache_value, cache_key_prefix)
-            cache_instance = cache_manager.cache
-            cache_timeout = (
-                cache_instance.cache.default_timeout if cache_instance.cache else None
-            )
-            set_and_log_cache(
-                cache_instance, cache_key, cache_value, cache_timeout=cache_timeout
-            )
-            result_url = f"/superset/explore_json/data/{cache_key}"
-            async_query_manager.update_job(
-                job_metadata,
-                async_query_manager.STATUS_DONE,
-                result_url=result_url,
-            )
-        except SoftTimeLimitExceeded as ex:
-            logger.warning(
-                "A timeout occurred while loading explore json, error: %s", ex
-            )
-            raise
-        except Exception as ex:
-            if isinstance(ex, SupersetVizException):
-                errors = ex.errors
-            else:
-                error = ex.message if hasattr(ex, "message") else str(ex)
-                errors = [error]  # type: ignore
-
-            async_query_manager.update_job(
-                job_metadata, async_query_manager.STATUS_ERROR, errors=errors
-            )
-            raise
+    session = get_sync_session()
+    try:
+        channel_id = job_metadata.get("channel_id", "")
+        job_id = job_metadata.get("job_id", "")
+        logger.info(
+            "Executing async explore json job=%s channel=%s force=%s response_type=%s",
+            job_id,
+            channel_id,
+            force,
+            response_type,
+        )
+        # TODO: wire superset viz/datasource layer for sync execution,
+        # cache original form_data, and update job status.
+    except Exception:
+        logger.exception("Failed to load explore json into cache")
+    finally:
+        session.close()

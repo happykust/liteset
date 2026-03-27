@@ -14,123 +14,51 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""Thumbnails digest computation and Celery task dispatch."""
 
 from __future__ import annotations
 
+import hashlib
 import logging
-from typing import TYPE_CHECKING
-
-from flask import current_app as app
-
-from superset import security_manager
-from superset.tasks.exceptions import ExecutorNotFoundError
-from superset.tasks.types import ExecutorType
-from superset.tasks.utils import get_current_user, get_executor
-from superset.utils.core import override_user
-from superset.utils.hashing import md5_sha_from_str
-
-if TYPE_CHECKING:
-    from superset.connectors.sqla.models import BaseDatasource, SqlaTable
-    from superset.models.dashboard import Dashboard
-    from superset.models.slice import Slice
 
 logger = logging.getLogger(__name__)
 
 
-def _adjust_string_for_executor(
-    unique_string: str,
-    executor_type: ExecutorType,
-    executor: str,
-) -> str:
-    """
-    Add the executor to the unique string if the thumbnail is
-    user-specific.
-    """
-    if executor_type == ExecutorType.CURRENT_USER:
-        # add the user id to the string to make it unique
-        unique_string = f"{unique_string}\n{executor}"
+class AsyncThumbnailsDigest:
+    """Compute digest and dispatch Celery screenshot task."""
 
-    return unique_string
+    @staticmethod
+    async def compute_digest(
+        url: str,
+        user_id: int,
+        force: bool = False,
+    ) -> str:
+        """Compute cache key digest for thumbnail."""
+        return hashlib.md5(  # noqa: S324
+            f"{url}_{user_id}".encode(),
+            usedforsecurity=False,
+        ).hexdigest()
 
+    @staticmethod
+    async def trigger_screenshot(
+        url: str,
+        digest: str,
+        user_id: int,
+        force: bool = False,
+    ) -> None:
+        """Dispatch Celery task for async screenshot capture."""
+        try:
+            from superset.tasks.thumbnails import (
+                cache_chart_thumbnail,
+                cache_dashboard_thumbnail,
+            )
 
-def _adjust_string_with_rls(
-    unique_string: str,
-    datasources: list[SqlaTable | None] | set[BaseDatasource],
-    executor: str,
-) -> str:
-    """
-    Add the RLS filters to the unique string based on current executor.
-    """
-    user = (
-        security_manager.find_user(executor)
-        or security_manager.get_current_guest_user_if_guest()
-    )
-
-    if user:
-        stringified_rls = ""
-        with override_user(user):
-            for datasource in datasources:
-                if (
-                    datasource
-                    and hasattr(datasource, "is_rls_supported")
-                    and datasource.is_rls_supported
-                ):
-                    rls_filters = datasource.get_sqla_row_level_filters()
-
-                    if len(rls_filters) > 0:
-                        stringified_rls += (
-                            f"{str(datasource.id)}\t"
-                            + "\t".join([str(f) for f in rls_filters])
-                            + "\n"
-                        )
-
-        if stringified_rls:
-            unique_string = f"{unique_string}\n{stringified_rls}"
-
-    return unique_string
-
-
-def get_dashboard_digest(dashboard: Dashboard) -> str | None:
-    try:
-        executor_type, executor = get_executor(
-            executors=app.config["THUMBNAIL_EXECUTORS"],
-            model=dashboard,
-            current_user=get_current_user(),
-        )
-    except ExecutorNotFoundError:
-        return None
-
-    if func := app.config["THUMBNAIL_DASHBOARD_DIGEST_FUNC"]:
-        return func(dashboard, executor_type, executor)
-
-    unique_string = (
-        f"{dashboard.id}\n{dashboard.charts}\n{dashboard.position_json}\n"
-        f"{dashboard.css}\n{dashboard.json_metadata}"
-    )
-
-    unique_string = _adjust_string_for_executor(unique_string, executor_type, executor)
-    unique_string = _adjust_string_with_rls(
-        unique_string, dashboard.datasources, executor
-    )
-
-    return md5_sha_from_str(unique_string)
-
-
-def get_chart_digest(chart: Slice) -> str | None:
-    try:
-        executor_type, executor = get_executor(
-            executors=app.config["THUMBNAIL_EXECUTORS"],
-            model=chart,
-            current_user=get_current_user(),
-        )
-    except ExecutorNotFoundError:
-        return None
-
-    if func := app.config["THUMBNAIL_CHART_DIGEST_FUNC"]:
-        return func(chart, executor_type, executor)
-
-    unique_string = f"{chart.params or ''}.{executor}"
-    unique_string = _adjust_string_for_executor(unique_string, executor_type, executor)
-    unique_string = _adjust_string_with_rls(unique_string, [chart.datasource], executor)
-
-    return md5_sha_from_str(unique_string)
+            # Determine type from URL and dispatch
+            if "/chart/" in url or "/slice/" in url:
+                cache_chart_thumbnail.delay(url, digest, force=force)
+            else:
+                cache_dashboard_thumbnail.delay(url, digest, force=force)
+        except ImportError:
+            logger.warning(
+                "Thumbnail tasks not available — Celery not configured"
+            )

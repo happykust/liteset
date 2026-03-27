@@ -14,3 +14,41 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+from __future__ import annotations
+
+from typing import Any
+from urllib.parse import urlparse, urlunparse
+
+import msgspec
+
+
+def filter_unset(data: dict[str, Any]) -> dict[str, Any]:
+    """Filter out msgspec.UNSET values from a dict."""
+    return {k: v for k, v in data.items() if v is not msgspec.UNSET}
+
+
+def filter_none(data: dict[str, Any]) -> dict[str, Any]:
+    """Filter out None values from a dict (for POST/create bodies)."""
+    return {k: v for k, v in data.items() if v is not None}
+
+
+def escape_like(value: str) -> str:
+    """Escape LIKE special characters (\\, %, _) to prevent wildcard injection."""
+    return value.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+
+def mask_uri_password(uri: str) -> str:
+    """Replace password component in a SQLAlchemy URI with a placeholder."""
+    if not uri:
+        return uri
+    try:
+        parsed = urlparse(uri)
+        if parsed.password:
+            masked = parsed._replace(
+                netloc=f"{parsed.username or ''}:XXXXXXXXXX@{parsed.hostname}"
+                + (f":{parsed.port}" if parsed.port else ""),
+            )
+            return urlunparse(masked)
+    except Exception:  # noqa: BLE001
+        pass
+    return uri

@@ -17,11 +17,12 @@
 from typing import Any, Callable, Optional, Union
 
 import numpy as np
-from flask_babel import gettext as _
 from pandas import DataFrame, Series, to_numeric
 
 from superset.exceptions import InvalidPostProcessingError
-from superset.utils.core import PostProcessingBoxplotWhiskerType
+from superset.utils.pandas_postprocessing._constants import (
+    PostProcessingBoxplotWhiskerType,
+)
 from superset.utils.pandas_postprocessing.aggregate import aggregate
 
 
@@ -42,18 +43,11 @@ def boxplot(  # noqa: C901
     - `__median`: the median
     - `__max`: the maximum value excluding outliers (see whisker type)
     - `__min`: the minimum value excluding outliers (see whisker type)
-    - `__q1`: the median
     - `__q1`: the first quartile (25th percentile)
     - `__q3`: the third quartile (75th percentile)
     - `__count`: count of observations
     - `__outliers`: the values that fall outside the minimum/maximum value
                     (see whisker type)
-
-    :param df: DataFrame containing all-numeric data (temporal column ignored)
-    :param groupby: The categories to group by (x-axis)
-    :param metrics: The metrics for which to calculate the distribution
-    :param whisker_type: The confidence level type
-    :return: DataFrame with boxplot statistics per groupby
     """
 
     def quartile1(series: Series) -> float:
@@ -85,10 +79,8 @@ def boxplot(  # noqa: C901
             or percentiles[0] >= percentiles[1]
         ):
             raise InvalidPostProcessingError(
-                _(
-                    "percentiles must be a list or tuple with two numeric values, "
-                    "of which the first is lower than the second value"
-                )
+                "percentiles must be a list or tuple with two numeric values, "
+                "of which the first is lower than the second value"
             )
         low, high = percentiles[0], percentiles[1]
 
