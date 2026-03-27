@@ -64,7 +64,7 @@ class FavoriteMixin:
             dttm=datetime.now(tz=timezone.utc),
         )
         self.session.add(fav)
-        await self.session.flush()
+        await self.session.flush([fav])
 
     async def remove_favorite(self, obj_id: int, user_id: int) -> None:
         """Remove an object from user's favorites."""

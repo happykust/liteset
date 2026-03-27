@@ -27,10 +27,11 @@ from litestar import Controller, delete, get, post, put
 
 from liteset.events import event_logger
 from liteset.exceptions import ObjectNotFoundError
+from liteset.guards.rbac import require_authentication
 from liteset.typing import KeyValueDAOProtocol, UserProtocol
 
 
-class TemporaryCacheBody(msgspec.Struct):
+class TemporaryCacheSchema(msgspec.Struct):
     """Request body for temporary cache create/update."""
     value: str
     tab_id: int | None = None
@@ -45,7 +46,7 @@ class TemporaryCacheController(Controller):
     """
     resource: ClassVar[str] = ""
 
-    @get("/{key:str}")
+    @get("/{key:str}", guards=[require_authentication])
     async def get_value(
         self,
         key: str,
@@ -71,10 +72,10 @@ class TemporaryCacheController(Controller):
             pass
         return {"value": raw}
 
-    @post("/", status_code=201)
+    @post("/", status_code=201, guards=[require_authentication])
     async def create_value(
         self,
-        data: TemporaryCacheBody,
+        data: TemporaryCacheSchema,
         kv_dao: KeyValueDAOProtocol,
         current_user: UserProtocol,
     ) -> dict[str, str]:
@@ -97,11 +98,11 @@ class TemporaryCacheController(Controller):
         )
         return {"key": key}
 
-    @put("/{key:str}")
+    @put("/{key:str}", guards=[require_authentication])
     async def update_value(
         self,
         key: str,
-        data: TemporaryCacheBody,
+        data: TemporaryCacheSchema,
         kv_dao: KeyValueDAOProtocol,
         current_user: UserProtocol,
     ) -> dict[str, str]:
@@ -132,7 +133,7 @@ class TemporaryCacheController(Controller):
         )
         return {"key": key}
 
-    @delete("/{key:str}", status_code=200)
+    @delete("/{key:str}", status_code=200, guards=[require_authentication])
     async def delete_value(
         self,
         key: str,

@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 
-from liteset.controllers.temporary_cache import TemporaryCacheBody, TemporaryCacheController
+from liteset.controllers.temporary_cache import TemporaryCacheSchema, TemporaryCacheController
 from liteset.exceptions import ObjectNotFoundError
 
 
@@ -69,7 +69,7 @@ async def test_get_value_not_found(controller, mock_kv_dao, mock_user):
 
 
 async def test_create_value(controller, mock_kv_dao, mock_user):
-    data = TemporaryCacheBody(value="new_data")
+    data = TemporaryCacheSchema(value="new_data")
     fn = _CacheController.create_value.fn
     result = await fn(controller, data=data, kv_dao=mock_kv_dao, current_user=mock_user)
     assert "key" in result
@@ -78,7 +78,7 @@ async def test_create_value(controller, mock_kv_dao, mock_user):
 
 async def test_update_value_found(controller, mock_kv_dao, mock_user):
     mock_kv_dao.get_value.return_value = "existing"
-    data = TemporaryCacheBody(value="updated")
+    data = TemporaryCacheSchema(value="updated")
     fn = _CacheController.update_value.fn
     result = await fn(controller, key="abc", data=data, kv_dao=mock_kv_dao, current_user=mock_user)
     assert result["key"] == "abc"
@@ -86,7 +86,7 @@ async def test_update_value_found(controller, mock_kv_dao, mock_user):
 
 async def test_update_value_not_found(controller, mock_kv_dao, mock_user):
     mock_kv_dao.get_value.return_value = None
-    data = TemporaryCacheBody(value="updated")
+    data = TemporaryCacheSchema(value="updated")
     fn = _CacheController.update_value.fn
     with pytest.raises(ObjectNotFoundError):
         await fn(controller, key="missing", data=data, kv_dao=mock_kv_dao, current_user=mock_user)

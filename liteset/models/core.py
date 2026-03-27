@@ -70,7 +70,16 @@ class FavStarClassName(str, enum.Enum):
 
 
 class KeyValue(Base):
-    """Generic key-value store."""
+    """Legacy generic key-value store (table ``keyvalue``).
+
+    This is the original Superset key-value table used for simple text
+    storage (e.g., filter state, permalink data in older versions).
+    It stores values as :class:`MediumText` and has no audit columns.
+
+    Not to be confused with :class:`liteset.models.key_value.KeyValueEntry`
+    which maps to the newer ``key_value`` table and supports binary values,
+    resource namespacing, expiration, and full audit tracking.
+    """
 
     __tablename__ = "keyvalue"
 

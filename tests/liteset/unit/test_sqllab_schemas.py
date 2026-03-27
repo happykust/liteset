@@ -20,20 +20,20 @@ import msgspec
 import pytest
 
 from liteset.schemas.sqllab import (
-    EstimateQueryCostBody,
-    ExecutePayloadBody,
-    FormatSQLBody,
+    EstimateQueryCostSchema,
+    ExecutePayloadSchema,
+    FormatSQLSchema,
     QueryExecutionResponse,
     QueryResult,
     SQLLabBootstrap,
-    SqlLabPermalinkBody,
+    SqlLabPermalinkSchema,
 )
 
 
 def test_estimate_query_cost_body():
     body = msgspec.json.decode(
         b'{"database_id": 1, "sql": "SELECT 1"}',
-        type=EstimateQueryCostBody,
+        type=EstimateQueryCostSchema,
     )
     assert body.database_id == 1
     assert body.sql == "SELECT 1"
@@ -43,22 +43,22 @@ def test_estimate_query_cost_body():
 
 def test_estimate_query_cost_body_missing_required():
     with pytest.raises(msgspec.ValidationError):
-        msgspec.json.decode(b'{"database_id": 1}', type=EstimateQueryCostBody)
+        msgspec.json.decode(b'{"database_id": 1}', type=EstimateQueryCostSchema)
 
 
 def test_format_sql_body():
-    body = FormatSQLBody(sql="SELECT * FROM t")
+    body = FormatSQLSchema(sql="SELECT * FROM t")
     assert body.sql == "SELECT * FROM t"
     assert body.engine is None
 
 
 def test_format_sql_body_with_engine():
-    body = FormatSQLBody(sql="SELECT 1", engine="postgres")
+    body = FormatSQLSchema(sql="SELECT 1", engine="postgres")
     assert body.engine == "postgres"
 
 
 def test_execute_payload_body_defaults():
-    body = ExecutePayloadBody(database_id=1, sql="SELECT 1")
+    body = ExecutePayloadSchema(database_id=1, sql="SELECT 1")
     assert body.select_as_cta is False
     assert body.ctas_method == "TABLE"
     assert body.runAsync is False
@@ -68,7 +68,7 @@ def test_execute_payload_body_defaults():
 
 
 def test_execute_payload_body_full():
-    body = ExecutePayloadBody(
+    body = ExecutePayloadSchema(
         database_id=5,
         sql="SELECT * FROM users",
         schema="public",
@@ -88,9 +88,9 @@ def test_execute_payload_body_full():
 
 
 def test_execute_payload_body_json_roundtrip():
-    body = ExecutePayloadBody(database_id=1, sql="SELECT 1")
+    body = ExecutePayloadSchema(database_id=1, sql="SELECT 1")
     encoded = msgspec.json.encode(body)
-    decoded = msgspec.json.decode(encoded, type=ExecutePayloadBody)
+    decoded = msgspec.json.decode(encoded, type=ExecutePayloadSchema)
     assert decoded.database_id == 1
     assert decoded.sql == "SELECT 1"
 
@@ -132,17 +132,17 @@ def test_sqllab_bootstrap_with_data():
 
 
 def test_sqllab_permalink_body_default():
-    body = SqlLabPermalinkBody()
+    body = SqlLabPermalinkSchema()
     assert body.state == {}
 
 
 def test_sqllab_permalink_body_with_state():
-    body = SqlLabPermalinkBody(state={"sql": "SELECT 1", "dbId": 1})
+    body = SqlLabPermalinkSchema(state={"sql": "SELECT 1", "dbId": 1})
     assert body.state["sql"] == "SELECT 1"
 
 
 def test_sqllab_permalink_body_json_roundtrip():
-    body = SqlLabPermalinkBody(state={"key": "value"})
+    body = SqlLabPermalinkSchema(state={"key": "value"})
     encoded = msgspec.json.encode(body)
-    decoded = msgspec.json.decode(encoded, type=SqlLabPermalinkBody)
+    decoded = msgspec.json.decode(encoded, type=SqlLabPermalinkSchema)
     assert decoded.state == {"key": "value"}

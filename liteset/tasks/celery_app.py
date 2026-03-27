@@ -43,14 +43,12 @@ def reset_db_connection_pool(**kwargs: Any) -> None:
     dispose the :class:`~sqlalchemy.ext.asyncio.AsyncEngine` so that
     each worker creates fresh connections on first use.
     """
-    from liteset.db.session import dispose_engine  # noqa: WPS433
-
     # Import lazily -- the engine is only available after app bootstrap.
     try:
-        from liteset.dependencies import get_engine  # noqa: WPS433
+        from liteset.db.session import dispose_engine, get_engine  # noqa: WPS433
 
         engine = get_engine()
-    except Exception:
+    except (ImportError, RuntimeError):
         logger.debug("Engine not available at worker init; skipping disposal")
         return
 

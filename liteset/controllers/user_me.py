@@ -22,8 +22,10 @@ from typing import Any
 
 import msgspec
 from litestar import Controller, get, put
+from litestar.di import Provide
 
 from liteset.events import event_logger
+from liteset.guards.rbac import require_authentication
 from liteset.schemas.user import (
     CurrentUserResponse,
     CurrentUserUpdateRequest,
@@ -32,11 +34,21 @@ from liteset.schemas.user import (
 from liteset.typing import UserProtocol
 
 
+def _provide_user_dao(session: Any) -> Any:
+    """Lazy provider for AsyncUserDAO — avoids eager Flask imports."""
+    from liteset.db.daos.user import AsyncUserDAO
+
+    return AsyncUserDAO(session)
+
+
 class CurrentUserController(Controller):
     path = "/api/v1/me"
     tags = ["Current User"]
+    dependencies = {
+        "user_dao": Provide(_provide_user_dao, sync_to_thread=False),
+    }
 
-    @get("/")
+    @get("/", guards=[require_authentication])
     async def get_me(self, current_user: UserProtocol) -> dict[str, Any]:
         """GET /api/v1/me/ — get current user info."""
         roles = []
@@ -61,7 +73,7 @@ class CurrentUserController(Controller):
         )
         return {"result": msgspec.to_builtins(resp)}
 
-    @get("/roles/")
+    @get("/roles/", guards=[require_authentication])
     async def get_my_roles(self, current_user: UserProtocol) -> dict[str, Any]:
         """GET /api/v1/me/roles/ — get current user roles."""
         roles = []
@@ -75,20 +87,26 @@ class CurrentUserController(Controller):
             )
         return {"result": roles}
 
-    @put("/")
+    @put("/", guards=[require_authentication])
     async def update_me(
         self,
         data: CurrentUserUpdateRequest,
         current_user: UserProtocol,
+        user_dao: Any,
     ) -> dict[str, Any]:
         """PUT /api/v1/me/ — update current user (first_name, last_name)."""
-        # NOTE: actual DB update requires session access which is available
-        # via the DAO layer. For now, this validates and returns the update.
         updates: dict[str, str] = {}
         if data.first_name is not None:
             updates["first_name"] = data.first_name
         if data.last_name is not None:
             updates["last_name"] = data.last_name
+
+        if updates:
+            user = await user_dao.get_by_id(current_user.id)
+            if user is not None:
+                for attr, value in updates.items():
+                    setattr(user, attr, value)
+                await user_dao.session.flush()
 
         event_logger.log("user.update_me", user_id=current_user.id)
         return {"result": updates}

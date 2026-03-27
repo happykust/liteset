@@ -22,7 +22,7 @@ from liteset.schemas.query import (
     ImportV1SavedQuery,
     QueryDatabaseInfo,
     QueryResponse,
-    StopQueryBody,
+    StopQuerySchema,
 )
 
 
@@ -55,7 +55,7 @@ def test_query_response_json_roundtrip():
 
 
 def test_stop_query_body():
-    body = msgspec.json.decode(b'{"client_id": "abc-123"}', type=StopQueryBody)
+    body = msgspec.json.decode(b'{"client_id": "abc-123"}', type=StopQuerySchema)
     assert body.client_id == "abc-123"
 
 
@@ -63,7 +63,7 @@ def test_stop_query_body_missing_client_id():
     import pytest
 
     with pytest.raises(msgspec.ValidationError):
-        msgspec.json.decode(b"{}", type=StopQueryBody)
+        msgspec.json.decode(b"{}", type=StopQuerySchema)
 
 
 def test_query_database_info():

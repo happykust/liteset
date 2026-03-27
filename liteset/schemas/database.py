@@ -30,7 +30,7 @@ from liteset.schemas.base import ApiListResponse, ApiResponse
 # ---------------------------------------------------------------------------
 
 
-class DatabasePostBody(msgspec.Struct):
+class DatabasePostSchema(msgspec.Struct):
     database_name: str
     sqlalchemy_uri: str | None = None
     engine: str | None = None
@@ -55,7 +55,7 @@ class DatabasePostBody(msgspec.Struct):
     force_ctas_schema: str | None = None
 
 
-class DatabasePutBody(msgspec.Struct):
+class DatabasePutSchema(msgspec.Struct):
     database_name: str | None | msgspec.UnsetType = msgspec.UNSET
     sqlalchemy_uri: str | None | msgspec.UnsetType = msgspec.UNSET
     engine: str | None | msgspec.UnsetType = msgspec.UNSET
@@ -79,7 +79,7 @@ class DatabasePutBody(msgspec.Struct):
     force_ctas_schema: str | None | msgspec.UnsetType = msgspec.UNSET
 
 
-class DatabaseTestConnectionBody(msgspec.Struct):
+class DatabaseTestConnectionSchema(msgspec.Struct):
     database_name: str | None = None
     sqlalchemy_uri: str | None = None
     engine: str | None = None
@@ -93,13 +93,13 @@ class DatabaseTestConnectionBody(msgspec.Struct):
     parameters: dict[str, Any] = {}
 
 
-class ValidateSQLBody(msgspec.Struct):
+class ValidateSQLSchema(msgspec.Struct):
     sql: str
     schema: str | None = None
     catalog: str | None = None
 
 
-class DatabaseValidateParamsBody(msgspec.Struct):
+class DatabaseValidateParamsSchema(msgspec.Struct):
     engine: str
     parameters: dict[str, Any] = {}
     database_name: str | None = None
@@ -194,7 +194,7 @@ class ImportV1Database(msgspec.Struct):
 # ---------------------------------------------------------------------------
 
 
-class UploadBody(msgspec.Struct):
+class UploadSchema(msgspec.Struct):
     table_name: str
     schema_name: str | None = None
     delimiter: str = ","
@@ -205,7 +205,7 @@ class UploadBody(msgspec.Struct):
     header_row: int = 0
 
 
-class UploadMetadataBody(msgspec.Struct):
+class UploadMetadataSchema(msgspec.Struct):
     table_name: str
     schema_name: str | None = None
 

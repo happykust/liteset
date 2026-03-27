@@ -24,7 +24,7 @@ from typing import Any
 import msgspec
 
 
-class EstimateQueryCostBody(msgspec.Struct):
+class EstimateQueryCostSchema(msgspec.Struct):
     """POST /api/v1/sqllab/estimate/"""
 
     database_id: int
@@ -34,14 +34,14 @@ class EstimateQueryCostBody(msgspec.Struct):
     template_params: dict[str, Any] = {}
 
 
-class FormatSQLBody(msgspec.Struct):
+class FormatSQLSchema(msgspec.Struct):
     """POST /api/v1/sqllab/format_sql/"""
 
     sql: str
     engine: str | None = None
 
 
-class ExecutePayloadBody(msgspec.Struct):
+class ExecutePayloadSchema(msgspec.Struct):
     """POST /api/v1/sqllab/execute/"""
 
     database_id: int
@@ -91,7 +91,7 @@ class SQLLabBootstrap(msgspec.Struct):
     user: dict[str, Any] = {}
 
 
-class SqlLabPermalinkBody(msgspec.Struct):
+class SqlLabPermalinkSchema(msgspec.Struct):
     """POST /api/v1/sqllab/permalink"""
 
     state: dict[str, Any] = {}

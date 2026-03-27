@@ -17,6 +17,7 @@
 """Async cache manager backed by redis.asyncio."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
@@ -26,6 +27,9 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 _CLEAR_PREFIX_BATCH_SIZE = 100
+_LOCK_TTL_SECONDS = 30
+_LOCK_RETRY_DELAY = 0.05
+_LOCK_MAX_RETRIES = 100
 
 
 class AsyncCacheManager:
@@ -70,12 +74,53 @@ class AsyncCacheManager:
         factory: Callable[[], Awaitable[bytes]],
         ttl: int | None = None,
     ) -> bytes:
+        """Get a cached value or compute and store it.
+
+        Uses a Redis SET NX lock to prevent thundering herd: only one caller
+        executes the factory while others wait and retry for the cached value.
+        """
         cached = await self.get(key)
         if cached is not None:
             return cached
-        value = await factory()
-        await self.set(key, value, ttl=ttl)
-        return value
+
+        lock_key = f"{key}:lock"
+        acquired = False
+        try:
+            acquired = bool(
+                await self._redis.set(
+                    lock_key, b"1", nx=True, ex=_LOCK_TTL_SECONDS
+                )
+            )
+        except Exception:
+            logger.warning("Lock acquire failed for key=%s", key, exc_info=True)
+
+        if acquired:
+            try:
+                value = await factory()
+                await self.set(key, value, ttl=ttl)
+                return value
+            finally:
+                try:
+                    await self._redis.delete(lock_key)
+                except Exception:
+                    logger.warning(
+                        "Lock release failed for key=%s", lock_key, exc_info=True
+                    )
+        else:
+            # Another caller is computing the value; wait and retry.
+            for _ in range(_LOCK_MAX_RETRIES):
+                await asyncio.sleep(_LOCK_RETRY_DELAY)
+                cached = await self.get(key)
+                if cached is not None:
+                    return cached
+
+            # Lock holder may have failed; final cache check before fallback.
+            cached = await self.get(key)
+            if cached is not None:
+                return cached
+            value = await factory()
+            await self.set(key, value, ttl=ttl)
+            return value
 
     async def clear_prefix(self, prefix: str) -> int:
         """Delete all keys matching prefix*. Returns count deleted.

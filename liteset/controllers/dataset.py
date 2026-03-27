@@ -66,12 +66,12 @@ from liteset.providers import (
 )
 from liteset.schemas.dataset import (
     DatasetCacheWarmUpRequest,
-    DatasetDuplicateBody,
+    DatasetDuplicateSchema,
     DatasetGetResponse,
     DatasetListResponse,
-    DatasetPostBody,
-    DatasetPutBody,
-    GetOrCreateDatasetBody,
+    DatasetPostSchema,
+    DatasetPutSchema,
+    GetOrCreateDatasetSchema,
 )
 from liteset.typing import (
     ColumnDAOProtocol,
@@ -294,7 +294,7 @@ class DatasetController(Controller):
     )
     async def create(
         self,
-        data: DatasetPostBody,
+        data: DatasetPostSchema,
         dao: DatasetDAOProtocol,
         current_user: UserProtocol,
     ) -> DatasetGetResponse:
@@ -328,7 +328,7 @@ class DatasetController(Controller):
     async def update(
         self,
         pk: int,
-        data: DatasetPutBody,
+        data: DatasetPutSchema,
         dao: DatasetDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
@@ -429,7 +429,7 @@ class DatasetController(Controller):
     )
     async def duplicate(
         self,
-        data: DatasetDuplicateBody,
+        data: DatasetDuplicateSchema,
         dao: DatasetDAOProtocol,
         current_user: UserProtocol,
     ) -> DatasetGetResponse:
@@ -463,7 +463,7 @@ class DatasetController(Controller):
     )
     async def get_or_create(
         self,
-        data: GetOrCreateDatasetBody,
+        data: GetOrCreateDatasetSchema,
         dao: DatasetDAOProtocol,
         current_user: UserProtocol,
     ) -> DatasetGetResponse:

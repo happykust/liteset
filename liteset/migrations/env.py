@@ -45,6 +45,7 @@ import liteset.models.connectors  # noqa: F401
 import liteset.models.cache  # noqa: F401
 import liteset.models.dynamic_plugins  # noqa: F401
 import liteset.models.key_value  # noqa: F401
+import liteset.models.security  # noqa: F401
 
 from liteset.models.helpers import Base
 

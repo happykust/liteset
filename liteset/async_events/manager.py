@@ -68,8 +68,8 @@ def increment_id(entry_id: str) -> str:
     Incrementing the last digit ensures xrange excludes the starting entry.
     """
     try:
-        prefix, last = entry_id[:-1], int(entry_id[-1])
-        return prefix + str(last + 1)
+        prefix, seq = entry_id.rsplit("-", 1)
+        return f"{prefix}-{int(seq) + 1}"
     except (ValueError, IndexError):
         return entry_id
 

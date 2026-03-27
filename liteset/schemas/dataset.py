@@ -30,7 +30,7 @@ from liteset.schemas.base import ApiListResponse, ApiResponse
 # ---------------------------------------------------------------------------
 
 
-class DatasetPostBody(msgspec.Struct):
+class DatasetPostSchema(msgspec.Struct):
     table_name: str
     database: int
     schema_name: str | None = None
@@ -82,7 +82,7 @@ class DatasetMetricsPut(msgspec.Struct):
     uuid: str | None = None
 
 
-class DatasetPutBody(msgspec.Struct):
+class DatasetPutSchema(msgspec.Struct):
     table_name: str | None | msgspec.UnsetType = msgspec.UNSET
     database_id: int | None | msgspec.UnsetType = msgspec.UNSET
     sql: str | None | msgspec.UnsetType = msgspec.UNSET
@@ -109,12 +109,12 @@ class DatasetPutBody(msgspec.Struct):
     uuid: str | None | msgspec.UnsetType = msgspec.UNSET
 
 
-class DatasetDuplicateBody(msgspec.Struct):
+class DatasetDuplicateSchema(msgspec.Struct):
     base_model_id: int
     table_name: str
 
 
-class GetOrCreateDatasetBody(msgspec.Struct):
+class GetOrCreateDatasetSchema(msgspec.Struct):
     table_name: str
     database: int
     schema_name: str | None = None

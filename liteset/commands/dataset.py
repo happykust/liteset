@@ -353,7 +353,7 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             raise ObjectNotFoundError("Dataset", self._base_model_id)
 
         # Only virtual datasets (with SQL) can be duplicated
-        if getattr(self._source, "kind", None) != "virtual":
+        if not getattr(self._source, "sql", None):
             raise CommandInvalidError("Only virtual datasets can be duplicated")
 
         # Check that the new name doesn't already exist
@@ -633,12 +633,14 @@ class DeleteDatasetColumnCommand(AsyncBaseCommand[None]):
         dataset_id: int,
         column_id: int,
         security_manager: Any | None = None,
+        user_id: int | None = None,
     ) -> None:
         self._dataset_dao = dataset_dao
         self._column_dao = column_dao
         self._dataset_id = dataset_id
         self._column_id = column_id
         self._security_manager = security_manager
+        self._user_id = user_id
         self._column: Any | None = None
 
     async def validate(self) -> None:
@@ -646,7 +648,7 @@ class DeleteDatasetColumnCommand(AsyncBaseCommand[None]):
         if not dataset:
             raise ObjectNotFoundError("Dataset", self._dataset_id)
         if self._security_manager is not None:
-            self._security_manager.raise_for_ownership(dataset)
+            await self._security_manager.raise_for_ownership(dataset, self._user_id)
         self._column = await self._column_dao.find_by_dataset_and_id(
             self._dataset_id, self._column_id
         )
@@ -667,12 +669,14 @@ class DeleteDatasetMetricCommand(AsyncBaseCommand[None]):
         dataset_id: int,
         metric_id: int,
         security_manager: Any | None = None,
+        user_id: int | None = None,
     ) -> None:
         self._dataset_dao = dataset_dao
         self._metric_dao = metric_dao
         self._dataset_id = dataset_id
         self._metric_id = metric_id
         self._security_manager = security_manager
+        self._user_id = user_id
         self._metric: Any | None = None
 
     async def validate(self) -> None:
@@ -680,7 +684,7 @@ class DeleteDatasetMetricCommand(AsyncBaseCommand[None]):
         if not dataset:
             raise ObjectNotFoundError("Dataset", self._dataset_id)
         if self._security_manager is not None:
-            self._security_manager.raise_for_ownership(dataset)
+            await self._security_manager.raise_for_ownership(dataset, self._user_id)
         self._metric = await self._metric_dao.find_by_dataset_and_id(
             self._dataset_id, self._metric_id
         )

@@ -49,6 +49,7 @@ from liteset.commands.dashboard_permalink import (
 
 # DAO imports moved to provider functions (avoid Flask import chain)
 from liteset.controllers.base import (
+    build_rison_query_params,
     extract_ids,
     extract_ids_required,
     extract_pagination,
@@ -68,15 +69,15 @@ from liteset.providers import (
 )
 from liteset.schemas.base import FavoriteStatusItem, FavoriteStatusResponse
 from liteset.schemas.dashboard import (
-    DashboardColorsUpdateBody,
-    DashboardCopyBody,
+    DashboardColorsUpdateSchema,
+    DashboardCopySchema,
     DashboardDataset,
-    DashboardFiltersUpdateBody,
+    DashboardFiltersUpdateSchema,
     DashboardGetResponse,
-    DashboardPermalinkBody,
-    DashboardPostBody,
-    DashboardPutBody,
-    DashboardScreenshotBody,
+    DashboardPermalinkSchema,
+    DashboardPostSchema,
+    DashboardPutSchema,
+    DashboardScreenshotSchema,
     EmbeddedDashboardConfig,
     EmbeddedDashboardResponse,
     TabInfo,
@@ -119,14 +120,18 @@ class DashboardController(Controller):
         """GET /api/v1/dashboard/ — list dashboards with filtering/pagination."""
         from liteset.db.filters import dashboard_access_filters
 
-        # TODO(liteset/remaining-api): Implement Rison-based
-        # filtering, sorting, pagination
-        page, page_size = extract_pagination(rison_params)
-        base_filters = await dashboard_access_filters(security_manager, current_user)
-        dashboards = await dao.find_all(
-            filters=base_filters or None, page=page, page_size=page_size
+        rison_filters, order_by, page, page_size = build_rison_query_params(
+            dao.model_cls, rison_params
         )
-        total = await dao.count(filters=base_filters or None)
+        base_filters = await dashboard_access_filters(security_manager, current_user)
+        all_filters = (base_filters or []) + rison_filters
+        dashboards = await dao.find_all(
+            filters=all_filters or None,
+            page=page,
+            page_size=page_size,
+            order_by=order_by,
+        )
+        total = await dao.count(filters=all_filters or None)
         event_logger.log("dashboard.list")
         return serialize_list_response(
             dashboards,
@@ -392,7 +397,7 @@ class DashboardController(Controller):
     )
     async def create(
         self,
-        data: DashboardPostBody,
+        data: DashboardPostSchema,
         dao: DashboardDAOProtocol,
         current_user: UserProtocol,
     ) -> DashboardGetResponse:
@@ -434,7 +439,7 @@ class DashboardController(Controller):
     async def update(
         self,
         pk: int,
-        data: DashboardPutBody,
+        data: DashboardPutSchema,
         dao: DashboardDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
@@ -526,7 +531,7 @@ class DashboardController(Controller):
     async def update_filters(
         self,
         pk: int,
-        data: DashboardFiltersUpdateBody,
+        data: DashboardFiltersUpdateSchema,
         dao: DashboardDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
@@ -566,7 +571,7 @@ class DashboardController(Controller):
     async def update_colors(
         self,
         pk: int,
-        data: DashboardColorsUpdateBody,
+        data: DashboardColorsUpdateSchema,
         dao: DashboardDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
@@ -676,7 +681,7 @@ class DashboardController(Controller):
     async def cache_dashboard_screenshot(
         self,
         pk: int,
-        data: DashboardScreenshotBody,
+        data: DashboardScreenshotSchema,
         dao: DashboardDAOProtocol,
         state: State,
     ) -> dict[str, Any]:
@@ -979,7 +984,7 @@ class DashboardController(Controller):
     async def copy_dashboard(
         self,
         id_or_slug: str,
-        data: DashboardCopyBody,
+        data: DashboardCopySchema,
         dao: DashboardDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
@@ -1020,7 +1025,7 @@ class DashboardController(Controller):
     async def create_permalink(
         self,
         pk: int,
-        data: DashboardPermalinkBody,
+        data: DashboardPermalinkSchema,
         dao: DashboardDAOProtocol,
         kv_dao: KeyValueDAOProtocol,
     ) -> dict[str, str]:

@@ -92,7 +92,12 @@ class SupersetConfigSettingsSource(PydanticBaseSettingsSource):
         if spec is None or spec.loader is None:
             return {}
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:
+            raise ImportError(
+                f"Failed to load superset_config.py from {path}: {exc}"
+            ) from exc
         values: dict[str, Any] = {}
         for sup_key, lit_key in _SUPERSET_TO_LITESET.items():
             val = getattr(module, sup_key, None)
@@ -160,6 +165,13 @@ class LitesetSettings(BaseSettings):
     auth_role_admin: str = "Admin"
     guest_role_name: str = "Guest"
 
+    # Security headers
+    content_security_policy: str = "default-src 'self'"
+
+    # Rate limiting
+    rate_limit_per_minute: int = 100
+    rate_limit_window_seconds: int = 60
+
     # Feature flags dict (mirrors Superset's FEATURE_FLAGS)
     feature_flags: dict[str, bool] = {}
 
@@ -224,7 +236,12 @@ class LitesetSettings(BaseSettings):
             raise ImportError(f"Cannot load config from {path}")
 
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:
+            raise ImportError(
+                f"Failed to load superset_config.py from {path}: {exc}"
+            ) from exc
 
         kwargs: dict[str, Any] = {}
         for superset_key, liteset_key in _SUPERSET_TO_LITESET.items():

@@ -31,9 +31,9 @@ from liteset.tasks.exceptions import ExecutorNotFoundError, InvalidExecutorError
 from liteset.tasks.types import ChosenExecutor, Executor, ExecutorType, FixedExecutor
 
 if TYPE_CHECKING:
-    from superset.models.dashboard import Dashboard
-    from superset.models.slice import Slice
-    from superset.reports.models import ReportSchedule
+    from liteset.models.dashboard import Dashboard
+    from liteset.models.reports import ReportSchedule
+    from liteset.models.slice import Slice
 
 logger = get_task_logger(__name__)
 logger.setLevel(logging.INFO)

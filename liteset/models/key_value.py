@@ -31,7 +31,16 @@ from liteset.models.helpers import AuditMixinNullable, Base, ImportExportMixin
 
 
 class KeyValueEntry(AuditMixinNullable, ImportExportMixin, Base):
-    """A key-value entry used by the key-value store subsystem.
+    """Structured key-value entry for the key-value store subsystem (table ``key_value``).
+
+    This is the newer, fully-featured key-value model that supports binary
+    (LargeBinary) values, resource-namespaced keys, TTL-based expiration
+    via ``expires_on``, and full audit tracking (created/changed by/on).
+
+    Not to be confused with :class:`liteset.models.core.KeyValue` which maps
+    to the legacy ``keyvalue`` table and only stores plain text without audit
+    columns or resource namespacing. Both tables coexist because existing
+    data in ``keyvalue`` must remain accessible during the migration period.
 
     Note: ``created_on``, ``created_by_fk``, ``changed_on``, and
     ``changed_by_fk`` are declared explicitly here (overriding the mixin)

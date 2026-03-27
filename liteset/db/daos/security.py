@@ -62,9 +62,9 @@ class AsyncRoleDAO:
 
         # Apply name filter (case-insensitive substring match)
         if name_filter:
-            from liteset.controllers.base import _escape_like
+            from liteset.utils import escape_like
 
-            escaped = _escape_like(name_filter)
+            escaped = escape_like(name_filter)
             stmt = stmt.where(Role.name.ilike(f"%{escaped}%"))
             count_stmt = count_stmt.where(Role.name.ilike(f"%{escaped}%"))
 
@@ -92,3 +92,64 @@ class AsyncRoleDAO:
         roles = list(result.scalars().unique().all())
 
         return roles, total
+
+    async def find_by_id(self, role_id: int) -> Any | None:
+        """Get a single role by ID with eager-loaded relationships."""
+        from liteset.models.security import Role
+
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        stmt = (
+            select(Role)
+            .where(Role.id == role_id)
+            .options(
+                selectinload(Role.permissions),
+                selectinload(Role.user),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().unique().one_or_none()
+
+    async def create(self, attributes: dict[str, Any]) -> Any:
+        """Create a new role."""
+        from liteset.models.security import Role
+
+        role = Role(**attributes)
+        self.session.add(role)
+        await self.session.flush()
+        return role
+
+    async def update(self, role: Any, attributes: dict[str, Any]) -> Any:
+        """Update role attributes in-place."""
+        for key, value in attributes.items():
+            setattr(role, key, value)
+        await self.session.flush()
+        return role
+
+    async def delete(self, role: Any) -> None:
+        """Delete a single role."""
+        await self.session.delete(role)
+        await self.session.flush()
+
+    async def get_permissions(self, role_id: int) -> list[Any]:
+        """Get all permissions for a role, with permission and view_menu loaded."""
+        from liteset.models.security import PermissionView, ab_permission_view_role
+
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        stmt = (
+            select(PermissionView)
+            .join(
+                ab_permission_view_role,
+                PermissionView.id == ab_permission_view_role.c.permission_view_id,
+            )
+            .where(ab_permission_view_role.c.role_id == role_id)
+            .options(
+                selectinload(PermissionView.permission),
+                selectinload(PermissionView.view_menu),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())

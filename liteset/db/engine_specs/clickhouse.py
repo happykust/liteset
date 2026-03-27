@@ -24,7 +24,7 @@ from sqlalchemy.sql import text
 
 from liteset.db.engine_specs.base import AsyncResultSet, BaseAsyncEngineSpec
 
-_VALID_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.\-]*$")
+_VALID_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_\-]*$")
 
 
 class AsyncClickHouseEngineSpec(BaseAsyncEngineSpec):

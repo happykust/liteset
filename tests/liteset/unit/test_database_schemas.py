@@ -19,10 +19,10 @@ from __future__ import annotations
 import msgspec
 
 from liteset.schemas.database import (
-    DatabasePostBody,
-    DatabasePutBody,
-    DatabaseTestConnectionBody,
-    DatabaseValidateParamsBody,
+    DatabasePostSchema,
+    DatabasePutSchema,
+    DatabaseTestConnectionSchema,
+    DatabaseValidateParamsSchema,
     ImportV1Database,
     SchemasResponse,
     TableMetadataColumn,
@@ -34,7 +34,7 @@ from liteset.schemas.database import (
 def test_database_post_body():
     body = msgspec.json.decode(
         b'{"database_name": "my_pg", "sqlalchemy_uri": "postgresql://localhost/test"}',
-        type=DatabasePostBody,
+        type=DatabasePostSchema,
     )
     assert body.database_name == "my_pg"
     assert body.sqlalchemy_uri == "postgresql://localhost/test"
@@ -47,7 +47,7 @@ def test_database_post_body():
 def test_database_put_body_partial():
     body = msgspec.json.decode(
         b'{"database_name": "renamed"}',
-        type=DatabasePutBody,
+        type=DatabasePutSchema,
     )
     assert body.database_name == "renamed"
     assert body.sqlalchemy_uri is msgspec.UNSET
@@ -60,7 +60,7 @@ def test_database_put_body_omitted_fields_are_unset():
     """Fields not sent in PUT body should be UNSET, not None."""
     body = msgspec.json.decode(
         b'{"cache_timeout": 60}',
-        type=DatabasePutBody,
+        type=DatabasePutSchema,
     )
     assert body.cache_timeout == 60
     # All other fields must be UNSET, not None
@@ -81,7 +81,7 @@ def test_database_put_body_omitted_fields_are_unset():
 def test_test_connection_body():
     body = msgspec.json.decode(
         b'{"sqlalchemy_uri": "postgresql://localhost/test", "engine": "postgresql"}',
-        type=DatabaseTestConnectionBody,
+        type=DatabaseTestConnectionSchema,
     )
     assert body.sqlalchemy_uri == "postgresql://localhost/test"
     assert body.engine == "postgresql"
@@ -94,7 +94,7 @@ def test_validate_params_body():
     payload = (
         b'{"engine": "postgresql", "parameters": {"host": "localhost", "port": 5432}}'
     )
-    body = msgspec.json.decode(payload, type=DatabaseValidateParamsBody)
+    body = msgspec.json.decode(payload, type=DatabaseValidateParamsSchema)
     assert body.engine == "postgresql"
     assert body.parameters == {"host": "localhost", "port": 5432}
     assert body.configuration_method == "sqlalchemy_form"

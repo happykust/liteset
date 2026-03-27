@@ -48,9 +48,22 @@ WS_CLOSE_TOO_MANY_CONNECTIONS = 4429
 
 # Defaults (overridable via settings)
 MAX_WS_PER_USER = 10
-HEARTBEAT_INTERVAL_SECONDS = 20
+HEARTBEAT_INTERVAL_SECONDS = 30
 SEND_QUEUE_MAX_SIZE = 64
 REDIS_RECONNECT_DELAY_SECONDS = 1
+
+# Lock protecting the check-accept-register sequence to prevent TOCTOU races
+# on the per-user connection limit.  Created lazily to avoid binding to the
+# wrong event loop when the module is imported at startup.
+_ws_accept_lock: asyncio.Lock | None = None
+
+
+def _get_ws_lock() -> asyncio.Lock:
+    """Return the module-level WebSocket accept lock, creating it lazily."""
+    global _ws_accept_lock
+    if _ws_accept_lock is None:
+        _ws_accept_lock = asyncio.Lock()
+    return _ws_accept_lock
 
 
 class AsyncQueryWebSocket(Controller):
@@ -68,7 +81,7 @@ class AsyncQueryWebSocket(Controller):
         2. Server validates JWT and origin, then accepts connection
         3. Server subscribes to Redis pub/sub channel ``events:{user_id}``
         4. Events are relayed from Redis -> asyncio.Queue -> WebSocket
-        5. Heartbeat ping sent every 20s; client must respond with pong
+        5. Heartbeat ping sent every 30s; client must respond with pong
         6. On disconnect, Redis subscription and socket are cleaned up
     """
 
@@ -83,6 +96,7 @@ class AsyncQueryWebSocket(Controller):
         origin = socket.headers.get("origin", "")
         allowed_origins: list[str] = getattr(settings, "cors_allow_origins", []) or []
         if allowed_origins and not validate_origin(origin, allowed_origins):
+            await socket.accept()
             await socket.close(code=WS_CLOSE_FORBIDDEN_ORIGIN)
             logger.warning("WebSocket rejected: forbidden origin %s", origin)
             return
@@ -94,26 +108,35 @@ class AsyncQueryWebSocket(Controller):
 
         auth_result = await authenticate_websocket(socket, jwt_secret=jwt_secret)
         if auth_result is None:
+            await socket.accept()
             await socket.close(code=WS_CLOSE_UNAUTHORIZED)
             logger.warning("WebSocket rejected: authentication failed")
             return
 
         # --- Per-user connection limit enforcement ---
+        # The lock serialises the check-accept-register sequence so that
+        # concurrent handshakes for the same user cannot both pass the limit
+        # check before either is registered (TOCTOU race).
         max_ws: int = getattr(settings, "max_ws_per_user", MAX_WS_PER_USER)
         active_ws: dict[WebSocket, int] = state.active_websockets
-        user_ws_count = sum(1 for uid in active_ws.values() if uid == auth_result.user_id)
-        if user_ws_count >= max_ws:
-            await socket.close(code=WS_CLOSE_TOO_MANY_CONNECTIONS)
-            logger.warning(
-                "WebSocket rejected: user %d has %d connections (max %d)",
-                auth_result.user_id,
-                user_ws_count,
-                max_ws,
-            )
-            return
 
-        await socket.accept()
-        active_ws[socket] = auth_result.user_id
+        async with _get_ws_lock():
+            user_ws_count = sum(
+                1 for uid in active_ws.values() if uid == auth_result.user_id
+            )
+            if user_ws_count >= max_ws:
+                await socket.accept()
+                await socket.close(code=WS_CLOSE_TOO_MANY_CONNECTIONS)
+                logger.warning(
+                    "WebSocket rejected: user %d has %d connections (max %d)",
+                    auth_result.user_id,
+                    user_ws_count,
+                    max_ws,
+                )
+                return
+
+            await socket.accept()
+            active_ws[socket] = auth_result.user_id
         channel = f"events:{auth_result.user_id}"
 
         logger.info(
@@ -177,8 +200,8 @@ class AsyncQueryWebSocket(Controller):
 
         async def _producer() -> None:
             while True:
+                pubsub = redis.pubsub()
                 try:
-                    pubsub = redis.pubsub()
                     await pubsub.subscribe(channel)
                     async for message in pubsub.listen():
                         if message["type"] != "message":
@@ -186,7 +209,14 @@ class AsyncQueryWebSocket(Controller):
                         data = message["data"]
                         if isinstance(data, bytes):
                             data = data.decode("utf-8")
-                        parsed = json.loads(data)
+                        try:
+                            parsed = json.loads(data)
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            logger.warning(
+                                "Malformed event on channel %s, skipping",
+                                channel,
+                            )
+                            continue
                         if send_queue.full():
                             try:
                                 send_queue.get_nowait()  # drop oldest stale event
@@ -200,6 +230,12 @@ class AsyncQueryWebSocket(Controller):
                     )
                     await asyncio.sleep(REDIS_RECONNECT_DELAY_SECONDS)
                     continue  # re-subscribe
+                finally:
+                    try:
+                        await pubsub.unsubscribe(channel)
+                        await pubsub.close()
+                    except Exception:  # noqa: BLE001
+                        pass  # Best-effort cleanup
 
         async def _consumer() -> None:
             while True:

@@ -80,7 +80,7 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
         report = await super().create(attributes)
         # Exception to the "flush at controller level" pattern: recipients
         # require report.id which is only available after INSERT is issued.
-        await self.session.flush()
+        await self.session.flush([report])
 
         for recipient in recipients_data:
             config = recipient.get("recipient_config_json", "")

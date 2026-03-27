@@ -31,18 +31,41 @@ def create_db_engine(
     echo: bool = False,
     pool_size: int = 5,
     max_overflow: int = 10,
+    pool_timeout: int = 30,
+    pool_recycle: int = 3600,
+    pool_pre_ping: bool = True,
 ) -> AsyncEngine:
+    global _engine  # noqa: PLW0603
     kwargs: dict[str, Any] = {"echo": echo}
     if not url.startswith("sqlite"):
         kwargs["pool_size"] = pool_size
         kwargs["max_overflow"] = max_overflow
-    return _create_async_engine(url, **kwargs)
+        kwargs["pool_timeout"] = pool_timeout
+        kwargs["pool_recycle"] = pool_recycle
+        kwargs["pool_pre_ping"] = pool_pre_ping
+    engine = _create_async_engine(url, **kwargs)
+    _engine = engine
+    return engine
 
 
 def create_session_factory(
     engine: AsyncEngine,
 ) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, expire_on_commit=False)
+
+
+_engine: AsyncEngine | None = None
+
+
+def get_engine() -> AsyncEngine:
+    """Return the module-level engine reference.
+
+    Raises RuntimeError if no engine has been created yet via
+    :func:`create_db_engine`.
+    """
+    if _engine is None:
+        raise RuntimeError("No engine has been created yet")
+    return _engine
 
 
 async def dispose_engine(engine: AsyncEngine) -> None:

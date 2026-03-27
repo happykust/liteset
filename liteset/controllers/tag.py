@@ -40,17 +40,12 @@ from liteset.controllers.base import (
 from liteset.events import event_logger
 from liteset.guards.rbac import require_permission
 from liteset.params.rison import provide_rison_query
+from liteset.providers import provide_tag_dao
 from liteset.schemas.tag import BulkTagCreateSchema, TagPostSchema, TagPutSchema
 from liteset.typing import UserProtocol
 from liteset.utils import filter_unset
 
 _LIST_COLUMNS = ["id", "name", "description", "type"]
-
-
-def provide_tag_dao(session: Any) -> Any:
-    from liteset.db.daos.tag import AsyncTagDAO
-
-    return AsyncTagDAO(session)
 
 
 class TagController(Controller):

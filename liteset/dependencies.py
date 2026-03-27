@@ -67,11 +67,13 @@ class RequestCache:
         self._store[key] = value
 
 
-async def provide_request_cache(request: Request[Any, Any, Any]) -> RequestCache:
-    """Per-request cache scoped to request lifecycle."""
-    if not hasattr(request.state, "_cache"):
-        request.state._cache = RequestCache()
-    return request.state._cache
+async def provide_request_cache() -> RequestCache:
+    """Per-request cache scoped to request lifecycle.
+
+    Registered with ``use_cache=True`` in the app factory, so Litestar
+    guarantees at most one invocation per request — no manual caching needed.
+    """
+    return RequestCache()
 
 
 # --- flask.g user helper replacements ---

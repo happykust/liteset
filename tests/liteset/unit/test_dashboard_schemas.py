@@ -19,13 +19,13 @@ from __future__ import annotations
 import msgspec
 
 from liteset.schemas.dashboard import (
-    DashboardColorsUpdateBody,
-    DashboardCopyBody,
+    DashboardColorsUpdateSchema,
+    DashboardCopySchema,
     DashboardGetResponse,
     DashboardJSONMetadata,
-    DashboardPostBody,
-    DashboardPutBody,
-    DashboardScreenshotBody,
+    DashboardPostSchema,
+    DashboardPutSchema,
+    DashboardScreenshotSchema,
     EmbeddedDashboardConfig,
     ImportV1Dashboard,
 )
@@ -34,7 +34,7 @@ from liteset.schemas.dashboard import (
 def test_dashboard_post_body():
     body = msgspec.json.decode(
         b'{"dashboard_title": "My Dashboard", "published": true, "owners": [1, 2]}',
-        type=DashboardPostBody,
+        type=DashboardPostSchema,
     )
     assert body.dashboard_title == "My Dashboard"
     assert body.published is True
@@ -48,7 +48,7 @@ def test_dashboard_post_body_without_title():
     """dashboard_title is optional — omitting it should succeed."""
     body = msgspec.json.decode(
         b'{"published": true}',
-        type=DashboardPostBody,
+        type=DashboardPostSchema,
     )
     assert body.dashboard_title is None
     assert body.published is True
@@ -58,7 +58,7 @@ def test_dashboard_post_body_without_title():
 def test_dashboard_put_body_partial():
     body = msgspec.json.decode(
         b'{"dashboard_title": "Updated Title"}',
-        type=DashboardPutBody,
+        type=DashboardPutSchema,
     )
     assert body.dashboard_title == "Updated Title"
     assert body.slug is msgspec.UNSET
@@ -69,7 +69,7 @@ def test_dashboard_put_body_partial():
 def test_dashboard_copy_body():
     body = msgspec.json.decode(
         b'{"dashboard_title": "Copy", "json_metadata": "{}", "duplicate_slices": true, "css": ".my-class {}"}',
-        type=DashboardCopyBody,
+        type=DashboardCopySchema,
     )
     assert body.dashboard_title == "Copy"
     assert body.duplicate_slices is True
@@ -112,7 +112,7 @@ def test_import_v1_dashboard():
 def test_dashboard_colors_update_with_label_colors():
     body = msgspec.json.decode(
         b'{"label_colors": {"series1": "#ff0000"}, "color_scheme_domain": ["#ff0000"]}',
-        type=DashboardColorsUpdateBody,
+        type=DashboardColorsUpdateSchema,
     )
     assert body.label_colors == {"series1": "#ff0000"}
     assert body.color_scheme_domain == ["#ff0000"]
@@ -130,7 +130,7 @@ def test_import_v1_dashboard_full():
 def test_screenshot_body_url_params_tuple_format():
     body = msgspec.json.decode(
         b'{"urlParams": [["key1", "val1"], ["key2", "val2"]]}',
-        type=DashboardScreenshotBody,
+        type=DashboardScreenshotSchema,
     )
     assert body.urlParams == [["key1", "val1"], ["key2", "val2"]]
 

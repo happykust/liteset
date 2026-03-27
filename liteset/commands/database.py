@@ -90,11 +90,23 @@ class CreateDatabaseCommand(AsyncBaseCommand["Database"]):
         db = await self._dao.create(data)
         await self._dao.session.flush()
 
-        # TODO(CMD-C6): Test database connection after creation.
-        # DatabaseTestConnectionCommand.run() is currently a stub that
-        # always returns {"message": "OK"}.  Once real engine-level
-        # connection testing is implemented, call it here and roll back
-        # the created row on failure.
+        # Best-effort connection test after creation.  We don't block
+        # creation on failure because the database may require OAuth2,
+        # VPN, or other setup that isn't available at creation time.
+        try:
+            test_cmd = DatabaseTestConnectionCommand(
+                dao=self._dao,
+                data={"sqlalchemy_uri": data.get("sqlalchemy_uri", "")},
+            )
+            await test_cmd.validate()
+            await test_cmd.run()
+        except Exception:
+            logger.warning(
+                "Connection test failed for new database '%s'; "
+                "creation will proceed anyway",
+                data.get("database_name", "<unknown>"),
+                exc_info=True,
+            )
 
         return db
 

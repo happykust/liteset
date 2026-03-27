@@ -84,6 +84,7 @@ class DeleteTagCommand(AsyncBaseCommand[None]):
 
     async def run(self) -> None:
         await self._dao.delete([self._item])
+        await self._dao.session.flush()
 
 
 class BulkDeleteTagCommand(AsyncBaseCommand[int]):

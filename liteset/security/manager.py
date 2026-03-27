@@ -23,10 +23,12 @@ and by controllers/guards (request-scoped session from DI).
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, TYPE_CHECKING
+import re
+from typing import Any, cast, TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from liteset.exceptions import LitesetSecurityException
 from liteset.security.permissions import (
@@ -45,6 +47,86 @@ if TYPE_CHECKING:
     from liteset.security.dao import AsyncSecurityDAO
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Regex patterns to extract integer IDs from permission strings
+# ---------------------------------------------------------------------------
+_DATASOURCE_PERM_RE = re.compile(r"^\[.+\]\.\[.+\]\(id:(?P<id>\d+)\)$")
+_DATABASE_PERM_RE = re.compile(r"^\[.+\]\.\(id:(?P<id>\d+)\)$")
+
+
+# ---------------------------------------------------------------------------
+# Query-context modification check (guest user safety)
+# ---------------------------------------------------------------------------
+
+def _freeze_value(value: Any) -> str:
+    """Deterministic JSON serialization for comparing column/metric sets."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def query_context_modified(query_context: Any) -> bool:
+    """Check if a query context has been modified from its stored chart params.
+
+    Used to prevent guest users from altering payloads to fetch data
+    different from what was shared with them in dashboards.
+    """
+    form_data: dict[str, Any] | None = getattr(query_context, "form_data", None)
+    stored_chart: Any | None = getattr(query_context, "slice_", None)
+
+    # Native filter requests — no chart to compare against.
+    if form_data is None or stored_chart is None:
+        return False
+
+    # Cannot request a different chart.
+    if form_data.get("slice_id") != stored_chart.id:
+        return True
+
+    stored_query_context = (
+        json.loads(cast(str, stored_chart.query_context))
+        if stored_chart.query_context
+        else None
+    )
+
+    # Compare columns and metrics in form_data with stored values.
+    for key, equivalent in [
+        ("metrics", ["metrics"]),
+        ("columns", ["columns", "groupby"]),
+        ("groupby", ["columns", "groupby"]),
+        ("orderby", ["orderby"]),
+    ]:
+        requested_values = {
+            _freeze_value(value) for value in form_data.get(key) or []
+        }
+        stored_values = {
+            _freeze_value(value)
+            for value in getattr(stored_chart, "params_dict", {}).get(key) or []
+        }
+        if not requested_values.issubset(stored_values):
+            return True
+
+        # Compare queries in query_context.
+        queries = getattr(query_context, "queries", [])
+        queries_values = {
+            _freeze_value(value)
+            for query in queries
+            for value in getattr(query, key, []) or []
+        }
+        if stored_query_context:
+            for sq in stored_query_context.get("queries") or []:
+                for eq_key in equivalent:
+                    stored_values.update(
+                        {_freeze_value(value) for value in sq.get(eq_key) or []}
+                    )
+
+        if not queries_values.issubset(stored_values):
+            return True
+
+    return False
 
 
 class AsyncSecurityManager:
@@ -179,14 +261,23 @@ class AsyncSecurityManager:
                         message="Guest access denied to chart"
                     )
                 return
-            # Deny guest access to custom query contexts entirely.
-            # TODO(liteset/remaining-api): implement query_context_modified()
-            # helper that compares submitted QC against the saved chart QC,
-            # then allow unmodified contexts through for guest chart-data.
             if query_context is not None:
-                raise LitesetSecurityException(
-                    message="Guest users cannot submit custom query contexts",
-                )
+                if query_context_modified(query_context):
+                    raise LitesetSecurityException(
+                        message="Guest users cannot modify query context",
+                    )
+                # Verify datasource belongs to an accessible dashboard
+                qc_datasource = getattr(query_context, "datasource", None)
+                if qc_datasource is not None:
+                    qc_dashboards = getattr(qc_datasource, "dashboards", []) or []
+                    if not any(
+                        await self.has_guest_access(d, user=user)
+                        for d in qc_dashboards
+                    ):
+                        raise LitesetSecurityException(
+                            message="Guest access denied: datasource not in an accessible dashboard",
+                        )
+                return
             # Guest users cannot access databases, datasources, or queries
             raise LitesetSecurityException(
                 message="Guest users can only access embedded dashboards"
@@ -204,7 +295,9 @@ class AsyncSecurityManager:
                         message=f"Access denied to catalog: {catalog}"
                     )
                 if schema is not None:
-                    if not await self.can_access_schema(database, schema, user=user):
+                    if not await self.can_access_schema(
+                        database, schema, catalog=catalog, user=user
+                    ):
                         raise LitesetSecurityException(
                             message=f"Access denied to schema: {schema}"
                         )
@@ -239,20 +332,31 @@ class AsyncSecurityManager:
             )
             if created_by and created_by == getattr(user, "id", None):
                 return
-            # TODO(liteset/remaining-api): implement SQL table extraction and
-            # per-table access check. Full implementation requires the Jinja
-            # template processor and SQL parser — both are remaining-api scope.
-            datasource = getattr(query, "datasource", None)
-            if datasource and not await self.can_access_datasource(
-                datasource, user=user
+
+            # Schema-level check: if the query has both database and schema,
+            # allow access when the user has schema-level permission.
+            query_database = getattr(query, "database", None)
+            query_schema = getattr(query, "schema", None)
+            if query_database and query_schema:
+                if await self.can_access_schema(
+                    query_database, query_schema, user=user
+                ):
+                    return
+
+            # Datasource-level check
+            query_datasource = getattr(query, "datasource", None)
+            if query_datasource and not await self.can_access_datasource(
+                query_datasource, user=user
             ):
                 raise LitesetSecurityException(
                     message="Access denied to query datasource"
                 )
-            elif not datasource:
-                database = getattr(query, "database", None)
-                if database and not await self.can_access_database(
-                    database, user=user
+            elif not query_datasource:
+                query_database_fallback = query_database or getattr(
+                    query, "database", None
+                )
+                if query_database_fallback and not await self.can_access_database(
+                    query_database_fallback, user=user
                 ):
                     raise LitesetSecurityException(
                         message="Access denied to query database"
@@ -289,13 +393,23 @@ class AsyncSecurityManager:
         database: Any,
         schema: str,
         *,
+        catalog: str | None = None,
         user: Any,
     ) -> bool:
-        """Check if user can access a specific schema."""
+        """Check if user can access a specific schema.
+
+        For catalog-aware databases (e.g. ClickHouse, Trino), pass the
+        ``catalog`` parameter to build the 3-part permission string
+        ``[db].[catalog].[schema]``.  Without a catalog the traditional
+        2-part ``[db].[schema]`` is used.
+        """
         if await self.can_access_database(database, user=user):
             return True
         db_name = getattr(database, "database_name", "")
-        schema_perm = f"[{db_name}].[{schema}]"
+        if catalog:
+            schema_perm = f"[{db_name}].[{catalog}].[{schema}]"
+        else:
+            schema_perm = f"[{db_name}].[{schema}]"
         return await self.has_access(SCHEMA_ACCESS, schema_perm, user=user)
 
     async def can_access_datasource(self, datasource: Any, *, user: Any) -> bool:
@@ -370,6 +484,7 @@ class AsyncSecurityManager:
         database: Any,
         schemas: list[str],
         *,
+        catalog: str | None = None,
         user: Any,
     ) -> list[str]:
         """Filter schemas to only those accessible by the user."""
@@ -380,11 +495,14 @@ class AsyncSecurityManager:
             return schemas
 
         db_name = getattr(database, "database_name", "")
-        user_perms = await self.dao.get_all_permissions_for_user(user.id)
+        user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
 
         accessible = []
         for schema in schemas:
-            schema_perm = f"[{db_name}].[{schema}]"
+            if catalog:
+                schema_perm = f"[{db_name}].[{catalog}].[{schema}]"
+            else:
+                schema_perm = f"[{db_name}].[{schema}]"
             if (SCHEMA_ACCESS, schema_perm) in user_perms:
                 accessible.append(schema)
         return accessible
@@ -397,7 +515,7 @@ class AsyncSecurityManager:
         """
         if self.is_admin(user):
             return []  # Admin can access all — empty means no filter
-        user_perms = await self.dao.get_all_permissions_for_user(user.id)
+        user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
         return [
             view_name
             for perm_name, view_name in user_perms
@@ -407,38 +525,94 @@ class AsyncSecurityManager:
     async def get_rls_filters(self, table: Any, *, user: Any) -> list[Any]:
         """Get Row Level Security filters for a table.
 
-        Stub — always returns []. Full implementation requires
-        RowLevelSecurityFilter model queries and clause generation.
-        Tracked: TODO(liteset/remaining-api) — implement RLS filter resolution.
+        Queries RowLevelSecurityFilter with M2M joins on tables and roles.
+        Two filter types:
+        - Regular: user HAS the role -> filter applies
+        - Base: user does NOT have the role -> filter applies
+        Results are ordered by group_key.
         """
+        from liteset.models.connectors import (
+            RLSFilterRoles,
+            RLSFilterTables,
+            RowLevelSecurityFilter,
+        )
+
         if self.is_admin(user):
             return []
-        if not AsyncSecurityManager._rls_warned:
-            logger.warning(
-                "RLS is not yet implemented in Liteset. "
-                "Row-level security rules are NOT being applied. "
-                "Tracked: TODO(liteset/remaining-api)"
+
+        user_roles = [r.id for r in getattr(user, "roles", [])]
+
+        # Sub-query: RLS filter IDs that apply to this table
+        filter_tables_sq = (
+            select(RLSFilterTables.c.rls_filter_id)
+            .where(RLSFilterTables.c.table_id == table.id)
+        )
+
+        # Sub-query: Regular filters where user has the role
+        regular_filter_roles_sq = (
+            select(RLSFilterRoles.c.rls_filter_id)
+            .join(
+                RowLevelSecurityFilter,
+                RLSFilterRoles.c.rls_filter_id == RowLevelSecurityFilter.id,
             )
-            AsyncSecurityManager._rls_warned = True
-        return []
+            .where(RowLevelSecurityFilter.filter_type == "Regular")
+            .where(RLSFilterRoles.c.role_id.in_(user_roles))
+        )
 
-    async def get_rls_cache_key(self, datasource: Any) -> str:
-        """Return cache key component representing active RLS filters.
+        # Sub-query: Base filters where user has the role (to be excluded)
+        base_filter_roles_sq = (
+            select(RLSFilterRoles.c.rls_filter_id)
+            .join(
+                RowLevelSecurityFilter,
+                RLSFilterRoles.c.rls_filter_id == RowLevelSecurityFilter.id,
+            )
+            .where(RowLevelSecurityFilter.filter_type == "Base")
+            .where(RLSFilterRoles.c.role_id.in_(user_roles))
+        )
 
-        Stub — returns empty string (no RLS differentiation).
-        Full implementation requires get_rls_filters() to be complete.
-        Tracked: TODO(liteset/remaining-api) — implement real RLS cache key.
+        stmt = (
+            select(RowLevelSecurityFilter)
+            .where(RowLevelSecurityFilter.id.in_(filter_tables_sq))
+            .where(
+                or_(
+                    and_(
+                        RowLevelSecurityFilter.filter_type == "Regular",
+                        RowLevelSecurityFilter.id.in_(regular_filter_roles_sq),
+                    ),
+                    and_(
+                        RowLevelSecurityFilter.filter_type == "Base",
+                        RowLevelSecurityFilter.id.notin_(base_filter_roles_sq),
+                    ),
+                )
+            )
+            .order_by(RowLevelSecurityFilter.group_key)
+        )
+
+        result = await self.dao.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_rls_cache_key(
+        self, datasource: Any, *, user: Any
+    ) -> list[str]:
+        """Return cache key components representing active RLS filters.
+
+        Calls get_rls_filters(), sorts by ID, and builds a deterministic
+        list of ``clause-group_key`` strings for cache differentiation.
         """
-        return ""
+        if not getattr(datasource, "is_rls_supported", False):
+            return []
+
+        filters = await self.get_rls_filters(datasource, user=user)
+        filters.sort(key=lambda f: f.id)
+        return [f"{f.clause}-{f.group_key or ''}" for f in filters]
 
     async def invalidate_user_cache(self, redis: Redis, user: Any) -> None:
-        """Invalidate Redis auth cache for a user."""
-        keys = [
-            f"auth:user:{user.id}",
-            f"auth:user:{user.username}",
-            f"auth:user:{user.email}",
-        ]
-        await redis.delete(*keys)
+        """Invalidate Redis auth cache for a user.
+
+        Only the ``auth:user:{id}`` key is written by the auth middleware,
+        so that is the only key we need to delete.
+        """
+        await redis.delete(f"auth:user:{user.id}")
 
     # --- Permission string formatters ---
 
@@ -488,27 +662,43 @@ class AsyncSecurityManager:
 
     # --- List-filtering methods (ID-based, for object-level filters) ---
 
-    async def get_accessible_datasource_ids(self, user: Any) -> list[int] | None:
-        """Return list of datasource IDs user can access, or None if not implemented.
+    async def get_accessible_datasource_ids(self, user: Any) -> list[int]:
+        """Return list of datasource IDs the user can access.
 
-        None signals that the caller should fall back to permissive behaviour
-        (no filtering).  Full implementation requires resolving every
-        datasource perm string back to a model ID, which is remaining-api scope.
-
-        TODO(liteset/remaining-api): implement full datasource access resolution.
+        Admins get an empty list (meaning no filter — access everything).
+        For other users, parses DATASOURCE_ACCESS permission strings using
+        the ``[db].[table](id:N)`` regex to extract integer IDs.
         """
-        return None
+        if self.is_admin(user):
+            return []
+        user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
+        ids: list[int] = []
+        for perm_name, view_name in user_perms:
+            if perm_name != DATASOURCE_ACCESS:
+                continue
+            m = _DATASOURCE_PERM_RE.match(view_name)
+            if m:
+                ids.append(int(m.group("id")))
+        return ids
 
-    async def get_accessible_database_ids(self, user: Any) -> list[int] | None:
-        """Return list of database IDs user can access, or None if not implemented.
+    async def get_accessible_database_ids(self, user: Any) -> list[int]:
+        """Return list of database IDs the user can access.
 
-        None signals that the caller should fall back to permissive behaviour
-        (no filtering).  Full implementation requires resolving every
-        database perm string back to a model ID, which is remaining-api scope.
-
-        TODO(liteset/remaining-api): implement full database access resolution.
+        Admins get an empty list (meaning no filter — access everything).
+        For other users, parses DATABASE_ACCESS permission strings using
+        the ``[db].(id:N)`` regex to extract integer IDs.
         """
-        return None
+        if self.is_admin(user):
+            return []
+        user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
+        ids: list[int] = []
+        for perm_name, view_name in user_perms:
+            if perm_name != DATABASE_ACCESS:
+                continue
+            m = _DATABASE_PERM_RE.match(view_name)
+            if m:
+                ids.append(int(m.group("id")))
+        return ids
 
     # --- List-filtering methods (perm-string-based) ---
 
@@ -520,7 +710,7 @@ class AsyncSecurityManager:
         """
         if self.is_admin(user):
             return []
-        user_perms = await self.dao.get_all_permissions_for_user(user.id)
+        user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
         return [
             view_name
             for perm_name, view_name in user_perms
@@ -540,7 +730,7 @@ class AsyncSecurityManager:
         if await self.can_access_database(database, user=user):
             return catalogs
         db_name = getattr(database, "database_name", "")
-        user_perms = await self.dao.get_all_permissions_for_user(user.id)
+        user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
         return [
             catalog
             for catalog in catalogs
@@ -553,7 +743,7 @@ class AsyncSecurityManager:
         """Get all view_menu names a user has for a given permission."""
         if self.is_admin(user):
             return set()
-        user_perms = await self.dao.get_all_permissions_for_user(user.id)
+        user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
         return {
             view_name
             for perm_name, view_name in user_perms

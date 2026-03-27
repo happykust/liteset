@@ -29,7 +29,7 @@ from liteset.commands.dashboard_filter_state import (
 )
 from liteset.guards.rbac import require_permission
 from liteset.providers import provide_kv_dao
-from liteset.schemas.dashboard import FilterStateBody
+from liteset.schemas.dashboard import FilterStateSchema
 from liteset.events import event_logger
 from liteset.typing import KeyValueDAOProtocol, SecurityManagerProtocol, UserProtocol
 
@@ -47,7 +47,7 @@ class DashboardFilterStateController(Controller):
     async def create(
         self,
         pk: int,
-        data: FilterStateBody,
+        data: FilterStateSchema,
         kv_dao: KeyValueDAOProtocol,
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
@@ -72,7 +72,7 @@ class DashboardFilterStateController(Controller):
         self,
         pk: int,
         key: str,
-        data: FilterStateBody,
+        data: FilterStateSchema,
         kv_dao: KeyValueDAOProtocol,
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,

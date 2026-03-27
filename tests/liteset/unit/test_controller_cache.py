@@ -21,7 +21,7 @@ from __future__ import annotations
 import msgspec
 import pytest
 
-from liteset.controllers.cache import CacheController, CacheInvalidateBody
+from liteset.controllers.cache import CacheController, CacheInvalidateSchema
 
 
 # ---------------------------------------------------------------------------
@@ -30,30 +30,30 @@ from liteset.controllers.cache import CacheController, CacheInvalidateBody
 
 
 def test_cache_invalidate_body_accepts_uids():
-    """CacheInvalidateBody accepts a list of datasource UIDs."""
+    """CacheInvalidateSchema accepts a list of datasource UIDs."""
     body = msgspec.convert(
         {"datasource_uids": ["table__1", "table__2"]},
-        CacheInvalidateBody,
+        CacheInvalidateSchema,
     )
     assert body.datasource_uids == ["table__1", "table__2"]
 
 
 def test_cache_invalidate_body_empty_list():
-    """CacheInvalidateBody accepts an empty list."""
-    body = msgspec.convert({"datasource_uids": []}, CacheInvalidateBody)
+    """CacheInvalidateSchema accepts an empty list."""
+    body = msgspec.convert({"datasource_uids": []}, CacheInvalidateSchema)
     assert body.datasource_uids == []
 
 
 def test_cache_invalidate_body_missing_field():
-    """CacheInvalidateBody requires datasource_uids."""
+    """CacheInvalidateSchema requires datasource_uids."""
     with pytest.raises(msgspec.ValidationError):
-        msgspec.convert({}, CacheInvalidateBody)
+        msgspec.convert({}, CacheInvalidateSchema)
 
 
 def test_cache_invalidate_body_wrong_type():
-    """CacheInvalidateBody rejects non-list values."""
+    """CacheInvalidateSchema rejects non-list values."""
     with pytest.raises(msgspec.ValidationError):
-        msgspec.convert({"datasource_uids": "not-a-list"}, CacheInvalidateBody)
+        msgspec.convert({"datasource_uids": "not-a-list"}, CacheInvalidateSchema)
 
 
 # ---------------------------------------------------------------------------

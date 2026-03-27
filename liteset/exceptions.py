@@ -106,6 +106,13 @@ class CommandException(LitesetException):
         self.exceptions = exceptions or []
         super().__init__(message=message)
 
+    def to_sip40(self) -> dict[str, Any]:
+        """Convert to SIP-40 error dict, including sub-errors."""
+        payload = super().to_sip40()
+        if self.exceptions:
+            payload["errors"] = [str(e) for e in self.exceptions]
+        return payload
+
 
 class CommandInvalidError(CommandException):
     status_code = 422

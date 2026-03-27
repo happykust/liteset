@@ -95,7 +95,7 @@ async def test_unauthenticated_returns_401():
 # passes and the RBAC guard (not a 422) is what produces the 403.
 _RBAC_403_CASES: list[tuple[type, str, str, str, dict | None]] = [
     # DatabaseController — write operations
-    # DatabasePostBody requires: database_name (str)
+    # DatabasePostSchema requires: database_name (str)
     (
         DatabaseController,
         "POST",
@@ -111,7 +111,7 @@ _RBAC_403_CASES: list[tuple[type, str, str, str, dict | None]] = [
         None,
     ),
     # DatasetController — write operations
-    # DatasetPostBody requires: table_name (str), database (int)
+    # DatasetPostSchema requires: table_name (str), database (int)
     (
         DatasetController,
         "POST",
@@ -127,7 +127,7 @@ _RBAC_403_CASES: list[tuple[type, str, str, str, dict | None]] = [
         None,
     ),
     # SavedQueryController — write operations
-    # SavedQueryPostBody requires: label (str), sql (str), db_id (int)
+    # SavedQueryPostSchema requires: label (str), sql (str), db_id (int)
     (
         SavedQueryController,
         "POST",
@@ -143,7 +143,7 @@ _RBAC_403_CASES: list[tuple[type, str, str, str, dict | None]] = [
         None,
     ),
     # DashboardFilterStateController — write on resource user cannot access
-    # FilterStateBody requires: value (str)
+    # FilterStateSchema requires: value (str)
     (
         DashboardFilterStateController,
         "POST",
@@ -152,7 +152,7 @@ _RBAC_403_CASES: list[tuple[type, str, str, str, dict | None]] = [
         {"value": "{}"},
     ),
     # SqlLabController — execute requires can_write_SqlLab
-    # ExecutePayloadBody requires: database_id (int), sql (str)
+    # ExecutePayloadSchema requires: database_id (int), sql (str)
     (
         SqlLabController,
         "POST",

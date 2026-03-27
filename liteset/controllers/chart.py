@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import io
 import json as _json
+import uuid
 from typing import Any
 
 from litestar import Controller, delete, get, post, put
@@ -46,6 +47,7 @@ from liteset.common.query_context import AsyncQueryContext
 from liteset.common.query_context_processor import AsyncQueryContextProcessor
 from liteset.common.query_object import AsyncQueryObject
 from liteset.controllers.base import (
+    build_rison_query_params,
     extract_ids,
     extract_ids_required,
     extract_pagination,
@@ -65,8 +67,8 @@ from liteset.schemas.chart import (
     ChartCacheWarmUpRequest,
     ChartDataQueryContext,
     ChartGetResponse,
-    ChartPostBody,
-    ChartPutBody,
+    ChartPostSchema,
+    ChartPutSchema,
 )
 from liteset.typing import (
     ChartDAOProtocol,
@@ -101,14 +103,18 @@ class ChartController(Controller):
         """GET /api/v1/chart/ — list charts with optional filtering/pagination."""
         from liteset.db.filters import chart_access_filters
 
-        # TODO(liteset/remaining-api): Implement Rison-based
-        # filtering, sorting, pagination
-        page, page_size = extract_pagination(rison_params)
-        base_filters = await chart_access_filters(security_manager, current_user)
-        charts = await dao.find_all(
-            filters=base_filters or None, page=page, page_size=page_size
+        rison_filters, order_by, page, page_size = build_rison_query_params(
+            dao.model_cls, rison_params
         )
-        total = await dao.count(filters=base_filters or None)
+        base_filters = await chart_access_filters(security_manager, current_user)
+        all_filters = (base_filters or []) + rison_filters
+        charts = await dao.find_all(
+            filters=all_filters or None,
+            page=page,
+            page_size=page_size,
+            order_by=order_by,
+        )
+        total = await dao.count(filters=all_filters or None)
         event_logger.log("chart.list")
         return serialize_list_response(charts, total, ["id", "slice_name", "viz_type"])
 
@@ -268,7 +274,7 @@ class ChartController(Controller):
     )
     async def create(
         self,
-        data: ChartPostBody,
+        data: ChartPostSchema,
         dao: ChartDAOProtocol,
         current_user: UserProtocol,
     ) -> ChartGetResponse:
@@ -321,7 +327,7 @@ class ChartController(Controller):
     async def update(
         self,
         pk: int,
-        data: ChartPutBody,
+        data: ChartPutSchema,
         dao: ChartDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
@@ -757,13 +763,36 @@ class ChartController(Controller):
             result_format = (format or "json").lower()
             result_type = (type or "full").lower()
             if result_format == "json" and result_type == "full":
-                # TODO: Implement full async query dispatch via Celery +
-                # CreateAsyncChartDataJobCommand (see superset/charts/data/api.py
-                # _run_async for reference).
+                from liteset.async_events.manager import build_job_metadata
+                from liteset.tasks.async_queries import load_chart_data_into_cache
+
+                chart = await dao.find_by_id(pk)
+                if not chart:
+                    raise ObjectNotFoundError("Chart", pk)
+
+                query_context_str = getattr(chart, "query_context", None)
+                if not query_context_str:
+                    raise LitesetValidationException(
+                        "Chart has no query context saved"
+                    )
+                try:
+                    form_data = _json.loads(query_context_str)
+                except (ValueError, TypeError):
+                    raise LitesetValidationException(
+                        "Chart has invalid query context"
+                    )
+
+                channel_id = str(uuid.uuid4())
+                job_id = str(uuid.uuid4())
+                job_metadata = build_job_metadata(
+                    channel_id=channel_id,
+                    job_id=job_id,
+                    user_id=current_user.id,
+                    status="pending",
+                )
+                load_chart_data_into_cache.delay(job_metadata, form_data)
                 return Response(
-                    content={
-                        "message": "Async queries not yet implemented in liteset"
-                    },
+                    content={"channel_id": channel_id, "job_id": job_id},
                     status_code=202,
                 )
 
@@ -849,8 +878,8 @@ class ChartController(Controller):
         # BL-H5: Fallback to form_data multipart field when JSON body is absent
         if data is None:
             form_data_str: str | None = None
-            content_type = request.content_type or ()
-            if "multipart" in content_type or "form" in content_type:
+            content_type_str = request.content_type[0] if request.content_type else ""
+            if "multipart" in content_type_str or "form" in content_type_str:
                 form = await request.form()
                 form_data_str = form.get("form_data")  # type: ignore[assignment]
             if form_data_str is None:
@@ -883,13 +912,21 @@ class ChartController(Controller):
             result_format = (getattr(data, "result_format", None) or "json").lower()
             result_type = (getattr(data, "result_type", None) or "full").lower()
             if result_format == "json" and result_type == "full":
-                # TODO: Implement full async query dispatch via Celery +
-                # CreateAsyncChartDataJobCommand (see superset/charts/data/api.py
-                # _run_async for reference).
+                from liteset.async_events.manager import build_job_metadata
+                from liteset.tasks.async_queries import load_chart_data_into_cache
+
+                channel_id = str(uuid.uuid4())
+                job_id = str(uuid.uuid4())
+                job_metadata = build_job_metadata(
+                    channel_id=channel_id,
+                    job_id=job_id,
+                    user_id=current_user.id,
+                    status="pending",
+                )
+                form_data = _msgspec.to_builtins(data)
+                load_chart_data_into_cache.delay(job_metadata, form_data)
                 return Response(
-                    content={
-                        "message": "Async queries not yet implemented in liteset"
-                    },
+                    content={"channel_id": channel_id, "job_id": job_id},
                     status_code=202,
                 )
 

@@ -26,9 +26,24 @@ from litestar.handlers import BaseRouteHandler
 GuardFn = Callable[[ASGIConnection[Any, Any, Any, Any], BaseRouteHandler], None]
 
 
+def is_admin(user: Any, admin_role_name: str = "Admin") -> bool:
+    """Check if user has the Admin role (bypasses all permission checks)."""
+    roles = getattr(user, "roles", [])
+    return any(getattr(r, "name", None) == admin_role_name for r in roles)
+
+
 def has_permissions(user: Any, required: set[str]) -> bool:
     user_perms: set[str] = getattr(user, "permissions", set())
     return required.issubset(user_perms)
+
+
+def require_authentication(
+    connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandler
+) -> None:
+    """Guard that only requires the user to be authenticated (no specific permission)."""
+    user = connection.user
+    if not getattr(user, "is_authenticated", False):
+        raise NotAuthorizedException(detail="Not authenticated")
 
 
 def require_permission(action: str, resource: str) -> GuardFn:
@@ -40,6 +55,8 @@ def require_permission(action: str, resource: str) -> GuardFn:
         user = connection.user
         if not getattr(user, "is_authenticated", False):
             raise NotAuthorizedException(detail="Not authenticated")
+        if is_admin(user):
+            return
         if not has_permissions(user, {permission_name}):
             raise PermissionDeniedException(
                 detail=f"Missing permission: {permission_name}"

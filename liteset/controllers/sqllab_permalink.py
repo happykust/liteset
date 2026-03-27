@@ -29,7 +29,7 @@ from liteset.commands.sqllab import (
 )
 from liteset.guards.rbac import require_permission
 from liteset.providers import provide_kv_dao
-from liteset.schemas.sqllab import SqlLabPermalinkBody
+from liteset.schemas.sqllab import SqlLabPermalinkSchema
 from liteset.events import event_logger
 from liteset.typing import KeyValueDAOProtocol
 
@@ -45,7 +45,7 @@ class SqlLabPermalinkController(Controller):
         status_code=201,
     )
     async def create_permalink(
-        self, data: SqlLabPermalinkBody, kv_dao: KeyValueDAOProtocol
+        self, data: SqlLabPermalinkSchema, kv_dao: KeyValueDAOProtocol
     ) -> dict[str, str]:
         cmd = CreateSqlLabPermalinkCommand(dao=kv_dao, state=data.state)
         key = await cmd.execute()

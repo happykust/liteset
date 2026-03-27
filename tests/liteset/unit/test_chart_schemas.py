@@ -28,8 +28,8 @@ from liteset.schemas.chart import (
     ChartExportParams,
     ChartGetResponse,
     ChartListResponse,
-    ChartPostBody,
-    ChartPutBody,
+    ChartPostSchema,
+    ChartPutSchema,
     FavoriteStatusParams,
 )
 
@@ -37,7 +37,7 @@ from liteset.schemas.chart import (
 def test_chart_post_body():
     body = msgspec.json.decode(
         b'{"slice_name": "Test", "viz_type": "table", "datasource_id": 1, "datasource_type": "table"}',
-        type=ChartPostBody,
+        type=ChartPostSchema,
     )
     assert body.slice_name == "Test"
     assert body.viz_type == "table"
@@ -47,7 +47,7 @@ def test_chart_post_body_invalid_datasource_type():
     with pytest.raises(msgspec.ValidationError):
         msgspec.json.decode(
             b'{"slice_name": "X", "viz_type": "table", "datasource_id": 1, "datasource_type": "invalid"}',
-            type=ChartPostBody,
+            type=ChartPostSchema,
         )
 
 
@@ -57,14 +57,14 @@ def test_chart_post_body_empty_name():
     with pytest.raises(msgspec.ValidationError):
         msgspec.json.decode(
             b'{"slice_name": "", "viz_type": "table", "datasource_id": 1, "datasource_type": "table"}',
-            type=ChartPostBody,
+            type=ChartPostSchema,
         )
 
 
 def test_chart_put_body_partial():
     body = msgspec.json.decode(
         b'{"slice_name": "Updated"}',
-        type=ChartPutBody,
+        type=ChartPutSchema,
     )
     assert body.slice_name == "Updated"
     assert body.viz_type is msgspec.UNSET

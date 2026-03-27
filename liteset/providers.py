@@ -142,6 +142,18 @@ def provide_report_execution_log_dao(session: AsyncSession) -> Any:
     return AsyncReportExecutionLogDAO(session)
 
 
+def provide_tag_dao(session: AsyncSession) -> Any:
+    from liteset.db.daos.tag import AsyncTagDAO
+
+    return AsyncTagDAO(session)
+
+
+def provide_theme_dao(session: AsyncSession) -> Any:
+    from liteset.db.daos.theme import AsyncThemeDAO
+
+    return AsyncThemeDAO(session)
+
+
 def provide_rls_dao(session: AsyncSession) -> Any:
     from liteset.db.base_dao import BaseAsyncDAO
     from liteset.models.connectors import RowLevelSecurityFilter

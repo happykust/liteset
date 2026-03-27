@@ -18,10 +18,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import zipfile
 from datetime import datetime, timezone
+from pathlib import PurePosixPath
 from typing import Any
 
 import yaml  # type: ignore[import-untyped]
@@ -29,6 +31,8 @@ import yaml  # type: ignore[import-untyped]
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+MAX_ZIP_ENTRIES = 500
 
 
 class ImportResult:
@@ -95,44 +99,86 @@ class AsyncFullAssetManager:
         overwrite: bool = False,
         passwords: dict[str, str] | None = None,
     ) -> ImportResult:
-        """Import assets from a ZIP file."""
+        """Import assets from a ZIP file.
+
+        ZIP parsing runs in a thread to avoid blocking the event loop.
+        Path traversal checks and entry count limits are enforced.
+        """
         result = ImportResult()
 
         try:
-            with zipfile.ZipFile(io.BytesIO(file_content)) as zf:
-                entries = [n for n in zf.namelist() if not n.endswith("/")]
-
-                # Parse metadata
-                if "metadata.yaml" in entries:
-                    metadata = yaml.safe_load(zf.read("metadata.yaml"))
-                    logger.info(
-                        "Importing assets version %s", metadata.get("version")
-                    )
-
-                # Group by type
-                by_type: dict[str, list[str]] = {}
-                for entry in entries:
-                    if entry == "metadata.yaml":
-                        continue
-                    parts = entry.split("/", 1)
-                    if len(parts) == 2:
-                        asset_type, _name = parts
-                        by_type.setdefault(asset_type, []).append(entry)
-
-                # Import each type
-                for asset_type, filenames in by_type.items():
-                    try:
-                        count = await self._import_type(
-                            zf, asset_type, filenames, overwrite, passwords
-                        )
-                        result.imported[asset_type] = count
-                    except Exception as e:
-                        result.errors.append(f"Failed to import {asset_type}: {e}")
-
+            parsed = await asyncio.to_thread(
+                self._parse_import_zip, file_content
+            )
         except zipfile.BadZipFile:
             result.errors.append("Invalid ZIP file")
+            return result
+        except ValueError as exc:
+            result.errors.append(str(exc))
+            return result
+
+        metadata, by_type, zf = parsed
+
+        try:
+            if metadata is not None:
+                logger.info(
+                    "Importing assets version %s", metadata.get("version")
+                )
+
+            # Import each type
+            for asset_type, filenames in by_type.items():
+                try:
+                    count = await self._import_type(
+                        zf, asset_type, filenames, overwrite, passwords
+                    )
+                    result.imported[asset_type] = count
+                except Exception as e:
+                    result.errors.append(f"Failed to import {asset_type}: {e}")
+        finally:
+            zf.close()
 
         return result
+
+    @staticmethod
+    def _parse_import_zip(
+        file_content: bytes,
+    ) -> tuple[dict[str, Any] | None, dict[str, list[str]], zipfile.ZipFile]:
+        """Parse and validate a ZIP file synchronously (run via to_thread).
+
+        Raises :class:`ValueError` on entry count or path traversal violations.
+        """
+        zf = zipfile.ZipFile(io.BytesIO(file_content))
+        entries = [n for n in zf.namelist() if not n.endswith("/")]
+
+        if len(entries) > MAX_ZIP_ENTRIES:
+            zf.close()
+            raise ValueError(
+                f"ZIP contains too many entries ({len(entries)} > {MAX_ZIP_ENTRIES})"
+            )
+
+        # Path traversal check
+        for entry in entries:
+            parts = PurePosixPath(entry).parts
+            if ".." in parts:
+                zf.close()
+                raise ValueError(
+                    f"ZIP entry contains path traversal: {entry}"
+                )
+
+        metadata: dict[str, Any] | None = None
+        if "metadata.yaml" in entries:
+            metadata = yaml.safe_load(zf.read("metadata.yaml"))
+
+        by_type: dict[str, list[str]] = {}
+        for entry in entries:
+            if entry == "metadata.yaml":
+                continue
+            split = entry.split("/", 1)
+            if len(split) == 2:
+                asset_type, _name = split
+                by_type.setdefault(asset_type, []).append(entry)
+
+        return metadata, by_type, zf
 
     async def _import_type(
         self,

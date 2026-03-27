@@ -30,7 +30,7 @@ from liteset.schemas.base import ApiListResponse, ApiResponse
 # ---------------------------------------------------------------------------
 
 
-class DashboardPostBody(msgspec.Struct):
+class DashboardPostSchema(msgspec.Struct):
     """POST /api/v1/dashboard/"""
 
     dashboard_title: str | None = None
@@ -50,7 +50,7 @@ class DashboardPostBody(msgspec.Struct):
     uuid: str | None = None
 
 
-class DashboardPutBody(msgspec.Struct):
+class DashboardPutSchema(msgspec.Struct):
     """PUT /api/v1/dashboard/<pk>"""
 
     dashboard_title: str | None | msgspec.UnsetType = msgspec.UNSET
@@ -70,7 +70,7 @@ class DashboardPutBody(msgspec.Struct):
     uuid: str | None | msgspec.UnsetType = msgspec.UNSET
 
 
-class DashboardCopyBody(msgspec.Struct):
+class DashboardCopySchema(msgspec.Struct):
     """POST /api/v1/dashboard/<pk>/copy/"""
 
     dashboard_title: str
@@ -79,7 +79,7 @@ class DashboardCopyBody(msgspec.Struct):
     duplicate_slices: bool = False
 
 
-class DashboardFiltersUpdateBody(msgspec.Struct):
+class DashboardFiltersUpdateSchema(msgspec.Struct):
     """PUT /api/v1/dashboard/<pk>/filters"""
 
     deleted: list[str] = []
@@ -87,7 +87,7 @@ class DashboardFiltersUpdateBody(msgspec.Struct):
     reordered: list[str] = []
 
 
-class DashboardColorsUpdateBody(msgspec.Struct):
+class DashboardColorsUpdateSchema(msgspec.Struct):
     """PUT /api/v1/dashboard/<pk>/colors"""
 
     color_namespace: str | None = None
@@ -98,7 +98,7 @@ class DashboardColorsUpdateBody(msgspec.Struct):
     color_scheme_domain: list[str] = []
 
 
-class DashboardScreenshotBody(msgspec.Struct):
+class DashboardScreenshotSchema(msgspec.Struct):
     """POST /api/v1/dashboard/<pk>/cache_dashboard_screenshot/"""
 
     dataMask: dict[str, Any] = {}
@@ -107,7 +107,7 @@ class DashboardScreenshotBody(msgspec.Struct):
     urlParams: list[list[str]] = []
 
 
-class DashboardPermalinkBody(msgspec.Struct):
+class DashboardPermalinkSchema(msgspec.Struct):
     """POST /api/v1/dashboard/<pk>/permalink"""
 
     dataMask: dict[str, Any] = {}
@@ -116,7 +116,7 @@ class DashboardPermalinkBody(msgspec.Struct):
     urlParams: list[list[str]] = []
 
 
-class FilterStateBody(msgspec.Struct):
+class FilterStateSchema(msgspec.Struct):
     """POST/PUT filter state value."""
 
     value: str

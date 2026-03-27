@@ -27,6 +27,7 @@ in the Flask initialisation chain at module-import time.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import inspect
 import json  # noqa: TID251
@@ -555,7 +556,11 @@ class AsyncQueryContextProcessor:
         return _generate_cache_key(cache_dict, "qc-")
 
     async def _cache_get(self, key: str) -> Any | None:
-        """Retrieve cached data (DataFrame or dict with df+annotation_data)."""
+        """Retrieve cached data (DataFrame or dict with df+annotation_data).
+
+        Values are stored as pickle bytes by ``_cache_set``, so we
+        deserialize them here before returning.
+        """
         if self._cache_manager is None:
             return None
         try:
@@ -563,22 +568,47 @@ class AsyncQueryContextProcessor:
                 getter = self._cache_manager.get(key)
                 result = await getter if inspect.isawaitable(getter) else getter
                 if result is not None:
-                    return result
+                    try:
+                        import pickle  # noqa: S403
+
+                        return pickle.loads(result)  # noqa: S301
+                    except (pickle.UnpicklingError, TypeError, EOFError):
+                        logger.warning(
+                            "Cache unpickle failed for key %s, returning raw value",
+                            key,
+                        )
+                        return result
         except Exception:  # noqa: BLE001
             logger.warning("Cache get failed for key %s", key, exc_info=True)
         return None
 
     async def _cache_set(self, key: str, value: Any, timeout: int) -> None:
-        """Store a value (DataFrame or dict) in cache."""
+        """Store a value (DataFrame or dict) in cache.
+
+        Serializes the value to bytes via pickle before passing to the cache
+        manager, which expects ``bytes``.  Pickle is used here (rather than
+        JSON) because the cached values may contain pandas DataFrames and
+        NumPy arrays — the same approach the original Flask QueryContextProcessor
+        takes via ``superset.extensions.cache_manager``.
+        """
         if self._cache_manager is None:
             return
         try:
+            import pickle  # noqa: S403
+
+            serialized = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
             if hasattr(self._cache_manager, "set"):
-                setter = self._cache_manager.set(key, value, timeout)
+                setter = self._cache_manager.set(key, serialized, timeout)
                 if inspect.isawaitable(setter):
                     await setter
-        except Exception:  # noqa: BLE001
-            logger.warning("Failed to cache key %s", key, exc_info=True)
+        except (TypeError, pickle.PicklingError):
+            logger.warning(
+                "Cache serialization failed for key %s", key, exc_info=True
+            )
+        except (ConnectionError, OSError):
+            logger.warning(
+                "Cache connection error for key %s", key, exc_info=True
+            )
 
     async def get_annotation_data(
         self, query_object: AsyncQueryObject
@@ -730,7 +760,7 @@ class AsyncQueryContextProcessor:
         )
         return {"records": payload["queries"][0].get("data", [])}
 
-    async def processing_time_offsets(
+    async def processing_time_offsets(  # noqa: C901
         self,
         df: pd.DataFrame,
         query_object: AsyncQueryObject,
@@ -738,20 +768,203 @@ class AsyncQueryContextProcessor:
         """Process time-shifted comparisons (e.g., '1 week ago', '1 year ago').
 
         For each time_offset, clones the query with shifted time range,
-        executes it, and joins with the original DataFrame.
-
-        TODO(liteset/remaining-api): Implement recursive ChartDataCommand
-        for time-shifted comparisons (YoY, WoW). See plan Task 2 warnings.
+        executes it, renames metric columns with the offset suffix, and
+        joins the offset DataFrames with the original on non-metric columns.
         """
-        if query_object.time_offsets:
-            logger.warning(
-                "Time offset processing not yet implemented (liteset/remaining-api). "
-                "Time comparison charts will return unshifted data. Offsets: %s",
-                query_object.time_offsets,
-            )
         queries: list[str] = []
         cache_keys: list[str | None] = []
+
+        if not query_object.time_offsets:
+            return CachedTimeOffset(df=df, queries=queries, cache_keys=cache_keys)
+
+        # Resolve outer time bounds from the query object
+        outer_from_dttm = query_object.from_dttm
+        outer_to_dttm = query_object.to_dttm
+
+        # If from/to not set directly, try resolving from time_range
+        if not outer_from_dttm or not outer_to_dttm:
+            try:
+                from superset.utils.date_parser import get_since_until
+
+                since, until = get_since_until(
+                    time_range=query_object.time_range,
+                    time_shift=query_object.time_shift,
+                )
+                outer_from_dttm = outer_from_dttm or since
+                outer_to_dttm = outer_to_dttm or until
+            except ImportError:
+                pass
+
+        if not outer_from_dttm or not outer_to_dttm:
+            try:
+                from superset.exceptions import QueryObjectValidationError
+
+                raise QueryObjectValidationError(
+                    "An enclosed time range (both start and end) must be specified "
+                    "when using a Time Comparison."
+                )
+            except ImportError:
+                raise ValueError(
+                    "An enclosed time range (both start and end) must be specified "
+                    "when using a Time Comparison."
+                )
+
+        # Determine metric names to identify which columns to rename
+        try:
+            from superset.utils.core import get_metric_names
+
+            metric_names = get_metric_names(query_object.metrics)
+        except ImportError:
+            # Fallback: extract metric labels manually
+            metric_names = []
+            for m in query_object.metrics or []:
+                if isinstance(m, str):
+                    metric_names.append(m)
+                elif isinstance(m, dict):
+                    metric_names.append(
+                        m.get("label") or m.get("expressionType", str(m))
+                    )
+
+        # Non-metric columns serve as join keys
+        join_keys = [col for col in df.columns if col not in metric_names]
+
+        # Time comparison separator (matches Superset's TIME_COMPARISON = "__")
+        time_comparison_sep = "__"
+
+        offset_dfs: dict[str, pd.DataFrame] = {}
+
+        for offset in query_object.time_offsets:
+            try:
+                query_object_clone = copy.deepcopy(query_object)
+
+                # Shift from_dttm and to_dttm using the offset string
+                try:
+                    from superset.utils.date_parser import get_past_or_future
+
+                    query_object_clone.from_dttm = get_past_or_future(
+                        offset, outer_from_dttm
+                    )
+                    query_object_clone.to_dttm = get_past_or_future(
+                        offset, outer_to_dttm
+                    )
+                except ImportError:
+                    logger.warning(
+                        "superset.utils.date_parser.get_past_or_future not available; "
+                        "cannot shift time range for offset %s",
+                        offset,
+                    )
+                    continue
+
+                query_object_clone.inner_from_dttm = query_object_clone.from_dttm
+                query_object_clone.inner_to_dttm = query_object_clone.to_dttm
+
+                # Set granularity if not already set
+                try:
+                    from superset.common.utils.query_analysis import get_x_axis_label
+
+                    x_axis_label = get_x_axis_label(query_object.columns)
+                    query_object_clone.granularity = (
+                        query_object_clone.granularity or x_axis_label
+                    )
+                except ImportError:
+                    pass
+
+                # Clear time_offsets and post_processing on the clone to avoid
+                # recursion and ensure we get raw data
+                query_object_clone.time_offsets = []
+                query_object_clone.post_processing = []
+
+                # Remove row_limit/offset on clone to prevent data inconsistency
+                # during the join (matches Superset behaviour)
+                query_object_clone.row_limit = None
+                query_object_clone.row_offset = 0
+
+                # Execute the shifted query
+                result = await self._get_query_result(query_object_clone)
+                offset_metrics_df = result.get("df", pd.DataFrame())
+                query_str = result.get("query", "")
+
+                queries.append(query_str)
+                cache_keys.append(None)
+
+                # Build metrics mapping: SUM(value) -> SUM(value)__1 year ago
+                metrics_mapping = {
+                    metric: time_comparison_sep.join([metric, offset])
+                    for metric in metric_names
+                }
+
+                if offset_metrics_df.empty:
+                    # Create a placeholder DataFrame with NaN values
+                    offset_metrics_df = pd.DataFrame(
+                        {
+                            col: [np.nan]
+                            for col in join_keys + list(metrics_mapping.values())
+                        }
+                    )
+                else:
+                    # Normalize the offset DataFrame
+                    offset_metrics_df = self._normalize_df(
+                        offset_metrics_df, query_object_clone
+                    )
+                    # Rename metric columns with offset suffix
+                    offset_metrics_df = offset_metrics_df.rename(
+                        columns=metrics_mapping
+                    )
+
+                offset_dfs[offset] = offset_metrics_df
+
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Failed to process time offset '%s'", offset
+                )
+                queries.append("")
+                cache_keys.append(None)
+
+        # Join all offset DataFrames with the original
+        if offset_dfs:
+            df = self._join_offset_dfs(df, offset_dfs, join_keys)
+
         return CachedTimeOffset(df=df, queries=queries, cache_keys=cache_keys)
+
+    @staticmethod
+    def _join_offset_dfs(
+        df: pd.DataFrame,
+        offset_dfs: dict[str, pd.DataFrame],
+        join_keys: list[str],
+    ) -> pd.DataFrame:
+        """Join offset DataFrames with the main DataFrame on non-metric columns.
+
+        Uses a suffixed join column approach to handle duplicate column names,
+        matching Superset's join_offset_dfs logic (simplified without
+        TIME_GRAIN_JOIN_COLUMN_PRODUCERS which requires Flask config).
+        """
+        for _offset, offset_df in offset_dfs.items():
+            # Find common join keys that exist in both DataFrames
+            actual_join_keys = [k for k in join_keys if k in offset_df.columns]
+            if not actual_join_keys:
+                # No join keys — concatenate columns directly
+                df = pd.concat([df, offset_df], axis=1)
+                continue
+
+            # Keep only join keys + new (renamed) metric columns from offset_df
+            offset_cols = actual_join_keys + [
+                c for c in offset_df.columns if c not in join_keys
+            ]
+            offset_df = offset_df[offset_cols]
+
+            df = df.merge(
+                offset_df,
+                on=actual_join_keys,
+                how="left",
+                suffixes=("", R_SUFFIX),
+            )
+
+            # Drop any right-suffix columns created by duplicate non-key columns
+            drop_cols = [c for c in df.columns if c.endswith(R_SUFFIX)]
+            if drop_cols:
+                df = df.drop(columns=drop_cols)
+
+        return df
 
     async def raise_for_access(self) -> None:
         """Validate per-query and delegate to AsyncSecurityManager.raise_for_access()."""

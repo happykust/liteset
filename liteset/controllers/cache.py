@@ -27,7 +27,7 @@ from liteset.events import event_logger
 from liteset.guards.rbac import require_permission
 
 
-class CacheInvalidateBody(msgspec.Struct):
+class CacheInvalidateSchema(msgspec.Struct):
     """Body for POST /api/v1/cachekey/invalidate."""
 
     datasource_uids: list[str]
@@ -43,7 +43,7 @@ class CacheController(Controller):
     )
     async def invalidate(
         self,
-        data: CacheInvalidateBody,
+        data: CacheInvalidateSchema,
     ) -> dict[str, str]:
         """POST /api/v1/cachekey/invalidate — invalidate cache keys."""
         # Cache invalidation logic would go through CacheKey model.

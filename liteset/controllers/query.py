@@ -34,7 +34,7 @@ from liteset.controllers.base import (
 from liteset.guards.rbac import require_permission
 from liteset.params.rison import provide_rison_query
 from liteset.providers import provide_query_dao
-from liteset.schemas.query import StopQueryBody
+from liteset.schemas.query import StopQuerySchema
 from liteset.events import event_logger
 from liteset.typing import QueryDAOProtocol, UserProtocol
 
@@ -179,7 +179,7 @@ class QueryController(Controller):
         guards=[require_permission("can_write", "Query")],
     )
     async def stop_query(
-        self, data: StopQueryBody, dao: QueryDAOProtocol
+        self, data: StopQuerySchema, dao: QueryDAOProtocol
     ) -> dict[str, str]:
         cmd = StopQueryCommand(dao=dao, client_id=data.client_id)
         await cmd.execute()

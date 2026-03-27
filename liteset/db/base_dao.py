@@ -38,18 +38,18 @@ class BaseAsyncDAO(Generic[T]):
     @classmethod
     def _get_pk_column(cls) -> Any:
         """Return the primary key column attribute, cached per model class."""
-        if cls.model_cls not in cls._pk_column_cache:
+        try:
+            return cls._pk_column_cache[cls.model_cls]
+        except KeyError:
             pk_cols = inspect(cls.model_cls).primary_key
             if len(pk_cols) != 1:
                 raise ValueError(
                     f"{cls.model_cls.__name__} has composite PK; "
                     "use a custom query instead of find_by_ids"
                 )
-            cls._pk_column_cache[cls.model_cls] = getattr(
-                cls.model_cls,
-                pk_cols[0].name,
-            )
-        return cls._pk_column_cache[cls.model_cls]
+            col = getattr(cls.model_cls, pk_cols[0].name)
+            cls._pk_column_cache[cls.model_cls] = col
+            return col
 
     async def find_by_id(self, model_id: int | str) -> T | None:
         return await self.session.get(self.model_cls, model_id)
@@ -65,13 +65,20 @@ class BaseAsyncDAO(Generic[T]):
         filters: list[Any] | None = None,
         page: int = 0,
         page_size: int = 0,
+        order_by: list[Any] | None = None,
     ) -> list[T]:
         stmt = select(self.model_cls)
         if filters:
             stmt = stmt.where(*filters)
         if page_size > 0:
-            stmt = stmt.order_by(self._get_pk_column())
+            tiebreak = self._get_pk_column()
+            if order_by:
+                stmt = stmt.order_by(*order_by, tiebreak)
+            else:
+                stmt = stmt.order_by(tiebreak)
             stmt = stmt.offset(page * page_size).limit(page_size)
+        elif order_by:
+            stmt = stmt.order_by(*order_by)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 

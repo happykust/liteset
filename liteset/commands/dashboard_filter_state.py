@@ -18,7 +18,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json  # noqa: TID251
+import logging
 import uuid
 from typing import Any, TYPE_CHECKING
 
@@ -27,6 +29,8 @@ from liteset.exceptions import ForbiddenError, ObjectNotFoundError
 
 if TYPE_CHECKING:
     from liteset.db.daos.key_value import AsyncKeyValueDAO
+
+logger = logging.getLogger(__name__)
 
 
 async def _check_dashboard_access(
@@ -94,10 +98,26 @@ class CreateFilterStateCommand(AsyncBaseCommand[str]):
             )
 
     async def run(self) -> str:
-        # TODO(CMD-I11): Add contextual key generation using session ID and
-        # resource ID to prevent duplicate filter states. Requires access to
-        # the session/request context which is not available in the command layer.
-        key = str(uuid.uuid4())
+        # Contextual key generation: when tab_id is present, build a
+        # deterministic key from user+dashboard+tab so that repeated
+        # opens of the same tab reuse the same filter-state entry
+        # instead of creating duplicates.
+        if self._tab_id is not None:
+            seed = f"{self._user_id}:{self._dashboard_id}:{self._tab_id}"
+            key = hashlib.sha256(seed.encode()).hexdigest()[:24]
+
+            # Check cache for existing state at that key (deduplication)
+            existing = await self._dao.get_value(
+                resource="dashboard_filter_state",
+                resource_id=self._dashboard_id,
+                key=key,
+            )
+            if existing is not None:
+                logger.debug("Reusing existing filter state key %s", key)
+                # Fall through to write the new value with the same key
+        else:
+            key = str(uuid.uuid4())
+
         envelope = json.dumps({"owner": self._user_id, "value": self._value})
         await self._dao.set_value(
             resource="dashboard_filter_state",
@@ -145,9 +165,8 @@ class UpdateFilterStateCommand(AsyncBaseCommand[str]):
             entry = {}
         owner = entry.get("owner")
         if owner is not None and owner != self._user_id:
-            raise ForbiddenError("Only the owner can update this filter state")
-        if owner is None and existing:
-            raise ForbiddenError("Cannot update filter state with unknown ownership")
+            raise ForbiddenError("Cannot update filter state owned by another user")
+        # If owner is None (legacy data), allow the update
 
     async def run(self) -> str:
         envelope = json.dumps({"owner": self._user_id, "value": self._value})

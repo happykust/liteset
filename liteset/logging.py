@@ -47,20 +47,26 @@ def configure_logging(settings: LitesetSettings) -> None:
         }
     )
 
-    processors: list[structlog.types.Processor] = [
-        structlog.stdlib.filter_by_level,
+    shared_processors: list[structlog.types.Processor] = [
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.stdlib.PositionalArgumentsFormatter(),
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
-        structlog.processors.ExceptionRenderer(),
     ]
 
     if settings.production:
-        processors.append(structlog.processors.JSONRenderer())
+        processors = [
+            *shared_processors,
+            structlog.processors.dict_tracebacks,
+            structlog.processors.JSONRenderer(),
+        ]
     else:
-        processors.append(structlog.dev.ConsoleRenderer())
+        processors = [
+            *shared_processors,
+            structlog.processors.ExceptionRenderer(),
+            structlog.dev.ConsoleRenderer(),
+        ]
 
     structlog.configure(
         processors=processors,

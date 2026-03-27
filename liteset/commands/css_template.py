@@ -38,7 +38,9 @@ class CreateCssTemplateCommand(AsyncBaseCommand["CssTemplate"]):
             raise CommandInvalidError("template_name is required")
 
     async def run(self) -> Any:
-        return await self._dao.create(self._data)
+        result = await self._dao.create(self._data)
+        await self._dao.session.flush()
+        return result
 
 
 class UpdateCssTemplateCommand(AsyncBaseCommand["CssTemplate"]):
@@ -57,7 +59,9 @@ class UpdateCssTemplateCommand(AsyncBaseCommand["CssTemplate"]):
 
     async def run(self) -> Any:
         assert self._template is not None
-        return await self._dao.update(self._template, self._data)
+        result = await self._dao.update(self._template, self._data)
+        await self._dao.session.flush()
+        return result
 
 
 class DeleteCssTemplateCommand(AsyncBaseCommand[None]):

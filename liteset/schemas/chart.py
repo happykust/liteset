@@ -32,7 +32,7 @@ from liteset.schemas.base import ApiListResponse, ApiResponse
 # ---------------------------------------------------------------------------
 
 
-class ChartPostBody(msgspec.Struct):
+class ChartPostSchema(msgspec.Struct):
     """POST /api/v1/chart/"""
 
     slice_name: Annotated[str, Meta(min_length=1)]
@@ -66,7 +66,7 @@ class ChartPostBody(msgspec.Struct):
                     ) from exc
 
 
-class ChartPutBody(msgspec.Struct):
+class ChartPutSchema(msgspec.Struct):
     """PUT /api/v1/chart/<pk>"""
 
     slice_name: str | None | msgspec.UnsetType = msgspec.UNSET

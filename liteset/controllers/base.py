@@ -36,6 +36,7 @@ Concrete controllers call these helpers from their own `@get` handlers.
 
 from __future__ import annotations
 
+import functools
 import io
 import logging
 from collections.abc import AsyncGenerator
@@ -53,6 +54,79 @@ def extract_pagination(rison_params: dict[str, Any] | None) -> tuple[int, int]:
     page = (rison_params or {}).get("page", 0)
     page_size = (rison_params or {}).get("page_size", 25)
     return page, page_size
+
+
+@functools.lru_cache(maxsize=32)
+def _get_model_columns(model_cls: type) -> dict[str, Any]:
+    """Return a mapping of column key -> column for a SQLAlchemy model (cached)."""
+    from sqlalchemy import inspect as sa_inspect
+
+    mapper = sa_inspect(model_cls)
+    return {col.key: col for col in mapper.columns}
+
+
+def build_rison_query_params(
+    model_cls: type[Any],
+    rison_params: dict[str, Any] | None,
+) -> tuple[list[Any], list[Any] | None, int, int]:
+    """Parse Rison query parameters into filters, ordering, and pagination.
+
+    Supports the following filter operators:
+        eq, neq, sw (starts with), ew (ends with), ct (contains),
+        nct (not contains), gt, lt, gte, lte.
+
+    Returns:
+        A tuple of ``(filters, order_by, page, page_size)``.
+    """
+    from sqlalchemy import asc, desc
+
+    from liteset.utils import escape_like
+
+    params = rison_params or {}
+    page, page_size = extract_pagination(rison_params)
+
+    # -- Validate column names via SQLAlchemy mapper inspection --
+    valid_columns = _get_model_columns(model_cls)
+
+    # -- Build filters --
+    filters: list[Any] = []
+    for flt in params.get("filters", []):
+        col_name = flt.get("col")
+        op = flt.get("opr")
+        value = flt.get("value")
+        if col_name not in valid_columns:
+            continue
+        col_attr = getattr(model_cls, col_name)
+        if op == "eq":
+            filters.append(col_attr == value)
+        elif op == "neq":
+            filters.append(col_attr != value)
+        elif op == "sw":
+            filters.append(col_attr.ilike(f"{escape_like(str(value))}%"))
+        elif op == "ew":
+            filters.append(col_attr.ilike(f"%{escape_like(str(value))}"))
+        elif op == "ct":
+            filters.append(col_attr.ilike(f"%{escape_like(str(value))}%"))
+        elif op == "nct":
+            filters.append(~col_attr.ilike(f"%{escape_like(str(value))}%"))
+        elif op == "gt":
+            filters.append(col_attr > value)
+        elif op == "lt":
+            filters.append(col_attr < value)
+        elif op == "gte":
+            filters.append(col_attr >= value)
+        elif op == "lte":
+            filters.append(col_attr <= value)
+
+    # -- Build order_by --
+    order_by: list[Any] | None = None
+    order_columns = params.get("order_column")
+    if order_columns and order_columns in valid_columns:
+        direction = params.get("order_direction", "asc")
+        order_fn = desc if direction == "desc" else asc
+        order_by = [order_fn(getattr(model_cls, order_columns))]
+
+    return filters, order_by, page, page_size
 
 
 def extract_ids(rison_params: dict[str, Any] | None) -> list[int]:
@@ -90,8 +164,15 @@ async def stream_zip(buf: io.BytesIO) -> AsyncGenerator[bytes, None]:
 
 
 def _escape_like(value: str) -> str:
-    """Escape LIKE special characters (\\, %, _) to prevent wildcard injection."""
-    return value.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+    """Escape LIKE special characters (\\, %, _) to prevent wildcard injection.
+
+    .. deprecated::
+        Use :func:`liteset.utils.escape_like` instead. This wrapper exists
+        for backward compatibility.
+    """
+    from liteset.utils import escape_like
+
+    return escape_like(value)
 
 
 def serialize_list_response(

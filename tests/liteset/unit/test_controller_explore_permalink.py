@@ -26,7 +26,7 @@ import pytest
 
 from liteset.controllers.explore_permalink import (
     ExplorePermalinkController,
-    ExplorePermalinkCreateBody,
+    ExplorePermalinkCreateSchema,
 )
 
 
@@ -49,7 +49,7 @@ def test_controller_tags():
 
 
 def test_create_body_defaults():
-    body = ExplorePermalinkCreateBody()
+    body = ExplorePermalinkCreateSchema()
     assert body.chart_id is None
     assert body.form_data == {}
     assert body.url_params == {}
@@ -58,7 +58,7 @@ def test_create_body_defaults():
 def test_create_body_with_values():
     body = msgspec.convert(
         {"chart_id": 42, "form_data": {"viz_type": "table"}, "url_params": {"foo": "bar"}},
-        ExplorePermalinkCreateBody,
+        ExplorePermalinkCreateSchema,
     )
     assert body.chart_id == 42
     assert body.form_data == {"viz_type": "table"}
@@ -83,7 +83,7 @@ def mock_user():
 
 
 async def test_create_permalink(mock_kv_dao, mock_user):
-    data = ExplorePermalinkCreateBody(chart_id=1, form_data={"viz_type": "table"})
+    data = ExplorePermalinkCreateSchema(chart_id=1, form_data={"viz_type": "table"})
     # Access the underlying function via .fn
     create_fn = ExplorePermalinkController.create_permalink.fn
     result = await create_fn(

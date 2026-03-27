@@ -38,15 +38,10 @@ from liteset.events import event_logger
 from liteset.exceptions import ObjectNotFoundError
 from liteset.guards.rbac import require_permission
 from liteset.params.rison import provide_rison_query
+from liteset.providers import provide_theme_dao
 from liteset.schemas.theme import ThemePostSchema, ThemePutSchema
 from liteset.typing import CRUDDAOProtocol, UserProtocol
 from liteset.utils import filter_unset
-
-
-def provide_theme_dao(session: Any) -> Any:
-    from liteset.db.daos.theme import AsyncThemeDAO
-
-    return AsyncThemeDAO(session)
 
 
 class ThemeController(Controller):

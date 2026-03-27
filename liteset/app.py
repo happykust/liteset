@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from litestar import get, Litestar
+from litestar.response import Response
 from litestar.config.compression import CompressionConfig
 from litestar.config.cors import CORSConfig
 from litestar.contrib.jinja import JinjaTemplateEngine
@@ -54,6 +55,8 @@ from liteset.exceptions import (
 from liteset.logging import configure_logging
 from liteset.middleware.auth import LitesetAuthMiddleware
 from liteset.middleware.csrf import create_csrf_config
+from liteset.middleware.rate_limit import RateLimitMiddleware
+from liteset.middleware.security_headers import SecurityHeadersMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +82,56 @@ def _make_manifest_lookup(manifest: dict[str, Any], asset_type: str) -> Any:
 @get("/api/v1/health", opt={"exclude_from_auth": True})
 async def health_check() -> dict[str, str]:
     return {"status": "OK"}
+
+
+@get("/health", opt={"exclude_from_auth": True})
+async def health() -> dict[str, str]:
+    return {"status": "OK"}
+
+
+@get("/healthcheck", opt={"exclude_from_auth": True})
+async def healthcheck() -> dict[str, str]:
+    return {"status": "OK"}
+
+
+@get("/ping", opt={"exclude_from_auth": True})
+async def ping() -> dict[str, str]:
+    return {"status": "OK"}
+
+
+@get("/healthz", opt={"exclude_from_auth": True})
+async def readiness_probe(state: State) -> Response[dict[str, Any]]:
+    """Readiness probe — checks DB and Redis connectivity."""
+    checks: dict[str, str] = {}
+
+    # Check database connectivity
+    try:
+        engine = getattr(state, "engine", None)
+        if engine is not None:
+            from sqlalchemy import text
+
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            checks["database"] = "ok"
+        else:
+            checks["database"] = "not configured"
+    except Exception as exc:
+        checks["database"] = f"error: {exc}"
+
+    # Check Redis connectivity
+    try:
+        redis = getattr(state, "redis", None)
+        if redis is not None:
+            await redis.ping()
+            checks["redis"] = "ok"
+        else:
+            checks["redis"] = "not configured"
+    except Exception as exc:
+        checks["redis"] = f"error: {exc}"
+
+    healthy = all(v == "ok" or v == "not configured" for v in checks.values())
+    body = {"status": "OK" if healthy else "ERROR", "checks": checks}
+    return Response(body, status_code=200 if healthy else 503)
 
 
 async def on_startup(app: Litestar) -> None:
@@ -176,6 +229,10 @@ def create_app(
     from liteset.controllers.sqllab import SqlLabController
     from liteset.controllers.sqllab_permalink import SqlLabPermalinkController
 
+    # Import datasource and role controllers (Phase 7: cleanup)
+    from liteset.controllers.datasource import DatasourceController
+    from liteset.controllers.role import RoleController
+
     # Import remaining API controllers (Phase 5)
     from liteset.controllers.advanced_data_type import AdvancedDataTypeController
     from liteset.controllers.annotation import AnnotationController
@@ -206,6 +263,10 @@ def create_app(
 
     route_handlers: list[Any] = [
         health_check,
+        health,
+        healthcheck,
+        ping,
+        readiness_probe,
         SPAController,
         SecurityController,
         # Phase 4: core API
@@ -241,6 +302,9 @@ def create_app(
         RLSController,
         ImportExportController,
         # LegacyApiController,  # deferred — path overlap (see import)
+        # Phase 7: cleanup — datasource and role controllers
+        DatasourceController,
+        RoleController,
         # Phase 6: WebSocket
         AsyncQueryWebSocket,
     ]
@@ -297,11 +361,15 @@ def create_app(
             secret=secret_key,
             cookie_name=settings.csrf_cookie_name,
             header_name=settings.csrf_header_name,
-            exclude_paths=["/api/v1/health", "/api/v1/security/csrf_token/"],
+            exclude_paths=[
+                "/api/v1/health",
+                "/health",
+                "/healthcheck",
+                "/ping",
+                "/healthz",
+                "/api/v1/security/csrf_token/",
+            ],
         )
-
-    # TODO(liteset/cleanup): add security headers middleware
-    #   (CSP, HSTS, X-Frame-Options) — replaces flask-talisman
 
     return Litestar(
         route_handlers=route_handlers,
@@ -315,7 +383,11 @@ def create_app(
             "security_manager": Provide(provide_security_manager),
             "event_manager": Provide(provide_event_manager),
         },
-        middleware=[LitesetAuthMiddleware],
+        middleware=[
+            SecurityHeadersMiddleware,
+            RateLimitMiddleware,
+            LitesetAuthMiddleware,
+        ],
         csrf_config=csrf_config,
         on_startup=startup_hooks,
         on_shutdown=[on_shutdown],

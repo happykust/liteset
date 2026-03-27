@@ -48,6 +48,7 @@ from liteset.commands.database import (
 
 # DAO imports moved to provider functions
 from liteset.controllers.base import (
+    build_rison_query_params,
     extract_ids,
     extract_pagination,
     get_distinct_payload,
@@ -56,13 +57,12 @@ from liteset.controllers.base import (
     serialize_list_response,
     stream_zip,
 )
+from liteset.events import event_logger
 from liteset.exceptions import (
     CommandInvalidError,
     LitesetSecurityException,
     ObjectNotFoundError,
 )
-
-_IDENTIFIER_RE = re.compile(r"^[a-zA-Z0-9_][a-zA-Z0-9_.$]*$")
 from liteset.guards.rbac import require_permission
 from liteset.params.rison import provide_rison_query
 from liteset.providers import provide_database_dao
@@ -70,21 +70,22 @@ from liteset.schemas.database import (
     CatalogsResponse,
     DatabaseConnectionResponse,
     DatabaseGetResponse,
-    DatabasePostBody,
-    DatabasePutBody,
-    DatabaseTestConnectionBody,
-    DatabaseValidateParamsBody,
+    DatabasePostSchema,
+    DatabasePutSchema,
+    DatabaseTestConnectionSchema,
+    DatabaseValidateParamsSchema,
     SchemaAccessForUploadResponse,
     SchemasResponse,
     SelectStarResponse,
     TableExtraMetadata,
     TableMetadataResponse,
-    UploadMetadataBody,
-    ValidateSQLBody,
+    UploadMetadataSchema,
+    ValidateSQLSchema,
 )
 from liteset.typing import DatabaseDAOProtocol, SecurityManagerProtocol, UserProtocol
-from liteset.events import event_logger
 from liteset.utils import filter_unset, mask_uri_password
+
+_IDENTIFIER_RE = re.compile(r"^[a-zA-Z0-9_][a-zA-Z0-9_.$]*$")
 
 
 class DatabaseController(Controller):
@@ -107,10 +108,16 @@ class DatabaseController(Controller):
         dao: DatabaseDAOProtocol,
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        page, page_size = extract_pagination(rison_params)
-        databases = await dao.find_all(page=page, page_size=page_size)
-        # TODO: pass same filters to count() when Rison filtering is implemented
-        total = await dao.count()
+        rison_filters, order_by, page, page_size = build_rison_query_params(
+            dao.model_cls, rison_params
+        )
+        databases = await dao.find_all(
+            filters=rison_filters or None,
+            page=page,
+            page_size=page_size,
+            order_by=order_by,
+        )
+        total = await dao.count(filters=rison_filters or None)
         event_logger.log("database.list")
         return serialize_list_response(
             databases,
@@ -248,7 +255,7 @@ class DatabaseController(Controller):
     )
     async def create(
         self,
-        data: DatabasePostBody,
+        data: DatabasePostSchema,
         dao: DatabaseDAOProtocol,
         current_user: UserProtocol,
     ) -> DatabaseGetResponse:
@@ -294,7 +301,7 @@ class DatabaseController(Controller):
     async def update(
         self,
         pk: int,
-        data: DatabasePutBody,
+        data: DatabasePutSchema,
         dao: DatabaseDAOProtocol,
         current_user: UserProtocol,
     ) -> DatabaseGetResponse:
@@ -368,7 +375,7 @@ class DatabaseController(Controller):
     ) -> dict[str, Any]:
         cmd = SyncPermissionsCommand(dao=dao, database_id=pk)
         result = await cmd.execute()
-        event_logger.log("database.test_connection")
+        event_logger.log("database.sync_permissions")
         return result
 
     # ------------------------------------------------------------------
@@ -546,7 +553,7 @@ class DatabaseController(Controller):
     )
     async def test_connection(
         self,
-        data: DatabaseTestConnectionBody,
+        data: DatabaseTestConnectionSchema,
         dao: DatabaseDAOProtocol,
     ) -> dict[str, Any]:
         cmd = DatabaseTestConnectionCommand(
@@ -613,7 +620,7 @@ class DatabaseController(Controller):
     async def validate_sql(
         self,
         pk: int,
-        data: ValidateSQLBody,
+        data: ValidateSQLSchema,
         dao: DatabaseDAOProtocol,
     ) -> dict[str, Any]:
         cmd = ValidateSQLCommand(
@@ -725,7 +732,7 @@ class DatabaseController(Controller):
     )
     async def validate_parameters(
         self,
-        data: DatabaseValidateParamsBody,
+        data: DatabaseValidateParamsSchema,
     ) -> dict[str, Any]:
         cmd = ValidateParametersCommand(
             data={
@@ -809,7 +816,7 @@ class DatabaseController(Controller):
         "/upload_metadata/",
         guards=[require_permission("can_write", "Database")],
     )
-    async def upload_metadata(self, data: UploadMetadataBody) -> dict[str, Any]:
+    async def upload_metadata(self, data: UploadMetadataSchema) -> dict[str, Any]:
         # Upload metadata stub; production logic deferred to engine
         return {
             "result": {
@@ -818,65 +825,65 @@ class DatabaseController(Controller):
             },
         }
 
-    # ------------------------------------------------------------------
-    # Deprecated endpoints (Flask 4.0 compat, marked for removal)
-    # ------------------------------------------------------------------
-    @get(
-        "/{pk:int}/table/{table_name:str}/{schema_name:str}/",
-        guards=[require_permission("can_read", "Database")],
-    )
-    async def table_metadata_deprecated(
-        self,
-        pk: int,
-        table_name: str,
-        schema_name: str,
-        dao: DatabaseDAOProtocol,
-        security_manager: SecurityManagerProtocol,
-        current_user: UserProtocol,
-    ) -> dict[str, Any]:
-        """Deprecated — use GET /{pk}/table_metadata/ with query params."""
-        # TODO(liteset/cleanup): remove in Phase 7
-        return await self.table_metadata(
-            pk=pk,
-            dao=dao,
-            security_manager=security_manager,
-            current_user=current_user,
-            name=table_name,
-            schema_name=schema_name,
-        )
-
-    @get(
-        "/{pk:int}/table_extra/{table_name:str}/{schema_name:str}/",
-        guards=[require_permission("can_read", "Database")],
-    )
-    async def table_extra_metadata_deprecated(
-        self,
-        pk: int,
-        table_name: str,
-        schema_name: str,
-        dao: DatabaseDAOProtocol,
-        security_manager: SecurityManagerProtocol,
-        current_user: UserProtocol,
-    ) -> dict[str, Any]:
-        """Deprecated — use GET /{pk}/table_metadata/extra/."""
-        # TODO(liteset/cleanup): remove in Phase 7
-        return await self.table_metadata_extra(
-            pk=pk,
-            dao=dao,
-            security_manager=security_manager,
-            current_user=current_user,
-            name=table_name,
-            schema_name=schema_name,
-        )
-
     @get(
         "/oauth2/",
         guards=[require_permission("can_read", "Database")],
     )
-    async def oauth2(self) -> dict[str, Any]:
-        """GET /api/v1/database/oauth2/ — OAuth2 provider redirect."""
-        # TODO(liteset/remaining-api): OAuth2 flow
-        return {"message": "OAuth2 not yet implemented"}
+    async def oauth2(
+        self,
+        dao: DatabaseDAOProtocol,
+        state: str = Parameter(query="state", default=""),
+        code: str = Parameter(query="code", default=""),
+    ) -> "Response[str]":
+        """GET /api/v1/database/oauth2/ — OAuth2 provider redirect.
+
+        Decodes the ``state`` parameter to recover the originating
+        ``database_id`` and ``tab_id``, looks up the database, and
+        returns a self-closing HTML page that posts a message back to
+        the opener window with the authorization code.
+        """
+        from litestar.response import Response
+
+        from liteset.utils.oauth2 import decode_oauth2_state
+
+        try:
+            decoded = decode_oauth2_state(state)
+        except ValueError:
+            return Response(
+                content="<html><body>Invalid OAuth2 state</body></html>",
+                status_code=400,
+                media_type="text/html",
+            )
+
+        database_id = decoded.get("database_id")
+        tab_id = decoded.get("tab_id", "")
+
+        if database_id is not None:
+            database = await dao.find_by_id(int(database_id))
+            if database is None:
+                return Response(
+                    content="<html><body>Database not found</body></html>",
+                    status_code=404,
+                    media_type="text/html",
+                )
+
+        html = (
+            "<html><body><script>"
+            "if (window.opener) {"
+            "  window.opener.postMessage("
+            f'    {{"type": "oauth2_redirect", "database_id": {json.dumps(database_id)}, '
+            f'"tab_id": {json.dumps(tab_id)}, "code": {json.dumps(code)}}}, '
+            '    window.location.origin'
+            "  );"
+            "}"
+            "window.close();"
+            "</script></body></html>"
+        )
+        return Response(
+            content=html,
+            status_code=200,
+            media_type="text/html",
+        )
 
     # ------------------------------------------------------------------
     # GET /{pk}/ssh_tunnel/ — get SSH tunnel config

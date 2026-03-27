@@ -23,6 +23,7 @@ translation patterns but without Flask dependency.
 from __future__ import annotations
 
 import contextvars
+from collections.abc import Iterator
 from typing import Any
 
 _current_locale: contextvars.ContextVar[str] = contextvars.ContextVar(
@@ -96,6 +97,15 @@ class LazyString:
 
     def __contains__(self, item: Any) -> bool:
         return item in str(self)
+
+    def __iter__(self) -> Iterator[str]:  # type: ignore[override]
+        return iter(str(self))
+
+    def __getitem__(self, key: int | slice) -> str:
+        return str(self)[key]
+
+    def __format__(self, format_spec: str) -> str:
+        return format(str(self), format_spec)
 
 
 def lazy_gettext(msgid: str) -> LazyString:

@@ -34,7 +34,10 @@ class AsyncThumbnailsDigest:
         force: bool = False,
     ) -> str:
         """Compute cache key digest for thumbnail."""
-        return hashlib.md5(f"{url}_{user_id}".encode()).hexdigest()
+        return hashlib.md5(  # noqa: S324
+            f"{url}_{user_id}".encode(),
+            usedforsecurity=False,
+        ).hexdigest()
 
     @staticmethod
     async def trigger_screenshot(

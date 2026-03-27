@@ -52,8 +52,8 @@ from liteset.params.rison import provide_rison_query
 from liteset.providers import provide_saved_query_dao
 from liteset.schemas.query import (
     SavedQueryGetResponse,
-    SavedQueryPostBody,
-    SavedQueryPutBody,
+    SavedQueryPostSchema,
+    SavedQueryPutSchema,
 )
 from liteset.typing import CRUDDAOProtocol, SecurityManagerProtocol, UserProtocol
 from liteset.events import event_logger
@@ -212,7 +212,7 @@ class SavedQueryController(Controller):
     )
     async def create(
         self,
-        data: SavedQueryPostBody,
+        data: SavedQueryPostSchema,
         dao: CRUDDAOProtocol,
         current_user: UserProtocol,
     ) -> SavedQueryGetResponse:
@@ -244,7 +244,7 @@ class SavedQueryController(Controller):
     async def update(
         self,
         pk: int,
-        data: SavedQueryPutBody,
+        data: SavedQueryPutSchema,
         dao: CRUDDAOProtocol,
         current_user: UserProtocol,
     ) -> SavedQueryGetResponse:

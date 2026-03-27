@@ -29,7 +29,7 @@ import sqlalchemy as sa
 from sqlalchemy import Column, Text
 from sqlalchemy.dialects.mysql import LONGTEXT, MEDIUMTEXT
 from sqlalchemy.ext.declarative import declared_attr
-from sqlalchemy.orm import DeclarativeBase, Mapped, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, RelationshipProperty, relationship
 from sqlalchemy.sql.sqltypes import Variant
 from sqlalchemy_utils import UUIDType
 
@@ -88,7 +88,7 @@ class AuditMixinNullable:
     )
 
     @declared_attr
-    def created_by_fk(cls):  # noqa: N805
+    def created_by_fk(cls) -> sa.Column[int | None]:  # noqa: N805
         return sa.Column(
             sa.Integer,
             sa.ForeignKey("ab_user.id"),
@@ -96,7 +96,7 @@ class AuditMixinNullable:
         )
 
     @declared_attr
-    def changed_by_fk(cls):  # noqa: N805
+    def changed_by_fk(cls) -> sa.Column[int | None]:  # noqa: N805
         return sa.Column(
             sa.Integer,
             sa.ForeignKey("ab_user.id"),
@@ -104,7 +104,7 @@ class AuditMixinNullable:
         )
 
     @declared_attr
-    def created_by(cls):  # noqa: N805
+    def created_by(cls) -> RelationshipProperty[Any]:  # noqa: N805
         return relationship(
             "User",
             primaryjoin=f"{cls.__name__}.created_by_fk == User.id",
@@ -113,7 +113,7 @@ class AuditMixinNullable:
         )
 
     @declared_attr
-    def changed_by(cls):  # noqa: N805
+    def changed_by(cls) -> RelationshipProperty[Any]:  # noqa: N805
         return relationship(
             "User",
             primaryjoin=f"{cls.__name__}.changed_by_fk == User.id",

@@ -144,6 +144,11 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
 
     async def run(self) -> "Dashboard":
         assert self._dashboard is not None
+
+        # Capture the old position_json before mutation so that
+        # _process_tab_diff can compute the tab diff correctly.
+        old_position_json = getattr(self._dashboard, "position_json", None)
+
         for key, value in self._data.items():
             if key in ("owners", "roles", "tags"):
                 continue
@@ -152,16 +157,8 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         if self._user_id is not None:
             self._dashboard.changed_by_fk = self._user_id
 
-        # TODO(CMD-I1): Implement process_tab_diff — when position_json changes
-        # and tabs are being modified, compute the diff between old and new tab
-        # structures and propagate filter-scope / access changes accordingly.
-        # The original Superset code compares old vs new tab structures, but
-        # we don't have _original_position_json tracked on the model yet.
         if "position_json" in self._data:
-            logger.debug(
-                "Tab diff handling not yet implemented for dashboard %s",
-                self._dashboard_id,
-            )
+            await self._process_tab_diff(old_position_json)
 
         # Synchronise filter scopes, color maps and shared-label colors
         # when json_metadata is updated.
@@ -190,6 +187,65 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
 
         await self._dao.session.flush()
         return self._dashboard
+
+    async def _process_tab_diff(self, old_position_json: str | None) -> None:
+        """Detect deleted tabs and deactivate report schedules anchored to them.
+
+        Compares *old_position_json* (captured before the model was mutated)
+        with the new value from ``self._data``.  Any tab IDs (keys starting
+        with ``TAB-``) present in the old layout but absent from the new one
+        are considered deleted.  Report schedules whose ``extra`` JSON
+        references a deleted tab's anchor are deactivated (``active=False``).
+        """
+        import json as _json  # noqa: TID251
+
+        assert self._dashboard is not None
+
+        old_position = old_position_json or ""
+        new_position = self._data.get("position_json", "")
+
+        try:
+            old_tabs = {
+                k for k in _json.loads(old_position) if k.startswith("TAB-")
+            } if old_position else set()
+        except (ValueError, TypeError):
+            old_tabs = set()
+
+        try:
+            new_tabs = {
+                k for k in _json.loads(new_position) if k.startswith("TAB-")
+            } if new_position else set()
+        except (ValueError, TypeError):
+            new_tabs = set()
+
+        deleted_tabs = old_tabs - new_tabs
+        if not deleted_tabs:
+            return
+
+        # Lazy-import the report DAO to avoid circular dependencies
+        from liteset.db.daos.report import AsyncReportScheduleDAO
+
+        report_dao = AsyncReportScheduleDAO(session=self._dao.session)
+        reports = await report_dao.find_by_dashboard_id(self._dashboard_id)
+
+        for report in reports:
+            extra_raw = getattr(report, "extra", None) or "{}"
+            try:
+                extra = _json.loads(extra_raw)
+            except (ValueError, TypeError):
+                continue
+
+            anchor = extra.get("anchor")
+            if anchor and anchor in deleted_tabs:
+                report.active = False  # type: ignore[assignment]
+                logger.info(
+                    "Deactivated report schedule %s (id=%s) — anchor tab "
+                    "'%s' was removed from dashboard %s",
+                    report.name,
+                    report.id,
+                    anchor,
+                    self._dashboard_id,
+                )
 
 
 class DeleteDashboardCommand(AsyncBaseCommand[None]):

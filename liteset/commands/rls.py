@@ -86,6 +86,7 @@ class DeleteRLSCommand(AsyncBaseCommand[None]):
 
     async def run(self) -> None:
         await self._dao.delete([self._model])
+        await self._dao.session.flush()
 
 
 class BulkDeleteRLSCommand(AsyncBaseCommand[int]):

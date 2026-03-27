@@ -34,9 +34,9 @@ from liteset.guards.rbac import require_permission
 from liteset.params.rison import provide_rison_query
 from liteset.providers import provide_query_dao
 from liteset.schemas.sqllab import (
-    EstimateQueryCostBody,
-    ExecutePayloadBody,
-    FormatSQLBody,
+    EstimateQueryCostSchema,
+    ExecutePayloadSchema,
+    FormatSQLSchema,
     SQLLabBootstrap,
 )
 from liteset.events import event_logger
@@ -66,7 +66,7 @@ class SqlLabController(Controller):
         "/estimate/",
         guards=[require_permission("can_read", "SQLLab")],
     )
-    async def estimate(self, data: EstimateQueryCostBody) -> dict[str, Any]:
+    async def estimate(self, data: EstimateQueryCostSchema) -> dict[str, Any]:
         cmd = EstimateQueryCostCommand(
             database_id=data.database_id,
             sql=data.sql,
@@ -80,7 +80,7 @@ class SqlLabController(Controller):
         "/format_sql/",
         guards=[require_permission("can_read", "SQLLab")],
     )
-    async def format_sql(self, data: FormatSQLBody) -> dict[str, str]:
+    async def format_sql(self, data: FormatSQLSchema) -> dict[str, str]:
         cmd = FormatSQLCommand(sql=data.sql, engine=data.engine)
         formatted = await cmd.execute()
         event_logger.log("sqllab.format_sql")
@@ -122,7 +122,7 @@ class SqlLabController(Controller):
     )
     async def execute(
         self,
-        data: ExecutePayloadBody,
+        data: ExecutePayloadSchema,
         dao: QueryDAOProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:

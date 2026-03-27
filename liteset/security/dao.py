@@ -201,6 +201,7 @@ class AsyncSecurityDAO:
             .join(PV.permission)
             .join(PV.view_menu)
             .where(User.id == user_id)
+            .distinct()
         )
         result = await self.session.execute(stmt)
         return {(row[0], row[1]) for row in result.all()}

@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 
 
@@ -52,9 +54,46 @@ def runserver(host: str, port: int, reload: bool, workers: int) -> None:
 
 @liteset_cli.command()
 def init() -> None:
-    """Initialize Liteset application (roles, permissions)."""
+    """Initialize Liteset application (roles, permissions).
+
+    Creates default roles (Admin, Alpha, Gamma, Public, sql_lab)
+    if they do not already exist in the database.
+    """
+    import anyio
+
+    async def _init() -> None:
+        from sqlalchemy import select
+
+        from liteset.config import LitesetSettings
+        from liteset.db.session import create_db_engine, create_session_factory
+        from liteset.models.security import Role
+
+        settings = LitesetSettings()  # type: ignore[call-arg]
+        db_url = settings.sqlalchemy_database_uri
+
+        click.echo(f"Connecting to database: {db_url.split('@')[-1] if '@' in db_url else db_url}")
+        engine = create_db_engine(db_url)
+        session_factory = create_session_factory(engine)
+
+        default_roles = ["Admin", "Alpha", "Gamma", "Public", "sql_lab"]
+
+        async with session_factory() as session:
+            for role_name in default_roles:
+                stmt = select(Role).where(Role.name == role_name)
+                result = await session.execute(stmt)
+                existing = result.scalars().one_or_none()
+                if existing is None:
+                    session.add(Role(name=role_name))
+                    click.echo(f"  Created role: {role_name}")
+                else:
+                    click.echo(f"  Role already exists: {role_name}")
+            await session.commit()
+
+        await engine.dispose()
+        click.echo("Initialization complete.")
+
     click.echo("Initializing Liteset...")
-    click.echo("Done.")
+    anyio.run(_init)
 
 
 @liteset_cli.command()
@@ -85,6 +124,7 @@ def upgrade(revision: str) -> None:
     from alembic import command
     from alembic.config import Config
 
-    alembic_cfg = Config("alembic.ini")
+    alembic_ini = Path(__file__).resolve().parent.parent.parent / "alembic.ini"
+    alembic_cfg = Config(str(alembic_ini))
     command.upgrade(alembic_cfg, revision)
     click.echo(f"Database upgraded to {revision}")

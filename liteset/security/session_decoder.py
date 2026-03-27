@@ -38,15 +38,18 @@ class FlaskSessionDecoder:
     Args:
         secret_key: The SECRET_KEY used by the Flask application.
         salt: The salt used for the session cookie (default: "cookie-session").
-        max_age: Maximum age in seconds for the cookie (default: None = no expiry).
+        max_age: Maximum age in seconds for the cookie (default: 31 days).
     """
+
+    # 31 days in seconds — matches Flask's PERMANENT_SESSION_LIFETIME default
+    DEFAULT_MAX_AGE: int = 86400 * 31
 
     def __init__(
         self,
         secret_key: str,
         *,
         salt: str = "cookie-session",
-        max_age: int | None = None,
+        max_age: int | None = DEFAULT_MAX_AGE,
     ) -> None:
         self._serializer = URLSafeTimedSerializer(secret_key, salt=salt)
         self._max_age = max_age

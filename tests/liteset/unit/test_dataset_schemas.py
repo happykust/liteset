@@ -22,11 +22,11 @@ from liteset.schemas.dataset import (
     DatasetColumnsPut,
     DatasetDrillInfo,
     DatasetDrillResponse,
-    DatasetDuplicateBody,
+    DatasetDuplicateSchema,
     DatasetMetricsPut,
-    DatasetPostBody,
-    DatasetPutBody,
-    GetOrCreateDatasetBody,
+    DatasetPostSchema,
+    DatasetPutSchema,
+    GetOrCreateDatasetSchema,
     ImportV1Column,
     ImportV1Dataset,
     ImportV1Metric,
@@ -36,7 +36,7 @@ from liteset.schemas.dataset import (
 def test_dataset_post_body():
     body = msgspec.json.decode(
         b'{"table_name": "my_table", "database": 1}',
-        type=DatasetPostBody,
+        type=DatasetPostSchema,
     )
     assert body.table_name == "my_table"
     assert body.database == 1
@@ -51,7 +51,7 @@ def test_dataset_post_body():
 def test_dataset_put_body_partial():
     body = msgspec.json.decode(
         b'{"table_name": "updated_table"}',
-        type=DatasetPutBody,
+        type=DatasetPutSchema,
     )
     assert body.table_name == "updated_table"
     assert body.database_id is msgspec.UNSET
@@ -74,7 +74,7 @@ def test_dataset_put_body_with_columns():
             ],
         }
     )
-    body = msgspec.json.decode(payload, type=DatasetPutBody)
+    body = msgspec.json.decode(payload, type=DatasetPutSchema)
     assert body.table_name == "t"
     assert len(body.columns) == 2
     assert isinstance(body.columns[0], DatasetColumnsPut)
@@ -88,27 +88,27 @@ def test_dataset_put_body_with_columns():
 
 
 def test_dataset_duplicate_body():
-    body = DatasetDuplicateBody(base_model_id=42, table_name="copy_of_table")
+    body = DatasetDuplicateSchema(base_model_id=42, table_name="copy_of_table")
     assert body.base_model_id == 42
     assert body.table_name == "copy_of_table"
 
     roundtrip = msgspec.json.decode(
         msgspec.json.encode(body),
-        type=DatasetDuplicateBody,
+        type=DatasetDuplicateSchema,
     )
     assert roundtrip.base_model_id == 42
     assert roundtrip.table_name == "copy_of_table"
 
 
 def test_get_or_create_body():
-    body = GetOrCreateDatasetBody(table_name="events", database=3)
+    body = GetOrCreateDatasetSchema(table_name="events", database=3)
     assert body.table_name == "events"
     assert body.database == 3
     assert body.schema_name is None
     assert body.normalize_columns is False
     assert body.always_filter_main_dttm is False
 
-    body_full = GetOrCreateDatasetBody(
+    body_full = GetOrCreateDatasetSchema(
         table_name="events",
         database=3,
         schema_name="public",

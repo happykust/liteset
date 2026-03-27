@@ -50,7 +50,7 @@ class QueryResponse(msgspec.Struct):
     tracking_url: str | None = None
 
 
-class StopQueryBody(msgspec.Struct):
+class StopQuerySchema(msgspec.Struct):
     """POST /api/v1/query/stop"""
 
     client_id: str
@@ -76,7 +76,7 @@ class ImportV1SavedQuery(msgspec.Struct):
     catalog: str | None = None
 
 
-class SavedQueryPostBody(msgspec.Struct):
+class SavedQueryPostSchema(msgspec.Struct):
     """POST /api/v1/saved_query/"""
 
     label: str
@@ -89,7 +89,7 @@ class SavedQueryPostBody(msgspec.Struct):
     catalog: str | None = None
 
 
-class SavedQueryPutBody(msgspec.Struct):
+class SavedQueryPutSchema(msgspec.Struct):
     """PUT /api/v1/saved_query/<pk>"""
 
     label: str | None | msgspec.UnsetType = msgspec.UNSET

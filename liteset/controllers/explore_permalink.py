@@ -28,11 +28,12 @@ from litestar.di import Provide
 
 from liteset.events import event_logger
 from liteset.exceptions import ObjectNotFoundError
+from liteset.guards.rbac import require_authentication
 from liteset.providers import provide_kv_dao
 from liteset.typing import KeyValueDAOProtocol, UserProtocol
 
 
-class ExplorePermalinkCreateBody(msgspec.Struct):
+class ExplorePermalinkCreateSchema(msgspec.Struct):
     """POST body for explore permalink creation."""
 
     chart_id: int | None = None
@@ -47,10 +48,10 @@ class ExplorePermalinkController(Controller):
         "kv_dao": Provide(provide_kv_dao, sync_to_thread=False),
     }
 
-    @post("/", status_code=201)
+    @post("/", status_code=201, guards=[require_authentication])
     async def create_permalink(
         self,
-        data: ExplorePermalinkCreateBody,
+        data: ExplorePermalinkCreateSchema,
         kv_dao: KeyValueDAOProtocol,
         current_user: UserProtocol,
     ) -> dict[str, str]:
@@ -66,7 +67,7 @@ class ExplorePermalinkController(Controller):
         event_logger.log("explore_permalink.create", user_id=current_user.id)
         return {"key": key, "url": f"/explore/p/{key}/"}
 
-    @get("/{key:str}")
+    @get("/{key:str}", guards=[require_authentication])
     async def get_permalink(
         self,
         key: str,

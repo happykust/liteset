@@ -33,6 +33,8 @@ from typing import Any
 from litestar import Controller, get
 
 from liteset.async_events.manager import AsyncEventManager
+from liteset.guards.rbac import require_authentication
+from liteset.typing import UserProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +44,11 @@ class AsyncEventController(Controller):
 
     path = "/api/v1/async_event"
 
-    @get("/")
+    @get("/", guards=[require_authentication])
     async def get_events(
         self,
         event_manager: AsyncEventManager,
-        current_user: Any,
+        current_user: UserProtocol,
         last_id: str | None = None,
     ) -> dict[str, Any]:
         """Poll for async events since the given last_id.

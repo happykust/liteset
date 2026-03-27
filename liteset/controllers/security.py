@@ -65,7 +65,7 @@ class GuestTokenRlsRule(msgspec.Struct):
     dataset: int | None = None
 
 
-class GuestTokenCreateBody(msgspec.Struct):
+class GuestTokenCreateSchema(msgspec.Struct):
     """POST body for ``/api/v1/security/guest_token/``."""
 
     user: GuestTokenUser
@@ -124,7 +124,7 @@ class SecurityController(Controller):
     )
     async def guest_token(
         self,
-        data: GuestTokenCreateBody,
+        data: GuestTokenCreateSchema,
         security_manager: SecurityManagerProtocol,
         state: State,
     ) -> dict[str, str]:

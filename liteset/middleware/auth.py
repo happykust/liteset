@@ -153,6 +153,7 @@ class LitesetAuthMiddleware(AbstractAuthenticationMiddleware):
             try:
                 cached = await self._get_cached_user(redis, f"auth:user:{user_id}")
                 if cached is not None:
+                    self._set_sentry_user(cached)
                     return cached
             except Exception:
                 logger.debug("Redis cache miss/error for user %d", user_id)

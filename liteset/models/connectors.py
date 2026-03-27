@@ -21,6 +21,7 @@ Pure SQLAlchemy -- no Flask dependencies.
 from __future__ import annotations
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Column,
     ForeignKey,
@@ -30,7 +31,6 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import relationship
 
 from liteset.models.helpers import (

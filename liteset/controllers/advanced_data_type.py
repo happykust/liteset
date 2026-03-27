@@ -24,6 +24,7 @@ from litestar import Controller, get, post
 from litestar.datastructures import State
 
 from liteset.exceptions import LitesetValidationException
+from liteset.guards.rbac import require_authentication
 from liteset.schemas.advanced_data_type import (
     AdvancedDataTypeConvertRequest,
     AdvancedDataTypeConvertResponse,
@@ -34,7 +35,7 @@ class AdvancedDataTypeController(Controller):
     path = "/api/v1/advanced_data_type"
     tags = ["Advanced Data Type"]
 
-    @get("/types")
+    @get("/types", guards=[require_authentication])
     async def get_types(self, state: State) -> dict[str, list[str]]:
         """GET /api/v1/advanced_data_type/types — list registered advanced data types."""
         registry: dict[str, Any] = getattr(
@@ -42,7 +43,7 @@ class AdvancedDataTypeController(Controller):
         )
         return {"result": list(registry.keys())}
 
-    @post("/convert")
+    @post("/convert", guards=[require_authentication])
     async def convert(
         self,
         data: AdvancedDataTypeConvertRequest,

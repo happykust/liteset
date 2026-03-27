@@ -32,6 +32,11 @@ def filter_none(data: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if v is not None}
 
 
+def escape_like(value: str) -> str:
+    """Escape LIKE special characters (\\, %, _) to prevent wildcard injection."""
+    return value.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+
 def mask_uri_password(uri: str) -> str:
     """Replace password component in a SQLAlchemy URI with a placeholder."""
     if not uri:

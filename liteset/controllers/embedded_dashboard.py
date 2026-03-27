@@ -22,13 +22,18 @@ from typing import Any
 
 from litestar import Controller, get
 from litestar.datastructures import State
+from litestar.di import Provide
 
 from liteset.exceptions import LitesetNotFoundError
+from liteset.providers import provide_embedded_dao
 
 
 class EmbeddedDashboardController(Controller):
     path = "/api/v1/embedded_dashboard"
     tags = ["Embedded Dashboard"]
+    dependencies = {
+        "embedded_dao": Provide(provide_embedded_dao, sync_to_thread=False),
+    }
 
     @get(
         "/{uuid:str}",
@@ -38,6 +43,7 @@ class EmbeddedDashboardController(Controller):
         self,
         uuid: str,
         state: State,
+        embedded_dao: Any,
     ) -> dict[str, Any]:
         """GET /api/v1/embedded_dashboard/{uuid} — get embedded dashboard config."""
         # Check EMBEDDED_SUPERSET feature flag
@@ -45,12 +51,20 @@ class EmbeddedDashboardController(Controller):
         if not feature_flags.get("EMBEDDED_SUPERSET", False):
             raise LitesetNotFoundError("Embedded dashboards are not enabled")
 
-        # Query EmbeddedDashboard model by uuid
-        # This requires session access — for now return UUID-based stub
+        embedded = await embedded_dao.find_by_uuid(uuid)
+        if embedded is None:
+            raise LitesetNotFoundError("Embedded dashboard not found")
+
+        # allow_domain_list is stored as comma-separated string in the DB
+        raw_domains = getattr(embedded, "allow_domain_list", None)
+        allowed_domains: list[str] = []
+        if raw_domains:
+            allowed_domains = [d for d in raw_domains.split(",") if d]
+
         return {
             "result": {
-                "uuid": uuid,
-                "dashboard_id": None,
-                "allowed_domains": [],
+                "uuid": str(embedded.uuid),
+                "dashboard_id": embedded.dashboard_id,
+                "allowed_domains": allowed_domains,
             },
         }
