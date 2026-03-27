@@ -14,26 +14,15 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Slack notification Celery tasks for Liteset.
 
-Replaces ``superset/tasks/slack.py``. Provides the Slack channel cache
-warm-up task registered under the ``liteset.tasks.*`` namespace.
-"""
-from __future__ import annotations
+from flask_babel import lazy_gettext as _
 
-import logging
-
-from liteset.tasks.celery_app import celery_app
-
-logger = logging.getLogger(__name__)
+from superset.exceptions import SupersetException
 
 
-@celery_app.task(name="liteset.tasks.slack.cache_channels")
-def cache_channels() -> None:
-    """Warm up the Slack channels cache.
+class ExecutorNotFoundError(SupersetException):
+    message = _("Scheduled task executor not found")
 
-    Delegates to the superset implementation during migration.
-    """
-    from superset.tasks.slack import cache_channels as _superset_cache_channels
 
-    _superset_cache_channels()
+class InvalidExecutorError(SupersetException):
+    message = _("Invalid executor type")
