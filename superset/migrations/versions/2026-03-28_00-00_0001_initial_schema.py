@@ -19,7 +19,7 @@
 Replaces 344 legacy Alembic migration files with a single SA 2.0
 compatible migration that creates the complete database schema.
 
-Revision ID: 0001
+Revision ID: c233f5365c9e
 Revises: (none)
 Create Date: 2026-03-28 00:00:00.000000
 """
@@ -29,7 +29,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "0001"
+revision = "c233f5365c9e"
 down_revision = None
 branch_labels = None
 depends_on = None
