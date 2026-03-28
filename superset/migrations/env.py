@@ -31,25 +31,6 @@ from sqlalchemy import create_engine, pool
 
 logger = logging.getLogger("alembic.env")
 
-# Import superset model metadata for autogenerate support
-import superset.models.annotations  # noqa: F401
-import superset.models.cache  # noqa: F401
-import superset.models.connectors  # noqa: F401
-import superset.models.core  # noqa: F401
-import superset.models.dashboard  # noqa: F401
-import superset.models.dynamic_plugins  # noqa: F401
-import superset.models.embedded_dashboard  # noqa: F401
-import superset.models.key_value  # noqa: F401
-import superset.models.reports  # noqa: F401
-import superset.models.security  # noqa: F401
-import superset.models.slice  # noqa: F401
-import superset.models.sql_lab  # noqa: F401
-import superset.models.tags  # noqa: F401
-import superset.models.user  # noqa: F401
-from superset.models.helpers import Base
-
-target_metadata = Base.metadata
-
 _ASYNC_TO_SYNC_DRIVERS = {
     "postgresql+asyncpg://": "postgresql+psycopg2://",
     "mysql+asyncmy://": "mysql+pymysql://",
@@ -59,7 +40,7 @@ _ASYNC_TO_SYNC_DRIVERS = {
 
 def _get_sync_url() -> str:
     url = os.environ.get(
-        "LITESET_SQLALCHEMY_DATABASE_URI",
+        "SUPERSET_SQLALCHEMY_DATABASE_URI",
         context.config.get_main_option("sqlalchemy.url", ""),
     )
     for async_prefix, sync_prefix in _ASYNC_TO_SYNC_DRIVERS.items():
@@ -69,11 +50,48 @@ def _get_sync_url() -> str:
     return url
 
 
+def _load_models_metadata():
+    """Load model metadata for autogenerate."""
+    import superset.models.annotations  # noqa: F401
+    import superset.models.cache  # noqa: F401
+    import superset.models.connectors  # noqa: F401
+    import superset.models.core  # noqa: F401
+    import superset.models.dashboard  # noqa: F401
+    import superset.models.dynamic_plugins  # noqa: F401
+    import superset.models.embedded_dashboard  # noqa: F401
+    import superset.models.key_value  # noqa: F401
+    import superset.models.reports  # noqa: F401
+    import superset.models.security  # noqa: F401
+    import superset.models.slice  # noqa: F401
+    import superset.models.sql_lab  # noqa: F401
+    import superset.models.tags  # noqa: F401
+    import superset.models.user  # noqa: F401
+    from superset.models.helpers import Base
+
+    return Base.metadata
+
+
+# target_metadata is used by autogenerate; None during upgrade/downgrade
+target_metadata = None
+
+
+def _get_target_metadata():
+    """Return model metadata for autogenerate, None for upgrade/downgrade."""
+    global target_metadata
+    if (
+        target_metadata is None
+        and context.config.cmd_opts
+        and getattr(context.config.cmd_opts, "autogenerate", False)
+    ):
+        target_metadata = _load_models_metadata()
+    return target_metadata
+
+
 def run_migrations_offline() -> None:
     url = _get_sync_url()
     context.configure(
         url=url,
-        target_metadata=target_metadata,
+        target_metadata=_get_target_metadata(),
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
     )
@@ -87,7 +105,7 @@ def run_migrations_online() -> None:
     with connectable.connect() as connection:
         context.configure(
             connection=connection,
-            target_metadata=target_metadata,
+            target_metadata=_get_target_metadata(),
         )
         with context.begin_transaction():
             context.run_migrations()
