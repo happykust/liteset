@@ -112,3 +112,47 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
         primaryjoin="Slice.datasource_id == SqlaTable.id",
         viewonly=True,
     )
+    tags = relationship(
+        "Tag",
+        secondary="tagged_object",
+        primaryjoin="and_(Slice.id == foreign(TaggedObject.object_id), "
+        "TaggedObject.object_type == 'chart')",
+        secondaryjoin="Tag.id == foreign(TaggedObject.tag_id)",
+        viewonly=True,
+    )
+
+    # -- Computed properties ---------------------------------------------------
+
+    @property
+    def url(self) -> str:
+        return f"/explore/?form_data=%7B%22slice_id%22%3A%20{self.id}%7D"
+
+    @property
+    def edit_url(self) -> str:
+        return f"/chart/edit/{self.id}"
+
+    @property
+    def slice_url(self) -> str:
+        return self.url
+
+    @property
+    def datasource_name_text(self) -> str | None:
+        if self.table:
+            return self.table.table_name
+        return None
+
+    @property
+    def datasource_url(self) -> str | None:
+        if self.table:
+            return (
+                f"/explore/?datasource_type=table"
+                f"&datasource_id={self.datasource_id}"
+            )
+        return None
+
+    @property
+    def thumbnail_url(self) -> str | None:
+        if not self.changed_on:
+            return None
+        digest = self.changed_on.strftime("%Y%m%d%H%M%S")
+        return f"/api/v1/chart/{self.id}/thumbnail/{digest}/"

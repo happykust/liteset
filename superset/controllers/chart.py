@@ -101,22 +101,94 @@ class ChartController(Controller):
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """GET /api/v1/chart/ — list charts with optional filtering/pagination."""
+        from sqlalchemy.orm import selectinload
+
         from superset.db.filters import chart_access_filters
+        from superset.models.slice import Slice
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
-            dao.model_cls, rison_params
+            Slice, rison_params,
         )
         base_filters = await chart_access_filters(security_manager, current_user)
         all_filters = (base_filters or []) + rison_filters
+
         charts = await dao.find_all(
             filters=all_filters or None,
             page=page,
             page_size=page_size,
             order_by=order_by,
+            options=[
+                selectinload(Slice.owners),
+                selectinload(Slice.changed_by),
+                selectinload(Slice.created_by),
+                selectinload(Slice.last_saved_by),
+                selectinload(Slice.table),
+                selectinload(Slice.dashboards),
+                selectinload(Slice.tags),
+            ],
         )
         total = await dao.count(filters=all_filters or None)
         event_logger.log("chart.list")
-        return serialize_list_response(charts, total, ["id", "slice_name", "viz_type"])
+        payload = serialize_list_response(
+            charts,
+            total,
+            [
+                "id",
+                "uuid",
+                "slice_name",
+                "viz_type",
+                "params",
+                "cache_timeout",
+                "description",
+                "certified_by",
+                "certification_details",
+                "is_managed_externally",
+                "datasource_id",
+                "datasource_type",
+                "changed_by.first_name",
+                "changed_by.last_name",
+                "changed_by.id",
+                "created_by.first_name",
+                "created_by.id",
+                "created_by.last_name",
+                "last_saved_at",
+                "last_saved_by.id",
+                "last_saved_by.first_name",
+                "last_saved_by.last_name",
+                "owners.id",
+                "owners.first_name",
+                "owners.last_name",
+                "dashboards.id",
+                "dashboards.dashboard_title",
+                "tags.id",
+                "tags.name",
+                "tags.type",
+            ],
+        )
+        for item in payload["result"]:
+            # Computed properties from the Slice model
+            chart_id = item["id"]
+            item["changed_by_name"] = ""
+            changed_by = item.get("changed_by")
+            if changed_by and isinstance(changed_by, dict):
+                fn = changed_by.get("first_name", "") or ""
+                ln = changed_by.get("last_name", "") or ""
+                item["changed_by_name"] = f"{fn} {ln}".strip()
+
+            # Find the matching ORM object for computed properties
+            chart_obj = next((c for c in charts if c.id == chart_id), None)
+            if chart_obj:
+                item["changed_on_utc"] = chart_obj.changed_on_utc
+                item["changed_on_delta_humanized"] = chart_obj.changed_on_delta_humanized
+                item["created_on_delta_humanized"] = chart_obj.created_on_delta_humanized
+                item["datasource_name_text"] = chart_obj.datasource_name_text
+                item["datasource_url"] = chart_obj.datasource_url
+                item["thumbnail_url"] = chart_obj.thumbnail_url
+                item["url"] = chart_obj.url
+                item["edit_url"] = chart_obj.edit_url
+                item["slice_url"] = chart_obj.slice_url
+
+        return payload
 
     @get(
         "/_info",
@@ -188,31 +260,51 @@ class ChartController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> ChartGetResponse:
-        chart = await dao.get_by_id_or_uuid(id_or_uuid)
-        if not chart:
-            raise ObjectNotFoundError("Chart", id_or_uuid)
-        # Verify object-level access
+        from sqlalchemy.orm import selectinload
+
         from superset.db.filters import chart_access_filters
+        from superset.models.slice import Slice
+
+        # Build id/uuid filter
+        id_filter: list[Any] = []
+        try:
+            chart_id = int(id_or_uuid)
+            id_filter = [Slice.id == chart_id]
+        except (ValueError, TypeError):
+            try:
+                uuid_val = uuid.UUID(str(id_or_uuid))
+                id_filter = [Slice.uuid == uuid_val]
+            except ValueError:
+                raise ObjectNotFoundError("Chart", id_or_uuid)
 
         base_filters = await chart_access_filters(security_manager, current_user)
-        if base_filters:
-            from sqlalchemy import select as sa_select
+        all_filters = id_filter + (base_filters or [])
 
-            model_cls = getattr(dao, "model_cls", None)
-            if model_cls is not None:
-                stmt = sa_select(model_cls.id).where(
-                    model_cls.id == chart.id, *base_filters
-                )
-                result = await dao.session.scalar(stmt)
-                if result is None:
-                    raise ObjectNotFoundError("Chart", id_or_uuid)
-        owners = getattr(chart, "owners", []) or []
-        dashboards = getattr(chart, "dashboards", []) or []
-        tags = getattr(chart, "tags", []) or []
-        changed_by = getattr(chart, "changed_by", None)
-        created_by = getattr(chart, "created_by", None)
-        changed_on = getattr(chart, "changed_on", None)
-        created_on = getattr(chart, "created_on", None)
+        results = await dao.find_all(
+            filters=all_filters,
+            page=0,
+            page_size=1,
+            options=[
+                selectinload(Slice.owners),
+                selectinload(Slice.changed_by),
+                selectinload(Slice.created_by),
+                selectinload(Slice.last_saved_by),
+                selectinload(Slice.table),
+                selectinload(Slice.dashboards),
+                selectinload(Slice.tags),
+            ],
+        )
+        if not results:
+            raise ObjectNotFoundError("Chart", id_or_uuid)
+        chart = results[0]
+
+        owners = chart.owners or []
+        dashboards = chart.dashboards or []
+        tags = chart.tags or []
+        changed_by = chart.changed_by
+        created_by = chart.created_by
+        changed_on = chart.changed_on
+        created_on = chart.created_on
         event_logger.log("chart.get", object_ref=f"chart:{id_or_uuid}")
         return ChartGetResponse(
             id=chart.id,
@@ -221,11 +313,11 @@ class ChartController(Controller):
                 "viz_type": chart.viz_type,
                 "params": chart.params,
                 "cache_timeout": chart.cache_timeout,
-                "description": getattr(chart, "description", None),
-                "datasource_id": getattr(chart, "datasource_id", None),
-                "datasource_type": getattr(chart, "datasource_type", None),
-                "query_context": getattr(chart, "query_context", None),
-                "uuid": str(chart.uuid) if getattr(chart, "uuid", None) else None,
+                "description": chart.description,
+                "datasource_id": chart.datasource_id,
+                "datasource_type": chart.datasource_type,
+                "query_context": chart.query_context,
+                "uuid": str(chart.uuid) if chart.uuid else None,
                 "changed_on": changed_on.isoformat() if changed_on else None,
                 "created_on": created_on.isoformat() if created_on else None,
                 "changed_by": {
@@ -244,27 +336,20 @@ class ChartController(Controller):
                 else None,
                 "owners": [{"id": o.id, "name": str(o)} for o in owners],
                 "dashboards": [
-                    {"id": d.id, "name": getattr(d, "dashboard_title", str(d))}
+                    {
+                        "id": d.id,
+                        "dashboard_title": getattr(d, "dashboard_title", str(d)),
+                    }
                     for d in dashboards
                 ],
-                "certified_by": getattr(chart, "certified_by", None),
-                "thumbnail_url": (
-                    f"/api/v1/chart/{chart.id}/thumbnail/"
-                    f"{getattr(chart, 'digest', '')}/"
-                    if getattr(chart, "digest", None)
-                    else None
-                ),
-                "is_managed_externally": getattr(chart, "is_managed_externally", False),
+                "certified_by": chart.certified_by,
+                "thumbnail_url": chart.thumbnail_url,
+                "is_managed_externally": chart.is_managed_externally,
                 "tags": [
                     {"id": t.id, "name": getattr(t, "name", str(t))} for t in tags
                 ],
-                "datasource_name_text": getattr(chart, "datasource_name_text", None),
-                "datasource_url": getattr(chart, "datasource_url", None),
-                "datasource_uuid": (
-                    str(getattr(chart, "datasource_uuid", None))
-                    if getattr(chart, "datasource_uuid", None)
-                    else None
-                ),
+                "datasource_name_text": chart.datasource_name_text,
+                "datasource_url": chart.datasource_url,
             },
         )
 
@@ -573,7 +658,7 @@ class ChartController(Controller):
         self,
         dao: ChartDAOProtocol,
         current_user: UserProtocol,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
     ) -> FavoriteStatusResponse:
         ids = extract_ids(rison_params)
         if not ids:

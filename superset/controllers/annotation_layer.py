@@ -30,8 +30,8 @@ from superset.commands.annotation import (
     UpdateAnnotationLayerCommand,
 )
 from superset.controllers.base import (
+    build_rison_query_params,
     extract_ids_required,
-    extract_pagination,
     get_info_payload,
     get_related_payload,
     serialize_list_response,
@@ -69,11 +69,41 @@ class AnnotationLayerController(Controller):
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """GET /api/v1/annotation_layer/ — list annotation layers."""
-        page, page_size = extract_pagination(rison_params)
-        items = await dao.find_all(page=page, page_size=page_size)
-        total = await dao.count()
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.annotations import AnnotationLayer
+
+        rison_filters, order_by, page, page_size = build_rison_query_params(
+            AnnotationLayer, rison_params,
+        )
+        items = await dao.find_all(
+            filters=rison_filters or None,
+            page=page,
+            page_size=page_size,
+            order_by=order_by,
+            options=[
+                selectinload(AnnotationLayer.changed_by),
+                selectinload(AnnotationLayer.created_by),
+            ],
+        )
+        total = await dao.count(filters=rison_filters or None)
         event_logger.log("annotation_layer.list")
-        return serialize_list_response(items, total, ["id", "name", "descr"])
+        return serialize_list_response(
+            items,
+            total,
+            [
+                "id",
+                "name",
+                "descr",
+                "created_on",
+                "changed_on",
+                "changed_on_delta_humanized",
+                "changed_by.first_name",
+                "changed_by.last_name",
+                "created_by.first_name",
+                "created_by.last_name",
+            ],
+        )
 
     # ------------------------------------------------------------------
     # GET — single annotation layer

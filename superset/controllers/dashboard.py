@@ -118,25 +118,73 @@ class DashboardController(Controller):
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """GET /api/v1/dashboard/ — list dashboards with filtering/pagination."""
+        from sqlalchemy.orm import selectinload
+
         from superset.db.filters import dashboard_access_filters
+        from superset.models.dashboard import Dashboard
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
-            dao.model_cls, rison_params
+            Dashboard, rison_params,
         )
+        # Default ordering: changed_on desc (matches original base_order)
+        if order_by is None:
+            order_by = [Dashboard.changed_on.desc()]
+
         base_filters = await dashboard_access_filters(security_manager, current_user)
         all_filters = (base_filters or []) + rison_filters
+
         dashboards = await dao.find_all(
             filters=all_filters or None,
             page=page,
             page_size=page_size,
             order_by=order_by,
+            options=[
+                selectinload(Dashboard.owners),
+                selectinload(Dashboard.roles),
+                selectinload(Dashboard.tags),
+                selectinload(Dashboard.changed_by),
+                selectinload(Dashboard.created_by),
+            ],
         )
         total = await dao.count(filters=all_filters or None)
         event_logger.log("dashboard.list")
         return serialize_list_response(
             dashboards,
             total,
-            ["id", "dashboard_title", "slug", "published"],
+            [
+                "id",
+                "uuid",
+                "published",
+                "status",
+                "slug",
+                "url",
+                "css",
+                "dashboard_title",
+                "thumbnail_url",
+                "certified_by",
+                "certification_details",
+                "json_metadata",
+                "position_json",
+                "changed_by_name",
+                "changed_by.first_name",
+                "changed_by.last_name",
+                "changed_by.id",
+                "changed_on_utc",
+                "changed_on_delta_humanized",
+                "created_on_delta_humanized",
+                "created_by.first_name",
+                "created_by.id",
+                "created_by.last_name",
+                "owners.id",
+                "owners.first_name",
+                "owners.last_name",
+                "roles.id",
+                "roles.name",
+                "tags.id",
+                "tags.name",
+                "tags.type",
+                "is_managed_externally",
+            ],
         )
 
     # ------------------------------------------------------------------
@@ -277,21 +325,23 @@ class DashboardController(Controller):
                 }
                 if created_by
                 else None,
-                "owners": [{"id": o.id, "name": str(o)} for o in owners],
+                "owners": [
+                    {
+                        "id": o.id,
+                        "first_name": getattr(o, "first_name", ""),
+                        "last_name": getattr(o, "last_name", ""),
+                        "username": getattr(o, "username", ""),
+                    }
+                    for o in owners
+                ],
                 "roles": [
                     {"id": r.id, "name": getattr(r, "name", str(r))} for r in roles
                 ],
                 "charts": [
-                    {"id": c.id, "slice_name": getattr(c, "slice_name", str(c))}
-                    for c in charts
+                    getattr(c, "slice_name", str(c)) for c in charts
                 ],
                 "certified_by": getattr(dashboard, "certified_by", None),
-                "thumbnail_url": (
-                    f"/api/v1/dashboard/{dashboard.id}/thumbnail/"
-                    f"{getattr(dashboard, 'digest', '')}/"
-                    if getattr(dashboard, "digest", None)
-                    else None
-                ),
+                "thumbnail_url": getattr(dashboard, "thumbnail_url", None),
                 "is_managed_externally": getattr(
                     dashboard, "is_managed_externally", False
                 ),
@@ -514,7 +564,15 @@ class DashboardController(Controller):
                 }
                 if created_by
                 else None,
-                "owners": [{"id": o.id, "name": str(o)} for o in owners],
+                "owners": [
+                    {
+                        "id": o.id,
+                        "first_name": getattr(o, "first_name", ""),
+                        "last_name": getattr(o, "last_name", ""),
+                        "username": getattr(o, "username", ""),
+                    }
+                    for o in owners
+                ],
                 "roles": [
                     {"id": r.id, "name": getattr(r, "name", str(r))} for r in roles
                 ],
@@ -789,7 +847,7 @@ class DashboardController(Controller):
         self,
         dao: DashboardDAOProtocol,
         current_user: UserProtocol,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
     ) -> FavoriteStatusResponse:
         ids = extract_ids(rison_params)
         if not ids:

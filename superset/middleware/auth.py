@@ -248,7 +248,16 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
                 logger.debug("Redis cache miss/error for user %d", user_id)
 
         # Cache miss — resolve from DB
-        user = await self._resolve_user_from_db(connection, user_id)
+        try:
+            user = await self._resolve_user_from_db(
+                connection, user_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to resolve user %d from DB",
+                user_id,
+            )
+            return None
         if user is None:
             return None
 

@@ -149,22 +149,55 @@ class DatabaseController(Controller):
         dao: DatabaseDAOProtocol,
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.core import Database
+
         rison_filters, order_by, page, page_size = build_rison_query_params(
-            dao.model_cls, rison_params
+            Database, rison_params,
         )
+        if not order_by:
+            order_by = [Database.changed_on.desc()]
+
         databases = await dao.find_all(
             filters=rison_filters or None,
             page=page,
             page_size=page_size,
             order_by=order_by,
+            options=[
+                selectinload(Database.changed_by),
+                selectinload(Database.created_by),
+            ],
         )
         total = await dao.count(filters=rison_filters or None)
         event_logger.log("database.list")
-        return serialize_list_response(
+        payload = serialize_list_response(
             databases,
             total,
-            ["id", "database_name", "backend", "expose_in_sqllab"],
+            [
+                "id",
+                "uuid",
+                "database_name",
+                "backend",
+                "expose_in_sqllab",
+                "allow_run_async",
+                "allow_file_upload",
+                "allow_ctas",
+                "allow_cvas",
+                "allow_dml",
+                "force_ctas_schema",
+                "extra",
+                "configuration_method",
+                "is_managed_externally",
+                "changed_on_delta_humanized",
+                "changed_on_utc",
+                "changed_by.first_name",
+                "changed_by.last_name",
+                "created_by.first_name",
+                "created_by.last_name",
+            ],
         )
+        return payload
 
     # ------------------------------------------------------------------
     # GET /_info — API metadata

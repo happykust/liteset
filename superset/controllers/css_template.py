@@ -29,8 +29,8 @@ from superset.commands.css_template import (
     UpdateCssTemplateCommand,
 )
 from superset.controllers.base import (
+    build_rison_query_params,
     extract_ids_required,
-    extract_pagination,
     get_info_payload,
     get_related_payload,
     serialize_list_response,
@@ -67,12 +67,41 @@ class CssTemplateController(Controller):
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """GET /api/v1/css_template/ — list CSS templates with optional pagination."""
-        page, page_size = extract_pagination(rison_params)
-        templates = await dao.find_all(page=page, page_size=page_size)
-        total = await dao.count()
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.core import CssTemplate
+
+        rison_filters, order_by, page, page_size = build_rison_query_params(
+            CssTemplate, rison_params,
+        )
+        templates = await dao.find_all(
+            filters=rison_filters or None,
+            page=page,
+            page_size=page_size,
+            order_by=order_by,
+            options=[
+                selectinload(CssTemplate.changed_by),
+                selectinload(CssTemplate.created_by),
+            ],
+        )
+        total = await dao.count(filters=rison_filters or None)
         event_logger.log("css_template.list")
         return serialize_list_response(
-            templates, total, ["id", "template_name", "css", "created_on", "changed_on"]
+            templates,
+            total,
+            [
+                "id",
+                "template_name",
+                "css",
+                "created_on",
+                "changed_on_delta_humanized",
+                "changed_by.first_name",
+                "changed_by.id",
+                "changed_by.last_name",
+                "created_by.first_name",
+                "created_by.id",
+                "created_by.last_name",
+            ],
         )
 
     @get(

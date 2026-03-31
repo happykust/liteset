@@ -138,9 +138,9 @@ class CurrentUserController(Controller):
                     setattr(user, attr, value)
 
                 if has_password:
-                    from superset.cli.users import _hash_password
+                    from superset.utils.password import generate_password_hash
 
-                    user.password = _hash_password(data.password)
+                    user.password = generate_password_hash(data.password)
 
                 await user_dao.session.flush()
 

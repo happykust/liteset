@@ -22,8 +22,6 @@ that ``SupersetAuthMiddleware`` decodes via ``SessionDecoder``.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -36,6 +34,7 @@ from litestar.response import Redirect, Template
 from superset.config import SupersetSettings
 from superset.controllers.spa import _build_bootstrap_data
 from superset.middleware.auth import UnauthenticatedUser
+from superset.utils.password import check_password_hash as _check_password_hash
 
 logger = logging.getLogger(__name__)
 
@@ -53,62 +52,6 @@ _FAKE_PASSWORD_HASH = (
     "0000000000000000000000000000000000000000000000000000"
     "00000000000000000000000000000000"
 )
-
-
-def _hash_internal(method: str, salt: str, password: str) -> str:
-    """Compute a password hash using the given method and salt.
-
-    Re-implements werkzeug's ``_hash_internal`` using only :mod:`hashlib`
-    so that we never need werkzeug at runtime.
-
-    Supported methods:
-    - ``scrypt:N:r:p`` (werkzeug >= 3.0 default, e.g. ``scrypt:32768:8:1``)
-    - ``pbkdf2:hash_name:iterations`` (e.g. ``pbkdf2:sha256:600000``)
-    """
-    parts = method.split(":")
-    algo = parts[0]
-    salt_bytes = salt.encode("utf-8")
-    password_bytes = password.encode("utf-8")
-
-    if algo == "scrypt":
-        if len(parts) == 4:
-            n, r, p = int(parts[1]), int(parts[2]), int(parts[3])
-        elif len(parts) == 1:
-            n, r, p = 2**15, 8, 1
-        else:
-            raise ValueError(f"Invalid scrypt method: {method}")
-        maxmem = 132 * n * r * p
-        return hashlib.scrypt(
-            password_bytes, salt=salt_bytes, n=n, r=r, p=p, maxmem=maxmem
-        ).hex()
-
-    if algo == "pbkdf2":
-        hash_name = parts[1] if len(parts) >= 2 else "sha256"
-        iterations = int(parts[2]) if len(parts) >= 3 else 600_000
-        return hashlib.pbkdf2_hmac(
-            hash_name, password_bytes, salt_bytes, iterations
-        ).hex()
-
-    raise ValueError(f"Unsupported hash method: {algo}")
-
-
-def _check_password_hash(stored_hash: str, password: str) -> bool:
-    """Verify a werkzeug-style password hash without importing werkzeug.
-
-    Supports both formats that FAB / werkzeug may produce:
-    - ``scrypt:N:r:p$salt$hash``  (werkzeug >= 3.0 default)
-    - ``pbkdf2:sha256:iterations$salt$hash``  (werkzeug < 3.0 default)
-
-    Uses :func:`hmac.compare_digest` for timing-safe comparison.
-    """
-    if not stored_hash or not password:
-        return False
-    try:
-        method, salt, hash_value = stored_hash.split("$", 2)
-        computed = _hash_internal(method, salt, password)
-        return hmac.compare_digest(computed, hash_value)
-    except (ValueError, IndexError, AttributeError):
-        return False
 
 
 def _get_secret_key(settings: SupersetSettings) -> str:
@@ -329,7 +272,7 @@ class AuthController(Controller):
                     update(User)
                     .where(User.id == user_id)
                     .values(
-                        last_login=datetime.now(timezone.utc),
+                        last_login=datetime.now(),
                         login_count=User.login_count + 1,
                         fail_login_count=0,
                     )

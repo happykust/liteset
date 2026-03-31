@@ -115,7 +115,7 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
             chart.created_by_fk = self._user_id
             chart.changed_by_fk = self._user_id
             chart.last_saved_by_fk = self._user_id
-        chart.last_saved_at = datetime.now(tz=timezone.utc)
+        chart.last_saved_at = datetime.now()
 
         # Resolve owners
         owner_ids = self._data.get("owners", [])
@@ -254,7 +254,7 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
         if self._user_id is not None:
             self._chart.changed_by_fk = self._user_id
             self._chart.last_saved_by_fk = self._user_id
-        self._chart.last_saved_at = datetime.now(tz=timezone.utc)
+        self._chart.last_saved_at = datetime.now()
         await self._dao.session.flush()
         return self._chart
 

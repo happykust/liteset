@@ -107,7 +107,7 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
             force_update = True
 
         if force_update:
-            attributes["changed_on"] = datetime.now(tz=timezone.utc)
+            attributes["changed_on"] = datetime.now()
 
         return await super().update(item, attributes)
 

@@ -120,6 +120,7 @@ class AsyncRoleDAO:
         role = Role(**attributes)
         self.session.add(role)
         await self.session.flush()
+        await self.session.refresh(role, attribute_names=["permissions", "user", "groups"])
         return role
 
     async def update(self, role: Any, attributes: dict[str, Any]) -> Any:
@@ -127,6 +128,7 @@ class AsyncRoleDAO:
         for key, value in attributes.items():
             setattr(role, key, value)
         await self.session.flush()
+        await self.session.refresh(role, attribute_names=["permissions", "user", "groups"])
         return role
 
     async def delete(self, role: Any) -> None:
@@ -179,6 +181,7 @@ class AsyncRoleDAO:
 
         role.permissions = pvs
         await self.session.flush()
+        await self.session.refresh(role, attribute_names=["permissions", "user", "groups"])
         return role
 
     async def set_users(self, role_id: int, user_ids: list[int]) -> Any:
@@ -202,6 +205,7 @@ class AsyncRoleDAO:
 
         role.user = users
         await self.session.flush()
+        await self.session.refresh(role, attribute_names=["permissions", "user", "groups"])
         return role
 
     async def set_groups(self, role_id: int, group_ids: list[int]) -> Any:
@@ -225,6 +229,7 @@ class AsyncRoleDAO:
 
         role.groups = groups
         await self.session.flush()
+        await self.session.refresh(role, attribute_names=["permissions", "user", "groups"])
         return role
 
 
@@ -326,6 +331,7 @@ class AsyncUserCrudDAO:
 
         self.session.add(user)
         await self.session.flush()
+        await self.session.refresh(user, attribute_names=["roles", "groups"])
         return user
 
     async def update(self, user: Any, attributes: dict[str, Any]) -> Any:
@@ -355,6 +361,7 @@ class AsyncUserCrudDAO:
             user.groups = list(result.scalars().all())
 
         await self.session.flush()
+        await self.session.refresh(user, attribute_names=["roles", "groups"])
         return user
 
     async def delete(self, user: Any) -> None:
@@ -457,6 +464,7 @@ class AsyncGroupDAO:
 
         self.session.add(group)
         await self.session.flush()
+        await self.session.refresh(group, attribute_names=["roles_", "users"])
         return group
 
     async def update(self, group: Any, attributes: dict[str, Any]) -> Any:
@@ -486,6 +494,7 @@ class AsyncGroupDAO:
             group.users = list(result.scalars().all())
 
         await self.session.flush()
+        await self.session.refresh(group, attribute_names=["roles_", "users"])
         return group
 
     async def delete(self, group: Any) -> None:

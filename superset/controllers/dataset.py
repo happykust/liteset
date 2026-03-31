@@ -48,6 +48,7 @@ from superset.commands.dataset import (
 # DAO imports moved to provider functions
 from superset.controllers.base import (
     build_export_headers,
+    build_rison_query_params,
     extract_ids,
     extract_ids_required,
     extract_pagination,
@@ -136,20 +137,64 @@ class DatasetController(Controller):
         current_user: UserProtocol,
         rison_params: dict[str, Any] | None,
     ) -> DatasetListResponse:
-        from superset.db.filters import dataset_access_filters
+        from sqlalchemy.orm import selectinload
 
-        page, page_size = extract_pagination(rison_params)
-        base_filters = await dataset_access_filters(security_manager, current_user)
-        datasets = await dao.find_all(
-            filters=base_filters or None, page=page, page_size=page_size
+        from superset.db.filters import dataset_access_filters
+        from superset.models.connectors import SqlaTable
+
+        rison_filters, order_by, page, page_size = build_rison_query_params(
+            SqlaTable, rison_params,
         )
-        total = await dao.count(filters=base_filters or None)
+        base_filters = await dataset_access_filters(security_manager, current_user)
+        all_filters = (base_filters or []) + rison_filters
+
+        datasets = await dao.find_all(
+            filters=all_filters or None,
+            page=page,
+            page_size=page_size,
+            order_by=order_by,
+            options=[
+                selectinload(SqlaTable.database),
+                selectinload(SqlaTable.owners),
+                selectinload(SqlaTable.changed_by),
+            ],
+        )
+        total = await dao.count(filters=all_filters or None)
         event_logger.log("dataset.list")
         payload = serialize_list_response(
             datasets,
             total,
-            ["id", "table_name", "schema", "database_id"],
+            [
+                "id",
+                "uuid",
+                "table_name",
+                "schema",
+                "catalog",
+                "sql",
+                "extra",
+                "description",
+                "default_endpoint",
+                "changed_on_utc",
+                "changed_on_delta_humanized",
+                "changed_by_name",
+                "changed_by_fk",
+                "changed_by.id",
+                "changed_by.first_name",
+                "changed_by.last_name",
+                "database.id",
+                "database.database_name",
+                "owners.id",
+                "owners.first_name",
+                "owners.last_name",
+            ],
         )
+        for item in payload["result"]:
+            item["datasource_type"] = "table"
+            item["kind"] = "physical" if not item.get("sql") else "virtual"
+            item["explore_url"] = (
+                item.pop("default_endpoint", None)
+                or f"/explore/?datasource_type=table&datasource_id={item['id']}"
+            )
         return DatasetListResponse(result=payload["result"], count=payload["count"])
 
     @get(

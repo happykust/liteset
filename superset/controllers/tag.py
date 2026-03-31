@@ -33,9 +33,9 @@ from superset.commands.tag import (
     UpdateTagCommand,
 )
 from superset.controllers.base import (
+    build_rison_query_params,
     extract_ids,
     extract_ids_required,
-    extract_pagination,
     get_info_payload,
     get_related_payload,
     serialize_list_response,
@@ -53,8 +53,6 @@ from superset.schemas.tag import (
 from superset.typing import UserProtocol
 from superset.utils import filter_unset
 
-_LIST_COLUMNS = ["id", "name", "description", "type"]
-
 
 class TagController(Controller):
     path = "/api/v1/tag"
@@ -70,10 +68,40 @@ class TagController(Controller):
         dao: Any,
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        page, page_size = extract_pagination(rison_params)
-        items = await dao.find_all(page=page, page_size=page_size)
-        total = await dao.count()
-        return serialize_list_response(items, total, _LIST_COLUMNS)
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.tags import Tag
+
+        rison_filters, order_by, page, page_size = build_rison_query_params(
+            Tag, rison_params,
+        )
+        items = await dao.find_all(
+            filters=rison_filters or None,
+            page=page,
+            page_size=page_size,
+            order_by=order_by,
+            options=[
+                selectinload(Tag.changed_by),
+                selectinload(Tag.created_by),
+            ],
+        )
+        total = await dao.count(filters=rison_filters or None)
+        return serialize_list_response(
+            items,
+            total,
+            [
+                "id",
+                "name",
+                "type",
+                "description",
+                "changed_on_delta_humanized",
+                "created_on_delta_humanized",
+                "changed_by.first_name",
+                "changed_by.last_name",
+                "created_by.first_name",
+                "created_by.last_name",
+            ],
+        )
 
     @get("/{pk:int}", guards=[require_permission("can_read", "Tag")])
     async def get_single(self, pk: int, dao: Any) -> dict[str, Any]:
@@ -338,7 +366,7 @@ class TagController(Controller):
     async def favorite_status(
         self,
         dao: Any,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
         """GET /api/v1/tag/favorite_status/?q=(ids) -- batch favorite check."""

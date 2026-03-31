@@ -56,6 +56,41 @@ def extract_pagination(rison_params: dict[str, Any] | None) -> tuple[int, int]:
     return page, page_size
 
 
+def extract_order(
+    rison_params: dict[str, Any] | None,
+) -> tuple[str | None, str]:
+    """Extract order_column and order_direction from rison params."""
+    params = rison_params or {}
+    return params.get("order_column"), params.get("order_direction", "asc")
+
+
+# Map computed/virtual column names to the real DB column they derive from.
+# Matches Flask-AppBuilder's @renders() mappings in the original Superset.
+_COMPUTED_ORDER_COLUMNS: dict[str, str] = {
+    "changed_on_delta_humanized": "changed_on",
+    "changed_on_utc": "changed_on",
+    "changed_by_name": "changed_by_fk",
+}
+
+
+def build_order_by(
+    model_cls: type[Any],
+    order_column: str | None,
+    order_direction: str = "asc",
+) -> list[Any] | None:
+    """Build SQLAlchemy order_by clauses from rison order params."""
+    if not order_column:
+        return None
+    # Resolve computed columns to their underlying DB column
+    resolved = _COMPUTED_ORDER_COLUMNS.get(order_column, order_column)
+    col = getattr(model_cls, resolved, None)
+    if col is None or not hasattr(col, "desc"):
+        return None
+    if order_direction == "desc":
+        return [col.desc()]
+    return [col.asc()]
+
+
 @functools.lru_cache(maxsize=32)
 def _get_model_columns(model_cls: type | None) -> dict[str, Any]:
     """Return a mapping of column key -> column for a SQLAlchemy model (cached)."""
@@ -80,7 +115,6 @@ def build_rison_query_params(
     Returns:
         A tuple of ``(filters, order_by, page, page_size)``.
     """
-    from sqlalchemy import asc, desc
 
     from superset.utils import escape_like
 
@@ -121,23 +155,31 @@ def build_rison_query_params(
             filters.append(col_attr <= value)
 
     # -- Build order_by --
-    order_by: list[Any] | None = None
-    order_columns = params.get("order_column")
-    if order_columns and order_columns in valid_columns:
-        direction = params.get("order_direction", "asc")
-        order_fn = desc if direction == "desc" else asc
-        order_by = [order_fn(getattr(model_cls, order_columns))]
+    order_by = build_order_by(
+        model_cls,
+        params.get("order_column"),
+        params.get("order_direction", "asc"),
+    )
 
     return filters, order_by, page, page_size
 
 
-def extract_ids(rison_params: dict[str, Any] | None) -> list[int]:
+def extract_ids(rison_params: list[int] | dict[str, Any] | None) -> list[int]:
     """Extract and validate ``ids`` from Rison query parameters.
+
+    Supports two formats used by the frontend:
+    - Array of ints directly: ``!(1,2,3)`` → ``[1, 2, 3]``
+    - Dict with ``ids`` key: ``(ids:!(1,2,3))`` → ``{"ids": [1, 2, 3]}``
 
     Returns a list of integers.  Raises ``ValueError`` when elements
     are not integers so the caller can return a 422 response.
     """
-    raw = (rison_params or {}).get("ids", [])
+    if rison_params is None:
+        return []
+    if isinstance(rison_params, list):
+        raw = rison_params
+    else:
+        raw = rison_params.get("ids", [])
     if not isinstance(raw, list):
         raise ValueError("ids must be a list")
     ids: list[int] = []
@@ -195,6 +237,54 @@ def _escape_like(value: str) -> str:
     return escape_like(value)
 
 
+def _resolve_attr(obj: Any, path: str) -> Any:
+    """Resolve a dotted attribute path like ``owners.id`` or ``database.database_name``.
+
+    For relationship collections (lists), returns a list of the nested attribute.
+    For scalar relationships, returns the nested attribute directly.
+    """
+    parts = path.split(".", 1)
+    val = getattr(obj, parts[0], None)
+    if len(parts) == 1:
+        return val
+    nested = parts[1]
+    if isinstance(val, list):
+        return [getattr(item, nested, None) for item in val]
+    if val is None:
+        return None
+    return getattr(val, nested, None)
+
+
+def _serialize_item(item: Any, columns: list[str]) -> dict[str, Any]:
+    """Serialize a single model item, handling nested paths.
+
+    Nested paths (``relationship.field``) are grouped into sub-dicts or
+    lists-of-dicts matching the Flask-AppBuilder API format.
+    """
+    result: dict[str, Any] = {}
+    # Group nested columns by their relationship name
+    nested_groups: dict[str, list[str]] = {}
+    for col in columns:
+        if "." in col:
+            rel, field = col.split(".", 1)
+            nested_groups.setdefault(rel, []).append(field)
+        else:
+            result[col] = getattr(item, col, None)
+
+    for rel, fields in nested_groups.items():
+        rel_val = getattr(item, rel, None)
+        if rel_val is None:
+            result[rel] = None
+        elif isinstance(rel_val, list):
+            result[rel] = [
+                {f: getattr(r, f, None) for f in fields} for r in rel_val
+            ]
+        else:
+            result[rel] = {f: getattr(rel_val, f, None) for f in fields}
+
+    return result
+
+
 def serialize_list_response(
     items: list[Any],
     total: int,
@@ -202,17 +292,21 @@ def serialize_list_response(
 ) -> dict[str, Any]:
     """Serialize a list of models into ApiListResponse-compatible dict.
 
-    Args:
-        items: Model instances from DAO.find_all()
-        total: Total count from DAO.count()
-        columns: Attribute names to include in each result item
+    Supports dotted paths like ``owners.id``, ``database.database_name``.
+    Nested relationships are grouped into sub-objects matching the
+    Flask-AppBuilder REST API format the frontend expects.
+
+    Automatically post-processes each item:
+    - ``uuid`` fields are converted to strings
+    - ``changed_on``/``created_on`` datetimes are left as-is for further
+      processing or JSON serialization
     """
-    return {
-        "result": [
-            {col: getattr(item, col, None) for col in columns} for item in (items or [])
-        ],
-        "count": total,
-    }
+    result = [_serialize_item(item, columns) for item in (items or [])]
+    for row in result:
+        # uuid → string
+        if "uuid" in row and row["uuid"] is not None:
+            row["uuid"] = str(row["uuid"])
+    return {"result": result, "count": total}
 
 
 async def get_info_payload(

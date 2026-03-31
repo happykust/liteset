@@ -36,7 +36,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
-from sqlalchemy_utils import UUIDType
+from superset.models.helpers import BinaryUUID
 
 from superset.models.helpers import (
     AuditMixinNullable,
@@ -206,6 +206,15 @@ class ReportSchedule(AuditMixinNullable, ExtraJSONMixin, Base):
         cascade="all, delete-orphan",
     )
 
+    @property
+    def crontab_humanized(self) -> str:
+        try:
+            from cron_descriptor import get_description
+
+            return get_description(self.crontab) if self.crontab else ""
+        except Exception:
+            return self.crontab or ""
+
 
 class ReportRecipients(Base, AuditMixinNullable):
     """A recipient of a report schedule."""
@@ -229,7 +238,7 @@ class ReportExecutionLog(Base):
 
     id = Column(Integer, primary_key=True)
     uuid = Column(
-        UUIDType(binary=True), default=uuid_mod.uuid4
+        BinaryUUID(), default=uuid_mod.uuid4
     )
     scheduled_dttm = Column(DateTime)
     start_dttm = Column(DateTime)

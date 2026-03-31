@@ -38,9 +38,9 @@ from superset.commands.query import (
 )
 from superset.controllers.base import (
     build_export_headers,
+    build_rison_query_params,
     extract_ids,
     extract_ids_required,
-    extract_pagination,
     get_distinct_payload,
     get_info_payload,
     get_related_payload,
@@ -81,21 +81,62 @@ class SavedQueryController(Controller):
         security_manager: Any,
     ) -> dict[str, Any]:
         """GET /api/v1/saved_query/ — list saved queries with optional pagination."""
-        from superset.db.filters import saved_query_access_filters
+        from sqlalchemy.orm import selectinload
 
-        page, page_size = extract_pagination(rison_params)
+        from superset.db.filters import saved_query_access_filters
+        from superset.models.sql_lab import SavedQuery
+
+        rison_filters, order_by, page, page_size = build_rison_query_params(
+            SavedQuery, rison_params,
+        )
+        if not order_by:
+            order_by = [SavedQuery.changed_on.desc()]
+
         base_filters = await saved_query_access_filters(
             security_manager, current_user
         )
+        all_filters = (base_filters or []) + rison_filters
+
         queries = await dao.find_all(
-            filters=base_filters or None, page=page, page_size=page_size
+            filters=all_filters or None,
+            page=page,
+            page_size=page_size,
+            order_by=order_by,
+            options=[
+                selectinload(SavedQuery.changed_by),
+                selectinload(SavedQuery.created_by),
+                selectinload(SavedQuery.database),
+            ],
         )
-        total = await dao.count(filters=base_filters or None)
+        total = await dao.count(filters=all_filters or None)
         event_logger.log("saved_query.list", user_id=current_user.id)
         return serialize_list_response(
             queries,
             total,
-            ["id", "label", "schema", "sql", "db_id", "description"],
+            [
+                "id",
+                "uuid",
+                "label",
+                "schema",
+                "sql",
+                "db_id",
+                "description",
+                "extra",
+                "catalog",
+                "rows",
+                "created_on",
+                "created_on_delta_humanized",
+                "changed_on_delta_humanized",
+                "changed_on_utc",
+                "database.database_name",
+                "database.id",
+                "changed_by.first_name",
+                "changed_by.id",
+                "changed_by.last_name",
+                "created_by.first_name",
+                "created_by.id",
+                "created_by.last_name",
+            ],
         )
 
     @get(

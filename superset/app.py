@@ -55,7 +55,7 @@ from superset.exceptions import (
 )
 from superset.logging import configure_logging
 from superset.middleware.auth import SupersetAuthMiddleware
-from superset.middleware.csrf import create_csrf_config
+# CSRF middleware is created lazily in create_app()
 from superset.middleware.rate_limit import RateLimitMiddleware
 from superset.middleware.security_headers import SecurityHeadersMiddleware
 
@@ -366,23 +366,39 @@ def create_app(
     async def provide_event_manager(state: State) -> Any:
         return _aem_mod.AsyncEventManager(redis=state.redis)
 
-    # Build CSRF config
-    csrf_config = None
+    # Build CSRF middleware (session-based, Flask-WTF compatible)
+    csrf_middleware = None
+    csrf_config = None  # Don't use Litestar built-in
     if settings.csrf_enabled:
+        from superset.middleware.csrf import (
+            create_csrf_middleware,
+        )
+
         secret_key = settings.secret_key
         if hasattr(secret_key, "get_secret_value"):
             secret_key = secret_key.get_secret_value()
-        csrf_config = create_csrf_config(
+        csrf_middleware = create_csrf_middleware(
             secret=secret_key,
-            cookie_name=settings.csrf_cookie_name,
-            header_name=settings.csrf_header_name,
+            header_name=getattr(
+                settings, "csrf_header_name", "X-CSRFToken",
+            ),
+            max_age=604800,  # 1 week (WTF_CSRF_TIME_LIMIT)
             exclude_paths=[
-                "/api/v1/health",
+                # Health probes
                 "/health",
                 "/healthcheck",
                 "/ping",
                 "/healthz",
-                "/api/v1/security/csrf_token/",
+                # Auth forms (no token before login)
+                "/login",
+                "/logout",
+                # Original WTF_CSRF_EXEMPT_LIST:
+                "/api/v1/chart/data",
+                "/api/v1/dashboard/"
+                "cache_dashboard_screenshot",
+                "/superset/explore_json",
+                "/superset/log",
+                "/datasource/samples",
             ],
         )
 
@@ -402,8 +418,13 @@ def create_app(
             SecurityHeadersMiddleware(),
             RateLimitMiddleware(),
             SupersetAuthMiddleware,
+            *(
+                [csrf_middleware]
+                if csrf_middleware
+                else []
+            ),
         ],
-        csrf_config=csrf_config,
+        csrf_config=None,  # Using custom middleware
         on_startup=startup_hooks,
         on_shutdown=[on_shutdown],
         exception_handlers={

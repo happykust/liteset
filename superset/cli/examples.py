@@ -16,14 +16,92 @@
 # under the License.
 """Load example data command.
 
-Signature-compatible stub that matches the original Superset
-``load-examples`` command.  Full data loading is not yet implemented
-for the async backend.
+Loads example datasets, charts, and dashboards into the Superset
+metadata database.  Uses a synchronous SQLAlchemy session since the
+CLI runs outside the async event loop and pandas ``to_sql`` requires
+a sync engine.
 """
-
 from __future__ import annotations
 
+import logging
+
 import click
+
+logger = logging.getLogger(__name__)
+
+
+def load_examples_run(
+    load_test_data: bool = False,
+    load_big_data: bool = False,
+    only_metadata: bool = False,
+    force: bool = False,
+) -> None:
+    from superset.examples import _ctx
+    from superset.examples import data_loading as examples
+
+    if only_metadata:
+        logger.info("Loading examples metadata")
+    else:
+        examples_db = _ctx.get_example_database()
+        logger.info("Loading examples metadata and data into %s", examples_db)
+
+    examples.load_css_templates()
+    _ctx.commit()
+
+    if load_test_data:
+        logger.info("Loading energy related dataset")
+        examples.load_energy(only_metadata, force)
+        _ctx.commit()
+
+    logger.info("Loading [World Bank's Health Nutrition and Population Stats]")
+    examples.load_world_bank_health_n_pop(only_metadata, force)
+    _ctx.commit()
+
+    logger.info("Loading [Birth names]")
+    examples.load_birth_names(only_metadata, force)
+    _ctx.commit()
+
+    if load_test_data:
+        logger.info("Loading [Tabbed dashboard]")
+        examples.load_tabbed_dashboard(only_metadata)
+        _ctx.commit()
+
+        logger.info("Loading [Supported Charts Dashboard]")
+        examples.load_supported_charts_dashboard()
+        _ctx.commit()
+    else:
+        logger.info("Loading [Random long/lat data]")
+        examples.load_long_lat_data(only_metadata, force)
+        _ctx.commit()
+
+        logger.info("Loading [Country Map data]")
+        examples.load_country_map_data(only_metadata, force)
+        _ctx.commit()
+
+        logger.info("Loading [San Francisco population polygons]")
+        examples.load_sf_population_polygons(only_metadata, force)
+        _ctx.commit()
+
+        logger.info("Loading [Flights data]")
+        examples.load_flights(only_metadata, force)
+        _ctx.commit()
+
+        logger.info("Loading [BART lines]")
+        examples.load_bart_lines(only_metadata, force)
+        _ctx.commit()
+
+        logger.info("Loading [Misc Charts] dashboard")
+        examples.load_misc_dashboard()
+        _ctx.commit()
+
+        logger.info("Loading DECK.gl demo")
+        examples.load_deck_dash()
+        _ctx.commit()
+
+    if load_big_data:
+        logger.info("Loading big synthetic data for tests")
+        examples.load_big_data()
+        _ctx.commit()
 
 
 @click.command("load-examples")
@@ -57,18 +135,19 @@ def load_examples(
     only_metadata: bool = False,
     force: bool = False,
 ) -> None:
-    """Load a set of Slices, Dashboards, and a supporting dataset.
+    """Load a set of Slices, Dashboards, and a supporting dataset."""
+    from superset.examples import _ctx
 
-    NOTE: Full example data loading is not yet implemented in the async
-    backend.  This command currently serves as a stub with the correct
-    interface for backward compatibility.
-    """
-    click.secho(
-        "WARNING: load-examples is not yet fully implemented in Liteset.\n"
-        "This is a stub preserving the original CLI interface.\n"
-        "Run the original Superset's load_examples if you need the data.",
-        fg="yellow",
-    )
-    click.echo(f"  Options: test_data={load_test_data}, big_data={load_big_data}, "
-               f"metadata_only={only_metadata}, force={force}")
-    click.echo("TODO: Implement async example data loading.")
+    click.echo("Initialising database context...")
+    _ctx.init()
+    try:
+        load_examples_run(load_test_data, load_big_data, only_metadata, force)
+        _ctx.commit()
+        click.secho("Example data loaded successfully.", fg="green")
+    except Exception:
+        logger.exception("Failed to load examples")
+        if _ctx.session is not None:
+            _ctx.session.rollback()
+        raise
+    finally:
+        _ctx.teardown()

@@ -108,10 +108,10 @@ def _user_to_response(user: Any) -> UserResponse:
 
 
 def _hash_password(password: str) -> str:
-    """Hash a password using werkzeug's generate_password_hash."""
-    from werkzeug.security import generate_password_hash
+    """Hash a password (werkzeug-compatible, no werkzeug dependency)."""
+    from superset.utils.password import generate_password_hash
 
-    return generate_password_hash(password, method="scrypt", salt_length=16)
+    return generate_password_hash(password)
 
 
 def _build_user_filters(rison_params: dict[str, Any] | None) -> list[Any]:

@@ -14,24 +14,50 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Explore form data controller — temporary cache for explore form state."""
+"""Explore form data controller — temporary cache for explore form state.
+
+The frontend sends ``{datasource_id, datasource_type, form_data, chart_id?}``
+with ``tab_id`` as a query parameter.  The original Superset stores the
+serialized value in a KV table keyed by a UUID.
+"""
 
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
-from litestar import get
+import msgspec
+from litestar import Controller, delete, get, post, put, Request
 from litestar.di import Provide
+from litestar.params import Parameter
 
-from superset.controllers.temporary_cache import TemporaryCacheController
+from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError
 from superset.guards.rbac import require_authentication
 from superset.providers import provide_kv_dao
 from superset.typing import KeyValueDAOProtocol, UserProtocol
 
 
-class ExploreFormDataController(TemporaryCacheController):
+class FormDataPostSchema(msgspec.Struct):
+    """POST body matching the original Superset explore form_data API."""
+
+    datasource_id: int
+    datasource_type: str
+    form_data: str
+    chart_id: int | None = None
+
+
+class FormDataPutSchema(msgspec.Struct):
+    """PUT body matching the original Superset explore form_data API."""
+
+    datasource_id: int
+    datasource_type: str
+    form_data: str
+    chart_id: int | None = None
+
+
+class ExploreFormDataController(Controller):
     path = "/api/v1/explore/form_data"
     tags = ["Explore Form Data"]
     resource = "explore_form_data"
@@ -46,11 +72,7 @@ class ExploreFormDataController(TemporaryCacheController):
         kv_dao: KeyValueDAOProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        """GET /{key} -- retrieve cached form_data.
-
-        Frontend expects ``{"form_data": "..."}`` for explore form data,
-        unlike dashboard_filter_state which uses ``{"value": "..."}``.
-        """
+        """GET /{key} — retrieve cached form_data."""
         raw = await kv_dao.get_value(
             resource=self.resource,
             resource_id=0,
@@ -59,7 +81,6 @@ class ExploreFormDataController(TemporaryCacheController):
         if raw is None:
             raise ObjectNotFoundError(self.resource, key)
 
-        # Unwrap envelope
         try:
             entry = json.loads(raw)
             if isinstance(entry, dict) and "value" in entry:
@@ -67,3 +88,92 @@ class ExploreFormDataController(TemporaryCacheController):
         except (json.JSONDecodeError, TypeError):
             pass
         return {"form_data": raw}
+
+    @post("/", status_code=201, guards=[require_authentication])
+    async def create_value(
+        self,
+        data: FormDataPostSchema,
+        kv_dao: KeyValueDAOProtocol,
+        current_user: UserProtocol,
+        tab_id: int | None = Parameter(query="tab_id", default=None, required=False),
+    ) -> dict[str, str]:
+        """POST / — create new cached form_data."""
+        key = str(uuid.uuid4())
+        envelope = json.dumps({
+            "owner": current_user.id,
+            "datasource_id": data.datasource_id,
+            "datasource_type": data.datasource_type,
+            "chart_id": data.chart_id,
+            "tab_id": tab_id,
+            "value": data.form_data,
+        })
+        await kv_dao.set_value(
+            resource=self.resource,
+            resource_id=0,
+            key=key,
+            value=envelope,
+        )
+        event_logger.log(
+            "explore_form_data.create",
+            user_id=current_user.id,
+        )
+        return {"key": key}
+
+    @put("/{key:str}", guards=[require_authentication])
+    async def update_value(
+        self,
+        key: str,
+        data: FormDataPutSchema,
+        kv_dao: KeyValueDAOProtocol,
+        current_user: UserProtocol,
+        tab_id: int | None = Parameter(query="tab_id", default=None, required=False),
+    ) -> dict[str, str]:
+        """PUT /{key} — update cached form_data."""
+        existing = await kv_dao.get_value(
+            resource=self.resource,
+            resource_id=0,
+            key=key,
+        )
+        if existing is None:
+            raise ObjectNotFoundError(self.resource, key)
+
+        envelope = json.dumps({
+            "owner": current_user.id,
+            "datasource_id": data.datasource_id,
+            "datasource_type": data.datasource_type,
+            "chart_id": data.chart_id,
+            "tab_id": tab_id,
+            "value": data.form_data,
+        })
+        await kv_dao.set_value(
+            resource=self.resource,
+            resource_id=0,
+            key=key,
+            value=envelope,
+        )
+        event_logger.log(
+            "explore_form_data.update",
+            user_id=current_user.id,
+        )
+        return {"key": key}
+
+    @delete("/{key:str}", status_code=200, guards=[require_authentication])
+    async def delete_value(
+        self,
+        key: str,
+        kv_dao: KeyValueDAOProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, str]:
+        """DELETE /{key} — delete cached form_data."""
+        deleted = await kv_dao.delete_value(
+            resource=self.resource,
+            resource_id=0,
+            key=key,
+        )
+        if not deleted:
+            raise ObjectNotFoundError(self.resource, key)
+        event_logger.log(
+            "explore_form_data.delete",
+            user_id=current_user.id,
+        )
+        return {"message": "OK"}

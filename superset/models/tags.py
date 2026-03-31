@@ -116,7 +116,7 @@ class TaggedObject(Base, AuditMixinNullable):
         Integer, ForeignKey("tag.id"), nullable=True
     )
     object_id = Column(Integer)
-    object_type = Column(Enum(ObjectType))
+    object_type = Column(String(255))
 
     # -- relationships --------------------------------------------------------
 

@@ -40,13 +40,23 @@ SPA_ROUTE_PREFIXES: frozenset[str] = frozenset(
         "alert",
         "report",
         "database",
+        "databaseview",
         "dataset",
         "savedquery",
+        "savedqueryview",
         "csstemplate",
+        "csstemplatemodelview",
         "annotationlayer",
         "rowlevelsecurity",
+        "tablemodelview",
+        "theme",
+        "sqllab",
+        "actionlog",
+        "user_info",
         "users",
         "roles",
+        "list_groups",
+        "registrations",
         "logmodelview",
     }
 )
@@ -356,6 +366,19 @@ _MENU_ITEMS: list[dict[str, Any]] = [
         ],
     },
 ]
+
+
+def _get_csrf_token(settings: Any) -> str:
+    """Generate a CSRF token for the SPA hidden input."""
+    from superset.middleware.csrf import generate_csrf_token
+
+    secret = ""
+    if settings:
+        sk = getattr(settings, "secret_key", "")
+        if hasattr(sk, "get_secret_value"):
+            sk = sk.get_secret_value()
+        secret = str(sk)
+    return generate_csrf_token(secret)
 
 
 def _get_conf_value(settings: Any, key: str) -> Any:
@@ -831,7 +854,7 @@ class SPAController(Controller):
                         ),
                     },
                 ],
-                "csrf_token": "",
+                "csrf_token": _get_csrf_token(settings),
             },
         )
 

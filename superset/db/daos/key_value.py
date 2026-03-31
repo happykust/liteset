@@ -38,7 +38,7 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
             KeyValueEntry.id == entry_id,
             or_(
                 KeyValueEntry.expires_on.is_(None),
-                KeyValueEntry.expires_on > datetime.now(tz=timezone.utc),
+                KeyValueEntry.expires_on > datetime.now(),
             ),
         )
         result = await self.session.execute(stmt)
@@ -127,7 +127,7 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
                 KeyValueEntry.resource == rkey,
                 or_(
                     KeyValueEntry.expires_on.is_(None),
-                    KeyValueEntry.expires_on > datetime.now(tz=timezone.utc),
+                    KeyValueEntry.expires_on > datetime.now(),
                 ),
             )
             .with_for_update()
@@ -156,7 +156,7 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
             KeyValueEntry.resource == rkey,
             or_(
                 KeyValueEntry.expires_on.is_(None),
-                KeyValueEntry.expires_on > datetime.now(tz=timezone.utc),
+                KeyValueEntry.expires_on > datetime.now(),
             ),
         )
         result = await self.session.execute(stmt)
@@ -177,7 +177,7 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
             KeyValueEntry.resource == rkey,
             or_(
                 KeyValueEntry.expires_on.is_(None),
-                KeyValueEntry.expires_on > datetime.now(tz=timezone.utc),
+                KeyValueEntry.expires_on > datetime.now(),
             ),
         )
         result = await self.session.execute(stmt)
@@ -197,6 +197,6 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         escaped = resource.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         stmt = delete(KeyValueEntry).where(
             KeyValueEntry.resource.like(f"{escaped}:%"),
-            KeyValueEntry.expires_on <= datetime.now(tz=timezone.utc),
+            KeyValueEntry.expires_on <= datetime.now(),
         )
         await self.session.execute(stmt)

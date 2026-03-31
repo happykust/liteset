@@ -149,3 +149,28 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
         back_populates="dashboard",
         cascade="all, delete-orphan",
     )
+    tags = relationship(
+        "Tag",
+        secondary="tagged_object",
+        primaryjoin="and_(Dashboard.id == foreign(TaggedObject.object_id), "
+        "TaggedObject.object_type == 'dashboard')",
+        secondaryjoin="Tag.id == foreign(TaggedObject.tag_id)",
+        viewonly=True,
+    )
+
+    # -- Computed properties (match original FAB model) ------------------------
+
+    @property
+    def url(self) -> str:
+        return f"/superset/dashboard/{self.slug or self.id}/"
+
+    @property
+    def status(self) -> str:
+        return "published" if self.published else "draft"
+
+    @property
+    def thumbnail_url(self) -> str | None:
+        if not self.changed_on:
+            return None
+        digest = self.changed_on.strftime("%Y%m%d%H%M%S")
+        return f"/api/v1/dashboard/{self.id}/thumbnail/{digest}/"

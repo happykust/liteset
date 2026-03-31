@@ -27,72 +27,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import click
-import hashlib
-import secrets
 
-# ------------------------------------------------------------------
-# Password hashing (werkzeug-compatible, no werkzeug dependency)
-# ------------------------------------------------------------------
-
-_SALT_CHARS = (
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789"
-)
-
-
-def _gen_salt(length: int = 16) -> str:
-    """Generate a random salt string (matches werkzeug gen_salt)."""
-    return "".join(secrets.choice(_SALT_CHARS) for _ in range(length))
-
-
-def _hash_password(
-    password: str,
-    method: str = "scrypt",
-    salt_length: int = 16,
-) -> str:
-    """Hash a password producing a werkzeug-compatible string.
-
-    Default method is ``scrypt:32768:8:1`` (werkzeug 3.0+ default).
-    Output format: ``method$salt$hash`` — identical to werkzeug's
-    ``generate_password_hash``.
-    """
-    salt = _gen_salt(salt_length)
-    password_bytes = password.encode("utf-8")
-    salt_bytes = salt.encode("utf-8")
-
-    if method == "scrypt" or method.startswith("scrypt:"):
-        parts = method.split(":")
-        n = int(parts[1]) if len(parts) > 1 else 32768
-        r = int(parts[2]) if len(parts) > 2 else 8
-        p = int(parts[3]) if len(parts) > 3 else 1
-        maxmem = 132 * n * r * p  # matches werkzeug
-        h = hashlib.scrypt(
-            password_bytes,
-            salt=salt_bytes,
-            n=n,
-            r=r,
-            p=p,
-            maxmem=maxmem,
-        ).hex()
-        actual_method = f"scrypt:{n}:{r}:{p}"
-    elif method == "pbkdf2" or method.startswith("pbkdf2:"):
-        parts = method.split(":")
-        hash_name = parts[1] if len(parts) > 1 else "sha256"
-        iterations = (
-            int(parts[2]) if len(parts) > 2 else 600000
-        )
-        h = hashlib.pbkdf2_hmac(
-            hash_name,
-            password_bytes,
-            salt_bytes,
-            iterations,
-        ).hex()
-        actual_method = f"pbkdf2:{hash_name}:{iterations}"
-    else:
-        raise ValueError(f"Unsupported hash method: {method!r}")
-
-    return f"{actual_method}${salt}${h}"
+from superset.utils.password import generate_password_hash as _hash_password
 
 
 # ------------------------------------------------------------------

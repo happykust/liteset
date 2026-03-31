@@ -31,8 +31,8 @@ from superset.commands.report import (
     UpdateReportScheduleCommand,
 )
 from superset.controllers.base import (
+    build_rison_query_params,
     extract_ids_required,
-    extract_pagination,
     get_info_payload,
     get_related_payload,
     serialize_list_response,
@@ -50,15 +50,34 @@ _LIST_COLUMNS = [
     "id",
     "name",
     "type",
-    "crontab",
-    "timezone",
+    "description",
     "active",
+    "crontab",
+    "crontab_humanized",
+    "creation_method",
+    "timezone",
+    "report_format",
     "chart_id",
     "dashboard_id",
     "database_id",
-    "description",
     "last_eval_dttm",
     "last_state",
+    "last_value",
+    "log_retention",
+    "grace_period",
+    "working_timeout",
+    "changed_on_delta_humanized",
+    "changed_on_utc",
+    "changed_by.first_name",
+    "changed_by.last_name",
+    "created_on",
+    "created_by.first_name",
+    "created_by.last_name",
+    "owners.id",
+    "owners.first_name",
+    "owners.last_name",
+    "recipients.id",
+    "recipients.type",
 ]
 
 
@@ -80,9 +99,29 @@ class ReportScheduleController(Controller):
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """GET /api/v1/report/ — list report schedules with pagination."""
-        page, page_size = extract_pagination(rison_params)
-        items = await dao.find_all(page=page, page_size=page_size)
-        total = await dao.count()
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.reports import ReportSchedule
+
+        rison_filters, order_by, page, page_size = build_rison_query_params(
+            ReportSchedule, rison_params,
+        )
+        if not order_by:
+            order_by = [ReportSchedule.changed_on.desc()]
+
+        items = await dao.find_all(
+            filters=rison_filters or None,
+            page=page,
+            page_size=page_size,
+            order_by=order_by,
+            options=[
+                selectinload(ReportSchedule.owners),
+                selectinload(ReportSchedule.recipients),
+                selectinload(ReportSchedule.changed_by),
+                selectinload(ReportSchedule.created_by),
+            ],
+        )
+        total = await dao.count(filters=rison_filters or None)
         event_logger.log("report.list")
         return serialize_list_response(items, total, _LIST_COLUMNS)
 

@@ -66,8 +66,11 @@ class BaseAsyncDAO(Generic[T]):
         page: int = 0,
         page_size: int = 0,
         order_by: list[Any] | None = None,
+        options: list[Any] | None = None,
     ) -> list[T]:
         stmt = select(self.model_cls)
+        if options:
+            stmt = stmt.options(*options)
         if filters:
             stmt = stmt.where(*filters)
         if page_size > 0:
@@ -80,7 +83,7 @@ class BaseAsyncDAO(Generic[T]):
         elif order_by:
             stmt = stmt.order_by(*order_by)
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        return list(result.scalars().unique().all())
 
     async def count(self, filters: list[Any] | None = None) -> int:
         """Return total record count (for pagination metadata)."""

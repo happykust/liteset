@@ -271,10 +271,7 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         """Return dashboard's last changed timestamp (truncated to seconds)."""
         changed_on = dashboard.changed_on
         if changed_on is None:
-            return datetime.now(tz=timezone.utc).replace(microsecond=0)
-        # Ensure timezone-aware before truncating
-        if changed_on.tzinfo is None:
-            changed_on = changed_on.replace(tzinfo=timezone.utc)
+            return datetime.now().replace(microsecond=0)
         return changed_on.replace(microsecond=0)
 
     async def get_charts_for_dashboard(self, dashboard: Dashboard) -> list[Slice]:
@@ -316,8 +313,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         if not slice_times:
             return dash_changed
         slices_max = max(slice_times)
-        if slices_max.tzinfo is None:
-            slices_max = slices_max.replace(tzinfo=timezone.utc)
         return max(dash_changed, slices_max.replace(microsecond=0))
 
     async def get_dashboard_and_datasets_changed_on(
@@ -333,8 +328,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         if not ds_times:
             return dash_changed
         ds_max = max(ds_times)
-        if ds_max.tzinfo is None:
-            ds_max = ds_max.replace(tzinfo=timezone.utc)
         return max(dash_changed, ds_max.replace(microsecond=0))
 
     async def update_native_filters_config(

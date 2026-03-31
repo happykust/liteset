@@ -61,7 +61,7 @@ class FavoriteMixin:
             class_name=self._fav_class_name,
             obj_id=obj_id,
             user_id=user_id,
-            dttm=datetime.now(tz=timezone.utc),
+            dttm=datetime.now(),
         )
         self.session.add(fav)
         await self.session.flush([fav])

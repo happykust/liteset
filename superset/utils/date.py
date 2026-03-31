@@ -845,3 +845,20 @@ def normalize_dttm_col(
             df[_col.col_label] += timedelta(hours=_col.offset)
         if _col.time_shift is not None:
             df[_col.col_label] += parse_human_timedelta(_col.time_shift)
+
+
+# ---------------------------------------------------------------------------
+# humanize_timedelta — human-readable "X minutes ago" strings
+# ---------------------------------------------------------------------------
+
+
+def humanize_timedelta(dt: datetime) -> str:
+    """Return a human-readable delta string like 'an hour ago'.
+
+    Uses the ``humanize`` library to match the original Superset output
+    from ``AuditMixinNullable.changed_on_delta_humanized``.
+    """
+    import humanize as _humanize
+
+    delta = datetime.now() - dt
+    return _humanize.naturaltime(delta)

@@ -165,36 +165,32 @@ class SecurityController(Controller):
 
     @get(
         "/csrf_token/",
-        opt={"exclude_from_auth": True},
     )
-    async def csrf_token(self, request: Request[Any, Any, Any]) -> dict[str, str]:
-        """Get a CSRF token for state-changing requests.
+    async def csrf_token(
+        self,
+        request: Request[Any, Any, Any],
+    ) -> dict[str, str]:
+        """Generate and return a CSRF token.
 
-        Returns the CSRF token from the cookie set by Litestar's
-        CSRFConfig middleware. On the first request (when no CSRF cookie
-        exists yet), this endpoint returns an empty string in ``result``.
-        The CSRF middleware will set the token cookie in the *response*
-        Set-Cookie header. The client should therefore:
-
-        1. Call ``GET /api/v1/security/csrf_token/``.
-        2. Read the CSRF token from the ``Set-Cookie`` header (or the
-           browser cookie jar) — **not** from the JSON body on first call.
-        3. On subsequent requests, the JSON ``result`` will contain the
-           token value since the cookie is now present on the request.
-        4. Include the token in the ``X-CSRFToken`` header for all
-           state-changing (POST/PUT/DELETE) requests.
-
-        Backward-compatible with Superset frontend's
-        GET /api/v1/security/csrf_token/ endpoint.
+        Compatible with Flask-WTF's ``generate_csrf()``.
+        Frontend stores this and sends it in ``X-CSRFToken``
+        header on POST/PUT/DELETE requests.
         """
-        # Read the CSRF cookie that Litestar's CSRFConfig middleware sets.
-        # The cookie name is configurable but defaults to "csrf_access_token".
-        # NOTE: On the very first request the cookie will not yet exist on the
-        # incoming request — the middleware generates a new token and sets it
-        # only on the *response*.  The client must read it from Set-Cookie.
-        settings = getattr(request.app.state, "settings", None)
-        cookie_name = getattr(settings, "csrf_cookie_name", "csrf_access_token")
-        token = request.cookies.get(cookie_name, "")
+        from superset.middleware.csrf import (
+            generate_csrf_token,
+        )
+
+        settings = getattr(
+            request.app.state, "settings", None,
+        )
+        secret = ""
+        if settings:
+            sk = settings.secret_key
+            if hasattr(sk, "get_secret_value"):
+                sk = sk.get_secret_value()
+            secret = str(sk)
+
+        token = generate_csrf_token(secret)
         event_logger.log("security.csrf_token")
         return {"result": token}
 
@@ -515,29 +511,8 @@ class SecurityController(Controller):
     def _check_password(stored_hash: str, password: str) -> bool:
         """Verify password against a werkzeug-compatible hash.
 
-        Supports pbkdf2:sha256 format used by Flask-AppBuilder.
+        Supports scrypt and pbkdf2 formats used by Flask-AppBuilder.
         """
-        try:
-            from werkzeug.security import check_password_hash
+        from superset.utils.password import check_password_hash
 
-            return check_password_hash(stored_hash, password)
-        except ImportError:
-            # Manual fallback for pbkdf2:sha256
-            import hashlib
-
-            if not stored_hash.startswith("pbkdf2:sha256:"):
-                return False
-            parts = stored_hash.split("$", 2)
-            if len(parts) != 3:
-                return False
-            prefix = parts[0]  # pbkdf2:sha256:<iterations>
-            salt = parts[1]
-            expected_hex = parts[2]
-            iterations = int(prefix.split(":")[2])
-            derived = hashlib.pbkdf2_hmac(
-                "sha256",
-                password.encode("utf-8"),
-                salt.encode("utf-8"),
-                iterations,
-            )
-            return derived.hex() == expected_hex
+        return check_password_hash(stored_hash, password)

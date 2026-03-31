@@ -25,7 +25,7 @@ import humanize
 from litestar import Controller, get, post
 from litestar.di import Provide
 
-from superset.controllers.base import extract_pagination
+from superset.controllers.base import build_rison_query_params, serialize_list_response
 from superset.events import event_logger
 from superset.guards.rbac import require_authentication, require_permission
 from superset.params.rison import provide_rison_query
@@ -52,35 +52,37 @@ class LogController(Controller):
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """GET /api/v1/log/ — list log entries."""
-        page, page_size = extract_pagination(rison_params)
-        items = await dao.find_all(page=page, page_size=page_size)
-        total = await dao.count()
+        from sqlalchemy.orm import selectinload
 
-        result = []
-        for item in items or []:
-            user = getattr(item, "user", None)
-            result.append(
-                {
-                    "id": getattr(item, "id", None),
-                    "action": getattr(item, "action", None),
-                    "user_id": getattr(item, "user_id", None),
-                    "user": {
-                        "first_name": getattr(user, "first_name", ""),
-                        "last_name": getattr(user, "last_name", ""),
-                        "username": getattr(user, "username", ""),
-                    }
-                    if user is not None
-                    else None,
-                    "dashboard_id": getattr(item, "dashboard_id", None),
-                    "slice_id": getattr(item, "slice_id", None),
-                    "json": getattr(item, "json", None),
-                    "dttm": getattr(item, "dttm", None),
-                    "duration_ms": getattr(item, "duration_ms", None),
-                    "referrer": getattr(item, "referrer", None),
-                }
-            )
+        from superset.models.core import Log
 
-        return {"result": result, "count": total}
+        rison_filters, order_by, page, page_size = build_rison_query_params(
+            Log, rison_params,
+        )
+        items = await dao.find_all(
+            filters=rison_filters or None,
+            page=page,
+            page_size=page_size,
+            order_by=order_by,
+            options=[selectinload(Log.user)],
+        )
+        total = await dao.count(filters=rison_filters or None)
+        return serialize_list_response(
+            items,
+            total,
+            [
+                "id",
+                "action",
+                "user_id",
+                "dttm",
+                "json",
+                "duration_ms",
+                "referrer",
+                "user.first_name",
+                "user.last_name",
+                "user.username",
+            ],
+        )
 
     @get(
         "/{pk:int}",
@@ -152,7 +154,7 @@ class LogController(Controller):
             page_size=page_size,
         )
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now()
         result = []
         for item in items:
             dashboard_id = getattr(item, "dashboard_id", None)
@@ -173,10 +175,7 @@ class LogController(Controller):
             # Compute human-readable time delta
             time_delta_humanized = ""
             if dttm is not None:
-                dttm_aware = dttm if dttm.tzinfo else dttm.replace(
-                    tzinfo=timezone.utc,
-                )
-                time_delta_humanized = humanize.naturaltime(now - dttm_aware)
+                time_delta_humanized = humanize.naturaltime(now - dttm)
 
             result.append(
                 {
