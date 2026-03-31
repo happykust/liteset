@@ -47,6 +47,22 @@ ab_permission_view_role = Table(
     Column("role_id", Integer, ForeignKey("ab_role.id")),
 )
 
+ab_user_group = Table(
+    "ab_user_group",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("user_id", Integer, ForeignKey("ab_user.id")),
+    Column("group_id", Integer, ForeignKey("ab_group.id")),
+)
+
+ab_group_role = Table(
+    "ab_group_role",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("group_id", Integer, ForeignKey("ab_group.id")),
+    Column("role_id", Integer, ForeignKey("ab_role.id")),
+)
+
 
 # ---------------------------------------------------------------------------
 # Models
@@ -72,6 +88,7 @@ class User(Base):
     changed_on = Column(DateTime, nullable=True)
 
     roles = relationship("Role", secondary=ab_user_role, backref="user")
+    groups = relationship("Group", secondary=ab_user_group, backref="users")
 
 
 class Role(Base):
@@ -87,6 +104,18 @@ class Role(Base):
         secondary=ab_permission_view_role,
         backref="role",
     )
+    groups = relationship("Group", secondary=ab_group_role, backref="roles_")
+
+
+class Group(Base):
+    """Maps to Flask-AppBuilder's ``ab_group`` table."""
+
+    __tablename__ = "ab_group"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), unique=True, nullable=False)
+    label = Column(String(150), nullable=True)
+    description = Column(String(512), nullable=True)
 
 
 class Permission(Base):

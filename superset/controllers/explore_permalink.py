@@ -73,7 +73,13 @@ class ExplorePermalinkController(Controller):
         key: str,
         kv_dao: KeyValueDAOProtocol,
     ) -> dict[str, Any]:
-        """GET /api/v1/explore/permalink/{key} — resolve permalink."""
+        """GET /api/v1/explore/permalink/{key} — resolve permalink.
+
+        The original Flask endpoint spreads the stored state fields
+        directly into the response (``**value``), so the frontend
+        receives ``{formData: ..., urlParams: ..., dataSources: ...}``
+        rather than ``{result: {...}}``.
+        """
         raw = await kv_dao.get_value(
             resource="explore_permalink",
             resource_id=0,
@@ -85,4 +91,7 @@ class ExplorePermalinkController(Controller):
             data = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             data = {"value": raw}
-        return {"result": data}
+        # Spread fields directly into the response (matches original)
+        if isinstance(data, dict):
+            return data
+        return {"value": data}

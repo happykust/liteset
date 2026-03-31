@@ -50,3 +50,9 @@ class AsyncThemeDAO(BaseAsyncDAO[Theme]):
         )
         result = await self.session.execute(stmt)
         return result.scalars().first()
+
+    async def find_system_dark(self) -> Theme | None:
+        """Find the system dark theme."""
+        stmt = select(Theme).where(Theme.is_system_dark.is_(True))
+        result = await self.session.execute(stmt)
+        return result.scalars().first()

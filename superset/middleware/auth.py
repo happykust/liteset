@@ -34,13 +34,22 @@ from litestar.middleware import AbstractAuthenticationMiddleware, Authentication
 logger = logging.getLogger(__name__)
 
 _USER_CACHE_TTL: int = 60  # seconds
+_PUBLIC_ROLE_CACHE_KEY: str = "auth:public_role_perms"
+_PUBLIC_ROLE_CACHE_TTL: int = 300  # 5 minutes
 
 
 @dataclass
 class UnauthenticatedUser:
-    """Placeholder for unauthenticated requests (public routes)."""
+    """Placeholder for unauthenticated requests (public routes).
+
+    When a Public role is configured (``auth_role_public``), anonymous
+    users receive that role's permissions so that RBAC guards can
+    allow access to public endpoints without requiring login.
+    """
 
     is_authenticated: bool = False
+    roles: list[Any] = field(default_factory=list)
+    permissions: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -126,24 +135,104 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         if user:
             return AuthenticationResult(user=user, auth="api_key")
 
-        # Return anonymous user — let RBAC guards handle denial at route level.
+        # Return anonymous user with Public role permissions (if configured).
         # This allows public routes (health checks, SPA assets, public dashboards)
         # to work without authentication.
-        return AuthenticationResult(user=UnauthenticatedUser(), auth=None)
+        anon = await self._build_anonymous_user(connection)
+        return AuthenticationResult(user=anon, auth=None)
+
+    async def _build_anonymous_user(
+        self, connection: ASGIConnection[Any, Any, Any, Any]
+    ) -> UnauthenticatedUser:
+        """Build an anonymous user, optionally with Public role permissions.
+
+        When ``auth_role_public`` is set in config, the anonymous user
+        receives that role's permissions so RBAC guards can allow access
+        to public endpoints without requiring login.
+        """
+        settings = connection.app.state.settings
+        role_name = getattr(settings, "auth_role_public", "")
+        if not role_name:
+            return UnauthenticatedUser()
+
+        permissions: set[str] = set()
+        redis = getattr(connection.app.state, "redis", None)
+
+        # Try Redis cache first
+        if redis is not None:
+            try:
+                cached = await redis.get(_PUBLIC_ROLE_CACHE_KEY)
+                if cached is not None:
+                    perm_list = json.loads(cached)
+                    permissions = set(perm_list)
+                    roles = [_CachedRole(id=0, name=role_name)] if permissions else []
+                    return UnauthenticatedUser(roles=roles, permissions=permissions)
+            except Exception:
+                logger.debug("Redis error reading public role cache")
+
+        # Cache miss -- resolve from DB
+        permissions = await self._resolve_public_permissions(connection, role_name)
+
+        # Populate cache (best-effort)
+        if redis is not None:
+            try:
+                await redis.set(
+                    _PUBLIC_ROLE_CACHE_KEY,
+                    json.dumps(sorted(permissions)),
+                    ex=_PUBLIC_ROLE_CACHE_TTL,
+                )
+            except Exception:
+                logger.debug("Failed to cache public role permissions in Redis")
+
+        roles = [_CachedRole(id=0, name=role_name)] if permissions else []
+        return UnauthenticatedUser(roles=roles, permissions=permissions)
+
+    @staticmethod
+    async def _resolve_public_permissions(
+        connection: ASGIConnection[Any, Any, Any, Any],
+        role_name: str,
+    ) -> set[str]:
+        """Load permissions for the named Public role from DB."""
+        from superset.security.dao import AsyncSecurityDAO
+
+        session_factory = connection.app.state.session_factory
+        try:
+            async with session_factory() as session:
+                dao = AsyncSecurityDAO(session)
+                perm_tuples = await dao.get_permissions_for_role_name(role_name)
+                return {f"{action}_{resource}" for action, resource in perm_tuples}
+        except Exception:
+            logger.exception("Failed to resolve public role permissions")
+            return set()
 
     async def _authenticate_cookie(
         self, connection: ASGIConnection[Any, Any, Any, Any]
     ) -> Any | None:
-        """Authenticate via Flask session cookie (itsdangerous)."""
+        """Authenticate via session cookie (JWT or itsdangerous)."""
         settings = connection.app.state.settings
         cookie_name = getattr(settings, "session_cookie_name", "session")
         cookie = connection.cookies.get(cookie_name)
         if not cookie:
             return None
 
-        # Cache FlaskSessionDecoder on app.state to avoid per-request creation
-        decoder = self._get_or_create_decoder(connection)
-        user_id = decoder.get_user_id(cookie)
+        # Try JWT decode first (Liteset auth controller)
+        import jwt as pyjwt
+
+        secret_key = _get_secret_key(settings)
+        user_id: int | None = None
+        try:
+            payload = pyjwt.decode(
+                cookie, secret_key, algorithms=["HS256"],
+            )
+            user_id = payload.get("user_id")
+        except Exception:
+            pass
+
+        # Fallback: itsdangerous (Flask legacy)
+        if user_id is None:
+            decoder = self._get_or_create_decoder(connection)
+            user_id = decoder.get_user_id(cookie)
+
         if user_id is None:
             return None
 
@@ -194,19 +283,75 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
     async def _authenticate_jwt(
         self, connection: ASGIConnection[Any, Any, Any, Any]
     ) -> Any | None:
-        """Authenticate via JWT Bearer token (guest tokens only)."""
-        # Check embedded_superset feature flag
-        settings = connection.app.state.settings
-        if not getattr(settings, "embedded_superset", False):
-            return None
+        """Authenticate via JWT Bearer token.
 
+        Tries in order:
+        1. API access token (type=access) -- always available
+        2. Guest token (type=guest) -- only when embedded_superset is on
+        """
         auth_header = connection.headers.get("authorization", "")
         if not auth_header.startswith("Bearer "):
             return None
         token = auth_header[7:]
         if not token:
             return None
-        return await self._resolve_guest_from_jwt(connection, token)
+
+        # 1. Try API access token
+        user = await self._resolve_user_from_access_token(connection, token)
+        if user is not None:
+            return user
+
+        # 2. Try guest token (only when embedded_superset is enabled)
+        settings = connection.app.state.settings
+        if getattr(settings, "embedded_superset", False):
+            return await self._resolve_guest_from_jwt(connection, token)
+
+        return None
+
+    async def _resolve_user_from_access_token(
+        self,
+        connection: ASGIConnection[Any, Any, Any, Any],
+        token: str,
+    ) -> CachedUser | None:
+        """Resolve user from an API access token (type=access).
+
+        Decodes the JWT, verifies type=access, then looks up the user
+        from Redis cache or DB.
+        """
+        import jwt as pyjwt
+
+        settings = connection.app.state.settings
+        secret_key = _get_secret_key(settings)
+
+        try:
+            payload = pyjwt.decode(token, secret_key, algorithms=["HS256"])
+        except pyjwt.PyJWTError:
+            return None
+
+        if payload.get("type") != "access":
+            return None
+
+        user_id_str = payload.get("sub")
+        if not user_id_str:
+            return None
+
+        try:
+            user_id = int(user_id_str)
+        except (ValueError, TypeError):
+            return None
+
+        # Try Redis cache first
+        redis = getattr(connection.app.state, "redis", None)
+        if redis is not None:
+            try:
+                cached = await self._get_cached_user(redis, f"auth:user:{user_id}")
+                if cached is not None:
+                    return cached
+            except Exception:
+                logger.debug("Redis cache miss/error for access token user %d", user_id)
+
+        # Resolve from DB
+        return await self._resolve_user_from_db(connection, user_id)
 
     async def _authenticate_api_key(
         self, connection: ASGIConnection[Any, Any, Any, Any]

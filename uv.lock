@@ -2898,429 +2898,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/82/e5/03207a0f11e1d60df85b97b61704ed701b725a7c2feaf83f7bfbd0c2d83e/linear-tsv-1.1.0.tar.gz", hash = "sha256:b504d78f4075615ae75de86a16e5680701a441fc84da2a2cf9f94351ab1ccbf5", size = 9589, upload-time = "2018-01-20T10:05:31.119Z" }
 
 [[package]]
-name = "liteset"
-source = { editable = "." }
-dependencies = [
-    { name = "aiosqlite" },
-    { name = "aiotrino" },
-    { name = "alembic" },
-    { name = "anyio" },
-    { name = "asyncpg" },
-    { name = "backoff" },
-    { name = "bottleneck" },
-    { name = "celery" },
-    { name = "click" },
-    { name = "click-option-group" },
-    { name = "colorama" },
-    { name = "cron-descriptor" },
-    { name = "croniter" },
-    { name = "cryptography" },
-    { name = "geopy" },
-    { name = "greenlet" },
-    { name = "hashids" },
-    { name = "holidays" },
-    { name = "humanize" },
-    { name = "isodate" },
-    { name = "itsdangerous" },
-    { name = "jsonpath-ng" },
-    { name = "litestar", extra = ["standard"] },
-    { name = "mako" },
-    { name = "markdown" },
-    { name = "msgpack" },
-    { name = "msgspec" },
-    { name = "nh3" },
-    { name = "numpy" },
-    { name = "packaging" },
-    { name = "pandas", extra = ["excel"] },
-    { name = "paramiko" },
-    { name = "parsedatetime" },
-    { name = "pgsanity" },
-    { name = "pillow" },
-    { name = "polyline" },
-    { name = "prison" },
-    { name = "pyarrow" },
-    { name = "pydantic-settings" },
-    { name = "pyjwt" },
-    { name = "pyparsing" },
-    { name = "python-dateutil" },
-    { name = "python-geohash" },
-    { name = "pyyaml" },
-    { name = "redis" },
-    { name = "selenium" },
-    { name = "simplejson" },
-    { name = "slack-sdk" },
-    { name = "sqlalchemy" },
-    { name = "sqlalchemy-utils" },
-    { name = "sqlglot" },
-    { name = "sshtunnel" },
-    { name = "structlog" },
-    { name = "tabulate" },
-    { name = "typing-extensions" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "uvloop", marker = "sys_platform != 'win32'" },
-    { name = "xlsxwriter" },
-]
-
-[package.optional-dependencies]
-athena = [
-    { name = "pyathena", extra = ["pandas"] },
-]
-aurora-data-api = [
-    { name = "preset-sqlalchemy-aurora-data-api" },
-]
-bigquery = [
-    { name = "google-cloud-bigquery" },
-    { name = "pandas-gbq" },
-    { name = "sqlalchemy-bigquery" },
-]
-clickhouse = [
-    { name = "clickhouse-connect" },
-]
-cockroachdb = [
-    { name = "cockroachdb" },
-]
-crate = [
-    { name = "sqlalchemy-cratedb" },
-]
-databend = [
-    { name = "databend-sqlalchemy" },
-]
-databricks = [
-    { name = "databricks-sql-connector" },
-    { name = "sqlalchemy-databricks" },
-]
-db2 = [
-    { name = "ibm-db-sa" },
-]
-denodo = [
-    { name = "denodo-sqlalchemy" },
-]
-development = [
-    { name = "docker" },
-    { name = "freezegun" },
-    { name = "grpcio" },
-    { name = "httpx" },
-    { name = "openapi-spec-validator" },
-    { name = "parameterized" },
-    { name = "pip" },
-    { name = "pre-commit" },
-    { name = "progress" },
-    { name = "psutil" },
-    { name = "pyfakefs" },
-    { name = "pyinstrument" },
-    { name = "pylint" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-    { name = "python-ldap" },
-    { name = "ruff" },
-    { name = "sqloxide" },
-    { name = "statsd" },
-]
-doris = [
-    { name = "pydoris" },
-]
-dremio = [
-    { name = "sqlalchemy-dremio" },
-]
-drill = [
-    { name = "sqlalchemy-drill" },
-]
-druid = [
-    { name = "pydruid" },
-]
-duckdb = [
-    { name = "duckdb" },
-    { name = "duckdb-engine" },
-]
-dynamodb = [
-    { name = "pydynamodb" },
-]
-elasticsearch = [
-    { name = "elasticsearch-dbapi" },
-]
-exasol = [
-    { name = "sqlalchemy-exasol" },
-]
-excel = [
-    { name = "xlrd" },
-]
-firebird = [
-    { name = "sqlalchemy-firebird" },
-]
-firebolt = [
-    { name = "firebolt-sqlalchemy" },
-]
-gevent = [
-    { name = "gevent" },
-]
-gsheets = [
-    { name = "shillelagh", extra = ["gsheetsapi"] },
-]
-hana = [
-    { name = "hdbcli" },
-    { name = "sqlalchemy-hana" },
-]
-hive = [
-    { name = "pyhive", extra = ["hive"], marker = "python_full_version < '3.11'" },
-    { name = "pyhive", extra = ["hive-pure-sasl"] },
-    { name = "tableschema" },
-    { name = "thrift" },
-    { name = "thrift-sasl" },
-]
-impala = [
-    { name = "impyla" },
-]
-kusto = [
-    { name = "sqlalchemy-kusto" },
-]
-kylin = [
-    { name = "kylinpy" },
-]
-motherduck = [
-    { name = "duckdb" },
-    { name = "duckdb-engine" },
-]
-mssql = [
-    { name = "pymssql" },
-]
-mysql = [
-    { name = "mysqlclient" },
-]
-netezza = [
-    { name = "nzalchemy" },
-]
-oceanbase = [
-    { name = "oceanbase-py" },
-]
-ocient = [
-    { name = "geojson" },
-    { name = "pyocient" },
-    { name = "shapely" },
-    { name = "sqlalchemy-ocient" },
-]
-oracle = [
-    { name = "cx-oracle" },
-]
-parseable = [
-    { name = "sqlalchemy-parseable" },
-]
-pinot = [
-    { name = "pinotdb" },
-]
-playwright = [
-    { name = "playwright" },
-]
-postgres = [
-    { name = "psycopg2-binary" },
-]
-presto = [
-    { name = "pyhive", extra = ["presto"] },
-]
-prophet = [
-    { name = "prophet" },
-]
-redshift = [
-    { name = "sqlalchemy-redshift" },
-]
-risingwave = [
-    { name = "sqlalchemy-risingwave" },
-]
-shillelagh = [
-    { name = "shillelagh", extra = ["all"] },
-]
-singlestore = [
-    { name = "sqlalchemy-singlestoredb" },
-]
-snowflake = [
-    { name = "snowflake-sqlalchemy" },
-]
-solr = [
-    { name = "sqlalchemy-solr" },
-]
-spark = [
-    { name = "pyhive", extra = ["hive"], marker = "python_full_version < '3.11'" },
-    { name = "pyhive", extra = ["hive-pure-sasl"] },
-    { name = "tableschema" },
-    { name = "thrift" },
-]
-starrocks = [
-    { name = "starrocks" },
-]
-tdengine = [
-    { name = "taos-ws-py" },
-    { name = "taospy" },
-]
-teradata = [
-    { name = "teradatasql" },
-]
-trino = [
-    { name = "trino" },
-]
-vertica = [
-    { name = "sqlalchemy-vertica-python" },
-]
-ydb = [
-    { name = "ydb-sqlalchemy" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiosqlite", specifier = ">=0.21.0" },
-    { name = "aiotrino", specifier = ">=0.3.0" },
-    { name = "alembic", specifier = ">=1.13.0" },
-    { name = "anyio", specifier = ">=4.8.0" },
-    { name = "asyncpg", specifier = ">=0.30.0" },
-    { name = "backoff", specifier = ">=1.8.0" },
-    { name = "bottleneck" },
-    { name = "celery", specifier = ">=5.3.6,<6.0.0" },
-    { name = "click", specifier = ">=8.0.3" },
-    { name = "click-option-group" },
-    { name = "clickhouse-connect", marker = "extra == 'clickhouse'", specifier = ">=0.5.14,<1.0" },
-    { name = "cockroachdb", marker = "extra == 'cockroachdb'", specifier = ">=0.3.5,<0.4" },
-    { name = "colorama" },
-    { name = "cron-descriptor" },
-    { name = "croniter", specifier = ">=0.3.28" },
-    { name = "cryptography", specifier = ">=42.0.4,<45.0.0" },
-    { name = "cx-oracle", marker = "extra == 'oracle'", specifier = ">8.0.0,<8.1" },
-    { name = "databend-sqlalchemy", marker = "extra == 'databend'", specifier = ">=0.3.2,<1.0" },
-    { name = "databricks-sql-connector", marker = "extra == 'databricks'", specifier = ">=2.0.2,<3" },
-    { name = "denodo-sqlalchemy", marker = "extra == 'denodo'", specifier = "~=1.0.6" },
-    { name = "docker", marker = "extra == 'development'" },
-    { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.4.2,<2" },
-    { name = "duckdb", marker = "extra == 'motherduck'", specifier = ">=1.4.2,<2" },
-    { name = "duckdb-engine", marker = "extra == 'duckdb'", specifier = ">=0.17.0" },
-    { name = "duckdb-engine", marker = "extra == 'motherduck'", specifier = ">=0.17.0" },
-    { name = "elasticsearch-dbapi", marker = "extra == 'elasticsearch'", specifier = ">=0.2.9,<0.3.0" },
-    { name = "firebolt-sqlalchemy", marker = "extra == 'firebolt'", specifier = ">=1.0.0,<2" },
-    { name = "freezegun", marker = "extra == 'development'" },
-    { name = "geojson", marker = "extra == 'ocient'" },
-    { name = "geopy" },
-    { name = "gevent", marker = "extra == 'gevent'", specifier = ">=23.9.1" },
-    { name = "google-cloud-bigquery", marker = "extra == 'bigquery'", specifier = ">=3.10.0" },
-    { name = "greenlet", specifier = ">=3.0.3,<=3.1.1" },
-    { name = "grpcio", marker = "extra == 'development'", specifier = ">=1.55.3" },
-    { name = "hashids", specifier = ">=1.3.1,<2" },
-    { name = "hdbcli", marker = "extra == 'hana'", specifier = "==2.4.162" },
-    { name = "holidays", specifier = ">=0.45,<1" },
-    { name = "httpx", marker = "extra == 'development'", specifier = ">=0.27.0" },
-    { name = "humanize" },
-    { name = "ibm-db-sa", marker = "extra == 'db2'", specifier = ">0.3.8,<=0.4.0" },
-    { name = "impyla", marker = "extra == 'impala'", specifier = ">=0.18,<1" },
-    { name = "isodate" },
-    { name = "itsdangerous", specifier = ">=2.1.0" },
-    { name = "jsonpath-ng", specifier = ">=1.6.1,<2" },
-    { name = "kylinpy", marker = "extra == 'kylin'", specifier = ">=2.8.1,<2.9" },
-    { name = "litestar", extras = ["standard"], specifier = ">=2.15.0" },
-    { name = "mako", specifier = ">=1.2.2" },
-    { name = "markdown", specifier = ">=3.0" },
-    { name = "msgpack", specifier = ">=1.0.0,<1.1" },
-    { name = "msgspec", specifier = ">=0.19.0" },
-    { name = "mysqlclient", marker = "extra == 'mysql'", specifier = ">=2.1.0,<3" },
-    { name = "nh3", specifier = ">=0.2.11,<0.3" },
-    { name = "numpy", specifier = ">1.23.5,<2.3" },
-    { name = "nzalchemy", marker = "extra == 'netezza'", specifier = ">=11.0.2" },
-    { name = "oceanbase-py", marker = "extra == 'oceanbase'", specifier = ">=0.0.1" },
-    { name = "openapi-spec-validator", marker = "extra == 'development'" },
-    { name = "packaging" },
-    { name = "pandas", extras = ["excel"], specifier = ">=2.1.4,<2.2" },
-    { name = "pandas-gbq", marker = "extra == 'bigquery'", specifier = ">=0.19.1" },
-    { name = "parameterized", marker = "extra == 'development'" },
-    { name = "paramiko", specifier = ">=3.4.0" },
-    { name = "parsedatetime" },
-    { name = "pgsanity" },
-    { name = "pillow", specifier = ">=11.0.0,<12" },
-    { name = "pinotdb", marker = "extra == 'pinot'", specifier = ">=5.0.0,<6.0.0" },
-    { name = "pip", marker = "extra == 'development'" },
-    { name = "playwright", marker = "extra == 'playwright'", specifier = ">=1.37.0,<2" },
-    { name = "polyline", specifier = ">=2.0.0,<3.0" },
-    { name = "pre-commit", marker = "extra == 'development'" },
-    { name = "preset-sqlalchemy-aurora-data-api", marker = "extra == 'aurora-data-api'", specifier = ">=0.2.8,<0.3" },
-    { name = "prison", specifier = ">=0.2.1,<1.0" },
-    { name = "progress", marker = "extra == 'development'", specifier = ">=1.5,<2" },
-    { name = "prophet", marker = "extra == 'prophet'", specifier = ">=1.1.6,<2" },
-    { name = "psutil", marker = "extra == 'development'" },
-    { name = "psycopg2-binary", marker = "extra == 'postgres'", specifier = ">=2.9.9,<3" },
-    { name = "pyarrow", specifier = ">=16.1.0,<19" },
-    { name = "pyathena", extras = ["pandas"], marker = "extra == 'athena'", specifier = ">=2,<3" },
-    { name = "pydantic-settings", specifier = ">=2.7.0" },
-    { name = "pydoris", marker = "extra == 'doris'", specifier = ">=1.0.0,<2.0.0" },
-    { name = "pydruid", marker = "extra == 'druid'", specifier = ">=0.6.5,<0.7" },
-    { name = "pydynamodb", marker = "extra == 'dynamodb'", specifier = ">=0.4.2" },
-    { name = "pyfakefs", marker = "extra == 'development'" },
-    { name = "pyhive", extras = ["hive"], marker = "python_full_version < '3.11' and extra == 'hive'", specifier = ">=0.6.5" },
-    { name = "pyhive", extras = ["hive"], marker = "python_full_version < '3.11' and extra == 'spark'", specifier = ">=0.6.5" },
-    { name = "pyhive", extras = ["hive-pure-sasl"], marker = "extra == 'hive'", specifier = ">=0.7.0" },
-    { name = "pyhive", extras = ["hive-pure-sasl"], marker = "extra == 'spark'", specifier = ">=0.7" },
-    { name = "pyhive", extras = ["presto"], marker = "extra == 'presto'", specifier = ">=0.6.5" },
-    { name = "pyinstrument", marker = "extra == 'development'", specifier = ">=4.0.2,<5" },
-    { name = "pyjwt", specifier = ">=2.4.0,<3.0" },
-    { name = "pylint", marker = "extra == 'development'" },
-    { name = "pymssql", marker = "extra == 'mssql'", specifier = ">=2.2.8,<3" },
-    { name = "pyocient", marker = "extra == 'ocient'", specifier = ">=1.0.15,<2" },
-    { name = "pyparsing", specifier = ">=3.0.6,<4" },
-    { name = "pytest", marker = "extra == 'development'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'development'", specifier = ">=0.24.0" },
-    { name = "pytest-cov", marker = "extra == 'development'" },
-    { name = "pytest-mock", marker = "extra == 'development'" },
-    { name = "python-dateutil" },
-    { name = "python-geohash" },
-    { name = "python-ldap", marker = "extra == 'development'", specifier = ">=3.4.4" },
-    { name = "pyyaml", specifier = ">=6.0.0,<7.0.0" },
-    { name = "redis", specifier = ">=4.6.0,<6.0" },
-    { name = "ruff", marker = "extra == 'development'" },
-    { name = "selenium", specifier = ">=4.14.0,<5.0" },
-    { name = "shapely", marker = "extra == 'ocient'" },
-    { name = "shillelagh", extras = ["all"], marker = "extra == 'shillelagh'", specifier = ">=1.4.3,<2" },
-    { name = "shillelagh", extras = ["gsheetsapi"], marker = "extra == 'gsheets'", specifier = ">=1.4.3,<2" },
-    { name = "simplejson", specifier = ">=3.15.0" },
-    { name = "slack-sdk", specifier = ">=3.19.0,<4" },
-    { name = "snowflake-sqlalchemy", marker = "extra == 'snowflake'", specifier = ">=1.2.4,<2" },
-    { name = "sqlalchemy", specifier = ">=2.0,<2.1" },
-    { name = "sqlalchemy-bigquery", marker = "extra == 'bigquery'", specifier = ">=1.15.0" },
-    { name = "sqlalchemy-cratedb", marker = "extra == 'crate'", specifier = ">=0.40.1,<1" },
-    { name = "sqlalchemy-databricks", marker = "extra == 'databricks'", specifier = ">=0.2.0" },
-    { name = "sqlalchemy-dremio", marker = "extra == 'dremio'", specifier = ">=1.2.1,<4" },
-    { name = "sqlalchemy-drill", marker = "extra == 'drill'", specifier = ">=1.1.4,<2" },
-    { name = "sqlalchemy-exasol", marker = "extra == 'exasol'", specifier = ">=4,<5" },
-    { name = "sqlalchemy-firebird", marker = "extra == 'firebird'", specifier = ">=0.7.0,<0.8" },
-    { name = "sqlalchemy-hana", marker = "extra == 'hana'", specifier = "==0.4.0" },
-    { name = "sqlalchemy-kusto", marker = "extra == 'kusto'", specifier = ">=3.0.0,<4" },
-    { name = "sqlalchemy-ocient", marker = "extra == 'ocient'", specifier = ">=1.0.0" },
-    { name = "sqlalchemy-parseable", marker = "extra == 'parseable'", specifier = ">=0.1.3,<0.2.0" },
-    { name = "sqlalchemy-redshift", marker = "extra == 'redshift'", specifier = ">=0.8.1,<0.9" },
-    { name = "sqlalchemy-risingwave", marker = "extra == 'risingwave'" },
-    { name = "sqlalchemy-singlestoredb", marker = "extra == 'singlestore'", specifier = ">=1.1.1,<2" },
-    { name = "sqlalchemy-solr", marker = "extra == 'solr'", specifier = ">=0.2.0" },
-    { name = "sqlalchemy-utils", specifier = ">=0.38.3,<0.39" },
-    { name = "sqlalchemy-vertica-python", marker = "extra == 'vertica'", specifier = ">=0.5.9,<0.6" },
-    { name = "sqlglot", specifier = ">=27.15.2,<28" },
-    { name = "sqloxide", marker = "extra == 'development'" },
-    { name = "sshtunnel", specifier = ">=0.4.0,<0.5" },
-    { name = "starrocks", marker = "extra == 'starrocks'", specifier = ">=1.0.0" },
-    { name = "statsd", marker = "extra == 'development'" },
-    { name = "structlog", specifier = ">=25.5.0" },
-    { name = "tableschema", marker = "extra == 'hive'" },
-    { name = "tableschema", marker = "extra == 'spark'" },
-    { name = "tabulate", specifier = ">=0.9.0,<1.0" },
-    { name = "taos-ws-py", marker = "extra == 'tdengine'", specifier = ">=0.3.8" },
-    { name = "taospy", marker = "extra == 'tdengine'", specifier = ">=2.7.21" },
-    { name = "teradatasql", marker = "extra == 'teradata'", specifier = ">=16.20.0.23" },
-    { name = "thrift", marker = "extra == 'hive'", specifier = ">=0.14.1,<1.0.0" },
-    { name = "thrift", marker = "extra == 'spark'", specifier = ">=0.14.1,<1" },
-    { name = "thrift-sasl", marker = "extra == 'hive'", specifier = ">=0.4.3,<1.0.0" },
-    { name = "trino", marker = "extra == 'trino'", specifier = ">=0.328.0" },
-    { name = "typing-extensions", specifier = ">=4,<5" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
-    { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.21.0" },
-    { name = "xlrd", marker = "extra == 'excel'", specifier = ">=2.0.1,<3" },
-    { name = "xlsxwriter", specifier = ">=3.0.7,<3.1" },
-    { name = "ydb-sqlalchemy", marker = "extra == 'ydb'", specifier = ">=0.1.2" },
-]
-provides-extras = ["athena", "aurora-data-api", "bigquery", "clickhouse", "cockroachdb", "crate", "databend", "databricks", "db2", "denodo", "dremio", "drill", "druid", "duckdb", "dynamodb", "solr", "elasticsearch", "exasol", "excel", "firebird", "firebolt", "gevent", "gsheets", "hana", "hive", "impala", "kusto", "kylin", "motherduck", "mssql", "mysql", "ocient", "oracle", "parseable", "pinot", "playwright", "postgres", "presto", "trino", "prophet", "redshift", "risingwave", "shillelagh", "singlestore", "snowflake", "spark", "tdengine", "teradata", "thumbnails", "vertica", "netezza", "starrocks", "doris", "oceanbase", "ydb", "development"]
-
-[[package]]
 name = "litestar"
 version = "2.21.0"
 source = { registry = "https://pypi.org/simple" }
@@ -6573,6 +6150,429 @@ sdist = { url = "https://files.pythonhosted.org/packages/ef/52/9ba0f43b686e7f3dd
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a8/45/a132b9074aa18e799b891b91ad72133c98d8042c70f6240e4c5f9dabee2f/structlog-25.5.0-py3-none-any.whl", hash = "sha256:a8453e9b9e636ec59bd9e79bbd4a72f025981b3ba0f5837aebf48f02f37a7f9f", size = 72510, upload-time = "2025-10-27T08:28:21.535Z" },
 ]
+
+[[package]]
+name = "superset"
+source = { editable = "." }
+dependencies = [
+    { name = "aiosqlite" },
+    { name = "aiotrino" },
+    { name = "alembic" },
+    { name = "anyio" },
+    { name = "asyncpg" },
+    { name = "backoff" },
+    { name = "bottleneck" },
+    { name = "celery" },
+    { name = "click" },
+    { name = "click-option-group" },
+    { name = "colorama" },
+    { name = "cron-descriptor" },
+    { name = "croniter" },
+    { name = "cryptography" },
+    { name = "geopy" },
+    { name = "greenlet" },
+    { name = "hashids" },
+    { name = "holidays" },
+    { name = "humanize" },
+    { name = "isodate" },
+    { name = "itsdangerous" },
+    { name = "jsonpath-ng" },
+    { name = "litestar", extra = ["standard"] },
+    { name = "mako" },
+    { name = "markdown" },
+    { name = "msgpack" },
+    { name = "msgspec" },
+    { name = "nh3" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "pandas", extra = ["excel"] },
+    { name = "paramiko" },
+    { name = "parsedatetime" },
+    { name = "pgsanity" },
+    { name = "pillow" },
+    { name = "polyline" },
+    { name = "prison" },
+    { name = "pyarrow" },
+    { name = "pydantic-settings" },
+    { name = "pyjwt" },
+    { name = "pyparsing" },
+    { name = "python-dateutil" },
+    { name = "python-geohash" },
+    { name = "pyyaml" },
+    { name = "redis" },
+    { name = "selenium" },
+    { name = "simplejson" },
+    { name = "slack-sdk" },
+    { name = "sqlalchemy" },
+    { name = "sqlalchemy-utils" },
+    { name = "sqlglot" },
+    { name = "sshtunnel" },
+    { name = "structlog" },
+    { name = "tabulate" },
+    { name = "typing-extensions" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvloop", marker = "sys_platform != 'win32'" },
+    { name = "xlsxwriter" },
+]
+
+[package.optional-dependencies]
+athena = [
+    { name = "pyathena", extra = ["pandas"] },
+]
+aurora-data-api = [
+    { name = "preset-sqlalchemy-aurora-data-api" },
+]
+bigquery = [
+    { name = "google-cloud-bigquery" },
+    { name = "pandas-gbq" },
+    { name = "sqlalchemy-bigquery" },
+]
+clickhouse = [
+    { name = "clickhouse-connect" },
+]
+cockroachdb = [
+    { name = "cockroachdb" },
+]
+crate = [
+    { name = "sqlalchemy-cratedb" },
+]
+databend = [
+    { name = "databend-sqlalchemy" },
+]
+databricks = [
+    { name = "databricks-sql-connector" },
+    { name = "sqlalchemy-databricks" },
+]
+db2 = [
+    { name = "ibm-db-sa" },
+]
+denodo = [
+    { name = "denodo-sqlalchemy" },
+]
+development = [
+    { name = "docker" },
+    { name = "freezegun" },
+    { name = "grpcio" },
+    { name = "httpx" },
+    { name = "openapi-spec-validator" },
+    { name = "parameterized" },
+    { name = "pip" },
+    { name = "pre-commit" },
+    { name = "progress" },
+    { name = "psutil" },
+    { name = "pyfakefs" },
+    { name = "pyinstrument" },
+    { name = "pylint" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-mock" },
+    { name = "python-ldap" },
+    { name = "ruff" },
+    { name = "sqloxide" },
+    { name = "statsd" },
+]
+doris = [
+    { name = "pydoris" },
+]
+dremio = [
+    { name = "sqlalchemy-dremio" },
+]
+drill = [
+    { name = "sqlalchemy-drill" },
+]
+druid = [
+    { name = "pydruid" },
+]
+duckdb = [
+    { name = "duckdb" },
+    { name = "duckdb-engine" },
+]
+dynamodb = [
+    { name = "pydynamodb" },
+]
+elasticsearch = [
+    { name = "elasticsearch-dbapi" },
+]
+exasol = [
+    { name = "sqlalchemy-exasol" },
+]
+excel = [
+    { name = "xlrd" },
+]
+firebird = [
+    { name = "sqlalchemy-firebird" },
+]
+firebolt = [
+    { name = "firebolt-sqlalchemy" },
+]
+gevent = [
+    { name = "gevent" },
+]
+gsheets = [
+    { name = "shillelagh", extra = ["gsheetsapi"] },
+]
+hana = [
+    { name = "hdbcli" },
+    { name = "sqlalchemy-hana" },
+]
+hive = [
+    { name = "pyhive", extra = ["hive"], marker = "python_full_version < '3.11'" },
+    { name = "pyhive", extra = ["hive-pure-sasl"] },
+    { name = "tableschema" },
+    { name = "thrift" },
+    { name = "thrift-sasl" },
+]
+impala = [
+    { name = "impyla" },
+]
+kusto = [
+    { name = "sqlalchemy-kusto" },
+]
+kylin = [
+    { name = "kylinpy" },
+]
+motherduck = [
+    { name = "duckdb" },
+    { name = "duckdb-engine" },
+]
+mssql = [
+    { name = "pymssql" },
+]
+mysql = [
+    { name = "mysqlclient" },
+]
+netezza = [
+    { name = "nzalchemy" },
+]
+oceanbase = [
+    { name = "oceanbase-py" },
+]
+ocient = [
+    { name = "geojson" },
+    { name = "pyocient" },
+    { name = "shapely" },
+    { name = "sqlalchemy-ocient" },
+]
+oracle = [
+    { name = "cx-oracle" },
+]
+parseable = [
+    { name = "sqlalchemy-parseable" },
+]
+pinot = [
+    { name = "pinotdb" },
+]
+playwright = [
+    { name = "playwright" },
+]
+postgres = [
+    { name = "psycopg2-binary" },
+]
+presto = [
+    { name = "pyhive", extra = ["presto"] },
+]
+prophet = [
+    { name = "prophet" },
+]
+redshift = [
+    { name = "sqlalchemy-redshift" },
+]
+risingwave = [
+    { name = "sqlalchemy-risingwave" },
+]
+shillelagh = [
+    { name = "shillelagh", extra = ["all"] },
+]
+singlestore = [
+    { name = "sqlalchemy-singlestoredb" },
+]
+snowflake = [
+    { name = "snowflake-sqlalchemy" },
+]
+solr = [
+    { name = "sqlalchemy-solr" },
+]
+spark = [
+    { name = "pyhive", extra = ["hive"], marker = "python_full_version < '3.11'" },
+    { name = "pyhive", extra = ["hive-pure-sasl"] },
+    { name = "tableschema" },
+    { name = "thrift" },
+]
+starrocks = [
+    { name = "starrocks" },
+]
+tdengine = [
+    { name = "taos-ws-py" },
+    { name = "taospy" },
+]
+teradata = [
+    { name = "teradatasql" },
+]
+trino = [
+    { name = "trino" },
+]
+vertica = [
+    { name = "sqlalchemy-vertica-python" },
+]
+ydb = [
+    { name = "ydb-sqlalchemy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiosqlite", specifier = ">=0.21.0" },
+    { name = "aiotrino", specifier = ">=0.3.0" },
+    { name = "alembic", specifier = ">=1.13.0" },
+    { name = "anyio", specifier = ">=4.8.0" },
+    { name = "asyncpg", specifier = ">=0.30.0" },
+    { name = "backoff", specifier = ">=1.8.0" },
+    { name = "bottleneck" },
+    { name = "celery", specifier = ">=5.3.6,<6.0.0" },
+    { name = "click", specifier = ">=8.0.3" },
+    { name = "click-option-group" },
+    { name = "clickhouse-connect", marker = "extra == 'clickhouse'", specifier = ">=0.5.14,<1.0" },
+    { name = "cockroachdb", marker = "extra == 'cockroachdb'", specifier = ">=0.3.5,<0.4" },
+    { name = "colorama" },
+    { name = "cron-descriptor" },
+    { name = "croniter", specifier = ">=0.3.28" },
+    { name = "cryptography", specifier = ">=42.0.4,<45.0.0" },
+    { name = "cx-oracle", marker = "extra == 'oracle'", specifier = ">8.0.0,<8.1" },
+    { name = "databend-sqlalchemy", marker = "extra == 'databend'", specifier = ">=0.3.2,<1.0" },
+    { name = "databricks-sql-connector", marker = "extra == 'databricks'", specifier = ">=2.0.2,<3" },
+    { name = "denodo-sqlalchemy", marker = "extra == 'denodo'", specifier = "~=1.0.6" },
+    { name = "docker", marker = "extra == 'development'" },
+    { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.4.2,<2" },
+    { name = "duckdb", marker = "extra == 'motherduck'", specifier = ">=1.4.2,<2" },
+    { name = "duckdb-engine", marker = "extra == 'duckdb'", specifier = ">=0.17.0" },
+    { name = "duckdb-engine", marker = "extra == 'motherduck'", specifier = ">=0.17.0" },
+    { name = "elasticsearch-dbapi", marker = "extra == 'elasticsearch'", specifier = ">=0.2.9,<0.3.0" },
+    { name = "firebolt-sqlalchemy", marker = "extra == 'firebolt'", specifier = ">=1.0.0,<2" },
+    { name = "freezegun", marker = "extra == 'development'" },
+    { name = "geojson", marker = "extra == 'ocient'" },
+    { name = "geopy" },
+    { name = "gevent", marker = "extra == 'gevent'", specifier = ">=23.9.1" },
+    { name = "google-cloud-bigquery", marker = "extra == 'bigquery'", specifier = ">=3.10.0" },
+    { name = "greenlet", specifier = ">=3.0.3,<=3.1.1" },
+    { name = "grpcio", marker = "extra == 'development'", specifier = ">=1.55.3" },
+    { name = "hashids", specifier = ">=1.3.1,<2" },
+    { name = "hdbcli", marker = "extra == 'hana'", specifier = "==2.4.162" },
+    { name = "holidays", specifier = ">=0.45,<1" },
+    { name = "httpx", marker = "extra == 'development'", specifier = ">=0.27.0" },
+    { name = "humanize" },
+    { name = "ibm-db-sa", marker = "extra == 'db2'", specifier = ">0.3.8,<=0.4.0" },
+    { name = "impyla", marker = "extra == 'impala'", specifier = ">=0.18,<1" },
+    { name = "isodate" },
+    { name = "itsdangerous", specifier = ">=2.1.0" },
+    { name = "jsonpath-ng", specifier = ">=1.6.1,<2" },
+    { name = "kylinpy", marker = "extra == 'kylin'", specifier = ">=2.8.1,<2.9" },
+    { name = "litestar", extras = ["standard"], specifier = ">=2.15.0" },
+    { name = "mako", specifier = ">=1.2.2" },
+    { name = "markdown", specifier = ">=3.0" },
+    { name = "msgpack", specifier = ">=1.0.0,<1.1" },
+    { name = "msgspec", specifier = ">=0.19.0" },
+    { name = "mysqlclient", marker = "extra == 'mysql'", specifier = ">=2.1.0,<3" },
+    { name = "nh3", specifier = ">=0.2.11,<0.3" },
+    { name = "numpy", specifier = ">1.23.5,<2.3" },
+    { name = "nzalchemy", marker = "extra == 'netezza'", specifier = ">=11.0.2" },
+    { name = "oceanbase-py", marker = "extra == 'oceanbase'", specifier = ">=0.0.1" },
+    { name = "openapi-spec-validator", marker = "extra == 'development'" },
+    { name = "packaging" },
+    { name = "pandas", extras = ["excel"], specifier = ">=2.1.4,<2.2" },
+    { name = "pandas-gbq", marker = "extra == 'bigquery'", specifier = ">=0.19.1" },
+    { name = "parameterized", marker = "extra == 'development'" },
+    { name = "paramiko", specifier = ">=3.4.0" },
+    { name = "parsedatetime" },
+    { name = "pgsanity" },
+    { name = "pillow", specifier = ">=11.0.0,<12" },
+    { name = "pinotdb", marker = "extra == 'pinot'", specifier = ">=5.0.0,<6.0.0" },
+    { name = "pip", marker = "extra == 'development'" },
+    { name = "playwright", marker = "extra == 'playwright'", specifier = ">=1.37.0,<2" },
+    { name = "polyline", specifier = ">=2.0.0,<3.0" },
+    { name = "pre-commit", marker = "extra == 'development'" },
+    { name = "preset-sqlalchemy-aurora-data-api", marker = "extra == 'aurora-data-api'", specifier = ">=0.2.8,<0.3" },
+    { name = "prison", specifier = ">=0.2.1,<1.0" },
+    { name = "progress", marker = "extra == 'development'", specifier = ">=1.5,<2" },
+    { name = "prophet", marker = "extra == 'prophet'", specifier = ">=1.1.6,<2" },
+    { name = "psutil", marker = "extra == 'development'" },
+    { name = "psycopg2-binary", marker = "extra == 'postgres'", specifier = ">=2.9.9,<3" },
+    { name = "pyarrow", specifier = ">=16.1.0,<19" },
+    { name = "pyathena", extras = ["pandas"], marker = "extra == 'athena'", specifier = ">=2,<3" },
+    { name = "pydantic-settings", specifier = ">=2.7.0" },
+    { name = "pydoris", marker = "extra == 'doris'", specifier = ">=1.0.0,<2.0.0" },
+    { name = "pydruid", marker = "extra == 'druid'", specifier = ">=0.6.5,<0.7" },
+    { name = "pydynamodb", marker = "extra == 'dynamodb'", specifier = ">=0.4.2" },
+    { name = "pyfakefs", marker = "extra == 'development'" },
+    { name = "pyhive", extras = ["hive"], marker = "python_full_version < '3.11' and extra == 'hive'", specifier = ">=0.6.5" },
+    { name = "pyhive", extras = ["hive"], marker = "python_full_version < '3.11' and extra == 'spark'", specifier = ">=0.6.5" },
+    { name = "pyhive", extras = ["hive-pure-sasl"], marker = "extra == 'hive'", specifier = ">=0.7.0" },
+    { name = "pyhive", extras = ["hive-pure-sasl"], marker = "extra == 'spark'", specifier = ">=0.7" },
+    { name = "pyhive", extras = ["presto"], marker = "extra == 'presto'", specifier = ">=0.6.5" },
+    { name = "pyinstrument", marker = "extra == 'development'", specifier = ">=4.0.2,<5" },
+    { name = "pyjwt", specifier = ">=2.4.0,<3.0" },
+    { name = "pylint", marker = "extra == 'development'" },
+    { name = "pymssql", marker = "extra == 'mssql'", specifier = ">=2.2.8,<3" },
+    { name = "pyocient", marker = "extra == 'ocient'", specifier = ">=1.0.15,<2" },
+    { name = "pyparsing", specifier = ">=3.0.6,<4" },
+    { name = "pytest", marker = "extra == 'development'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'development'", specifier = ">=0.24.0" },
+    { name = "pytest-cov", marker = "extra == 'development'" },
+    { name = "pytest-mock", marker = "extra == 'development'" },
+    { name = "python-dateutil" },
+    { name = "python-geohash" },
+    { name = "python-ldap", marker = "extra == 'development'", specifier = ">=3.4.4" },
+    { name = "pyyaml", specifier = ">=6.0.0,<7.0.0" },
+    { name = "redis", specifier = ">=4.6.0,<6.0" },
+    { name = "ruff", marker = "extra == 'development'" },
+    { name = "selenium", specifier = ">=4.14.0,<5.0" },
+    { name = "shapely", marker = "extra == 'ocient'" },
+    { name = "shillelagh", extras = ["all"], marker = "extra == 'shillelagh'", specifier = ">=1.4.3,<2" },
+    { name = "shillelagh", extras = ["gsheetsapi"], marker = "extra == 'gsheets'", specifier = ">=1.4.3,<2" },
+    { name = "simplejson", specifier = ">=3.15.0" },
+    { name = "slack-sdk", specifier = ">=3.19.0,<4" },
+    { name = "snowflake-sqlalchemy", marker = "extra == 'snowflake'", specifier = ">=1.2.4,<2" },
+    { name = "sqlalchemy", specifier = ">=2.0,<2.1" },
+    { name = "sqlalchemy-bigquery", marker = "extra == 'bigquery'", specifier = ">=1.15.0" },
+    { name = "sqlalchemy-cratedb", marker = "extra == 'crate'", specifier = ">=0.40.1,<1" },
+    { name = "sqlalchemy-databricks", marker = "extra == 'databricks'", specifier = ">=0.2.0" },
+    { name = "sqlalchemy-dremio", marker = "extra == 'dremio'", specifier = ">=1.2.1,<4" },
+    { name = "sqlalchemy-drill", marker = "extra == 'drill'", specifier = ">=1.1.4,<2" },
+    { name = "sqlalchemy-exasol", marker = "extra == 'exasol'", specifier = ">=4,<5" },
+    { name = "sqlalchemy-firebird", marker = "extra == 'firebird'", specifier = ">=0.7.0,<0.8" },
+    { name = "sqlalchemy-hana", marker = "extra == 'hana'", specifier = "==0.4.0" },
+    { name = "sqlalchemy-kusto", marker = "extra == 'kusto'", specifier = ">=3.0.0,<4" },
+    { name = "sqlalchemy-ocient", marker = "extra == 'ocient'", specifier = ">=1.0.0" },
+    { name = "sqlalchemy-parseable", marker = "extra == 'parseable'", specifier = ">=0.1.3,<0.2.0" },
+    { name = "sqlalchemy-redshift", marker = "extra == 'redshift'", specifier = ">=0.8.1,<0.9" },
+    { name = "sqlalchemy-risingwave", marker = "extra == 'risingwave'" },
+    { name = "sqlalchemy-singlestoredb", marker = "extra == 'singlestore'", specifier = ">=1.1.1,<2" },
+    { name = "sqlalchemy-solr", marker = "extra == 'solr'", specifier = ">=0.2.0" },
+    { name = "sqlalchemy-utils", specifier = ">=0.38.3,<0.39" },
+    { name = "sqlalchemy-vertica-python", marker = "extra == 'vertica'", specifier = ">=0.5.9,<0.6" },
+    { name = "sqlglot", specifier = ">=27.15.2,<28" },
+    { name = "sqloxide", marker = "extra == 'development'" },
+    { name = "sshtunnel", specifier = ">=0.4.0,<0.5" },
+    { name = "starrocks", marker = "extra == 'starrocks'", specifier = ">=1.0.0" },
+    { name = "statsd", marker = "extra == 'development'" },
+    { name = "structlog", specifier = ">=25.5.0" },
+    { name = "tableschema", marker = "extra == 'hive'" },
+    { name = "tableschema", marker = "extra == 'spark'" },
+    { name = "tabulate", specifier = ">=0.9.0,<1.0" },
+    { name = "taos-ws-py", marker = "extra == 'tdengine'", specifier = ">=0.3.8" },
+    { name = "taospy", marker = "extra == 'tdengine'", specifier = ">=2.7.21" },
+    { name = "teradatasql", marker = "extra == 'teradata'", specifier = ">=16.20.0.23" },
+    { name = "thrift", marker = "extra == 'hive'", specifier = ">=0.14.1,<1.0.0" },
+    { name = "thrift", marker = "extra == 'spark'", specifier = ">=0.14.1,<1" },
+    { name = "thrift-sasl", marker = "extra == 'hive'", specifier = ">=0.4.3,<1.0.0" },
+    { name = "trino", marker = "extra == 'trino'", specifier = ">=0.328.0" },
+    { name = "typing-extensions", specifier = ">=4,<5" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
+    { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.21.0" },
+    { name = "xlrd", marker = "extra == 'excel'", specifier = ">=2.0.1,<3" },
+    { name = "xlsxwriter", specifier = ">=3.0.7,<3.1" },
+    { name = "ydb-sqlalchemy", marker = "extra == 'ydb'", specifier = ">=0.1.2" },
+]
+provides-extras = ["athena", "aurora-data-api", "bigquery", "clickhouse", "cockroachdb", "crate", "databend", "databricks", "db2", "denodo", "dremio", "drill", "druid", "duckdb", "dynamodb", "solr", "elasticsearch", "exasol", "excel", "firebird", "firebolt", "gevent", "gsheets", "hana", "hive", "impala", "kusto", "kylin", "motherduck", "mssql", "mysql", "ocient", "oracle", "parseable", "pinot", "playwright", "postgres", "presto", "trino", "prophet", "redshift", "risingwave", "shillelagh", "singlestore", "snowflake", "spark", "tdengine", "teradata", "thumbnails", "vertica", "netezza", "starrocks", "doris", "oceanbase", "ydb", "development"]
 
 [[package]]
 name = "tableschema"

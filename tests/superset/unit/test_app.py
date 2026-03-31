@@ -24,7 +24,7 @@ async def test_health_endpoint(app):
     async with AsyncTestClient(app=app) as client:
         resp = await client.get("/api/v1/health")
         assert resp.status_code == 200
-        assert resp.json() == {"status": "OK"}
+        assert resp.text == "OK"
 
 
 @pytest.mark.skip(

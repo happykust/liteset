@@ -75,17 +75,45 @@ class CurrentUserController(Controller):
 
     @get("/roles/", guards=[require_authentication])
     async def get_my_roles(self, current_user: UserProtocol) -> dict[str, Any]:
-        """GET /api/v1/me/roles/ — get current user roles."""
-        roles = []
+        """GET /api/v1/me/roles/ — get current user roles and permissions.
+
+        Returns bootstrap_user_data-compatible payload including roles
+        (with their permissions) and a flat permissions dict.
+        """
         user_roles = getattr(current_user, "roles", [])
+
+        roles: dict[str, list[tuple[str, str]]] = {}
+        permissions: dict[str, list[str]] = {}
         for role in user_roles:
-            roles.append(
-                {
-                    "id": getattr(role, "id", 0),
-                    "name": getattr(role, "name", ""),
-                }
-            )
-        return {"result": roles}
+            role_name = getattr(role, "name", "")
+            role_perms: list[tuple[str, str]] = []
+            for pvm in getattr(role, "permissions", []):
+                perm_name = getattr(
+                    getattr(pvm, "permission", None), "name", "",
+                )
+                view_name = getattr(
+                    getattr(pvm, "view_menu", None), "name", "",
+                )
+                if perm_name and view_name:
+                    role_perms.append((perm_name, view_name))
+                    permissions.setdefault(perm_name, [])
+                    if view_name not in permissions[perm_name]:
+                        permissions[perm_name].append(view_name)
+            roles[role_name] = role_perms
+
+        return {
+            "result": {
+                "username": current_user.username,
+                "firstName": getattr(current_user, "first_name", ""),
+                "lastName": getattr(current_user, "last_name", ""),
+                "userId": current_user.id,
+                "isActive": getattr(current_user, "is_active", True),
+                "isAnonymous": not current_user.is_authenticated,
+                "email": getattr(current_user, "email", ""),
+                "roles": roles,
+                "permissions": permissions,
+            }
+        }
 
     @put("/", guards=[require_authentication])
     async def update_me(
@@ -94,18 +122,26 @@ class CurrentUserController(Controller):
         current_user: UserProtocol,
         user_dao: Any,
     ) -> dict[str, Any]:
-        """PUT /api/v1/me/ — update current user (first_name, last_name)."""
+        """PUT /api/v1/me/ — update current user (first_name, last_name, password)."""
         updates: dict[str, str] = {}
         if data.first_name is not None:
             updates["first_name"] = data.first_name
         if data.last_name is not None:
             updates["last_name"] = data.last_name
 
-        if updates:
+        has_password = data.password is not None
+
+        if updates or has_password:
             user = await user_dao.get_by_id(current_user.id)
             if user is not None:
                 for attr, value in updates.items():
                     setattr(user, attr, value)
+
+                if has_password:
+                    from superset.cli.users import _hash_password
+
+                    user.password = _hash_password(data.password)
+
                 await user_dao.session.flush()
 
         event_logger.log("user.update_me", user_id=current_user.id)

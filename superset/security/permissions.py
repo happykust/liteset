@@ -59,25 +59,130 @@ LOG_VIEW: str = "Log"
 TAG_VIEW: str = "Tag"
 
 # --- Permission sets ---
+
+# Permissions accessible to all authenticated users (Alpha, Gamma, etc.)
+ACCESSIBLE_PERMS: frozenset[str] = frozenset(
+    {
+        "can_userinfo",
+        "resetmypassword",
+    }
+)
+
 ADMIN_ONLY_PERMISSIONS: frozenset[str] = frozenset(
     {
         CAN_GRANT_ACCESS,
         CAN_OVERRIDE_ROLE_PERMISSIONS,
         CAN_APPROVE,
         "can_sync_druid_source",
-        "menu_access",
         "can_this_form_post",
         "can_this_form_get",
-        "resetmypassword",
         "resetpasswords",
         "userinfoedit",
+        "all_datasource_access",
+        "all_database_access",
+        "all_query_access",
+        "can_warm_up_cache",
+    }
+)
+
+ADMIN_ONLY_VIEW_MENUS: frozenset[str] = frozenset(
+    {
+        "Security",
+        "AccessRequestsModelView",
+        "Manage",
+        "SQL Lab",
+        "Queries",
+        "RoleModelView",
+        "UserDBModelView",
+        "ResetMyPasswordView",
+        "ResetPasswordView",
+        "UserInfoEditView",
+        "SecurityRestApi",
+    }
+)
+
+ALPHA_ONLY_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        "muldelete",
         "all_datasource_access",
         "all_database_access",
         "all_query_access",
     }
 )
 
-READ_ONLY_PERMISSIONS: frozenset[str] = frozenset(
+ALPHA_ONLY_VIEW_MENUS: frozenset[str] = frozenset(
+    {
+        "ReportSchedule",
+        "Annotation",
+        "AnnotationLayer",
+        "CssTemplate",
+        "ImportExportRestApi",
+        "Upload",
+    }
+)
+
+# Specific (permission, view_menu) pairs that are Alpha-only
+ALPHA_ONLY_PMVS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("can_write", "Dashboard"),
+        ("can_write", "Chart"),
+    }
+)
+
+# Permissions that are assigned per-object (datasource, database, schema, etc.)
+OBJECT_SPEC_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        DATABASE_ACCESS,
+        SCHEMA_ACCESS,
+        DATASOURCE_ACCESS,
+        CATALOG_ACCESS,
+    }
+)
+
+# Data-access permissions (should be preserved on Public role merge)
+DATA_ACCESS_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        DATABASE_ACCESS,
+        SCHEMA_ACCESS,
+        DATASOURCE_ACCESS,
+        CATALOG_ACCESS,
+        ALL_DATABASE_ACCESS,
+        ALL_DATASOURCE_ACCESS,
+        ALL_QUERY_ACCESS,
+    }
+)
+
+# SQL-Lab-only permissions: (permission_name, view_menu_name) tuples
+SQLLAB_ONLY_PERMISSIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("can_read", "SavedQuery"),
+        ("can_write", "SavedQuery"),
+        ("can_read", "Query"),
+        ("can_write", "Query"),
+        ("can_sqllab", "Superset"),
+        ("can_sqllab", "SqlLab"),
+        ("can_only_my_queries", "SqlLab"),
+        ("can_read", "SQLLab"),
+        ("can_write", "SQLLab"),
+        ("can_execute_sql_query", "SQLLab"),
+    }
+)
+
+# SQL-Lab extra permission views (assigned to sql_lab role, not only-SQL-Lab)
+SQLLAB_EXTRA_PERMISSION_VIEWS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("can_csv", "Superset"),
+        ("can_read", "CsvToDatabaseView"),
+        ("can_read", "ExcelToDatabaseView"),
+        ("can_read", "ColumnarToDatabaseView"),
+        ("menu_access", "SQL Lab"),
+        ("menu_access", "Query Search"),
+        ("menu_access", "Saved Queries"),
+    }
+)
+
+# Read-only permission names
+READ_ONLY_PERMISSION: frozenset[str] = frozenset(
     {
         CAN_READ,
         "can_get",
@@ -88,5 +193,39 @@ READ_ONLY_PERMISSIONS: frozenset[str] = frozenset(
         CAN_EXPLORE,
         CAN_SHARE_DASHBOARD,
         CAN_SHARE_CHART,
+    }
+)
+
+# Alias for backward compatibility
+READ_ONLY_PERMISSIONS: frozenset[str] = READ_ONLY_PERMISSION
+
+# Model views that are read-only (non-read permissions are Admin-only)
+READ_ONLY_MODEL_VIEWS: frozenset[str] = frozenset(
+    {
+        "Database",
+        "DynamicPlugin",
+    }
+)
+
+# Model views that are read-only for Gamma (Alpha gets write access)
+GAMMA_READ_ONLY_MODEL_VIEWS: frozenset[str] = frozenset(
+    {
+        "Dataset",
+        "Datasource",
+    }
+)
+
+# Custom permission views that should always be created in the DB
+CUSTOM_PERMISSION_VIEWS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("can_share_dashboard", "Superset"),
+        ("can_share_chart", "Superset"),
+        ("can_csv", "Superset"),
+        ("can_explore_json", "Superset"),
+        ("can_explore", "Superset"),
+        ("can_sqllab", "Superset"),
+        ("can_grant_guest_token", "SecurityRestApi"),
+        ("can_userinfo", "UserInfoView"),
+        ("resetmypassword", "UserInfoView"),
     }
 )

@@ -32,6 +32,7 @@ from superset.commands.annotation import (
 from superset.controllers.base import (
     extract_ids_required,
     extract_pagination,
+    get_info_payload,
 )
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError
@@ -316,3 +317,15 @@ class AnnotationController(Controller):
             extra={"layer_id": layer_pk, "count": len(ids)},
         )
         return {"message": "OK"}
+
+    @get(
+        "/_info",
+        guards=[require_permission("can_read", "Annotation")],
+    )
+    async def info(self, ann_dao: Any) -> dict[str, Any]:
+        """GET /api/v1/annotation_layer/{layer_pk}/annotation/_info."""
+        return await get_info_payload(
+            dao=ann_dao,
+            model_name="Annotation",
+            permissions=["can_read", "can_write"],
+        )

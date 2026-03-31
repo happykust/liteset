@@ -1,0 +1,125 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+from __future__ import annotations
+
+from typing import Any
+
+from sqlalchemy import create_engine as _create_sync_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.ext.asyncio import (
+    async_sessionmaker,
+    AsyncEngine,
+    AsyncSession,
+    create_async_engine as _create_async_engine,
+)
+from sqlalchemy.orm import Session, sessionmaker
+
+
+def create_db_engine(
+    url: str,
+    echo: bool = False,
+    pool_size: int = 5,
+    max_overflow: int = 10,
+    pool_timeout: int = 30,
+    pool_recycle: int = 3600,
+    pool_pre_ping: bool = True,
+) -> AsyncEngine:
+    global _engine  # noqa: PLW0603
+    kwargs: dict[str, Any] = {"echo": echo}
+    if not url.startswith("sqlite"):
+        kwargs["pool_size"] = pool_size
+        kwargs["max_overflow"] = max_overflow
+        kwargs["pool_timeout"] = pool_timeout
+        kwargs["pool_recycle"] = pool_recycle
+        kwargs["pool_pre_ping"] = pool_pre_ping
+    engine = _create_async_engine(url, **kwargs)
+    _engine = engine
+    return engine
+
+
+def create_session_factory(
+    engine: AsyncEngine,
+) -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(engine, expire_on_commit=False)
+
+
+_engine: AsyncEngine | None = None
+
+
+def get_engine() -> AsyncEngine:
+    """Return the module-level engine reference.
+
+    Raises RuntimeError if no engine has been created yet via
+    :func:`create_db_engine`.
+    """
+    if _engine is None:
+        raise RuntimeError("No engine has been created yet")
+    return _engine
+
+
+async def dispose_engine(engine: AsyncEngine) -> None:
+    await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Sync session helpers (for Celery workers)
+# ---------------------------------------------------------------------------
+
+_sync_engine: Engine | None = None
+_sync_session_factory: sessionmaker[Session] | None = None
+
+_ASYNC_TO_SYNC_DRIVERS: dict[str, str] = {
+    "postgresql+asyncpg": "postgresql+psycopg2",
+    "sqlite+aiosqlite": "sqlite",
+    "mysql+aiomysql": "mysql+pymysql",
+}
+
+
+def get_sync_session() -> Session:
+    """Create a sync :class:`~sqlalchemy.orm.Session` for Celery task execution.
+
+    The sync engine is lazily created on first call, converting the async
+    database URI from :class:`~superset.config.SupersetSettings` into its
+    synchronous equivalent (e.g. ``asyncpg`` -> ``psycopg2``).
+
+    The engine and session factory are cached at module level so that
+    subsequent calls reuse the same connection pool.
+    """
+    global _sync_engine, _sync_session_factory  # noqa: PLW0603
+    if _sync_engine is None:
+        if _engine is not None:
+            sync_uri = str(_engine.url)
+        else:
+            import os
+
+            sync_uri = os.environ.get(
+                "LITESET_SQLALCHEMY_DATABASE_URI",
+                "",
+            )
+            if not sync_uri:
+                raise RuntimeError(
+                    "LITESET_SQLALCHEMY_DATABASE_URI environment variable is "
+                    "not set.  Celery workers require an explicit database URI."
+                )
+        for async_prefix, sync_prefix in _ASYNC_TO_SYNC_DRIVERS.items():
+            if sync_uri.startswith(async_prefix):
+                sync_uri = sync_uri.replace(async_prefix, sync_prefix, 1)
+                break
+        _sync_engine = _create_sync_engine(sync_uri)
+        _sync_session_factory = sessionmaker(bind=_sync_engine)
+    assert _sync_session_factory is not None  # noqa: S101
+    return _sync_session_factory()

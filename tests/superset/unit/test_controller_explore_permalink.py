@@ -99,7 +99,7 @@ async def test_get_permalink_found(mock_kv_dao):
     mock_kv_dao.get_value.return_value = json.dumps({"chart_id": 1})
     get_fn = ExplorePermalinkController.get_permalink.fn
     result = await get_fn(None, key="abc123", kv_dao=mock_kv_dao)
-    assert result["result"]["chart_id"] == 1
+    assert result["chart_id"] == 1
 
 
 async def test_get_permalink_not_found(mock_kv_dao):

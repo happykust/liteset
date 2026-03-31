@@ -31,6 +31,8 @@ from superset.commands.css_template import (
 from superset.controllers.base import (
     extract_ids_required,
     extract_pagination,
+    get_info_payload,
+    get_related_payload,
     serialize_list_response,
 )
 from superset.events import event_logger
@@ -192,3 +194,33 @@ class CssTemplateController(Controller):
         await cmd.execute()
         event_logger.log("css_template.bulk_delete", extra={"count": len(ids)})
         return {"message": "OK"}
+
+    @get(
+        "/_info",
+        guards=[require_permission("can_read", "CssTemplate")],
+    )
+    async def info(self, dao: CRUDDAOProtocol) -> dict[str, Any]:
+        """GET /api/v1/css_template/_info -- API metadata for frontend."""
+        return await get_info_payload(
+            dao=dao,
+            model_name="CssTemplate",
+            permissions=["can_read", "can_write"],
+        )
+
+    @get(
+        "/related/{column_name:str}",
+        guards=[require_permission("can_read", "CssTemplate")],
+    )
+    async def related(
+        self,
+        column_name: str,
+        dao: CRUDDAOProtocol,
+        rison_params: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """GET /api/v1/css_template/related/{column_name}."""
+        return await get_related_payload(
+            dao=dao,
+            column_name=column_name,
+            rison_params=rison_params,
+            allowed_fields=frozenset({"created_by", "changed_by"}),
+        )

@@ -26,7 +26,7 @@ from litestar import Controller, delete, get, post, put
 from litestar.datastructures import State, UploadFile
 from litestar.di import Provide
 from litestar.enums import RequestEncodingType
-from litestar.params import Body
+from litestar.params import Body, Parameter
 from litestar.response import Response, Stream
 
 from superset.commands.dashboard import (
@@ -49,6 +49,7 @@ from superset.commands.dashboard_permalink import (
 
 # DAO imports moved to provider functions (avoid Flask import chain)
 from superset.controllers.base import (
+    build_export_headers,
     build_rison_query_params,
     extract_ids,
     extract_ids_required,
@@ -677,7 +678,10 @@ class DashboardController(Controller):
         media_type="application/zip",
     )
     async def export(
-        self, dao: DashboardDAOProtocol, rison_params: dict[str, Any] | None
+        self,
+        dao: DashboardDAOProtocol,
+        rison_params: dict[str, Any] | None,
+        token: str | None = Parameter(query="token", default=None),
     ) -> Stream:
         ids = extract_ids(rison_params)
         if not ids:
@@ -689,9 +693,7 @@ class DashboardController(Controller):
             stream_zip(buf),
             status_code=200,
             media_type="application/zip",
-            headers={
-                "Content-Disposition": "attachment; filename=dashboards_export.zip"
-            },
+            headers=build_export_headers("dashboards_export.zip", token=token),
         )
 
     # ------------------------------------------------------------------

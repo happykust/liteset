@@ -64,19 +64,10 @@ class ObjectType(enum.Enum):
 # ---------------------------------------------------------------------------
 
 user_favorite_tag_table = Table(
-    "user_favorite_tag_table",
+    "user_favorite_tag",
     metadata,
-    Column("id", Integer, primary_key=True),
-    Column(
-        "user_id",
-        Integer,
-        ForeignKey("ab_user.id", ondelete="CASCADE"),
-    ),
-    Column(
-        "tag_id",
-        Integer,
-        ForeignKey("tag.id", ondelete="CASCADE"),
-    ),
+    Column("user_id", Integer, ForeignKey("ab_user.id")),
+    Column("tag_id", Integer, ForeignKey("tag.id")),
 )
 
 

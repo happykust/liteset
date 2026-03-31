@@ -40,12 +40,35 @@ def has_permissions(user: Any, required: set[str]) -> bool:
 def require_authentication(
     connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandler
 ) -> None:
-    """Guard that only requires the user to be
-    authenticated (no specific permission).
+    """Guard that requires authentication OR Public role permissions.
+
+    Allows anonymous users if they have been granted permissions
+    via the Public role (``auth_role_public`` config). Rejects
+    anonymous users with no permissions at all.
+    """
+    user = connection.user
+    if getattr(user, "is_authenticated", False):
+        return
+    # Allow anonymous users with Public role permissions
+    permissions: set[str] = getattr(user, "permissions", set())
+    if permissions:
+        return
+    raise NotAuthorizedException(detail="Not authenticated")
+
+
+def require_authenticated_user(
+    connection: ASGIConnection[Any, Any, Any, Any],
+    _: BaseRouteHandler,
+) -> None:
+    """Guard that strictly requires is_authenticated=True.
+
+    Rejects anonymous users even with Public role permissions.
     """
     user = connection.user
     if not getattr(user, "is_authenticated", False):
-        raise NotAuthorizedException(detail="Not authenticated")
+        raise NotAuthorizedException(
+            detail="Not authenticated",
+        )
 
 
 def require_permission(action: str, resource: str) -> GuardFn:
@@ -55,7 +78,12 @@ def require_permission(action: str, resource: str) -> GuardFn:
         connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandler
     ) -> None:
         user = connection.user
+        # Check if user is authenticated
         if not getattr(user, "is_authenticated", False):
+            # Allow anonymous users with matching Public role permission
+            user_perms: set[str] = getattr(user, "permissions", set())
+            if permission_name in user_perms:
+                return
             raise NotAuthorizedException(detail="Not authenticated")
         if is_admin(user):
             return

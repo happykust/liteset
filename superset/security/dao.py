@@ -134,6 +134,16 @@ class AsyncSecurityDAO:
         result = await self.session.execute(stmt)
         return result.scalars().one_or_none()
 
+    async def get_first_user(self) -> Any | None:
+        """Return the first user row (by id). Used for timing balance."""
+        stmt = (
+            select(self.user_model)
+            .order_by(self.user_model.id)
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
     async def get_user_roles(self, user: Any) -> list[Any]:
         """Get all roles for a user. Assumes roles are already loaded."""
         return list(getattr(user, "roles", []))
@@ -181,6 +191,36 @@ class AsyncSecurityDAO:
         result = await self.session.execute(stmt)
         return result.scalars().first() is not None
 
+    async def get_role_by_name(self, name: str) -> Any | None:
+        """Load a role by name."""
+        stmt = select(self.role_model).where(self.role_model.name == name)
+        result = await self.session.execute(stmt)
+        return result.scalars().one_or_none()
+
+    async def get_permissions_for_role_name(
+        self, role_name: str
+    ) -> set[tuple[str, str]]:
+        """Get all (permission_name, view_menu_name) tuples for a role by name.
+
+        Single query: role -> permission_views -> permission + view_menu.
+        """
+        Role = self.role_model  # noqa: N806
+        PV = self.permission_view_model  # noqa: N806
+        P = self.permission_model  # noqa: N806
+        VM = self.view_menu_model  # noqa: N806
+
+        stmt = (
+            select(P.name, VM.name)
+            .select_from(Role)
+            .join(Role.permissions)
+            .join(PV.permission)
+            .join(PV.view_menu)
+            .where(Role.name == role_name)
+            .distinct()
+        )
+        result = await self.session.execute(stmt)
+        return {(row[0], row[1]) for row in result.all()}
+
     async def get_all_permissions_for_user(self, user_id: int) -> set[tuple[str, str]]:
         """Get all (permission_name, view_menu_name) tuples for a user.
 
@@ -206,54 +246,66 @@ class AsyncSecurityDAO:
         result = await self.session.execute(stmt)
         return {(row[0], row[1]) for row in result.all()}
 
-    async def get_user_groups(self, user_id: int) -> list[Any]:
-        """Get all groups for a user via ab_user_group join table."""
+    async def get_user_groups(
+        self, user_id: int,
+    ) -> list[Any]:
+        """Get groups for a user via ab_user_group."""
         stmt = text(
             "SELECT g.id, g.name FROM ab_group g "
             "JOIN ab_user_group ug ON ug.group_id = g.id "
             "WHERE ug.user_id = :user_id"
         )
-        result = await self.session.execute(stmt, {"user_id": user_id})
+        result = await self.session.execute(
+            stmt, {"user_id": user_id},
+        )
         return list(result.all())
 
-    async def get_group_roles(self, group_id: int) -> list[Any]:
-        """Get all roles assigned to a group via ab_group_role join table."""
+    async def get_group_roles(
+        self, group_id: int,
+    ) -> list[Any]:
+        """Get roles for a group via ab_group_role."""
         stmt = text(
             "SELECT r.id, r.name FROM ab_role r "
             "JOIN ab_group_role gr ON gr.role_id = r.id "
             "WHERE gr.group_id = :group_id"
         )
-        result = await self.session.execute(stmt, {"group_id": group_id})
+        result = await self.session.execute(
+            stmt, {"group_id": group_id},
+        )
         return list(result.all())
 
-    async def get_group_permissions(self, user_id: int) -> set[tuple[str, str]]:
-        """Get all (permission_name, view_menu_name) tuples inherited via groups.
-
-        Single query replacing the N+1 pattern. Traverses:
-        user -> ab_user_group -> ab_group_role -> ab_permission_view_role
-        -> ab_permission_view -> ab_permission + ab_view_menu.
-        """
+    async def get_group_permissions(
+        self, user_id: int,
+    ) -> set[tuple[str, str]]:
+        """Get permissions inherited via groups."""
         stmt = text(
             "SELECT DISTINCT p.name, vm.name "
             "FROM ab_user_group ug "
-            "JOIN ab_group_role gr ON gr.group_id = ug.group_id "
-            "JOIN ab_permission_view_role pvr ON pvr.role_id = gr.role_id "
-            "JOIN ab_permission_view pv ON pv.id = pvr.permission_view_id "
-            "JOIN ab_permission p ON p.id = pv.permission_id "
-            "JOIN ab_view_menu vm ON vm.id = pv.view_menu_id "
+            "JOIN ab_group_role gr "
+            "  ON gr.group_id = ug.group_id "
+            "JOIN ab_permission_view_role pvr "
+            "  ON pvr.role_id = gr.role_id "
+            "JOIN ab_permission_view pv "
+            "  ON pv.id = pvr.permission_view_id "
+            "JOIN ab_permission p "
+            "  ON p.id = pv.permission_id "
+            "JOIN ab_view_menu vm "
+            "  ON vm.id = pv.view_menu_id "
             "WHERE ug.user_id = :user_id"
         )
-        result = await self.session.execute(stmt, {"user_id": user_id})
-        return {(row[0], row[1]) for row in result.all()}
+        result = await self.session.execute(
+            stmt, {"user_id": user_id},
+        )
+        return {
+            (row[0], row[1]) for row in result.all()
+        }
 
     async def get_all_permissions_for_user_with_groups(
-        self, user_id: int
+        self, user_id: int,
     ) -> set[tuple[str, str]]:
-        """Get all (permission_name, view_menu_name) tuples for a user,
-        including permissions inherited through group memberships.
-
-        Uses two queries total (direct + groups) instead of N+1.
-        """
-        direct_perms = await self.get_all_permissions_for_user(user_id)
-        group_perms = await self.get_group_permissions(user_id)
-        return direct_perms | group_perms
+        """Get all permissions for a user, including group-inherited."""
+        direct = await self.get_all_permissions_for_user(
+            user_id,
+        )
+        group = await self.get_group_permissions(user_id)
+        return direct | group

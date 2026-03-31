@@ -24,14 +24,19 @@ from litestar import Controller, delete, get, post, put
 from litestar.di import Provide
 
 from superset.commands.theme import (
+    BulkDeleteThemeCommand,
     CreateThemeCommand,
     DeleteThemeCommand,
+    SetSystemDarkCommand,
     SetSystemDefaultCommand,
+    UnsetSystemDarkCommand,
     UnsetSystemDefaultCommand,
     UpdateThemeCommand,
 )
 from superset.controllers.base import (
+    extract_ids_required,
     extract_pagination,
+    get_info_payload,
     serialize_list_response,
 )
 from superset.events import event_logger
@@ -242,3 +247,97 @@ class ThemeController(Controller):
         await cmd.execute()
         event_logger.log("theme.unset_system_default", user_id=current_user.id)
         return {"message": "OK"}
+
+    @delete(
+        "/",
+        guards=[require_permission("can_write", "Theme")],
+        status_code=200,
+    )
+    async def bulk_delete(
+        self,
+        dao: CRUDDAOProtocol,
+        rison_params: dict[str, Any] | None,
+        current_user: UserProtocol,
+    ) -> dict[str, str]:
+        """DELETE /api/v1/theme/?q=(ids:!(...)) -- bulk delete themes."""
+        ids = extract_ids_required(rison_params)
+        cmd = BulkDeleteThemeCommand(dao=dao, ids=ids)
+        count = await cmd.execute()
+        event_logger.log(
+            "theme.bulk_delete",
+            extra={"count": count},
+            user_id=current_user.id,
+        )
+        return {"message": f"Deleted {count} themes"}
+
+    @put(
+        "/{pk:int}/set_system_dark",
+        guards=[require_permission("can_write", "Theme")],
+    )
+    async def set_system_dark(
+        self,
+        pk: int,
+        dao: Any,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
+        """PUT /api/v1/theme/{pk}/set_system_dark -- set as system dark theme."""
+        cmd = SetSystemDarkCommand(dao=dao, pk=pk)
+        theme = await cmd.execute()
+        event_logger.log(
+            "theme.set_system_dark",
+            object_ref=str(pk),
+            user_id=current_user.id,
+        )
+        return {"id": theme.id, "result": {"id": theme.id}}
+
+    @delete(
+        "/unset_system_dark",
+        guards=[require_permission("can_write", "Theme")],
+        status_code=200,
+    )
+    async def unset_system_dark(
+        self,
+        dao: Any,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
+        """DELETE /api/v1/theme/unset_system_dark -- clear system dark theme."""
+        cmd = UnsetSystemDarkCommand(dao=dao)
+        await cmd.execute()
+        event_logger.log("theme.unset_system_dark", user_id=current_user.id)
+        return {"message": "OK"}
+
+    @get(
+        "/export/",
+        guards=[require_permission("can_read", "Theme")],
+    )
+    async def export_themes(
+        self,
+        current_user: UserProtocol,
+    ) -> dict[str, str]:
+        """GET /api/v1/theme/export/ -- export themes (stub)."""
+        event_logger.log("theme.export", user_id=current_user.id)
+        return {"message": "Theme export not yet implemented"}
+
+    @post(
+        "/import/",
+        guards=[require_permission("can_write", "Theme")],
+    )
+    async def import_themes(
+        self,
+        current_user: UserProtocol,
+    ) -> dict[str, str]:
+        """POST /api/v1/theme/import/ -- import themes (stub)."""
+        event_logger.log("theme.import", user_id=current_user.id)
+        return {"message": "Theme import not yet implemented"}
+
+    @get(
+        "/_info",
+        guards=[require_permission("can_read", "Theme")],
+    )
+    async def info(self, dao: CRUDDAOProtocol) -> dict[str, Any]:
+        """GET /api/v1/theme/_info -- API metadata for frontend."""
+        return await get_info_payload(
+            dao=dao,
+            model_name="Theme",
+            permissions=["can_read", "can_write"],
+        )

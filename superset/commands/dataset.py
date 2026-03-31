@@ -555,10 +555,14 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         self,
         contents: io.BytesIO,
         dao: AsyncDatasetDAO | None = None,
+        sync_columns: bool = True,
+        sync_metrics: bool = True,
         **kwargs: Any,
     ) -> None:
         super().__init__(contents, **kwargs)
         self._dao = dao
+        self._sync_columns = sync_columns
+        self._sync_metrics = sync_metrics
 
     async def _validate(self, configs: dict[str, dict[str, Any]]) -> None:
         for name, config in configs.items():
@@ -604,11 +608,13 @@ class WarmUpDatasetCacheCommand(AsyncBaseCommand[list[dict[str, Any]]]):
         db_name: str,
         table_name: str,
         dashboard_id: int | None = None,
+        extra_filters: str | None = None,
     ) -> None:
         self._dao = dao
         self._db_name = db_name
         self._table_name = table_name
         self._dashboard_id = dashboard_id
+        self._extra_filters = extra_filters
 
     async def validate(self) -> None:
         if not self._db_name:

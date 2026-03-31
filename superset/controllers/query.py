@@ -48,6 +48,51 @@ class QueryController(Controller):
     }
 
     @get(
+        "/{pk:int}",
+        guards=[require_permission("can_read", "Query")],
+    )
+    async def get_single(
+        self,
+        pk: int,
+        dao: QueryDAOProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
+        """GET /api/v1/query/{pk} — get a single query by ID."""
+        from superset.exceptions import ObjectNotFoundError
+
+        query = await dao.find_by_id(pk)
+        if query is None:
+            raise ObjectNotFoundError("Query", pk)
+
+        # Serialize using show_columns matching the original Flask API
+        show_columns = [
+            "id", "changed_on", "client_id", "database_id",
+            "end_result_backend_time", "end_time", "error_message",
+            "executed_sql", "limit", "progress", "results_key", "rows",
+            "schema", "select_as_cta", "select_as_cta_used", "select_sql",
+            "sql", "sql_editor_id", "start_running_time", "start_time",
+            "status", "tab_name", "tmp_schema_name", "tmp_table_name",
+            "tracking_url",
+        ]
+        result: dict[str, Any] = {}
+        for col in show_columns:
+            val = getattr(query, col, None)
+            if hasattr(val, "isoformat"):
+                val = val.isoformat()
+            result[col] = val
+
+        # Include nested database info
+        db_obj = getattr(query, "database", None)
+        if db_obj is not None:
+            result["database"] = {
+                "id": db_obj.id,
+                "database_name": getattr(db_obj, "database_name", ""),
+            }
+
+        event_logger.log("query.get", user_id=current_user.id)
+        return {"id": pk, "result": result}
+
+    @get(
         "/",
         guards=[require_permission("can_read", "Query")],
     )

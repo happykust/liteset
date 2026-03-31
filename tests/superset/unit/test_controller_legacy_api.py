@@ -35,7 +35,7 @@ async def test_deprecated_query(app: Litestar) -> None:
     """GET /api/v1/query/ returns deprecation warning."""
     async with AsyncTestClient(app=app) as client:
         response = await client.get("/api/v1/query/")
-        assert response.status_code == 200
+        assert response.status_code == 410
         data = response.json()
         assert "Deprecated" in data["message"]
         assert "sqllab" in data["message"]
@@ -47,7 +47,7 @@ async def test_deprecated_form_data(app: Litestar) -> None:
     """GET /api/v1/form_data/ returns deprecation warning."""
     async with AsyncTestClient(app=app) as client:
         response = await client.get("/api/v1/form_data/")
-        assert response.status_code == 200
+        assert response.status_code == 410
         data = response.json()
         assert "Deprecated" in data["message"]
         assert "form_data" in data["message"]
@@ -61,7 +61,7 @@ async def test_deprecated_time_range(app: Litestar) -> None:
     """GET /api/v1/time_range/ returns deprecation warning."""
     async with AsyncTestClient(app=app) as client:
         response = await client.get("/api/v1/time_range/")
-        assert response.status_code == 200
+        assert response.status_code == 410
         data = response.json()
         assert "Deprecated" in data["message"]
         assert response.headers.get("Deprecation") == "true"

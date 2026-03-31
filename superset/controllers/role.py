@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Role controller — full CRUD for FAB roles (ab_role table)."""
+"""Role controller — full CRUD + sub-resource mutations for FAB roles."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from litestar.di import Provide
 
 from superset.controllers.base import extract_pagination
 from superset.events import event_logger
-from superset.exceptions import SupersetValidationException, ObjectNotFoundError
+from superset.exceptions import ObjectNotFoundError, SupersetValidationException
 from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_role_dao
@@ -53,6 +53,24 @@ class RolePutBody(msgspec.Struct):
     name: str
 
 
+class RolePermissionsPostBody(msgspec.Struct):
+    """POST body for setting role permissions."""
+
+    permission_view_menu_ids: list[int]
+
+
+class RoleUsersPutBody(msgspec.Struct):
+    """PUT body for setting role users."""
+
+    user_ids: list[int]
+
+
+class RoleGroupsPutBody(msgspec.Struct):
+    """PUT body for setting role groups."""
+
+    group_ids: list[int]
+
+
 # ---------------------------------------------------------------------------
 # Response schemas
 # ---------------------------------------------------------------------------
@@ -74,10 +92,10 @@ class RolePermissionsResponse(msgspec.Struct):
 
 
 class RoleController(Controller):
-    """Full CRUD controller for FAB roles."""
+    """Full CRUD controller for FAB roles with sub-resource mutations."""
 
-    path = "/api/v1/role"
-    tags = ["Roles"]
+    path = "/api/v1/security/roles"
+    tags = ["Security Roles"]
     dependencies = {
         "role_dao": Provide(provide_role_dao, sync_to_thread=False),
         "rison_params": Provide(provide_rison_query),
@@ -95,7 +113,7 @@ class RoleController(Controller):
         role_dao: Any,
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """GET /api/v1/role/ — list roles with optional filtering/pagination.
+        """GET /api/v1/security/roles/ — list roles with optional filtering/pagination.
 
         Supports Rison query parameters:
         - ``page``, ``page_size`` for pagination
@@ -131,6 +149,7 @@ class RoleController(Controller):
                 name=role.name,
                 user_ids=[u.id for u in (role.user or [])],
                 permission_ids=[p.id for p in (role.permissions or [])],
+                group_ids=[g.id for g in (getattr(role, "groups", None) or [])],
             )
             for role in roles
         ]
@@ -157,7 +176,7 @@ class RoleController(Controller):
         role_dao: Any,
         pk: int,
     ) -> dict[str, Any]:
-        """GET /api/v1/role/{pk} — get a single role by ID."""
+        """GET /api/v1/security/roles/{pk} — get a single role by ID."""
         role = await role_dao.find_by_id(pk)
         if role is None:
             raise ObjectNotFoundError("Role", pk)
@@ -167,6 +186,7 @@ class RoleController(Controller):
             name=role.name,
             user_ids=[u.id for u in (role.user or [])],
             permission_ids=[p.id for p in (role.permissions or [])],
+            group_ids=[g.id for g in (getattr(role, "groups", None) or [])],
         )
         event_logger.log("role.show", object_ref=str(pk))
         return {"id": pk, "result": msgspec.to_builtins(result)}
@@ -183,7 +203,7 @@ class RoleController(Controller):
         role_dao: Any,
         data: RolePostBody,
     ) -> dict[str, Any]:
-        """POST /api/v1/role/ — create a new role.
+        """POST /api/v1/security/roles/ — create a new role.
 
         Requires admin or ``can_write_Role`` permission.
         """
@@ -207,7 +227,7 @@ class RoleController(Controller):
         pk: int,
         data: RolePutBody,
     ) -> dict[str, Any]:
-        """PUT /api/v1/role/{pk} — update a role.
+        """PUT /api/v1/security/roles/{pk} — update a role.
 
         Requires admin or ``can_write_Role`` permission.
         """
@@ -235,7 +255,7 @@ class RoleController(Controller):
         role_dao: Any,
         pk: int,
     ) -> dict[str, str]:
-        """DELETE /api/v1/role/{pk} — delete a role.
+        """DELETE /api/v1/security/roles/{pk} — delete a role.
 
         Requires admin or ``can_write_Role`` permission.
         """
@@ -259,12 +279,7 @@ class RoleController(Controller):
         role_dao: Any,
         pk: int,
     ) -> dict[str, Any]:
-        """GET /api/v1/role/{pk}/permissions/ — get all permissions for a role.
-
-        Returns a list of permission-view entries with their
-        permission name and view menu name.
-        """
-        # Verify role exists
+        """GET /api/v1/security/roles/{pk}/permissions/ — list role permissions."""
         role = await role_dao.find_by_id(pk)
         if role is None:
             raise ObjectNotFoundError("Role", pk)
@@ -291,3 +306,102 @@ class RoleController(Controller):
                 count=len(result),
             )
         )
+
+    # ------------------------------------------------------------------
+    # POST /{pk}/permissions — set role permissions
+    # ------------------------------------------------------------------
+    @post(
+        "/{pk:int}/permissions",
+        guards=[require_permission("can_write", "Role")],
+    )
+    async def set_permissions(
+        self,
+        role_dao: Any,
+        pk: int,
+        data: RolePermissionsPostBody,
+    ) -> dict[str, Any]:
+        """POST /api/v1/security/roles/{pk}/permissions — replace role permissions.
+
+        Body: {permission_view_menu_ids: [int, ...]}
+        """
+        result = await role_dao.set_permissions(pk, data.permission_view_menu_ids)
+        if result is None:
+            raise ObjectNotFoundError("Role", pk)
+
+        event_logger.log("role.set_permissions", object_ref=str(pk))
+        return {
+            "result": {
+                "permission_view_menu_ids": data.permission_view_menu_ids,
+            }
+        }
+
+    # ------------------------------------------------------------------
+    # PUT /{pk}/users — set role users
+    # ------------------------------------------------------------------
+    @put(
+        "/{pk:int}/users",
+        guards=[require_permission("can_write", "Role")],
+    )
+    async def set_users(
+        self,
+        role_dao: Any,
+        pk: int,
+        data: RoleUsersPutBody,
+    ) -> dict[str, Any]:
+        """PUT /api/v1/security/roles/{pk}/users — replace role users.
+
+        Body: {user_ids: [int, ...]}
+        """
+        result = await role_dao.set_users(pk, data.user_ids)
+        if result is None:
+            raise ObjectNotFoundError("Role", pk)
+        if result == "not_found":
+            raise ObjectNotFoundError(
+                "User", "some user_ids not found"
+            )
+
+        event_logger.log("role.set_users", object_ref=str(pk))
+        return {"result": {"user_ids": data.user_ids}}
+
+    # ------------------------------------------------------------------
+    # PUT /{pk}/groups — set role groups
+    # ------------------------------------------------------------------
+    @put(
+        "/{pk:int}/groups",
+        guards=[require_permission("can_write", "Role")],
+    )
+    async def set_groups(
+        self,
+        role_dao: Any,
+        pk: int,
+        data: RoleGroupsPutBody,
+    ) -> dict[str, Any]:
+        """PUT /api/v1/security/roles/{pk}/groups — replace role groups.
+
+        Body: {group_ids: [int, ...]}
+        """
+        result = await role_dao.set_groups(pk, data.group_ids)
+        if result is None:
+            raise ObjectNotFoundError("Role", pk)
+        if result == "not_found":
+            raise ObjectNotFoundError(
+                "Group", "some group_ids not found"
+            )
+
+        event_logger.log("role.set_groups", object_ref=str(pk))
+        return {"result": {"group_ids": data.group_ids}}
+
+    # ------------------------------------------------------------------
+    # GET /_info — metadata for frontend forms
+    # ------------------------------------------------------------------
+    @get(
+        "/_info",
+        guards=[require_permission("can_read", "Role")],
+    )
+    async def get_info(self) -> dict[str, Any]:
+        """GET /api/v1/security/roles/_info — permissions, columns metadata."""
+        return {
+            "permissions": ["can_read", "can_write"],
+            "add_columns": ["name"],
+            "edit_columns": ["name"],
+        }

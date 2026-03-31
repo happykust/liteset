@@ -14,19 +14,22 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Security controller — CSRF token, guest token,
+"""Security controller — CSRF token, guest token, JWT login/refresh,
 roles search and auth-related endpoints."""
 
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
+import jwt as pyjwt
 import msgspec
 from litestar import Controller, get, post
 from litestar.connection import Request
 from litestar.datastructures import State
 from litestar.di import Provide
+from litestar.exceptions import NotAuthorizedException, ValidationException
 
 from superset.controllers.base import extract_pagination
 from superset.events import event_logger
@@ -37,6 +40,82 @@ from superset.security.guest import validate_guest_token_resources
 from superset.typing import SecurityManagerProtocol
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# JWT helper functions
+# ---------------------------------------------------------------------------
+
+
+def _get_jwt_secret(settings: Any) -> str:
+    """Extract JWT secret from settings (supports SecretStr and plain str)."""
+    secret_key = settings.secret_key
+    if hasattr(secret_key, "get_secret_value"):
+        return secret_key.get_secret_value()
+    return str(secret_key)
+
+
+def _create_api_access_token(
+    secret_key: str,
+    *,
+    user_id: int,
+    expires_in: int = 900,
+    fresh: bool = True,
+) -> str:
+    """Create a JWT access token for API authentication."""
+    now = int(time.time())
+    payload = {
+        "sub": str(user_id),
+        "iat": now,
+        "exp": now + expires_in,
+        "type": "access",
+        "fresh": fresh,
+    }
+    return pyjwt.encode(payload, secret_key, algorithm="HS256")
+
+
+def _create_api_refresh_token(
+    secret_key: str,
+    *,
+    user_id: int,
+    expires_in: int = 86400 * 30,
+) -> str:
+    """Create a JWT refresh token for obtaining new access tokens."""
+    now = int(time.time())
+    payload = {
+        "sub": str(user_id),
+        "iat": now,
+        "exp": now + expires_in,
+        "type": "refresh",
+    }
+    return pyjwt.encode(payload, secret_key, algorithm="HS256")
+
+
+# ---------------------------------------------------------------------------
+# Request / response schemas for login/refresh endpoints
+# ---------------------------------------------------------------------------
+
+
+class LoginRequest(msgspec.Struct):
+    """POST body for ``/api/v1/security/login``."""
+
+    username: str
+    password: str
+    provider: str = "db"
+    refresh: bool = True
+
+
+class LoginResponse(msgspec.Struct):
+    """Response for successful login."""
+
+    access_token: str
+    refresh_token: str = ""
+
+
+class RefreshResponse(msgspec.Struct):
+    """Response for successful token refresh."""
+
+    access_token: str
 
 
 # ---------------------------------------------------------------------------
@@ -283,3 +362,182 @@ class SecurityController(Controller):
                 ids=[r.id for r in result],
             )
         )
+
+    # -----------------------------------------------------------------
+    # Login / Refresh endpoints
+    # -----------------------------------------------------------------
+
+    @post(
+        "/login",
+        opt={"exclude_from_auth": True},
+        status_code=200,
+    )
+    async def login(
+        self,
+        data: LoginRequest,
+        state: State,
+    ) -> LoginResponse | dict[str, str]:
+        """POST /api/v1/security/login -- authenticate and return JWT tokens.
+
+        Supports ``provider=db`` (database auth) currently.
+        Returns access_token and optionally refresh_token.
+        """
+        settings = state.settings
+        secret_key = _get_jwt_secret(settings)
+
+        # Validate provider
+        valid_providers = {"db", "ldap"}
+        if data.provider not in valid_providers:
+            raise ValidationException(detail=f"Invalid provider: {data.provider}")
+
+        # Check provider is allowed
+        auth_type = getattr(settings, "auth_type", 1)
+        allow_multiple = getattr(settings, "api_login_allow_multiple_providers", False)
+        provider_type_map = {"db": 1, "ldap": 2}
+        if not allow_multiple and provider_type_map.get(data.provider) != auth_type:
+            raise ValidationException(
+                detail=f"Provider '{data.provider}' not allowed"
+            )
+
+        if not data.username:
+            raise ValidationException(detail="Username is required")
+
+        # Only DB auth is implemented
+        if data.provider == "ldap":
+            raise ValidationException(
+                detail="LDAP provider not yet implemented"
+            )
+
+        # Authenticate via DAO
+        from superset.security.dao import AsyncSecurityDAO
+
+        session_factory = state.session_factory
+        async with session_factory() as session:
+            dao = AsyncSecurityDAO(session)
+            user = await dao.get_user_by_username(data.username)
+
+            if user is None:
+                raise NotAuthorizedException(detail="Invalid credentials")
+
+            # Check active status
+            if not getattr(user, "active", 1):
+                raise NotAuthorizedException(detail="User is inactive")
+
+            # Verify password
+            if not self._check_password(user.password, data.password):
+                raise NotAuthorizedException(detail="Invalid credentials")
+
+            # Create tokens
+            access_expires = getattr(settings, "jwt_access_token_expires", 900)
+            access_token = _create_api_access_token(
+                secret_key,
+                user_id=user.id,
+                expires_in=access_expires,
+                fresh=True,
+            )
+
+            result: dict[str, str] = {"access_token": access_token}
+
+            if data.refresh:
+                refresh_expires = getattr(
+                    settings, "jwt_refresh_token_expires", 86400 * 30
+                )
+                refresh_token = _create_api_refresh_token(
+                    secret_key,
+                    user_id=user.id,
+                    expires_in=refresh_expires,
+                )
+                result["refresh_token"] = refresh_token
+
+            event_logger.log(
+                "security.login",
+                extra={"username": data.username, "provider": data.provider},
+            )
+            return result
+
+    @post(
+        "/refresh",
+        opt={"exclude_from_auth": True},
+        status_code=200,
+    )
+    async def refresh(
+        self,
+        request: Request[Any, Any, Any],
+        state: State,
+    ) -> RefreshResponse | dict[str, str]:
+        """POST /api/v1/security/refresh -- exchange refresh token for new access token.
+
+        Requires a valid refresh token in the Authorization: Bearer header.
+        Returns a new non-fresh access token.
+        """
+        settings = state.settings
+        secret_key = _get_jwt_secret(settings)
+
+        auth_header = request.headers.get("authorization", "")
+        if not auth_header.startswith("Bearer "):
+            raise NotAuthorizedException(detail="Missing refresh token")
+
+        token = auth_header[7:]
+        if not token:
+            raise NotAuthorizedException(detail="Missing refresh token")
+
+        try:
+            payload = pyjwt.decode(token, secret_key, algorithms=["HS256"])
+        except pyjwt.PyJWTError:
+            raise NotAuthorizedException(detail="Invalid or expired refresh token")
+
+        if payload.get("type") != "refresh":
+            raise NotAuthorizedException(
+                detail="Invalid token type (expected refresh)"
+            )
+
+        user_id_str = payload.get("sub")
+        if not user_id_str:
+            raise NotAuthorizedException(detail="Invalid refresh token (no sub)")
+
+        try:
+            user_id = int(user_id_str)
+        except (ValueError, TypeError):
+            raise NotAuthorizedException(detail="Invalid refresh token (bad sub)")
+
+        access_expires = getattr(settings, "jwt_access_token_expires", 900)
+        access_token = _create_api_access_token(
+            secret_key,
+            user_id=user_id,
+            expires_in=access_expires,
+            fresh=False,
+        )
+
+        event_logger.log("security.refresh", extra={"user_id": user_id})
+        return {"access_token": access_token}
+
+    @staticmethod
+    def _check_password(stored_hash: str, password: str) -> bool:
+        """Verify password against a werkzeug-compatible hash.
+
+        Supports pbkdf2:sha256 format used by Flask-AppBuilder.
+        """
+        try:
+            from werkzeug.security import check_password_hash
+
+            return check_password_hash(stored_hash, password)
+        except ImportError:
+            # Manual fallback for pbkdf2:sha256
+            import hashlib
+
+            if not stored_hash.startswith("pbkdf2:sha256:"):
+                return False
+            parts = stored_hash.split("$", 2)
+            if len(parts) != 3:
+                return False
+            prefix = parts[0]  # pbkdf2:sha256:<iterations>
+            salt = parts[1]
+            expected_hex = parts[2]
+            iterations = int(prefix.split(":")[2])
+            derived = hashlib.pbkdf2_hmac(
+                "sha256",
+                password.encode("utf-8"),
+                salt.encode("utf-8"),
+                iterations,
+            )
+            return derived.hex() == expected_hex

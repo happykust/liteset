@@ -33,7 +33,13 @@ from superset.db.daos.key_value import AsyncKeyValueDAO
 from superset.db.daos.log import AsyncLogDAO
 from superset.db.daos.query import AsyncQueryDAO, AsyncSavedQueryDAO
 from superset.db.daos.report import AsyncReportExecutionLogDAO, AsyncReportScheduleDAO
-from superset.db.daos.security import AsyncSecurityDAO
+from superset.db.daos.security import (
+    AsyncGroupDAO,
+    AsyncPermissionViewDAO,
+    AsyncRoleDAO,
+    AsyncSecurityDAO,
+    AsyncUserCrudDAO,
+)
 from superset.db.daos.tag import AsyncTagDAO
 from superset.db.daos.theme import AsyncThemeDAO
 from superset.db.daos.user import AsyncUserDAO
@@ -51,15 +57,19 @@ __all__ = [
     "AsyncDatasetMetricDAO",
     "AsyncDatasourceDAO",
     "AsyncEmbeddedDashboardDAO",
+    "AsyncGroupDAO",
     "AsyncKeyValueDAO",
     "AsyncLogDAO",
+    "AsyncPermissionViewDAO",
     "AsyncQueryDAO",
     "AsyncReportExecutionLogDAO",
     "AsyncReportScheduleDAO",
+    "AsyncRoleDAO",
     "AsyncSavedQueryDAO",
     "AsyncSecurityDAO",
     "AsyncSSHTunnelDAO",
     "AsyncTagDAO",
     "AsyncThemeDAO",
+    "AsyncUserCrudDAO",
     "AsyncUserDAO",
 ]

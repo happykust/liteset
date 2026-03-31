@@ -26,40 +26,40 @@ class LegacyApiController(Controller):
     path = "/api/v1"
     tags = ["Legacy"]
 
-    @get("/query/", opt={"exclude_from_auth": False})
+    @get("/query/", opt={"exclude_from_auth": False}, status_code=410)
     async def deprecated_query(self) -> Response[dict[str, str]]:
         """GET /api/v1/query/ -- deprecated query polling."""
         return Response(
             content={"message": "Deprecated. Use /api/v1/sqllab/ instead."},
-            status_code=200,
+            status_code=410,
             headers={
                 "Deprecation": "true",
                 "X-Deprecated-Endpoint": "/api/v1/query/",
             },
         )
 
-    @get("/form_data/", opt={"exclude_from_auth": False})
+    @get("/form_data/", opt={"exclude_from_auth": False}, status_code=410)
     async def deprecated_form_data(self) -> Response[dict[str, str]]:
         """GET /api/v1/form_data/ -- deprecated form_data endpoint."""
         return Response(
             content={
                 "message": "Deprecated. Use /api/v1/explore/form_data/ instead."
             },
-            status_code=200,
+            status_code=410,
             headers={
                 "Deprecation": "true",
                 "X-Deprecated-Endpoint": "/api/v1/form_data/",
             },
         )
 
-    @get("/time_range/", opt={"exclude_from_auth": False})
+    @get("/time_range/", opt={"exclude_from_auth": False}, status_code=410)
     async def deprecated_time_range(self) -> Response[dict[str, str]]:
         """GET /api/v1/time_range/ -- deprecated time range endpoint."""
         return Response(
             content={
                 "message": "Deprecated. Use chart data queries instead."
             },
-            status_code=200,
+            status_code=410,
             headers={
                 "Deprecation": "true",
                 "X-Deprecated-Endpoint": "/api/v1/time_range/",

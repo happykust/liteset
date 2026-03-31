@@ -135,9 +135,9 @@ class ImportExportMixin(UUIDMixin):
 
 
 class ExtraJSONMixin:
-    """Provides an ``extra`` Text column with a default of ``'{}'``."""
+    """Provides an ``extra_json`` Text column with a default of ``'{}'``."""
 
-    extra = sa.Column(Text, default="{}")
+    extra_json = sa.Column("extra_json", Text, default="{}")
 
 
 class CertificationMixin:

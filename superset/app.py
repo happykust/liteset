@@ -34,6 +34,7 @@ from litestar.template.config import TemplateConfig
 from sqlalchemy.engine import make_url
 
 from superset.config import SupersetSettings
+from superset.controllers.auth import AuthController
 from superset.controllers.security import SecurityController
 from superset.controllers.spa import SPAController
 from superset.db.session import (
@@ -82,23 +83,23 @@ def _make_manifest_lookup(manifest: dict[str, Any], asset_type: str) -> Any:
 
 
 @get("/api/v1/health", opt={"exclude_from_auth": True})
-async def health_check() -> dict[str, str]:
-    return {"status": "OK"}
+async def health_check() -> Response[str]:
+    return Response(content="OK", media_type="text/plain")
 
 
 @get("/health", opt={"exclude_from_auth": True})
-async def health() -> dict[str, str]:
-    return {"status": "OK"}
+async def health() -> Response[str]:
+    return Response(content="OK", media_type="text/plain")
 
 
 @get("/healthcheck", opt={"exclude_from_auth": True})
-async def healthcheck() -> dict[str, str]:
-    return {"status": "OK"}
+async def healthcheck() -> Response[str]:
+    return Response(content="OK", media_type="text/plain")
 
 
 @get("/ping", opt={"exclude_from_auth": True})
-async def ping() -> dict[str, str]:
-    return {"status": "OK"}
+async def ping() -> Response[str]:
+    return Response(content="OK", media_type="text/plain")
 
 
 @get("/healthz", opt={"exclude_from_auth": True})
@@ -248,12 +249,14 @@ def create_app(
     from superset.controllers.explore import ExploreController
     from superset.controllers.explore_form_data import ExploreFormDataController
     from superset.controllers.explore_permalink import ExplorePermalinkController
+    from superset.controllers.group import GroupController
     from superset.controllers.import_export import ImportExportController
 
     # LegacyApiController deferred — its /api/v1 path prefix overlaps
     # with existing controllers. Will be added with path aliases in Phase 7.
     # from superset.controllers.legacy_api import LegacyApiController
     from superset.controllers.log import LogController
+    from superset.controllers.permission_view import PermissionViewController
     from superset.controllers.query import QueryController
     from superset.controllers.report import ReportScheduleController
     from superset.controllers.report_log import ReportExecutionLogController
@@ -276,6 +279,7 @@ def create_app(
         healthcheck,
         ping,
         readiness_probe,
+        AuthController,
         SPAController,
         SecurityController,
         # Phase 4: core API
@@ -311,9 +315,11 @@ def create_app(
         RLSController,
         ImportExportController,
         # LegacyApiController,  # deferred — path overlap (see import)
-        # Phase 7: cleanup — datasource and role controllers
+        # Phase 7: cleanup — datasource, role, group, permission-view controllers
         DatasourceController,
         RoleController,
+        GroupController,
+        PermissionViewController,
         # Phase 6: WebSocket
         AsyncQueryWebSocket,
     ]

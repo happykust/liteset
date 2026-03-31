@@ -145,6 +145,52 @@ def upgrade() -> None:
         ),
     )
 
+    # -- ab_group (FAB Groups) -----------------------------------------------
+    op.create_table(
+        "ab_group",
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column(
+            "name",
+            sa.String(length=100),
+            unique=True,
+            nullable=False,
+        ),
+        sa.Column("label", sa.String(length=150)),
+        sa.Column("description", sa.String(length=512)),
+    )
+
+    # -- ab_user_group -------------------------------------------------------
+    op.create_table(
+        "ab_user_group",
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column(
+            "user_id",
+            sa.Integer(),
+            sa.ForeignKey("ab_user.id", ondelete="CASCADE"),
+        ),
+        sa.Column(
+            "group_id",
+            sa.Integer(),
+            sa.ForeignKey("ab_group.id", ondelete="CASCADE"),
+        ),
+    )
+
+    # -- ab_group_role -------------------------------------------------------
+    op.create_table(
+        "ab_group_role",
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column(
+            "group_id",
+            sa.Integer(),
+            sa.ForeignKey("ab_group.id", ondelete="CASCADE"),
+        ),
+        sa.Column(
+            "role_id",
+            sa.Integer(),
+            sa.ForeignKey("ab_role.id", ondelete="CASCADE"),
+        ),
+    )
+
     # -- keyvalue (legacy) ---------------------------------------------------
     op.create_table(
         "keyvalue",
@@ -540,20 +586,19 @@ def upgrade() -> None:
         ),
     )
 
-    # -- user_favorite_tag_table ---------------------------------------------
+    # -- user_favorite_tag ---------------------------------------------
     op.create_table(
-        "user_favorite_tag_table",
-        sa.Column("id", sa.Integer(), primary_key=True),
+        "user_favorite_tag",
         sa.Column(
             "user_id",
             sa.Integer(),
-            sa.ForeignKey("ab_user.id", ondelete="CASCADE"),
+            sa.ForeignKey("ab_user.id"),
             nullable=True,
         ),
         sa.Column(
             "tag_id",
             sa.Integer(),
-            sa.ForeignKey("tag.id", ondelete="CASCADE"),
+            sa.ForeignKey("tag.id"),
             nullable=True,
         ),
     )
@@ -575,7 +620,7 @@ def upgrade() -> None:
         sa.Column("password", sa.Text(), nullable=True),
         sa.Column("private_key", sa.Text(), nullable=True),
         sa.Column("private_key_password", sa.Text(), nullable=True),
-        sa.Column("extra", sa.Text(), nullable=True),
+        sa.Column("extra_json", sa.Text(), nullable=True),
         sa.Column(
             "uuid",
             sa.LargeBinary(length=16),
@@ -606,7 +651,7 @@ def upgrade() -> None:
     op.create_table(
         "tables",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("table_name", sa.String(length=250), nullable=True),
+        sa.Column("table_name", sa.String(length=250), nullable=False),
         sa.Column("main_dttm_col", sa.String(length=250), nullable=True),
         sa.Column(
             "database_id",
@@ -614,7 +659,7 @@ def upgrade() -> None:
             sa.ForeignKey("dbs.id"),
             nullable=False,
         ),
-        sa.Column("fetch_values_predicate", sa.String(length=1000), nullable=True),
+        sa.Column("fetch_values_predicate", sa.Text(), nullable=True),
         sa.Column("schema", sa.String(length=255), nullable=True),
         sa.Column("catalog", sa.String(length=256), nullable=True),
         sa.Column("sql", sa.Text(), nullable=True),
@@ -821,34 +866,34 @@ def upgrade() -> None:
         sa.Column(
             "role_id",
             sa.Integer(),
-            sa.ForeignKey("ab_role.id", ondelete="CASCADE"),
-            nullable=True,
+            sa.ForeignKey("ab_role.id"),
+            nullable=False,
         ),
         sa.Column(
             "rls_filter_id",
             sa.Integer(),
             sa.ForeignKey(
-                "row_level_security_filters.id", ondelete="CASCADE"
+                "row_level_security_filters.id",
             ),
             nullable=True,
         ),
     )
 
-    # -- rls_filter_tables (association) -------------------------------------
+    # -- rls_filter_tables (association) -----
     op.create_table(
         "rls_filter_tables",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column(
             "table_id",
             sa.Integer(),
-            sa.ForeignKey("tables.id", ondelete="CASCADE"),
+            sa.ForeignKey("tables.id"),
             nullable=True,
         ),
         sa.Column(
             "rls_filter_id",
             sa.Integer(),
             sa.ForeignKey(
-                "row_level_security_filters.id", ondelete="CASCADE"
+                "row_level_security_filters.id",
             ),
             nullable=True,
         ),
@@ -1115,18 +1160,18 @@ def upgrade() -> None:
     op.create_table(
         "report_schedule",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("type", sa.String(length=50), nullable=True),
+        sa.Column("type", sa.String(length=50), nullable=False),
         sa.Column("name", sa.String(length=150), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("context_markdown", sa.Text(), nullable=True),
         sa.Column("active", sa.Boolean(), nullable=True),
-        sa.Column("crontab", sa.String(length=1000), nullable=True),
+        sa.Column("crontab", sa.String(length=1000), nullable=False),
         sa.Column(
             "creation_method",
             sa.String(length=255),
             server_default="alerts_reports",
         ),
-        sa.Column("timezone", sa.String(length=100), nullable=True),
+        sa.Column("timezone", sa.String(length=100), nullable=False),
         sa.Column("report_format", sa.String(length=50), nullable=True),
         sa.Column("sql", sa.Text(), nullable=True),
         sa.Column(
@@ -1161,7 +1206,7 @@ def upgrade() -> None:
         sa.Column("custom_height", sa.Integer(), nullable=True),
         sa.Column("email_subject", sa.String(length=255), nullable=True),
         # ExtraJSONMixin
-        sa.Column("extra", sa.Text(), nullable=True),
+        sa.Column("extra_json", sa.Text(), nullable=True),
         # AuditMixinNullable
         sa.Column("created_on", sa.DateTime(), nullable=True),
         sa.Column("changed_on", sa.DateTime(), nullable=True),
@@ -1192,14 +1237,22 @@ def upgrade() -> None:
         sa.Column(
             "user_id",
             sa.Integer(),
-            sa.ForeignKey("ab_user.id", ondelete="CASCADE"),
-            nullable=True,
+            sa.ForeignKey(
+                "ab_user.id", ondelete="CASCADE",
+            ),
+            nullable=False,
         ),
         sa.Column(
             "report_schedule_id",
             sa.Integer(),
-            sa.ForeignKey("report_schedule.id", ondelete="CASCADE"),
-            nullable=True,
+            sa.ForeignKey(
+                "report_schedule.id",
+                ondelete="CASCADE",
+            ),
+            nullable=False,
+        ),
+        sa.UniqueConstraint(
+            "user_id", "report_schedule_id",
         ),
     )
 
@@ -1207,7 +1260,7 @@ def upgrade() -> None:
     op.create_table(
         "report_recipient",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("type", sa.String(length=50), nullable=True),
+        sa.Column("type", sa.String(length=50), nullable=False),
         sa.Column("recipient_config_json", sa.Text(), nullable=True),
         sa.Column(
             "report_schedule_id",
@@ -1216,8 +1269,12 @@ def upgrade() -> None:
             nullable=False,
         ),
         # AuditMixinNullable
-        sa.Column("created_on", sa.DateTime(), nullable=True),
-        sa.Column("changed_on", sa.DateTime(), nullable=True),
+        sa.Column(
+            "created_on", sa.DateTime(), nullable=True,
+        ),
+        sa.Column(
+            "changed_on", sa.DateTime(), nullable=True,
+        ),
         sa.Column(
             "created_by_fk",
             sa.Integer(),
@@ -1231,8 +1288,13 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
+    op.create_index(
+        "ix_report_recipient_report_schedule_id",
+        "report_recipient",
+        ["report_schedule_id"],
+    )
 
-    # -- report_execution_log ------------------------------------------------
+    # -- report_execution_log ---------------
     op.create_table(
         "report_execution_log",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -1241,12 +1303,12 @@ def upgrade() -> None:
             sa.LargeBinary(length=16),
             nullable=True,
         ),
-        sa.Column("scheduled_dttm", sa.DateTime(), nullable=True),
+        sa.Column("scheduled_dttm", sa.DateTime(), nullable=False),
         sa.Column("start_dttm", sa.DateTime(), nullable=True),
         sa.Column("end_dttm", sa.DateTime(), nullable=True),
         sa.Column("value", sa.Float(), nullable=True),
         sa.Column("value_row_json", sa.Text(), nullable=True),
-        sa.Column("state", sa.String(length=50), nullable=True),
+        sa.Column("state", sa.String(length=50), nullable=False),
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column(
             "report_schedule_id",
@@ -1254,6 +1316,16 @@ def upgrade() -> None:
             sa.ForeignKey("report_schedule.id"),
             nullable=False,
         ),
+    )
+    op.create_index(
+        "ix_report_execution_log_report_schedule_id",
+        "report_execution_log",
+        ["report_schedule_id"],
+    )
+    op.create_index(
+        "ix_report_execution_log_start_dttm",
+        "report_execution_log",
+        ["start_dttm"],
     )
 
     # =====================================================================
@@ -1316,7 +1388,7 @@ def upgrade() -> None:
         sa.Column("tracking_url", sa.Text(), nullable=True),
         sa.Column("changed_on", sa.DateTime(), nullable=True),
         # ExtraJSONMixin
-        sa.Column("extra", sa.Text(), nullable=True),
+        sa.Column("extra_json", sa.Text(), nullable=True),
     )
     op.create_index(
         "ti_user_id_changed_on",
@@ -1359,7 +1431,7 @@ def upgrade() -> None:
         sa.Column("rows", sa.Integer(), nullable=True),
         sa.Column("last_run", sa.DateTime(), nullable=True),
         # ExtraJSONMixin
-        sa.Column("extra", sa.Text(), nullable=True),
+        sa.Column("extra_json", sa.Text(), nullable=True),
         # ImportExportMixin (UUIDMixin)
         sa.Column(
             "uuid",
@@ -1422,7 +1494,7 @@ def upgrade() -> None:
             nullable=True,
         ),
         # ExtraJSONMixin
-        sa.Column("extra", sa.Text(), nullable=True),
+        sa.Column("extra_json", sa.Text(), nullable=True),
         # AuditMixinNullable
         sa.Column("created_on", sa.DateTime(), nullable=True),
         sa.Column("changed_on", sa.DateTime(), nullable=True),
@@ -1454,7 +1526,7 @@ def upgrade() -> None:
             "database_id",
             sa.Integer(),
             sa.ForeignKey("dbs.id", ondelete="CASCADE"),
-            nullable=True,
+            nullable=False,
         ),
         sa.Column("schema", sa.String(length=256), nullable=True),
         sa.Column("catalog", sa.String(length=256), nullable=True),
@@ -1462,7 +1534,7 @@ def upgrade() -> None:
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("expanded", sa.Boolean(), nullable=True),
         # ExtraJSONMixin
-        sa.Column("extra", sa.Text(), nullable=True),
+        sa.Column("extra_json", sa.Text(), nullable=True),
         # AuditMixinNullable
         sa.Column("created_on", sa.DateTime(), nullable=True),
         sa.Column("changed_on", sa.DateTime(), nullable=True),
@@ -1511,7 +1583,7 @@ def downgrade() -> None:
     op.drop_table("table_columns")
     op.drop_table("tables")
     op.drop_table("ssh_tunnels")
-    op.drop_table("user_favorite_tag_table")
+    op.drop_table("user_favorite_tag")
     op.drop_table("tagged_object")
     op.drop_table("tag")
     op.drop_index("ti_dag_state", table_name="annotation")
@@ -1532,10 +1604,13 @@ def downgrade() -> None:
     op.drop_table("annotation_layer")
     op.drop_table("keyvalue")
     op.drop_table("ab_permission_view_role")
+    op.drop_table("ab_group_role")
+    op.drop_table("ab_user_group")
     op.drop_table("ab_user_role")
     op.drop_table("ab_permission_view")
     op.drop_table("ab_register_user")
     op.drop_table("ab_user")
+    op.drop_table("ab_group")
     op.drop_table("ab_role")
     op.drop_table("ab_view_menu")
     op.drop_table("ab_permission")

@@ -52,19 +52,40 @@ class ExploreController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/explore/ — assemble form_data from params.
 
-        Query params: form_data_key, slice_id, dataset_id, dataset_type
+        Query params: form_data_key, permalink_key, slice_id,
+                      datasource_id, datasource_type
         """
         form_data_key = request.query_params.get("form_data_key")
+        permalink_key = request.query_params.get("permalink_key")
         slice_id_raw = request.query_params.get("slice_id")
-        dataset_id_raw = request.query_params.get("dataset_id")
-        dataset_type = request.query_params.get("dataset_type", "table")
+        datasource_id_raw = request.query_params.get("datasource_id")
+        datasource_type = request.query_params.get("datasource_type", "table")
 
         form_data: dict[str, Any] = {}
         message = ""
         slice_data: dict[str, Any] | None = None
         dataset_data: dict[str, Any] | None = None
 
-        # 1. Load form_data from permalink key
+        # 1a. Load form_data from permalink key (metadata DB)
+        if permalink_key:
+            raw = await kv_dao.get_value(
+                resource="explore_permalink",
+                resource_id=0,
+                key=permalink_key,
+            )
+            if raw:
+                try:
+                    entry = json.loads(raw)
+                    if isinstance(entry, dict):
+                        # Permalink stores formData/form_data directly
+                        fd = entry.get("formData") or entry.get("form_data") or {}
+                        form_data = (
+                            json.loads(fd) if isinstance(fd, str) else fd
+                        )
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        # 1b. Load form_data from temporary cache key (overrides permalink)
         if form_data_key:
             raw = await kv_dao.get_value(
                 resource="explore_form_data",
@@ -111,14 +132,14 @@ class ExploreController(Controller):
                 pass
 
         # 3. Load dataset defaults
-        if dataset_id_raw:
+        if datasource_id_raw:
             try:
-                dataset_id = int(dataset_id_raw)
-                dataset = await dataset_dao.find_by_id(dataset_id)
+                ds_id = int(datasource_id_raw)
+                dataset = await dataset_dao.find_by_id(ds_id)
                 if dataset is not None:
                     dataset_data = {
                         "id": dataset.id,
-                        "type": dataset_type,
+                        "type": datasource_type,
                         "name": getattr(dataset, "table_name", "")
                         or getattr(dataset, "name", ""),
                     }

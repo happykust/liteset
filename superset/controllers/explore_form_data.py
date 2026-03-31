@@ -18,10 +18,17 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
+from litestar import get
 from litestar.di import Provide
 
 from superset.controllers.temporary_cache import TemporaryCacheController
+from superset.exceptions import ObjectNotFoundError
+from superset.guards.rbac import require_authentication
 from superset.providers import provide_kv_dao
+from superset.typing import KeyValueDAOProtocol, UserProtocol
 
 
 class ExploreFormDataController(TemporaryCacheController):
@@ -31,3 +38,32 @@ class ExploreFormDataController(TemporaryCacheController):
     dependencies = {
         "kv_dao": Provide(provide_kv_dao, sync_to_thread=False),
     }
+
+    @get("/{key:str}", guards=[require_authentication])
+    async def get_value(
+        self,
+        key: str,
+        kv_dao: KeyValueDAOProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
+        """GET /{key} -- retrieve cached form_data.
+
+        Frontend expects ``{"form_data": "..."}`` for explore form data,
+        unlike dashboard_filter_state which uses ``{"value": "..."}``.
+        """
+        raw = await kv_dao.get_value(
+            resource=self.resource,
+            resource_id=0,
+            key=key,
+        )
+        if raw is None:
+            raise ObjectNotFoundError(self.resource, key)
+
+        # Unwrap envelope
+        try:
+            entry = json.loads(raw)
+            if isinstance(entry, dict) and "value" in entry:
+                return {"form_data": entry["value"]}
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return {"form_data": raw}

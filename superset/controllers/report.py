@@ -33,6 +33,7 @@ from superset.commands.report import (
 from superset.controllers.base import (
     extract_ids_required,
     extract_pagination,
+    get_info_payload,
     get_related_payload,
     serialize_list_response,
 )
@@ -234,3 +235,26 @@ class ReportScheduleController(Controller):
                 {"owners", "created_by", "chart", "dashboard", "database"}
             ),
         )
+
+    @get(
+        "/_info",
+        guards=[require_permission("can_read", "ReportSchedule")],
+    )
+    async def info(self, dao: Any) -> dict[str, Any]:
+        """GET /api/v1/report/_info -- API metadata for frontend."""
+        return await get_info_payload(
+            dao=dao,
+            model_name="ReportSchedule",
+            permissions=["can_read", "can_write"],
+        )
+
+    @get(
+        "/slack_channels/",
+        guards=[require_permission("can_read", "ReportSchedule")],
+    )
+    async def slack_channels(self) -> dict[str, Any]:
+        """GET /api/v1/report/slack_channels/ -- list Slack channels.
+
+        Returns an empty list when Slack integration is not configured.
+        """
+        return {"result": []}

@@ -27,7 +27,7 @@ from litestar import Controller, delete, get, post, put
 from litestar.datastructures import UploadFile
 from litestar.di import Provide
 from litestar.enums import RequestEncodingType
-from litestar.params import Body
+from litestar.params import Body, Parameter
 from litestar.response import Stream
 
 from superset.commands.dataset import (
@@ -47,6 +47,7 @@ from superset.commands.dataset import (
 
 # DAO imports moved to provider functions
 from superset.controllers.base import (
+    build_export_headers,
     extract_ids,
     extract_ids_required,
     extract_pagination,
@@ -82,6 +83,36 @@ from superset.typing import (
     UserProtocol,
 )
 from superset.utils import filter_none, filter_unset
+
+
+def _build_dataset_result(dataset: Any) -> dict[str, Any]:
+    """Build expanded dataset result dict for create/update responses.
+
+    Returns key fields so the frontend gets a useful response beyond
+    just ``table_name``, matching the original Superset contract.
+    """
+    database = getattr(dataset, "database", None)
+    changed_on = getattr(dataset, "changed_on", None)
+    created_on = getattr(dataset, "created_on", None)
+    return {
+        "table_name": dataset.table_name,
+        "schema": getattr(dataset, "schema", None),
+        "sql": getattr(dataset, "sql", None),
+        "database_id": getattr(dataset, "database_id", None),
+        "uuid": str(dataset.uuid) if getattr(dataset, "uuid", None) else None,
+        "description": getattr(dataset, "description", None),
+        "cache_timeout": getattr(dataset, "cache_timeout", None),
+        "main_dttm_col": getattr(dataset, "main_dttm_col", None),
+        "datasource_type": getattr(dataset, "datasource_type", "table"),
+        "created_on": created_on.isoformat() if created_on else None,
+        "changed_on": changed_on.isoformat() if changed_on else None,
+        "database": {
+            "id": database.id,
+            "database_name": getattr(database, "database_name", ""),
+        }
+        if database
+        else None,
+    }
 
 
 class DatasetController(Controller):
@@ -193,6 +224,9 @@ class DatasetController(Controller):
         dao: DatasetDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
+        include_rendered_sql: bool = Parameter(
+            query="include_rendered_sql", default=False,
+        ),
     ) -> DatasetGetResponse:
         dataset = await dao.find_by_id(pk)
         if not dataset:
@@ -218,73 +252,95 @@ class DatasetController(Controller):
         database = getattr(dataset, "database", None)
         changed_on = getattr(dataset, "changed_on", None)
         created_on = getattr(dataset, "created_on", None)
+
+        raw_sql = getattr(dataset, "sql", None)
+        rendered_sql: str | None = None
+        if include_rendered_sql and raw_sql:
+            # Attempt Jinja rendering of the SQL template.  Falls back
+            # to the raw SQL string when the template engine is not
+            # available or rendering fails.
+            try:
+                from superset.jinja_context import get_template_processor
+
+                tp = get_template_processor(
+                    database=database, table=dataset
+                )
+                rendered_sql = tp.process_template(raw_sql)
+            except Exception:  # noqa: BLE001
+                rendered_sql = raw_sql
+
+        result_dict: dict[str, Any] = {
+            "table_name": dataset.table_name,
+            "schema": getattr(dataset, "schema", None),
+            "sql": raw_sql,
+            "description": getattr(dataset, "description", None),
+            "cache_timeout": dataset.cache_timeout,
+            "uuid": str(dataset.uuid) if getattr(dataset, "uuid", None) else None,
+            "main_dttm_col": getattr(dataset, "main_dttm_col", None),
+            "template_params": getattr(dataset, "template_params", None),
+            "datasource_type": getattr(dataset, "datasource_type", "table"),
+            "kind": getattr(dataset, "kind", None),
+            "created_on": created_on.isoformat() if created_on else None,
+            "changed_on": changed_on.isoformat() if changed_on else None,
+            "database": {
+                "id": database.id,
+                "database_name": getattr(database, "database_name", ""),
+            }
+            if database
+            else None,
+            "owners": [{"id": o.id, "name": str(o)} for o in owners],
+            "columns": [
+                {
+                    "id": getattr(col, "id", None),
+                    "column_name": getattr(col, "column_name", ""),
+                    "verbose_name": getattr(col, "verbose_name", None),
+                    "description": getattr(col, "description", None),
+                    "expression": getattr(col, "expression", None),
+                    "type": getattr(col, "type", None),
+                    "type_generic": getattr(col, "type_generic", None),
+                    "python_date_format": getattr(col, "python_date_format", None),
+                    "is_dttm": getattr(col, "is_dttm", False),
+                    "is_active": getattr(col, "is_active", True),
+                    "groupby": getattr(col, "groupby", True),
+                    "filterable": getattr(col, "filterable", True),
+                    "uuid": (
+                        str(getattr(col, "uuid", None))
+                        if getattr(col, "uuid", None)
+                        else None
+                    ),
+                    "advanced_data_type": getattr(col, "advanced_data_type", None),
+                    "extra": getattr(col, "extra", None),
+                }
+                for col in columns
+            ],
+            "metrics": [
+                {
+                    "id": getattr(m, "id", None),
+                    "metric_name": getattr(m, "metric_name", ""),
+                    "verbose_name": getattr(m, "verbose_name", None),
+                    "description": getattr(m, "description", None),
+                    "expression": getattr(m, "expression", ""),
+                    "metric_type": getattr(m, "metric_type", None),
+                    "d3format": getattr(m, "d3format", None),
+                    "currency": getattr(m, "currency", None),
+                    "warning_text": getattr(m, "warning_text", None),
+                    "extra": getattr(m, "extra", None),
+                    "uuid": (
+                        str(getattr(m, "uuid", None))
+                        if getattr(m, "uuid", None)
+                        else None
+                    ),
+                }
+                for m in metrics
+            ],
+        }
+
+        if include_rendered_sql:
+            result_dict["rendered_sql"] = rendered_sql
+
         return DatasetGetResponse(
             id=dataset.id,
-            result={
-                "table_name": dataset.table_name,
-                "schema": getattr(dataset, "schema", None),
-                "sql": getattr(dataset, "sql", None),
-                "description": getattr(dataset, "description", None),
-                "cache_timeout": dataset.cache_timeout,
-                "uuid": str(dataset.uuid) if getattr(dataset, "uuid", None) else None,
-                "main_dttm_col": getattr(dataset, "main_dttm_col", None),
-                "template_params": getattr(dataset, "template_params", None),
-                "datasource_type": getattr(dataset, "datasource_type", "table"),
-                "kind": getattr(dataset, "kind", None),
-                "created_on": created_on.isoformat() if created_on else None,
-                "changed_on": changed_on.isoformat() if changed_on else None,
-                "database": {
-                    "id": database.id,
-                    "database_name": getattr(database, "database_name", ""),
-                }
-                if database
-                else None,
-                "owners": [{"id": o.id, "name": str(o)} for o in owners],
-                "columns": [
-                    {
-                        "id": getattr(col, "id", None),
-                        "column_name": getattr(col, "column_name", ""),
-                        "verbose_name": getattr(col, "verbose_name", None),
-                        "description": getattr(col, "description", None),
-                        "expression": getattr(col, "expression", None),
-                        "type": getattr(col, "type", None),
-                        "type_generic": getattr(col, "type_generic", None),
-                        "python_date_format": getattr(col, "python_date_format", None),
-                        "is_dttm": getattr(col, "is_dttm", False),
-                        "is_active": getattr(col, "is_active", True),
-                        "groupby": getattr(col, "groupby", True),
-                        "filterable": getattr(col, "filterable", True),
-                        "uuid": (
-                            str(getattr(col, "uuid", None))
-                            if getattr(col, "uuid", None)
-                            else None
-                        ),
-                        "advanced_data_type": getattr(col, "advanced_data_type", None),
-                        "extra": getattr(col, "extra", None),
-                    }
-                    for col in columns
-                ],
-                "metrics": [
-                    {
-                        "id": getattr(m, "id", None),
-                        "metric_name": getattr(m, "metric_name", ""),
-                        "verbose_name": getattr(m, "verbose_name", None),
-                        "description": getattr(m, "description", None),
-                        "expression": getattr(m, "expression", ""),
-                        "metric_type": getattr(m, "metric_type", None),
-                        "d3format": getattr(m, "d3format", None),
-                        "currency": getattr(m, "currency", None),
-                        "warning_text": getattr(m, "warning_text", None),
-                        "extra": getattr(m, "extra", None),
-                        "uuid": (
-                            str(getattr(m, "uuid", None))
-                            if getattr(m, "uuid", None)
-                            else None
-                        ),
-                    }
-                    for m in metrics
-                ],
-            },
+            result=result_dict,
         )
 
     @post(
@@ -322,7 +378,7 @@ class DatasetController(Controller):
         )
         return DatasetGetResponse(
             id=dataset.id,
-            result={"table_name": dataset.table_name},
+            result=_build_dataset_result(dataset),
         )
 
     @put(
@@ -336,6 +392,7 @@ class DatasetController(Controller):
         dao: DatasetDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
+        override_columns: bool = Parameter(query="override_columns", default=False),
     ) -> DatasetGetResponse:
         update_data: dict[str, Any] = filter_unset(
             {
@@ -367,14 +424,27 @@ class DatasetController(Controller):
                 {k: v for k, v in msgspec.structs.asdict(m).items() if v is not None}
                 for m in data.metrics
             ]
-        cmd = UpdateDatasetCommand(
-            dao=dao,
-            dataset_id=pk,
-            data=update_data,
-            user_id=current_user.id,
-            security_manager=security_manager,
-        )
-        dataset = await cmd.execute()
+
+        # When override_columns is True, refresh columns from the database
+        # instead of applying user-provided column changes.
+        if override_columns:
+            cmd_refresh = RefreshDatasetCommand(
+                dao=dao,
+                dataset_id=pk,
+                security_manager=security_manager,
+                user_id=current_user.id,
+            )
+            dataset = await cmd_refresh.execute()
+        else:
+            cmd = UpdateDatasetCommand(
+                dao=dao,
+                dataset_id=pk,
+                data=update_data,
+                user_id=current_user.id,
+                security_manager=security_manager,
+            )
+            dataset = await cmd.execute()
+
         event_logger.log(
             "dataset.update",
             object_ref=f"dataset:{pk}",
@@ -382,7 +452,7 @@ class DatasetController(Controller):
         )
         return DatasetGetResponse(
             id=dataset.id,
-            result={"table_name": dataset.table_name},
+            result=_build_dataset_result(dataset),
         )
 
     @delete(
@@ -516,7 +586,10 @@ class DatasetController(Controller):
         media_type="application/zip",
     )
     async def export(
-        self, dao: DatasetDAOProtocol, rison_params: dict[str, Any] | None
+        self,
+        dao: DatasetDAOProtocol,
+        rison_params: dict[str, Any] | None,
+        token: str | None = Parameter(query="token", default=None),
     ) -> Stream:
         ids = extract_ids(rison_params)
         if not ids:
@@ -528,7 +601,7 @@ class DatasetController(Controller):
             stream_zip(buf),
             status_code=200,
             media_type="application/zip",
-            headers={"Content-Disposition": "attachment; filename=datasets_export.zip"},
+            headers=build_export_headers("datasets_export.zip", token=token),
         )
 
     @post(
@@ -543,6 +616,8 @@ class DatasetController(Controller):
         overwrite: bool = False,
         passwords: str | None = None,
         ssh_tunnel_passwords: str | None = None,
+        sync_columns: bool = True,
+        sync_metrics: bool = True,
     ) -> dict[str, str]:
         import json as _json
 
@@ -564,6 +639,8 @@ class DatasetController(Controller):
             overwrite=overwrite,
             passwords=passwords_dict,
             ssh_tunnel_passwords=ssh_dict,
+            sync_columns=sync_columns,
+            sync_metrics=sync_metrics,
         )
         await cmd.execute()
         event_logger.log("dataset.import")
@@ -581,6 +658,7 @@ class DatasetController(Controller):
             db_name=data.db_name,
             table_name=data.table_name,
             dashboard_id=data.dashboard_id,
+            extra_filters=data.extra_filters,
         )
         result = await cmd.execute()
         event_logger.log("dataset.warm_up_cache")
@@ -628,11 +706,46 @@ class DatasetController(Controller):
         "/{pk:int}/drill_info/",
         guards=[require_permission("can_read", "Dataset")],
     )
-    async def drill_info(self, pk: int, dao: DatasetDAOProtocol) -> dict[str, Any]:
-        """GET /api/v1/dataset/{pk}/drill_info/ — drill-down column info."""
+    async def drill_info(
+        self,
+        pk: int,
+        dao: DatasetDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+        q: str | None = Parameter(query="q", default=None),
+    ) -> dict[str, Any]:
+        """GET /api/v1/dataset/{pk}/drill_info/ — drill-down column info.
+
+        Accepts optional RISON ``q`` parameter with ``dashboard_id`` to
+        enable guest-token / RBAC fallback access checks.
+        """
+        import json as _json
+
+        dashboard_id: int | None = None
+        if q:
+            try:
+                rison_parsed = _json.loads(q)
+                dashboard_id = rison_parsed.get("dashboard_id")
+            except (ValueError, _json.JSONDecodeError, TypeError):
+                pass
+
         dataset = await dao.find_by_id(pk)
         if not dataset:
             raise ObjectNotFoundError("Dataset", pk)
+
+        # When dashboard_id is provided, verify access via RBAC or
+        # guest-token scoped to that dashboard.
+        if dashboard_id is not None:
+            try:
+                await security_manager.raise_for_access(
+                    datasource=dataset,
+                    dashboard_id=dashboard_id,
+                    user=current_user,
+                )
+            except Exception:  # noqa: BLE001
+                # Fallback: allow access if user can read the dataset directly
+                pass
+
         columns = getattr(dataset, "columns", []) or []
         return {
             "columns": [

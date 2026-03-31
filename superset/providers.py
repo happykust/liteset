@@ -106,6 +106,24 @@ def provide_role_dao(session: AsyncSession) -> Any:
     return AsyncRoleDAO(session)
 
 
+def provide_user_crud_dao(session: AsyncSession) -> Any:
+    from superset.db.daos.security import AsyncUserCrudDAO
+
+    return AsyncUserCrudDAO(session)
+
+
+def provide_group_dao(session: AsyncSession) -> Any:
+    from superset.db.daos.security import AsyncGroupDAO
+
+    return AsyncGroupDAO(session)
+
+
+def provide_permission_view_dao(session: AsyncSession) -> Any:
+    from superset.db.daos.security import AsyncPermissionViewDAO
+
+    return AsyncPermissionViewDAO(session)
+
+
 def provide_css_template_dao(session: AsyncSession) -> Any:
     from superset.db.daos.css import AsyncCssTemplateDAO
 

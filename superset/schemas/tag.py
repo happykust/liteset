@@ -42,3 +42,9 @@ class TagPutSchema(msgspec.Struct):
 
 class BulkTagCreateSchema(msgspec.Struct):
     tags: list[TagPostSchema]
+
+
+class AddTagsToObjectSchema(msgspec.Struct):
+    """Schema for POST /{object_type}/{object_id}/ -- add tags to object."""
+
+    tags: list[str] = []

@@ -99,8 +99,23 @@ class AsyncFullAssetManager:
         file_content: bytes,
         overwrite: bool = False,
         passwords: dict[str, str] | None = None,
+        ssh_tunnel_passwords: dict[str, str] | None = None,
+        ssh_tunnel_private_keys: dict[str, str] | None = None,
+        ssh_tunnel_private_key_passwords: dict[str, str] | None = None,
+        sparse: bool = False,
     ) -> ImportResult:
         """Import assets from a ZIP file.
+
+        Args:
+            file_content: Raw bytes of the ZIP archive.
+            overwrite: Whether to overwrite existing assets.
+            passwords: Database connection passwords keyed by UUID.
+            ssh_tunnel_passwords: SSH tunnel passwords keyed by UUID.
+            ssh_tunnel_private_keys: SSH tunnel private keys keyed by UUID.
+            ssh_tunnel_private_key_passwords: SSH tunnel private key passphrases
+                keyed by UUID.
+            sparse: If True, only update fields present in the import file,
+                preserving other existing fields on the target model.
 
         ZIP parsing runs in a thread to avoid blocking the event loop.
         Path traversal checks and entry count limits are enforced.
@@ -120,6 +135,14 @@ class AsyncFullAssetManager:
 
         metadata, by_type, zf = parsed
 
+        # Merge all secret dictionaries for downstream importers
+        all_passwords = {
+            **(passwords or {}),
+            **(ssh_tunnel_passwords or {}),
+            **(ssh_tunnel_private_keys or {}),
+            **(ssh_tunnel_private_key_passwords or {}),
+        }
+
         try:
             if metadata is not None:
                 logger.info(
@@ -130,7 +153,7 @@ class AsyncFullAssetManager:
             for asset_type, filenames in by_type.items():
                 try:
                     count = await self._import_type(
-                        zf, asset_type, filenames, overwrite, passwords
+                        zf, asset_type, filenames, overwrite, all_passwords
                     )
                     result.imported[asset_type] = count
                 except Exception as e:

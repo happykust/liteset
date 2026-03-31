@@ -76,17 +76,29 @@ class ImportExportController(Controller):
 
         file: UploadFile | None = data.get("file")
         overwrite = data.get("overwrite", False)
+        sparse = data.get("sparse", False)
         passwords_raw = data.get("passwords", "{}")
+        ssh_tunnel_passwords_raw = data.get("ssh_tunnel_passwords", "{}")
+        ssh_tunnel_private_keys_raw = data.get("ssh_tunnel_private_keys", "{}")
+        ssh_tunnel_private_key_passwords_raw = data.get(
+            "ssh_tunnel_private_key_passwords", "{}"
+        )
 
         if file is None:
             from superset.exceptions import CommandInvalidError
 
             raise CommandInvalidError("file is required")
 
-        passwords = (
-            json.loads(passwords_raw)
-            if isinstance(passwords_raw, str)
-            else passwords_raw
+        def _parse_json(raw: str | dict[str, Any] | None) -> dict[str, Any]:
+            if raw is None:
+                return {}
+            return json.loads(raw) if isinstance(raw, str) else raw
+
+        passwords = _parse_json(passwords_raw)
+        ssh_tunnel_passwords = _parse_json(ssh_tunnel_passwords_raw)
+        ssh_tunnel_private_keys = _parse_json(ssh_tunnel_private_keys_raw)
+        ssh_tunnel_private_key_passwords = _parse_json(
+            ssh_tunnel_private_key_passwords_raw
         )
 
         content = await file.read()
@@ -95,6 +107,10 @@ class ImportExportController(Controller):
             file_content=content,
             overwrite=bool(overwrite),
             passwords=passwords,
+            ssh_tunnel_passwords=ssh_tunnel_passwords,
+            ssh_tunnel_private_keys=ssh_tunnel_private_keys,
+            ssh_tunnel_private_key_passwords=ssh_tunnel_private_key_passwords,
+            sparse=bool(sparse),
         )
 
         event_logger.log(

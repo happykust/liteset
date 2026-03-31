@@ -168,15 +168,18 @@ class InvalidPostProcessingError(SupersetValidationException):
 def superset_exception_handler(
     request: Request[Any, Any, Any], exc: SupersetException
 ) -> Response[Any]:
-    """SIP-40 compatible error response handler."""
-    from superset.schemas.base import ErrorResponse, SupersetErrorDetail
+    """SIP-40 compatible error response handler.
 
-    body = ErrorResponse(
-        errors=[SupersetErrorDetail(**exc.to_sip40())],
-        message=exc.message,
-    )
+    Includes both ``message`` (FAB compat) and ``detail`` (Litestar compat)
+    keys in the response body for backward compatibility.
+    """
+    error_detail = exc.to_sip40()
     return Response(
-        content=body,
+        content={
+            "errors": [error_detail],
+            "message": exc.message,
+            "detail": exc.message,
+        },
         status_code=exc.status_code,
         media_type=MediaType.JSON,
     )
@@ -216,6 +219,7 @@ def generic_exception_handler(
                     }
                 ],
                 "message": detail,
+                "detail": detail,
             },
             status_code=exc.status_code,
         )
@@ -231,6 +235,7 @@ def generic_exception_handler(
                 }
             ],
             "message": "An unexpected error occurred",
+            "detail": "An unexpected error occurred",
         },
         status_code=500,
     )

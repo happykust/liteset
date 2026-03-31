@@ -33,15 +33,23 @@ from superset.commands.tag import (
     UpdateTagCommand,
 )
 from superset.controllers.base import (
+    extract_ids,
     extract_ids_required,
     extract_pagination,
+    get_info_payload,
+    get_related_payload,
     serialize_list_response,
 )
 from superset.events import event_logger
 from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_tag_dao
-from superset.schemas.tag import BulkTagCreateSchema, TagPostSchema, TagPutSchema
+from superset.schemas.tag import (
+    AddTagsToObjectSchema,
+    BulkTagCreateSchema,
+    TagPostSchema,
+    TagPutSchema,
+)
 from superset.typing import UserProtocol
 from superset.utils import filter_unset
 
@@ -232,3 +240,145 @@ class TagController(Controller):
             "tag.remove_favorite", object_ref=str(pk), user_id=current_user.id
         )
         return {"message": "OK"}
+
+    # ------------------------------------------------------------------
+    # POST /{object_type}/{object_id}/ -- add tags to an object
+    # ------------------------------------------------------------------
+    @post(
+        "/{object_type:int}/{object_id:int}/",
+        guards=[require_permission("can_write", "Tag")],
+        status_code=201,
+    )
+    async def add_objects(
+        self,
+        object_type: int,
+        object_id: int,
+        data: AddTagsToObjectSchema,
+        dao: Any,
+        current_user: UserProtocol,
+    ) -> dict[str, str]:
+        """POST /api/v1/tag/{object_type}/{object_id}/ -- add tags to object.
+
+        Creates new tags if they do not already exist and links them
+        to the given object.
+        """
+        from superset.models.tags import ObjectType
+
+        try:
+            obj_type = ObjectType(object_type)
+        except ValueError:
+            from superset.exceptions import SupersetValidationException
+
+            raise SupersetValidationException(
+                f"Invalid object type: {object_type}"
+            )
+
+        await dao.create_custom_tagged_objects(
+            object_type=obj_type.name,
+            object_id=object_id,
+            tag_names=data.tags,
+        )
+        await dao.session.flush()
+        event_logger.log(
+            "tag.add_objects",
+            extra={"object_type": object_type, "object_id": object_id},
+            user_id=current_user.id,
+        )
+        return {"message": "OK"}
+
+    # ------------------------------------------------------------------
+    # DELETE /{object_type}/{object_id}/{tag}/ -- remove tag from object
+    # ------------------------------------------------------------------
+    @delete(
+        "/{object_type:int}/{object_id:int}/{tag:str}/",
+        guards=[require_permission("can_write", "Tag")],
+        status_code=200,
+    )
+    async def delete_object(
+        self,
+        object_type: int,
+        object_id: int,
+        tag: str,
+        dao: Any,
+        current_user: UserProtocol,
+    ) -> dict[str, str]:
+        """DELETE /api/v1/tag/{object_type}/{object_id}/{tag}/ -- remove tag."""
+        from superset.models.tags import ObjectType
+
+        try:
+            obj_type = ObjectType(object_type)
+        except ValueError:
+            from superset.exceptions import SupersetValidationException
+
+            raise SupersetValidationException(
+                f"Invalid object type: {object_type}"
+            )
+
+        await dao.delete_tagged_object(
+            object_type=obj_type.name,
+            object_id=object_id,
+            tag_name=tag,
+        )
+        await dao.session.flush()
+        event_logger.log(
+            "tag.delete_object",
+            extra={
+                "object_type": object_type,
+                "object_id": object_id,
+                "tag": tag,
+            },
+            user_id=current_user.id,
+        )
+        return {"message": "OK"}
+
+    # ------------------------------------------------------------------
+    # GET /favorite_status/ -- batch check favorite status
+    # ------------------------------------------------------------------
+    @get("/favorite_status/", guards=[require_permission("can_read", "Tag")])
+    async def favorite_status(
+        self,
+        dao: Any,
+        rison_params: dict[str, Any] | None,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
+        """GET /api/v1/tag/favorite_status/?q=(ids) -- batch favorite check."""
+        requested_ids = extract_ids(rison_params)
+        fav_ids = await dao.favorited_ids(requested_ids, current_user.id)
+        return {
+            "result": [
+                {"id": rid, "value": rid in fav_ids} for rid in requested_ids
+            ]
+        }
+
+    # ------------------------------------------------------------------
+    # GET /_info -- API metadata
+    # ------------------------------------------------------------------
+    @get("/_info", guards=[require_permission("can_read", "Tag")])
+    async def info(self, dao: Any) -> dict[str, Any]:
+        """GET /api/v1/tag/_info -- API metadata for frontend."""
+        return await get_info_payload(
+            dao=dao,
+            model_name="Tag",
+            permissions=["can_read", "can_write"],
+        )
+
+    # ------------------------------------------------------------------
+    # GET /related/{column_name} -- related values for dropdowns
+    # ------------------------------------------------------------------
+    @get(
+        "/related/{column_name:str}",
+        guards=[require_permission("can_read", "Tag")],
+    )
+    async def related(
+        self,
+        column_name: str,
+        dao: Any,
+        rison_params: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """GET /api/v1/tag/related/{column_name} -- related values."""
+        return await get_related_payload(
+            dao=dao,
+            column_name=column_name,
+            rison_params=rison_params,
+            allowed_fields=frozenset({"created_by", "changed_by"}),
+        )

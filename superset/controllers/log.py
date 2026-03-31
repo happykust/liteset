@@ -18,14 +18,16 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
+import humanize
 from litestar import Controller, get, post
 from litestar.di import Provide
 
-from superset.controllers.base import extract_pagination, serialize_list_response
+from superset.controllers.base import extract_pagination
 from superset.events import event_logger
-from superset.guards.rbac import require_permission
+from superset.guards.rbac import require_authentication, require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_log_dao
 from superset.schemas.log import LogPostSchema
@@ -53,11 +55,32 @@ class LogController(Controller):
         page, page_size = extract_pagination(rison_params)
         items = await dao.find_all(page=page, page_size=page_size)
         total = await dao.count()
-        return serialize_list_response(
-            items,
-            total,
-            ["id", "action", "user_id", "dashboard_id", "slice_id", "json", "dttm"],
-        )
+
+        result = []
+        for item in items or []:
+            user = getattr(item, "user", None)
+            result.append(
+                {
+                    "id": getattr(item, "id", None),
+                    "action": getattr(item, "action", None),
+                    "user_id": getattr(item, "user_id", None),
+                    "user": {
+                        "first_name": getattr(user, "first_name", ""),
+                        "last_name": getattr(user, "last_name", ""),
+                        "username": getattr(user, "username", ""),
+                    }
+                    if user is not None
+                    else None,
+                    "dashboard_id": getattr(item, "dashboard_id", None),
+                    "slice_id": getattr(item, "slice_id", None),
+                    "json": getattr(item, "json", None),
+                    "dttm": getattr(item, "dttm", None),
+                    "duration_ms": getattr(item, "duration_ms", None),
+                    "referrer": getattr(item, "referrer", None),
+                }
+            )
+
+        return {"result": result, "count": total}
 
     @get(
         "/{pk:int}",
@@ -94,9 +117,22 @@ class LogController(Controller):
             object_ref=f"log:{item.id}",
             user_id=current_user.id,
         )
-        return {"id": item.id}
+        return {
+            "id": item.id,
+            "result": {
+                "id": getattr(item, "id", None),
+                "action": getattr(item, "action", None),
+                "user_id": getattr(item, "user_id", None),
+                "dashboard_id": getattr(item, "dashboard_id", None),
+                "slice_id": getattr(item, "slice_id", None),
+                "json": getattr(item, "json", None),
+                "dttm": str(getattr(item, "dttm", "")),
+                "duration_ms": getattr(item, "duration_ms", None),
+                "referrer": getattr(item, "referrer", None),
+            },
+        }
 
-    @get("/recent_activity/")
+    @get("/recent_activity/", guards=[require_authentication])
     async def recent_activity(
         self,
         dao: Any,
@@ -107,7 +143,7 @@ class LogController(Controller):
         params = rison_params or {}
         page = params.get("page", 0)
         page_size = params.get("page_size", 25)
-        actions = params.get("actions", ["explore", "dashboard"])
+        actions = params.get("actions", ["mount_explorer", "mount_dashboard"])
 
         items = await dao.get_recent_activity(
             user_id=current_user.id,
@@ -116,16 +152,42 @@ class LogController(Controller):
             page_size=page_size,
         )
 
+        now = datetime.now(timezone.utc)
         result = []
         for item in items:
+            dashboard_id = getattr(item, "dashboard_id", None)
+            slice_id = getattr(item, "slice_id", None)
+            dttm = getattr(item, "dttm", None)
+
+            # Determine item_type and item_url
+            if dashboard_id:
+                item_type = "dashboard"
+                item_url = f"/superset/dashboard/{dashboard_id}/"
+            elif slice_id:
+                item_type = "slice"
+                item_url = f"/explore/?slice_id={slice_id}"
+            else:
+                item_type = None
+                item_url = None
+
+            # Compute human-readable time delta
+            time_delta_humanized = ""
+            if dttm is not None:
+                dttm_aware = dttm if dttm.tzinfo else dttm.replace(
+                    tzinfo=timezone.utc,
+                )
+                time_delta_humanized = humanize.naturaltime(now - dttm_aware)
+
             result.append(
                 {
                     "action": getattr(item, "action", ""),
-                    "item_type": getattr(item, "action", ""),
-                    "item_id": getattr(item, "slice_id", None)
-                    or getattr(item, "dashboard_id", None),
-                    "item_title": getattr(item, "slice_id", ""),
-                    "time": str(getattr(item, "dttm", "")),
+                    "item_type": item_type,
+                    "item_url": item_url,
+                    "item_title": getattr(item, "slice_id", "")
+                    if slice_id
+                    else str(dashboard_id or ""),
+                    "time": str(dttm or ""),
+                    "time_delta_humanized": time_delta_humanized,
                 }
             )
 

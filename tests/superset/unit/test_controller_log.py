@@ -74,23 +74,34 @@ def controller():
 
 
 async def test_get_list(controller, mock_dao):
+    user1 = MagicMock()
+    user1.first_name = "Test"
+    user1.last_name = "User"
+    user1.username = "testuser"
+
     item1 = MagicMock()
     item1.id = 1
     item1.action = "explore"
     item1.user_id = 1
+    item1.user = user1
     item1.dashboard_id = None
     item1.slice_id = 5
     item1.json = "{}"
     item1.dttm = "2026-01-01T00:00:00"
+    item1.duration_ms = 100
+    item1.referrer = "http://localhost"
 
     item2 = MagicMock()
     item2.id = 2
     item2.action = "dashboard"
     item2.user_id = 1
+    item2.user = None
     item2.dashboard_id = 10
     item2.slice_id = None
     item2.json = "{}"
     item2.dttm = "2026-01-02T00:00:00"
+    item2.duration_ms = None
+    item2.referrer = None
 
     mock_dao.find_all.return_value = [item1, item2]
     mock_dao.count.return_value = 2
@@ -99,6 +110,17 @@ async def test_get_list(controller, mock_dao):
 
     assert result["count"] == 2
     assert len(result["result"]) == 2
+
+    # Verify user nested fields
+    assert result["result"][0]["user"]["first_name"] == "Test"
+    assert result["result"][0]["user"]["username"] == "testuser"
+    assert result["result"][0]["duration_ms"] == 100
+    assert result["result"][0]["referrer"] == "http://localhost"
+
+    # Verify null user
+    assert result["result"][1]["user"] is None
+    assert result["result"][1]["duration_ms"] is None
+
     mock_dao.find_all.assert_awaited_once_with(page=0, page_size=25)
     mock_dao.count.assert_awaited_once()
 
@@ -134,11 +156,13 @@ async def test_get_single_not_found(controller, mock_dao):
 
 
 async def test_recent_activity(controller, mock_dao, mock_user):
+    from datetime import datetime, timezone
+
     log_item = MagicMock()
-    log_item.action = "explore"
+    log_item.action = "mount_explorer"
     log_item.slice_id = 5
     log_item.dashboard_id = None
-    log_item.dttm = "2026-01-01T00:00:00"
+    log_item.dttm = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
     mock_dao.get_recent_activity.return_value = [log_item]
 
@@ -147,12 +171,13 @@ async def test_recent_activity(controller, mock_dao, mock_user):
     )
 
     assert len(result["result"]) == 1
-    assert result["result"][0]["action"] == "explore"
-    assert result["result"][0]["item_id"] == 5
-    assert result["result"][0]["time"] == "2026-01-01T00:00:00"
+    assert result["result"][0]["action"] == "mount_explorer"
+    assert result["result"][0]["item_type"] == "slice"
+    assert result["result"][0]["item_url"] == "/explore/?slice_id=5"
+    assert "time_delta_humanized" in result["result"][0]
     mock_dao.get_recent_activity.assert_awaited_once_with(
         user_id=1,
-        actions=["explore", "dashboard"],
+        actions=["mount_explorer", "mount_dashboard"],
         page=0,
         page_size=25,
     )

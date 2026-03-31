@@ -117,3 +117,82 @@ class DatasourceController(Controller):
             extra={"datasource_type": datasource_type, "datasource_id": datasource_id},
         )
         return {"result": result}
+
+    @get(
+        "/{datasource_type:str}/{datasource_id:int}/column/{column_name:str}/values/",
+        guards=[require_authentication],
+    )
+    async def get_column_values(
+        self,
+        datasource_type: str,
+        datasource_id: int,
+        column_name: str,
+        ds_dao: DatasourceDAOProtocol,
+    ) -> dict[str, Any]:
+        """GET /api/v1/datasource/{type}/{id}/column/{name}/values/
+
+        Returns distinct values for a datasource column (used for filter UIs).
+        """
+        allowed_types = ("table",)
+        if datasource_type not in allowed_types:
+            raise SupersetValidationException(
+                f"Invalid datasource type: {datasource_type}. "
+                f"Supported types: {', '.join(allowed_types)}"
+            )
+
+        try:
+            datasource = await ds_dao.get_datasource(
+                datasource_type, datasource_id
+            )
+        except ValueError as exc:
+            raise SupersetValidationException(str(exc)) from exc
+
+        if datasource is None:
+            raise ObjectNotFoundError("Datasource", datasource_id)
+
+        # Try the values_for_column method on the datasource model
+        if hasattr(datasource, "values_for_column"):
+            try:
+                payload = datasource.values_for_column(
+                    column_name=column_name,
+                    limit=1000,
+                )
+                event_logger.log(
+                    "datasource.column_values",
+                    extra={
+                        "datasource_type": datasource_type,
+                        "datasource_id": datasource_id,
+                        "column_name": column_name,
+                    },
+                )
+                return {"result": payload}
+            except KeyError as exc:
+                raise SupersetValidationException(
+                    f"Column name '{column_name}' does not exist"
+                ) from exc
+            except NotImplementedError as exc:
+                raise SupersetValidationException(
+                    f"Unable to get column values for "
+                    f"datasource type: {datasource_type}"
+                ) from exc
+
+        # Fallback: check if column exists and return empty
+        columns = getattr(datasource, "columns", None)
+        if columns is not None:
+            col_names = [
+                getattr(c, "column_name", None) for c in columns
+            ]
+            if column_name not in col_names:
+                raise SupersetValidationException(
+                    f"Column name '{column_name}' does not exist"
+                )
+
+        event_logger.log(
+            "datasource.column_values",
+            extra={
+                "datasource_type": datasource_type,
+                "datasource_id": datasource_id,
+                "column_name": column_name,
+            },
+        )
+        return {"result": []}

@@ -92,6 +92,39 @@ class SQLLabBootstrap(msgspec.Struct):
 
 
 class SqlLabPermalinkSchema(msgspec.Struct):
-    """POST /api/v1/sqllab/permalink"""
+    """POST /api/v1/sqllab/permalink
 
+    Accepts either a raw ``state`` dict (original contract) or typed
+    top-level fields (``dbId``, ``sql``, ``schema``, etc.) which are
+    merged into ``state`` during normalization.
+    """
+
+    # Original contract: opaque state dict
     state: dict[str, Any] = {}
+
+    # Typed aliases for common fields (frontend may send these directly)
+    dbId: int | None = None
+    sql: str | None = None
+    schema: str | None = None
+    catalog: str | None = None
+    autorun: bool | None = None
+    templateParams: str | None = None
+    queryLimit: int | None = None
+    name: str | None = None
+
+    def __post_init__(self) -> None:
+        """Merge typed fields into state when state is empty."""
+        typed_fields = {
+            "dbId": self.dbId,
+            "sql": self.sql,
+            "schema": self.schema,
+            "catalog": self.catalog,
+            "autorun": self.autorun,
+            "templateParams": self.templateParams,
+            "queryLimit": self.queryLimit,
+            "name": self.name,
+        }
+        # Only merge non-None typed fields that are not already in state
+        for key, value in typed_fields.items():
+            if value is not None and key not in self.state:
+                self.state[key] = value

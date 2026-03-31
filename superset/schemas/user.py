@@ -40,3 +40,4 @@ class CurrentUserResponse(msgspec.Struct):
 class CurrentUserUpdateRequest(msgspec.Struct):
     first_name: str | None = None
     last_name: str | None = None
+    password: str | None = None

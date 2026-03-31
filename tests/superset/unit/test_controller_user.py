@@ -98,17 +98,23 @@ async def test_get_me_anonymous() -> None:
 
 async def test_get_my_roles(mock_user: MagicMock) -> None:
     role = MagicMock()
-    role.id = 1
     role.name = "Admin"
+    pvm = MagicMock()
+    pvm.permission.name = "can_read"
+    pvm.view_menu.name = "Dashboard"
+    role.permissions = [pvm]
     mock_user.roles = [role]
     result = await _get_my_roles(None, current_user=mock_user)
-    assert result["result"][0]["name"] == "Admin"
-    assert result["result"][0]["id"] == 1
+    assert "Admin" in result["result"]["roles"]
+    assert result["result"]["roles"]["Admin"] == [("can_read", "Dashboard")]
+    assert result["result"]["permissions"] == {"can_read": ["Dashboard"]}
+    assert result["result"]["username"] == "testuser"
 
 
 async def test_get_my_roles_empty(mock_user: MagicMock) -> None:
     result = await _get_my_roles(None, current_user=mock_user)
-    assert result["result"] == []
+    assert result["result"]["roles"] == {}
+    assert result["result"]["permissions"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +125,7 @@ async def test_get_my_roles_empty(mock_user: MagicMock) -> None:
 async def test_update_me(mock_user: MagicMock) -> None:
     data = CurrentUserUpdateRequest(first_name="New")
     user_dao = AsyncMock()
-    user_dao.get_by_id.return_value = mock_user
+    user_dao.find_by_id.return_value = mock_user
     result = await _update_me(None, data=data, current_user=mock_user, user_dao=user_dao)
     assert result["result"]["first_name"] == "New"
     assert "last_name" not in result["result"]
@@ -128,7 +134,7 @@ async def test_update_me(mock_user: MagicMock) -> None:
 async def test_update_me_both_fields(mock_user: MagicMock) -> None:
     data = CurrentUserUpdateRequest(first_name="New", last_name="Name")
     user_dao = AsyncMock()
-    user_dao.get_by_id.return_value = mock_user
+    user_dao.find_by_id.return_value = mock_user
     result = await _update_me(None, data=data, current_user=mock_user, user_dao=user_dao)
     assert result["result"]["first_name"] == "New"
     assert result["result"]["last_name"] == "Name"
@@ -148,7 +154,7 @@ async def test_update_me_empty(mock_user: MagicMock) -> None:
 
 async def test_avatar_not_found() -> None:
     user_dao = AsyncMock()
-    user_dao.get_by_id.return_value = None
+    user_dao.find_by_id.return_value = None
     with pytest.raises(ObjectNotFoundError):
         await _get_avatar(None, pk=999, user_dao=user_dao)
 
@@ -158,7 +164,7 @@ async def test_avatar_gravatar_fallback() -> None:
     user = MagicMock()
     user.email = "test@example.com"
     user.extra_attributes = []
-    user_dao.get_by_id.return_value = user
+    user_dao.find_by_id.return_value = user
     result = await _get_avatar(None, pk=1, user_dao=user_dao)
     assert "gravatar.com" in result.url
 
@@ -169,7 +175,7 @@ async def test_avatar_custom_url() -> None:
     attr = MagicMock()
     attr.avatar_url = "https://example.com/avatar.png"
     user.extra_attributes = [attr]
-    user_dao.get_by_id.return_value = user
+    user_dao.find_by_id.return_value = user
     result = await _get_avatar(None, pk=1, user_dao=user_dao)
     assert result.url == "https://example.com/avatar.png"
 
@@ -214,6 +220,7 @@ def test_current_user_update_request_defaults() -> None:
     req = CurrentUserUpdateRequest()
     assert req.first_name is None
     assert req.last_name is None
+    assert req.password is None
 
 
 # ---------------------------------------------------------------------------
@@ -223,5 +230,5 @@ def test_current_user_update_request_defaults() -> None:
 
 def test_controller_paths() -> None:
     assert CurrentUserController.path == "/api/v1/me"
-    assert UserController.path == "/api/v1/user"
+    assert UserController.path == "/api/v1/security/users"
     assert UserRegistrationsController.path == "/api/v1/security/user_registrations"

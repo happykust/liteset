@@ -148,3 +148,69 @@ class UnsetSystemDefaultCommand(AsyncBaseCommand[None]):
         if current_default:
             current_default.is_system_default = False
             await self._dao.session.flush()
+
+
+class BulkDeleteThemeCommand(AsyncBaseCommand[int]):
+    """Bulk delete themes by IDs. Returns count of deleted themes."""
+
+    def __init__(
+        self,
+        dao: AsyncThemeDAO,
+        ids: list[int],
+    ) -> None:
+        self._dao = dao
+        self._ids = ids
+
+    async def validate(self) -> None:
+        if not self._ids:
+            raise CommandInvalidError("No theme IDs provided")
+
+    async def run(self) -> int:
+        count = await self._dao.bulk_delete(self._ids)
+        await self._dao.session.flush()
+        return count
+
+
+class SetSystemDarkCommand(AsyncBaseCommand[Any]):
+    """Set a theme as the system dark theme, unsetting the previous one."""
+
+    def __init__(
+        self,
+        dao: AsyncThemeDAO,
+        pk: int,
+    ) -> None:
+        self._dao = dao
+        self._pk = pk
+        self._model: Any = None
+
+    async def validate(self) -> None:
+        self._model = await self._dao.find_by_id(self._pk)
+        if not self._model:
+            raise ObjectNotFoundError("Theme", self._pk)
+
+    async def run(self) -> Any:
+        current_dark = await self._dao.find_system_dark()
+        if current_dark and current_dark.id != self._pk:
+            current_dark.is_system_dark = False
+        self._model.is_system_dark = True
+        await self._dao.session.flush()
+        return self._model
+
+
+class UnsetSystemDarkCommand(AsyncBaseCommand[None]):
+    """Remove the system dark flag from the current dark theme."""
+
+    def __init__(
+        self,
+        dao: AsyncThemeDAO,
+    ) -> None:
+        self._dao = dao
+
+    async def validate(self) -> None:
+        pass
+
+    async def run(self) -> None:
+        current_dark = await self._dao.find_system_dark()
+        if current_dark:
+            current_dark.is_system_dark = False
+            await self._dao.session.flush()

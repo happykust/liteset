@@ -165,6 +165,24 @@ async def stream_zip(buf: io.BytesIO) -> AsyncGenerator[bytes, None]:
         yield chunk
 
 
+def build_export_headers(
+    filename: str,
+    token: str | None = None,
+) -> dict[str, str]:
+    """Build response headers for ZIP export endpoints.
+
+    Includes ``Content-Disposition`` and, when a ``token`` query parameter
+    is present, a ``Set-Cookie`` header that sets ``token=done`` so the
+    frontend can track download completion.
+    """
+    headers: dict[str, str] = {
+        "Content-Disposition": f"attachment; filename={filename}",
+    }
+    if token:
+        headers["Set-Cookie"] = f"token=done; Path=/; SameSite=Lax"
+    return headers
+
+
 def _escape_like(value: str) -> str:
     """Escape LIKE special characters (\\, %, _) to prevent wildcard injection.
 

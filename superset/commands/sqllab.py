@@ -137,16 +137,19 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
         key: str,
         rows: int | None = None,
         cache_manager: Any = None,
+        dao: "AsyncQueryDAO | Any | None" = None,
     ) -> None:
         self._key = key
         self._rows = rows
         self._cache_manager = cache_manager
+        self._dao = dao
 
     async def validate(self) -> None:
         if not self._key:
             raise CommandInvalidError("key is required")
 
     async def run(self) -> dict[str, Any]:
+        # 1. Try the cache first
         if self._cache_manager is not None:
             try:
                 getter = self._cache_manager.get(self._key)
@@ -157,6 +160,39 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
                     return result
             except Exception:  # noqa: BLE001
                 logger.warning("Cache get failed for key %s", self._key, exc_info=True)
+
+        # 2. Fallback: look up the Query by results_key and return its metadata
+        if self._dao is not None:
+            try:
+                query = await self._dao.find_one_or_none(results_key=self._key)
+                if query is not None:
+                    # Return the query metadata; actual data re-execution
+                    # requires a database connection which may not be available.
+                    extra = (
+                        query.get_extra_dict()
+                        if hasattr(query, "get_extra_dict")
+                        else {}
+                    )
+                    columns = extra.get("columns", [])
+                    return {
+                        "status": query.status or "success",
+                        "query": (
+                            query.to_dict()
+                            if hasattr(query, "to_dict")
+                            else {"id": query.id}
+                        ),
+                        "columns": columns,
+                        "selected_columns": columns,
+                        "expanded_columns": [],
+                        "data": [],
+                    }
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "DAO fallback failed for key %s",
+                    self._key,
+                    exc_info=True,
+                )
+
         return {"status": "not_found", "data": [], "columns": []}
 
 

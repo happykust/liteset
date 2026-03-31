@@ -62,35 +62,55 @@ def init() -> None:
     import anyio
 
     async def _init() -> None:
-        from sqlalchemy import select
-
         from superset.config import SupersetSettings
-        from superset.db.session import create_db_engine, create_session_factory
-        from superset.models.security import Role
+        from superset.db.session import (
+            create_db_engine,
+            create_session_factory,
+        )
+        from superset.security.sync_roles import (
+            sync_role_definitions,
+        )
 
         settings = SupersetSettings()  # type: ignore[call-arg]
         db_url = settings.sqlalchemy_database_uri
 
         safe_url = (
-            db_url.split('@')[-1] if '@' in db_url else db_url
+            db_url.split("@")[-1]
+            if "@" in db_url
+            else db_url
         )
-        click.echo(f"Connecting to database: {safe_url}")
+        click.echo(
+            f"Connecting to database: {safe_url}"
+        )
         engine = create_db_engine(db_url)
         session_factory = create_session_factory(engine)
 
-        default_roles = ["Admin", "Alpha", "Gamma", "Public", "sql_lab"]
-
+        click.echo("Syncing role definitions...")
+        public_role_like = getattr(
+            settings, "public_role_like", None
+        )
         async with session_factory() as session:
-            for role_name in default_roles:
-                stmt = select(Role).where(Role.name == role_name)
-                result = await session.execute(stmt)
-                existing = result.scalars().one_or_none()
-                if existing is None:
-                    session.add(Role(name=role_name))
-                    click.echo(f"  Created role: {role_name}")
-                else:
-                    click.echo(f"  Role already exists: {role_name}")
+            summary = await sync_role_definitions(
+                session,
+                public_role_like=public_role_like,
+            )
             await session.commit()
+
+        for role in summary.get(
+            "roles_synced", []
+        ):
+            count = summary.get(
+                f"{role.lower()}_permissions",
+                summary.get(
+                    f"{role}_permissions", "?"
+                ),
+            )
+            click.echo(f"  {role}: {count} permissions")
+
+        total = summary.get("total_pvms", "?")
+        click.echo(
+            f"  Total PVMs in database: {total}"
+        )
 
         await engine.dispose()
         click.echo("Initialization complete.")
@@ -114,20 +134,81 @@ def version(verbose: bool) -> None:
         click.echo(f"  SQLAlchemy: {sqlalchemy.__version__}")
 
 
-@superset_cli.group()
-def db() -> None:
-    """Database migration commands."""
+# -----------------------------------------------------------
+# Register sub-modules
+# -----------------------------------------------------------
 
+from superset.cli.db import db_group
 
-@db.command()
-@click.option("--revision", default="head", help="Revision target")
-def upgrade(revision: str) -> None:
-    """Run Alembic database migrations."""
-    click.echo(f"Upgrading database to {revision}...")
-    from alembic import command
-    from alembic.config import Config
+superset_cli.add_command(db_group, "db")
 
-    alembic_ini = Path(__file__).resolve().parent.parent.parent / "alembic.ini"
-    alembic_cfg = Config(str(alembic_ini))
-    command.upgrade(alembic_cfg, revision)
-    click.echo(f"Database upgraded to {revision}")
+# Users management (create-admin, create-user, list-users,
+# reset-password, load-test-users, fab group)
+try:
+    from superset.cli.users import (
+        create_admin,
+        create_user,
+        fab_group,
+        list_users,
+        load_test_users,
+        reset_password,
+    )
+
+    superset_cli.add_command(create_admin)
+    superset_cli.add_command(create_user)
+    superset_cli.add_command(list_users)
+    superset_cli.add_command(reset_password)
+    superset_cli.add_command(load_test_users)
+    superset_cli.add_command(fab_group, "fab")
+except ImportError:
+    pass
+
+# Import / export
+try:
+    from superset.cli.importexport import (
+        export_dashboards,
+        export_datasources,
+        import_dashboards,
+        import_datasources,
+        import_directory,
+    )
+
+    superset_cli.add_command(export_dashboards)
+    superset_cli.add_command(export_datasources)
+    superset_cli.add_command(import_dashboards)
+    superset_cli.add_command(import_datasources)
+    superset_cli.add_command(import_directory)
+except ImportError:
+    pass
+
+# Examples
+try:
+    from superset.cli.examples import load_examples
+
+    superset_cli.add_command(load_examples)
+except ImportError:
+    pass
+
+# Update utilities
+try:
+    from superset.cli.update import (
+        re_encrypt_secrets,
+        set_database_uri,
+        sync_tags,
+    )
+
+    superset_cli.add_command(set_database_uri)
+    superset_cli.add_command(sync_tags)
+    superset_cli.add_command(re_encrypt_secrets)
+except ImportError:
+    pass
+
+# Thumbnails
+try:
+    from superset.cli.thumbnails import (
+        compute_thumbnails,
+    )
+
+    superset_cli.add_command(compute_thumbnails)
+except ImportError:
+    pass
