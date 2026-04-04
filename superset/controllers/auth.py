@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 import jwt
 from litestar import Controller, get, post, Request
@@ -43,11 +43,17 @@ logger = logging.getLogger(__name__)
 # Overridden at runtime by ``settings.session_max_age``.
 _DEFAULT_SESSION_MAX_AGE: int = 86400 * 31
 
+# Flash message matching Flask-AppBuilder's invalid_login_message.
+_INVALID_LOGIN_MESSAGE: str = "Invalid login. Please try again."
+
+# Cookie name for one-shot flash messages (read once then cleared).
+_FLASH_COOKIE_NAME: str = "_flash"
+
 # Pre-computed hash used for timing balance when the user is not found or
 # inactive.  Mirrors Flask-AppBuilder's ``AUTH_DB_FAKE_PASSWORD_HASH_CHECK``.
 # Format: scrypt:32768:8:1 (werkzeug 3.0+ default).
 _FAKE_PASSWORD_HASH = (
-    "scrypt:32768:8:1$FakeTimingSalt01$"
+    "scrypt:32768:8:1$FakeTimingSalt01$"  # noqa: S105
     "0000000000000000000000000000000000000000000000000000"
     "0000000000000000000000000000000000000000000000000000"
     "00000000000000000000000000000000"
@@ -56,10 +62,10 @@ _FAKE_PASSWORD_HASH = (
 
 def _get_secret_key(settings: SupersetSettings) -> str:
     """Extract the secret key string from settings."""
-    secret_key = settings.secret_key
-    if hasattr(secret_key, "get_secret_value"):
-        secret_key = secret_key.get_secret_value()
-    return str(secret_key)
+    raw_key = settings.secret_key
+    if hasattr(raw_key, "get_secret_value"):
+        return raw_key.get_secret_value()
+    return str(raw_key)
 
 
 def _create_session_cookie(
@@ -110,10 +116,24 @@ class AuthController(Controller):
         if user is not None and getattr(user, "is_authenticated", False):
             return Redirect(path="/")
 
-        bootstrap = _build_bootstrap_data(UnauthenticatedUser(), settings)
+        # Read one-shot flash messages from cookie (set by failed POST /login/).
+        flash_messages: list[list[str]] = []
+        flash_raw = request.cookies.get(_FLASH_COOKIE_NAME)
+        if flash_raw:
+            import urllib.parse
+
+            flash_messages = [
+                ["warning", urllib.parse.unquote(flash_raw)],
+            ]
+
+        bootstrap = _build_bootstrap_data(
+            UnauthenticatedUser(),
+            settings,
+            flash_messages=flash_messages,
+        )
         import json
 
-        return Template(
+        response = Template(
             template_name="spa.html",
             context={
                 "bootstrap_data": json.dumps(bootstrap),
@@ -121,19 +141,30 @@ class AuthController(Controller):
                 "title": "Superset",
                 "assets_prefix": settings.static_assets_prefix,
                 "standalone_mode": False,
-                "favicons": [
-                    {"href": "/static/assets/images/favicon.png"}
-                ],
+                "favicons": [{"href": "/static/assets/images/favicon.png"}],
                 "csrf_token": "",
             },
         )
+        # Clear the flash cookie so the message shows only once.
+        if flash_raw:
+            from litestar.datastructures import Cookie
+
+            response.cookies.append(
+                Cookie(
+                    key=_FLASH_COOKIE_NAME,
+                    value="",
+                    max_age=0,
+                    path="/",
+                )
+            )
+        return response
 
     @post(
         ["/login/", "/login"],
         exclude_from_auth=True,
         opt={"exclude_from_csrf": True},
     )
-    async def login_submit(
+    async def login_submit(  # noqa: C901
         self,
         request: Request[Any, Any, Any],
         state: State,
@@ -160,7 +191,7 @@ class AuthController(Controller):
         password = str(form_data.get("password", ""))
 
         if not username or not password:
-            return Redirect(path="/login/")
+            return _login_failed_redirect()
 
         session_factory = state.session_factory
 
@@ -183,9 +214,7 @@ class AuthController(Controller):
             first_user = await dao.get_first_user()
             if first_user is not None:
                 first_user_id = first_user.id
-                first_user_login_count = (
-                    getattr(first_user, "login_count", 0) or 0
-                )
+                first_user_login_count = getattr(first_user, "login_count", 0) or 0
 
             user_by_name = await dao.get_user_by_username(username)
             if user_by_name is None:
@@ -196,9 +225,7 @@ class AuthController(Controller):
 
             if user_obj is not None:
                 user_id = user_obj.id
-                user_active = bool(
-                    getattr(user_obj, "active", False)
-                )
+                user_active = bool(getattr(user_obj, "active", False))
                 user_password = getattr(user_obj, "password", None)
 
         if user_id is None or not user_active:
@@ -221,18 +248,13 @@ class AuthController(Controller):
                         )
                         await session.commit()
                 except Exception:  # noqa: BLE001
-                    logger.debug(
-                        "Noop user update failed"
-                    )
-            return Redirect(path="/login/")
+                    logger.debug("Noop user update failed")
+            return _login_failed_redirect()
 
         # ------------------------------------------------------------------
         # Verify password (FAB stores werkzeug-hashed passwords)
         # ------------------------------------------------------------------
-        if (
-            not user_password
-            or not _check_password_hash(user_password, password)
-        ):
+        if not user_password or not _check_password_hash(user_password, password):
             logger.debug(
                 "Login failed: wrong password for '%s'",
                 username,
@@ -248,10 +270,8 @@ class AuthController(Controller):
                     )
                     await session.commit()
             except Exception:  # noqa: BLE001
-                logger.debug(
-                    "Failed to update fail_login_count"
-                )
-            return Redirect(path="/login/")
+                logger.debug("Failed to update fail_login_count")
+            return _login_failed_redirect()
 
         # ------------------------------------------------------------------
         # Authentication successful -- create session cookie
@@ -321,10 +341,10 @@ class AuthController(Controller):
 
         # Invalidate Redis cache and blacklist JWT tokens (best-effort)
         try:
-            from superset.security.session_decoder import SessionDecoder
+            from superset.security.session_decoder import FlaskSessionDecoder
 
             secret_key = _get_secret_key(settings)
-            decoder = SessionDecoder(secret_key=secret_key)
+            decoder = FlaskSessionDecoder(secret_key=secret_key)
             cookie_value = request.cookies.get(cookie_name)
             user_id = decoder.decode(cookie_value)
             if user_id is not None:
@@ -363,6 +383,32 @@ class AuthController(Controller):
         return redirect
 
 
+def _login_failed_redirect() -> Redirect:
+    """Return a redirect to /login/ with a flash cookie for the error message.
+
+    Mirrors Flask-AppBuilder's ``flash(self.invalid_login_message, "warning")``
+    followed by ``redirect(get_url_for_login)``.  The GET /login/ handler reads
+    the ``_flash`` cookie, includes it in ``bootstrap_data.common.flash_messages``,
+    and clears the cookie so the message shows only once.
+    """
+    import urllib.parse
+
+    from litestar.datastructures import Cookie
+
+    redirect = Redirect(path="/login/")
+    redirect.cookies.append(
+        Cookie(
+            key=_FLASH_COOKIE_NAME,
+            value=urllib.parse.quote(_INVALID_LOGIN_MESSAGE),
+            max_age=60,  # short-lived; consumed on next GET /login/
+            path="/",
+            httponly=True,
+            samesite="lax",
+        )
+    )
+    return redirect
+
+
 def _make_session_cookie(
     name: str,
     value: str,
@@ -370,7 +416,7 @@ def _make_session_cookie(
     *,
     secure: bool = False,
     httponly: bool = True,
-    samesite: str = "lax",
+    samesite: Literal["lax", "strict", "none"] = "lax",
 ) -> Any:
     """Create a Cookie object for session management.
 
