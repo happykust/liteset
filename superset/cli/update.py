@@ -107,7 +107,13 @@ def set_database_uri(database_name: str, uri: str, skip_create: bool) -> None:
 
 @click.command("sync-tags")
 def sync_tags() -> None:
-    """Rebuild special tags (owner, type, favorited by)."""
+    """Rebuild special tags (owner, type, favorited by).
+
+    For each object type (dashboard, chart, query, dataset) ensures that:
+      - type tags exist and are linked to every object
+      - owner tags exist for every user and are linked to objects they created
+      - favorited_by tags exist and are linked to favorited objects
+    """
     import anyio
 
     async def _sync() -> None:
@@ -121,7 +127,7 @@ def sync_tags() -> None:
         session_factory = create_session_factory(engine)
 
         async with session_factory() as session:
-            # Check if tagged_object table exists before syncing
+            # Check if tag tables exist before syncing
             result = await session.execute(
                 text(
                     "SELECT EXISTS ("
@@ -141,28 +147,190 @@ def sync_tags() -> None:
 
             click.echo("Syncing tags...")
 
-            # Sync type tags for dashboards
+            # ----------------------------------------------------------
+            # 1. Ensure type tags exist for every object type
+            # ----------------------------------------------------------
+            click.echo("  Adding type tags...")
+            for type_name in ("chart", "dashboard", "query", "dataset"):
+                await session.execute(
+                    text(
+                        "INSERT INTO tag (name, type) "
+                        "SELECT :tag_name, 'type' "
+                        "WHERE NOT EXISTS ("
+                        "  SELECT 1 FROM tag WHERE name = :tag_name"
+                        ")"
+                    ),
+                    {"tag_name": f"type:{type_name}"},
+                )
+
+            # Link type tags to objects that don't have them yet
+            # -- charts (slices table)
             await session.execute(
                 text(
-                    "INSERT INTO tag (name, type) "
-                    "SELECT DISTINCT 'type:dashboard', 'type' "
-                    "WHERE NOT EXISTS (SELECT 1 FROM tag WHERE name = 'type:dashboard')"
+                    "INSERT INTO tagged_object (tag_id, object_id, object_type) "
+                    "SELECT t.id, s.id, 'chart' "
+                    "FROM slices s "
+                    "JOIN tag t ON t.name = 'type:chart' "
+                    "LEFT JOIN tagged_object tobj "
+                    "  ON tobj.tag_id = t.id "
+                    "  AND tobj.object_id = s.id "
+                    "  AND tobj.object_type = 'chart' "
+                    "WHERE tobj.tag_id IS NULL"
                 )
             )
-            # Sync type tags for charts
+            # -- dashboards
             await session.execute(
                 text(
-                    "INSERT INTO tag (name, type) "
-                    "SELECT DISTINCT 'type:chart', 'type' "
-                    "WHERE NOT EXISTS (SELECT 1 FROM tag WHERE name = 'type:chart')"
+                    "INSERT INTO tagged_object (tag_id, object_id, object_type) "
+                    "SELECT t.id, d.id, 'dashboard' "
+                    "FROM dashboards d "
+                    "JOIN tag t ON t.name = 'type:dashboard' "
+                    "LEFT JOIN tagged_object tobj "
+                    "  ON tobj.tag_id = t.id "
+                    "  AND tobj.object_id = d.id "
+                    "  AND tobj.object_type = 'dashboard' "
+                    "WHERE tobj.tag_id IS NULL"
                 )
             )
-            # Sync type tags for datasets
+            # -- saved queries
             await session.execute(
                 text(
-                    "INSERT INTO tag (name, type) "
-                    "SELECT DISTINCT 'type:dataset', 'type' "
-                    "WHERE NOT EXISTS (SELECT 1 FROM tag WHERE name = 'type:dataset')"
+                    "INSERT INTO tagged_object (tag_id, object_id, object_type) "
+                    "SELECT t.id, sq.id, 'query' "
+                    "FROM saved_query sq "
+                    "JOIN tag t ON t.name = 'type:query' "
+                    "LEFT JOIN tagged_object tobj "
+                    "  ON tobj.tag_id = t.id "
+                    "  AND tobj.object_id = sq.id "
+                    "  AND tobj.object_type = 'query' "
+                    "WHERE tobj.tag_id IS NULL"
+                )
+            )
+            # -- datasets (tables table)
+            await session.execute(
+                text(
+                    "INSERT INTO tagged_object (tag_id, object_id, object_type) "
+                    "SELECT t.id, tbl.id, 'dataset' "
+                    "FROM tables tbl "
+                    "JOIN tag t ON t.name = 'type:dataset' "
+                    "LEFT JOIN tagged_object tobj "
+                    "  ON tobj.tag_id = t.id "
+                    "  AND tobj.object_id = tbl.id "
+                    "  AND tobj.object_type = 'dataset' "
+                    "WHERE tobj.tag_id IS NULL"
+                )
+            )
+
+            # ----------------------------------------------------------
+            # 2. Ensure owner tags exist for every user, then link
+            # ----------------------------------------------------------
+            click.echo("  Adding owner tags...")
+            user_rows = await session.execute(
+                text("SELECT id FROM ab_user")
+            )
+            for (user_id,) in user_rows:
+                await session.execute(
+                    text(
+                        "INSERT INTO tag (name, type) "
+                        "SELECT :tag_name, 'owner' "
+                        "WHERE NOT EXISTS ("
+                        "  SELECT 1 FROM tag WHERE name = :tag_name"
+                        ")"
+                    ),
+                    {"tag_name": f"owner:{user_id}"},
+                )
+
+            # Link owner tags to objects created by each user
+            # -- charts
+            await session.execute(
+                text(
+                    "INSERT INTO tagged_object (tag_id, object_id, object_type) "
+                    "SELECT t.id, s.id, 'chart' "
+                    "FROM slices s "
+                    "JOIN tag t ON t.name = 'owner:' || CAST(s.created_by_fk AS TEXT) "
+                    "LEFT JOIN tagged_object tobj "
+                    "  ON tobj.tag_id = t.id "
+                    "  AND tobj.object_id = s.id "
+                    "  AND tobj.object_type = 'chart' "
+                    "WHERE tobj.tag_id IS NULL "
+                    "  AND s.created_by_fk IS NOT NULL"
+                )
+            )
+            # -- dashboards
+            await session.execute(
+                text(
+                    "INSERT INTO tagged_object (tag_id, object_id, object_type) "
+                    "SELECT t.id, d.id, 'dashboard' "
+                    "FROM dashboards d "
+                    "JOIN tag t ON t.name = 'owner:' || CAST(d.created_by_fk AS TEXT) "
+                    "LEFT JOIN tagged_object tobj "
+                    "  ON tobj.tag_id = t.id "
+                    "  AND tobj.object_id = d.id "
+                    "  AND tobj.object_type = 'dashboard' "
+                    "WHERE tobj.tag_id IS NULL "
+                    "  AND d.created_by_fk IS NOT NULL"
+                )
+            )
+            # -- saved queries
+            await session.execute(
+                text(
+                    "INSERT INTO tagged_object (tag_id, object_id, object_type) "
+                    "SELECT t.id, sq.id, 'query' "
+                    "FROM saved_query sq "
+                    "JOIN tag t ON t.name = 'owner:' || CAST(sq.created_by_fk AS TEXT) "
+                    "LEFT JOIN tagged_object tobj "
+                    "  ON tobj.tag_id = t.id "
+                    "  AND tobj.object_id = sq.id "
+                    "  AND tobj.object_type = 'query' "
+                    "WHERE tobj.tag_id IS NULL "
+                    "  AND sq.created_by_fk IS NOT NULL"
+                )
+            )
+            # -- datasets
+            await session.execute(
+                text(
+                    "INSERT INTO tagged_object (tag_id, object_id, object_type) "
+                    "SELECT t.id, tbl.id, 'dataset' "
+                    "FROM tables tbl "
+                    "JOIN tag t ON t.name = 'owner:' || CAST(tbl.created_by_fk AS TEXT) "
+                    "LEFT JOIN tagged_object tobj "
+                    "  ON tobj.tag_id = t.id "
+                    "  AND tobj.object_id = tbl.id "
+                    "  AND tobj.object_type = 'dataset' "
+                    "WHERE tobj.tag_id IS NULL "
+                    "  AND tbl.created_by_fk IS NOT NULL"
+                )
+            )
+
+            # ----------------------------------------------------------
+            # 3. Ensure favorited_by tags exist, then link
+            # ----------------------------------------------------------
+            click.echo("  Adding favorited_by tags...")
+            for (user_id,) in (await session.execute(text("SELECT id FROM ab_user"))):
+                await session.execute(
+                    text(
+                        "INSERT INTO tag (name, type) "
+                        "SELECT :tag_name, 'favorited_by' "
+                        "WHERE NOT EXISTS ("
+                        "  SELECT 1 FROM tag WHERE name = :tag_name"
+                        ")"
+                    ),
+                    {"tag_name": f"favorited_by:{user_id}"},
+                )
+
+            # Link favorited_by tags to favorited objects
+            await session.execute(
+                text(
+                    "INSERT INTO tagged_object (tag_id, object_id, object_type) "
+                    "SELECT t.id, f.obj_id, LOWER(f.class_name) "
+                    "FROM favstar f "
+                    "JOIN tag t "
+                    "  ON t.name = 'favorited_by:' || CAST(f.user_id AS TEXT) "
+                    "LEFT JOIN tagged_object tobj "
+                    "  ON tobj.tag_id = t.id "
+                    "  AND tobj.object_id = f.obj_id "
+                    "  AND tobj.object_type = LOWER(f.class_name) "
+                    "WHERE tobj.tag_id IS NULL"
                 )
             )
 

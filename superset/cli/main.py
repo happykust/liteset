@@ -18,8 +18,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import click
 
 
@@ -74,21 +72,13 @@ def init() -> None:
         settings = SupersetSettings()  # type: ignore[call-arg]
         db_url = settings.sqlalchemy_database_uri
 
-        safe_url = (
-            db_url.split("@")[-1]
-            if "@" in db_url
-            else db_url
-        )
-        click.echo(
-            f"Connecting to database: {safe_url}"
-        )
+        safe_url = db_url.split("@")[-1] if "@" in db_url else db_url
+        click.echo(f"Connecting to database: {safe_url}")
         engine = create_db_engine(db_url)
         session_factory = create_session_factory(engine)
 
         click.echo("Syncing role definitions...")
-        public_role_like = getattr(
-            settings, "public_role_like", None
-        )
+        public_role_like = getattr(settings, "public_role_like", None)
         async with session_factory() as session:
             summary = await sync_role_definitions(
                 session,
@@ -96,21 +86,15 @@ def init() -> None:
             )
             await session.commit()
 
-        for role in summary.get(
-            "roles_synced", []
-        ):
+        for role in summary.get("roles_synced", []):
             count = summary.get(
                 f"{role.lower()}_permissions",
-                summary.get(
-                    f"{role}_permissions", "?"
-                ),
+                summary.get(f"{role}_permissions", "?"),
             )
             click.echo(f"  {role}: {count} permissions")
 
         total = summary.get("total_pvms", "?")
-        click.echo(
-            f"  Total PVMs in database: {total}"
-        )
+        click.echo(f"  Total PVMs in database: {total}")
 
         await engine.dispose()
         click.echo("Initialization complete.")
@@ -210,5 +194,13 @@ try:
     )
 
     superset_cli.add_command(compute_thumbnails)
+except ImportError:
+    pass
+
+# Database diagnostics (test-db)
+try:
+    from superset.cli.test_db import test_db
+
+    superset_cli.add_command(test_db)
 except ImportError:
     pass
