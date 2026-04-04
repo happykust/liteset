@@ -16,23 +16,33 @@
 # under the License.
 """Cache warming Celery tasks for Superset.
 
-Self-contained implementations with no superset dependency.
-:func:`fetch_url` performs an HTTP PUT to warm chart caches.
-:func:`cache_warmup` is a strategy-based stub for future expansion.
+Ported 1:1 from the original ``superset/tasks/cache.py``.
+Strategy classes query the database via :func:`superset.db.session.get_sync_session`
+and :func:`fetch_url` sends HTTP PUT requests to warm chart caches.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, TypedDict
+from typing import Any, Optional, TypedDict, Union
 from urllib import request
 from urllib.error import URLError
 
+from celery.beat import SchedulingError
 from celery.utils.log import get_task_logger
+from sqlalchemy import and_, func
 
 from superset.tasks.celery_app import celery_app
+from superset.tasks.exceptions import ExecutorNotFoundError, InvalidExecutorError
+from superset.tasks.utils import get_executor
 
 logger = get_task_logger(__name__)
 logger.setLevel(logging.INFO)
+
+
+# ---------------------------------------------------------------------------
+# Type definitions
+# ---------------------------------------------------------------------------
 
 
 class CacheWarmupPayload(TypedDict, total=False):
@@ -45,49 +55,468 @@ class CacheWarmupTask(TypedDict):
     username: str | None
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def get_task(
+    chart: Any,
+    dashboard: Any | None = None,
+) -> CacheWarmupTask:
+    """Return task for warming up a given chart/table cache.
+
+    Ported from the original ``get_task``. Reads ``CACHE_WARMUP_EXECUTORS``
+    from settings to determine which user should execute the warm-up.
+    """
+    from superset.config import SupersetSettings
+
+    settings = SupersetSettings()  # type: ignore[call-arg]
+    executors = settings.cache_warmup_executors
+
+    payload: CacheWarmupPayload = {"chart_id": chart.id}
+    if dashboard:
+        payload["dashboard_id"] = dashboard.id
+
+    username: str | None
+    try:
+        executor = get_executor(executors, chart)
+        username = executor[1]
+    except (ExecutorNotFoundError, InvalidExecutorError):
+        username = None
+
+    return {"payload": payload, "username": username}
+
+
+def _get_warmup_url() -> str:
+    """Build the chart warm-up cache URL from settings.
+
+    The original used ``get_url_path("ChartRestApi.warm_up_cache")`` which
+    relied on Flask's ``url_for()``. In Liteset we construct the URL
+    directly from ``webdriver_baseurl`` + the known API path.
+    """
+    from superset.config import SupersetSettings
+
+    settings = SupersetSettings()  # type: ignore[call-arg]
+    base_url = settings.webdriver_baseurl.rstrip("/")
+    return f"{base_url}/api/v1/chart/warm_up_cache"
+
+
+def _is_secure_url(url: str) -> bool:
+    """Check if the URL uses HTTPS."""
+    return url.startswith("https://")
+
+
+def _fetch_csrf_token(headers: dict[str, str]) -> dict[str, str]:
+    """Fetch a CSRF token for API requests.
+
+    The original used ``fetch_csrf_token`` from ``superset/tasks/utils.py``
+    which called ``get_url_path("SecurityRestApi.csrf_token")``. In Liteset
+    we construct the URL directly from settings.
+    """
+    from superset.config import SupersetSettings
+
+    settings = SupersetSettings()  # type: ignore[call-arg]
+    base_url = settings.webdriver_baseurl.rstrip("/")
+    url = f"{base_url}/api/v1/security/csrf_token/"
+
+    try:
+        req = request.Request(url, headers=headers, method="GET")  # noqa: S310
+        with request.urlopen(req, timeout=600) as response:  # noqa: S310
+            body = response.read().decode("utf-8")
+            import json
+
+            data = json.loads(body)
+            csrf_token = data.get("result", "")
+
+            session_cookie: str | None = None
+            cookie_headers = response.headers.get_all("set-cookie")
+            if cookie_headers:
+                for cookie in cookie_headers:
+                    cookie = cookie.split(";", 1)[0]
+                    name, value = cookie.split("=", 1)
+                    if name == "session":
+                        session_cookie = value
+                        break
+
+            result_headers: dict[str, str] = {}
+            if csrf_token:
+                result_headers["X-CSRFToken"] = csrf_token
+            if session_cookie:
+                result_headers["Cookie"] = f"session={session_cookie}"
+            return result_headers
+    except Exception:
+        logger.warning("Failed to fetch CSRF token", exc_info=True)
+        return {}
+
+
+def _get_auth_cookies(user: Any) -> dict[str, str]:
+    """Generate authentication cookies for a user.
+
+    The original used ``MachineAuthProvider.get_auth_cookies(user)`` which
+    relied on Flask's ``test_request_context`` and ``login_user``. In
+    Liteset we generate a session token using the JWT-based auth system.
+    """
+    # For Liteset, we use our auth middleware's session mechanism.
+    # In a Celery worker context, we create a minimal session cookie
+    # by encoding user info directly.
+    try:
+        from superset.config import SupersetSettings
+
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        secret_key = settings.secret_key.get_secret_value()
+
+        import hashlib
+        import hmac
+        import json
+
+        # Create a simple session payload matching the format expected
+        # by the AuthMiddleware / FlaskSessionDecoder
+        session_data = {
+            "_user_id": str(user.id),
+            "_fresh": True,
+            "_id": hashlib.sha256(str(user.id).encode()).hexdigest()[:16],
+        }
+        # Sign with HMAC for basic integrity
+        payload_bytes = json.dumps(session_data, sort_keys=True).encode()
+        signature = hmac.new(
+            secret_key.encode() if isinstance(secret_key, str) else secret_key,
+            payload_bytes,
+            hashlib.sha256,
+        ).hexdigest()
+
+        import base64
+
+        session_value = base64.b64encode(payload_bytes).decode() + "." + signature
+        return {"session": session_value}
+    except Exception:
+        logger.warning("Failed to generate auth cookies", exc_info=True)
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Strategy classes
+# ---------------------------------------------------------------------------
+
+
+class Strategy:
+    """A cache warm up strategy.
+
+    Each strategy defines a ``get_tasks`` method that returns a list of
+    tasks to send to the ``/api/v1/chart/warm_up_cache`` endpoint.
+
+    Strategies can be configured in ``superset_config.py``::
+
+        beat_schedule = {
+            'cache-warmup-hourly': {
+                'task': 'cache-warmup',
+                'schedule': crontab(minute=1, hour='*'),
+                'kwargs': {
+                    'strategy_name': 'top_n_dashboards',
+                    'top_n': 10,
+                    'since': '7 days ago',
+                },
+            },
+        }
+    """
+
+    def __init__(self) -> None:
+        pass
+
+    def get_tasks(self) -> list[CacheWarmupTask]:
+        raise NotImplementedError("Subclasses must implement get_tasks!")
+
+
+class DummyStrategy(Strategy):
+    """Warm up all charts.
+
+    This is a dummy strategy that will fetch all charts. Can be configured by::
+
+        beat_schedule = {
+            'cache-warmup-hourly': {
+                'task': 'cache-warmup',
+                'schedule': crontab(minute=1, hour='*'),
+                'kwargs': {'strategy_name': 'dummy'},
+            },
+        }
+    """
+
+    name = "dummy"
+
+    def get_tasks(self) -> list[CacheWarmupTask]:
+        from superset.db.session import get_sync_session
+        from superset.models.slice import Slice
+
+        session = get_sync_session()
+        try:
+            return [get_task(chart) for chart in session.query(Slice).all()]
+        finally:
+            session.close()
+
+
+class TopNDashboardsStrategy(Strategy):
+    """Warm up charts in the top-n dashboards.
+
+    Example config::
+
+        beat_schedule = {
+            'cache-warmup-hourly': {
+                'task': 'cache-warmup',
+                'schedule': crontab(minute=1, hour='*'),
+                'kwargs': {
+                    'strategy_name': 'top_n_dashboards',
+                    'top_n': 5,
+                    'since': '7 days ago',
+                },
+            },
+        }
+    """
+
+    name = "top_n_dashboards"
+
+    def __init__(self, top_n: int = 5, since: str = "7 days ago") -> None:
+        super().__init__()
+        self.top_n = top_n
+        self.since = since
+
+    def get_tasks(self) -> list[CacheWarmupTask]:
+        from superset.db.session import get_sync_session
+        from superset.models.core import Log
+        from superset.models.dashboard import Dashboard
+        from superset.utils.date import parse_human_datetime
+
+        since_dt = parse_human_datetime(self.since) if self.since else None
+
+        session = get_sync_session()
+        try:
+            records = (
+                session.query(Log.dashboard_id, func.count(Log.dashboard_id))
+                .filter(
+                    and_(Log.dashboard_id.isnot(None), Log.dttm >= since_dt)
+                )
+                .group_by(Log.dashboard_id)
+                .order_by(func.count(Log.dashboard_id).desc())
+                .limit(self.top_n)
+                .all()
+            )
+            dash_ids = [record.dashboard_id for record in records]
+            dashboards = (
+                session.query(Dashboard)
+                .filter(Dashboard.id.in_(dash_ids))
+                .all()
+            )
+
+            return [
+                get_task(chart, dashboard)
+                for dashboard in dashboards
+                for chart in dashboard.slices
+            ]
+        finally:
+            session.close()
+
+
+class DashboardTagsStrategy(Strategy):
+    """Warm up charts in dashboards with custom tags.
+
+    Example config::
+
+        beat_schedule = {
+            'cache-warmup-hourly': {
+                'task': 'cache-warmup',
+                'schedule': crontab(minute=1, hour='*'),
+                'kwargs': {
+                    'strategy_name': 'dashboard_tags',
+                    'tags': ['core', 'warmup'],
+                },
+            },
+        }
+    """
+
+    name = "dashboard_tags"
+
+    def __init__(self, tags: Optional[list[str]] = None) -> None:
+        super().__init__()
+        self.tags = tags or []
+
+    def get_tasks(self) -> list[CacheWarmupTask]:
+        from superset.db.session import get_sync_session
+        from superset.models.dashboard import Dashboard
+        from superset.models.slice import Slice
+        from superset.models.tags import Tag, TaggedObject
+
+        session = get_sync_session()
+        try:
+            tasks: list[CacheWarmupTask] = []
+            tags = session.query(Tag).filter(Tag.name.in_(self.tags)).all()
+            tag_ids = [tag.id for tag in tags]
+
+            # Add dashboards that are tagged
+            tagged_objects = (
+                session.query(TaggedObject)
+                .filter(
+                    and_(
+                        TaggedObject.object_type == "dashboard",
+                        TaggedObject.tag_id.in_(tag_ids),
+                    )
+                )
+                .all()
+            )
+            dash_ids = [
+                tagged_object.object_id for tagged_object in tagged_objects
+            ]
+            tagged_dashboards = session.query(Dashboard).filter(
+                Dashboard.id.in_(dash_ids)
+            )
+            for dashboard in tagged_dashboards:
+                for chart in dashboard.slices:
+                    tasks.append(get_task(chart))
+
+            # Add charts that are tagged
+            tagged_objects = (
+                session.query(TaggedObject)
+                .filter(
+                    and_(
+                        TaggedObject.object_type == "chart",
+                        TaggedObject.tag_id.in_(tag_ids),
+                    )
+                )
+                .all()
+            )
+            chart_ids = [
+                tagged_object.object_id for tagged_object in tagged_objects
+            ]
+            tagged_charts = session.query(Slice).filter(
+                Slice.id.in_(chart_ids)
+            )
+            for chart in tagged_charts:
+                tasks.append(get_task(chart))
+
+            return tasks
+        finally:
+            session.close()
+
+
+strategies = [DummyStrategy, TopNDashboardsStrategy, DashboardTagsStrategy]
+
+
+# ---------------------------------------------------------------------------
+# Celery tasks
+# ---------------------------------------------------------------------------
+
+
 @celery_app.task(name="superset.tasks.cache.fetch_url")
 def fetch_url(data: str, headers: dict[str, str]) -> dict[str, str]:
     """Fetch a URL to warm up the chart cache.
 
     Sends an HTTP PUT request with the provided *data* payload and
-    *headers*.  Returns a dict indicating success or failure.
+    *headers* to the chart warm-up cache endpoint.
+    Returns a dict indicating success or failure.
     """
     result: dict[str, str] = {}
     try:
-        logger.info("Fetching cache warmup with payload %s", data)
+        url = _get_warmup_url()
+
+        if _is_secure_url(url):
+            logger.info("URL '%s' is secure. Adding Referer header.", url)
+            headers.update({"Referer": url})
+
+        # Fetch CSRF token for API request
+        headers.update(_fetch_csrf_token(headers))
+
+        logger.info("Fetching %s with payload %s", url, data)
         req = request.Request(  # noqa: S310
-            data,
-            data=bytes(data, "utf-8"),
-            headers=headers,
-            method="PUT",
+            url, data=bytes(data, "utf-8"), headers=headers, method="PUT"
         )
         response = request.urlopen(req, timeout=600)  # noqa: S310
-        logger.info("Fetched with payload %s, status code: %s", data, response.code)
+        logger.info(
+            "Fetched %s with payload %s, status code: %s", url, data, response.code
+        )
         if response.code == 200:
             result = {"success": data, "response": response.read().decode("utf-8")}
         else:
             result = {"error": data, "status_code": str(response.code)}
             logger.error(
-                "Error fetching with payload %s, status code: %s",
+                "Error fetching %s with payload %s, status code: %s",
+                url,
                 data,
                 response.code,
             )
-    except URLError:
-        logger.exception("Error fetching cache warmup URL with payload %s", data)
-        result = {"error": data}
+    except URLError as err:
+        logger.exception("Error warming up cache!")
+        result = {"error": data, "exception": str(err)}
     return result
 
 
 @celery_app.task(name="superset.tasks.cache.cache_warmup")
 def cache_warmup(
     strategy_name: str, *args: Any, **kwargs: Any
-) -> list[dict[str, Any]]:
-    """Warm up cache using the specified strategy.
+) -> Union[dict[str, list[str]], str]:
+    """Warm up cache.
 
-    Strategy classes (TopNDashboards, DashboardTags, etc.) are not yet
-    ported.  This stub logs the invocation and returns an empty list.
+    This task periodically hits charts to warm up the cache.
+    Ported from the original ``cache_warmup`` task.
     """
-    logger.info("Cache warmup requested with strategy: %s", strategy_name)
-    # TODO: implement strategy classes (DummyStrategy, TopNDashboardsStrategy,
-    # DashboardTagsStrategy) using superset DAOs once available.
-    return []
+    import json as json_module
+
+    from superset.db.session import get_sync_session
+
+    logger.info("Loading strategy")
+    class_: type[Strategy] | None = None
+    for class_ in strategies:
+        if class_.name == strategy_name:  # type: ignore[attr-defined]
+            break
+    else:
+        message = f"No strategy {strategy_name} found!"
+        logger.error(message, exc_info=True)
+        return message
+
+    logger.info("Loading %s", class_.__name__)
+    try:
+        strategy = class_(*args, **kwargs)
+        logger.info("Success!")
+    except TypeError:
+        message = "Error loading strategy!"
+        logger.exception(message)
+        return message
+
+    results: dict[str, list[str]] = {"scheduled": [], "errors": []}
+
+    # Load users for cookie generation via sync session
+    session = get_sync_session()
+    try:
+        for task in strategy.get_tasks():
+            username = task["username"]
+            payload = json_module.dumps(task["payload"])
+            if username:
+                try:
+                    from sqlalchemy import select
+
+                    from superset.models.security import User
+
+                    stmt = select(User).where(User.username == username)
+                    user = session.execute(stmt).scalars().one_or_none()
+                    if user is None:
+                        logger.warning(
+                            "User %s not found for payload: %s", username, payload
+                        )
+                        continue
+
+                    cookies = _get_auth_cookies(user)
+                    headers = {
+                        "Cookie": f"session={cookies.get('session', '')}",
+                        "Content-Type": "application/json",
+                    }
+                    logger.info("Scheduling %s", payload)
+                    fetch_url.delay(payload, headers)
+                    results["scheduled"].append(payload)
+                except SchedulingError:
+                    logger.exception(
+                        "Error scheduling fetch_url for payload: %s", payload
+                    )
+                    results["errors"].append(payload)
+            else:
+                logger.warning("Executor not found for %s", payload)
+    finally:
+        session.close()
+
+    return results
