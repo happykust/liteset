@@ -129,6 +129,63 @@ class Query(Base, ExtraJSONMixin):
         foreign_keys=[user_id],
     )
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize query to a dict matching the original camelCase contract.
+
+        The frontend relies on these exact keys (dbId, endDttm, startDttm,
+        sqlEditorId, etc.) so we must preserve the original naming.
+        """
+        user_label = ""
+        if self.user:
+            user_label = (
+                getattr(self.user, "username", None)
+                or getattr(self.user, "email", None)
+                or str(self.user)
+            )
+
+        changed_on_iso = ""
+        if self.changed_on is not None:
+            changed_on_iso = self.changed_on.isoformat()
+
+        return {
+            "changed_on": changed_on_iso,
+            "dbId": self.database_id,
+            "db": (
+                self.database.database_name
+                if self.database is not None
+                else None
+            ),
+            "endDttm": self.end_time,
+            "errorMessage": self.error_message,
+            "executedSql": self.executed_sql,
+            "id": self.client_id,
+            "queryId": self.id,
+            "limit": self.limit,
+            "limitingFactor": (
+                self.limiting_factor.value
+                if isinstance(self.limiting_factor, LimitingFactor)
+                else self.limiting_factor
+            ),
+            "progress": self.progress,
+            "rows": self.rows,
+            "catalog": self.catalog,
+            "schema": self.schema,
+            "ctas": self.select_as_cta,
+            "serverId": self.id,
+            "sql": self.sql,
+            "sqlEditorId": self.sql_editor_id,
+            "startDttm": self.start_time,
+            "state": (self.status or "").lower(),
+            "tab": self.tab_name,
+            "tempSchema": self.tmp_schema_name,
+            "tempTable": self.tmp_table_name,
+            "userId": self.user_id,
+            "user": user_label,
+            "resultsKey": self.results_key,
+            "trackingUrl": self.tracking_url_raw,
+            "extra": self.extra,
+        }
+
 
 # ---------------------------------------------------------------------------
 # SavedQuery

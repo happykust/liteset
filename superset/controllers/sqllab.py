@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Any
 
 from litestar import Controller, get, post
+from litestar.datastructures import State
 from litestar.di import Provide
 from litestar.response import Response
 from sqlalchemy import select
@@ -236,7 +237,9 @@ class SqlLabController(Controller):
         data: ExecutePayloadSchema,
         dao: QueryDAOProtocol,
         current_user: UserProtocol,
+        state: State,
     ) -> dict[str, Any]:
+        settings = state.settings
         cmd = ExecuteSQLCommand(
             dao=dao,  # type: ignore[arg-type]
             database_id=data.database_id,
@@ -250,6 +253,10 @@ class SqlLabController(Controller):
             run_async=data.runAsync,
             client_id=data.client_id,
             user_id=current_user.id,
+            sql_editor_id=data.sql_editor_id,
+            tab=data.tab,
+            expand_data=data.expand_data,
+            sql_max_row=getattr(settings, "sql_max_row", 100000),
         )
         result = await cmd.execute()
         event_logger.log("sqllab.execute", user_id=current_user.id)

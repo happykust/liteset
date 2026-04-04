@@ -234,6 +234,16 @@ class ExtraJSONMixin:
     def extra(self, extras: dict[str, Any]) -> None:
         self.extra_json = json.dumps(extras)
 
+    def set_extra_json_key(self, key: str, value: Any) -> None:
+        """Set a single key in the extra JSON dict."""
+        extra = self.extra
+        extra[key] = value
+        self.extra_json = json.dumps(extra)
+
+    def get_extra_dict(self) -> dict[str, Any]:
+        """Alias for the ``extra`` property — used by callers that expect a method."""
+        return self.extra
+
 
 class CertificationMixin:
     """Certification tracking columns."""
