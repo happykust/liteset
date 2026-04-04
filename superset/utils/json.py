@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import copy
 import datetime
 import decimal
 import json
@@ -27,7 +28,10 @@ from datetime import date, time, timedelta
 from typing import Any
 
 import numpy as np
-import pytz
+import pytz  # type: ignore[import-untyped]
+from jsonpath_ng import parse  # type: ignore[import-untyped]
+
+from superset.constants import PASSWORD_MASK
 
 # ---------------------------------------------------------------------------
 # Epoch helpers (ported from superset.utils.dates)
@@ -128,7 +132,7 @@ def json_int_dttm_ser(obj: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _default_serializer(obj: Any) -> Any:
+def _default_serializer(obj: Any) -> Any:  # noqa: C901
     """Handle datetime, UUID, Decimal, numpy types, NaN, set, timedelta, time."""
     if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
         return None
@@ -166,3 +170,59 @@ def dumps(obj: Any, **kwargs: Any) -> str:
 
 def loads(s: str | bytes, **kwargs: Any) -> Any:
     return json.loads(s, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Sensitive field masking/unmasking (ported from superset.utils.json)
+# ---------------------------------------------------------------------------
+
+
+def redact_sensitive(
+    payload: dict[str, Any],
+    sensitive_fields: set[str],
+) -> dict[str, Any]:
+    """
+    Redacts sensitive fields from a payload.
+
+    :param payload: The payload to redact
+    :param sensitive_fields: The set of fields to redact, as JSONPath expressions
+    :returns: The redacted payload
+    """
+    redacted_payload = copy.deepcopy(payload)
+
+    for json_path in sensitive_fields:
+        jsonpath_expr = parse(json_path)
+        for match in jsonpath_expr.find(redacted_payload):
+            match.context.value[match.path.fields[0]] = PASSWORD_MASK
+
+    return redacted_payload
+
+
+def reveal_sensitive(
+    old_payload: dict[str, Any],
+    new_payload: dict[str, Any],
+    sensitive_fields: set[str],
+) -> dict[str, Any]:
+    """
+    Reveals sensitive fields from a payload when not modified.
+
+    This allows users to perform deep edits on a payload without having to provide
+    sensitive information. The old payload is sent to the user with any sensitive fields
+    masked, and when the user sends back a modified payload, any fields that were masked
+    are replaced with the original values from the old payload.
+
+    :param old_payload: The old payload to reveal
+    :param new_payload: The new payload to reveal
+    :param sensitive_fields: The set of fields to reveal, as JSONPath expressions
+    :returns: The revealed payload
+    """
+    revealed_payload = copy.deepcopy(new_payload)
+
+    for json_path in sensitive_fields:
+        jsonpath_expr = parse(json_path)
+        for match in jsonpath_expr.find(revealed_payload):
+            if match.value == PASSWORD_MASK:
+                old_value = match.full_path.find(old_payload)
+                match.context.value[match.path.fields[0]] = old_value[0].value
+
+    return revealed_payload

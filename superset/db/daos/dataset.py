@@ -16,7 +16,7 @@
 # under the License.
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -88,6 +88,48 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         result = await self.session.execute(stmt)
         found = set(result.scalars().all())
         return found >= set(metric_ids)
+
+    async def validate_columns_uniqueness(
+        self,
+        dataset_id: int,
+        columns_names: list[str],
+    ) -> bool:
+        """Check for duplicate column names in a dataset.
+
+        Returns True if none of the given column names already exist
+        on the dataset.
+
+        Ports the original ``DatasetDAO.validate_columns_uniqueness`` logic.
+        """
+        if not columns_names:
+            return True
+        stmt = select(TableColumn.id).where(
+            TableColumn.table_id == dataset_id,
+            TableColumn.column_name.in_(columns_names),
+        )
+        result = await self.session.execute(stmt)
+        return len(list(result.scalars().all())) == 0
+
+    async def validate_metrics_uniqueness(
+        self,
+        dataset_id: int,
+        metrics_names: list[str],
+    ) -> bool:
+        """Check for duplicate metric names in a dataset.
+
+        Returns True if none of the given metric names already exist
+        on the dataset.
+
+        Ports the original ``DatasetDAO.validate_metrics_uniqueness`` logic.
+        """
+        if not metrics_names:
+            return True
+        stmt = select(SqlMetric.id).where(
+            SqlMetric.table_id == dataset_id,
+            SqlMetric.metric_name.in_(metrics_names),
+        )
+        result = await self.session.execute(stmt)
+        return len(list(result.scalars().all())) == 0
 
     async def update(
         self,

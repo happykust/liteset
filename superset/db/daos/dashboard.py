@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json as _json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -31,6 +31,7 @@ from superset.models.core import FavStarClassName
 from superset.models.dashboard import Dashboard
 from superset.models.embedded_dashboard import EmbeddedDashboard
 from superset.models.slice import Slice
+from superset.utils.dashboard_filter_scopes_converter import copy_filter_scopes
 from superset.utils.json import dumps, loads
 
 logger = logging.getLogger(__name__)
@@ -90,12 +91,18 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         self,
         dashboard: Dashboard,
         data: dict[str, Any],
+        old_to_new_slice_ids: dict[int, int] | None = None,
     ) -> None:
         """Update dashboard JSON metadata from data dict.
 
-        Syncs slices from position data and filters default_filters
-        to only include applicable slice IDs.
+        Ports the original ``DashboardDAO.set_dash_metadata`` logic:
+        - Syncs slices from position data
+        - Adds UUID references into position entries
+        - Handles ``filter_scopes`` remapping when slices are duplicated
+        - Filters ``default_filters`` to only applicable slice IDs
+        - Sets all remaining metadata keys with their proper defaults
         """
+        new_filter_scopes: dict[str, Any] = {}
         md: dict[str, Any] = {}
         if dashboard.json_metadata:
             try:
@@ -103,41 +110,33 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
             except (ValueError, TypeError):
                 pass
 
-        # Handle positions and sync slices
-        if "positions" in data:
-            positions = data["positions"]
-            if isinstance(positions, str):
-                try:
-                    positions = loads(positions)
-                except (ValueError, TypeError):
-                    positions = {}
-
-            # Extract chart IDs from positions
+        if (positions := data.get("positions")) is not None:
+            # find slices in the position data
             slice_ids = [
                 value.get("meta", {}).get("chartId")
                 for value in positions.values()
-                if isinstance(value, dict) and value.get("meta", {}).get("chartId")
+                if isinstance(value, dict)
             ]
 
-            if slice_ids:
-                # Sync dashboard slices from positions
-                stmt = select(Slice).where(Slice.id.in_(slice_ids))
-                result = await self.session.execute(stmt)
-                current_slices = list(result.scalars().all())
-                await self.session.refresh(dashboard, attribute_names=["slices"])
-                dashboard.slices = current_slices
+            stmt = select(Slice).where(Slice.id.in_(slice_ids))
+            result = await self.session.execute(stmt)
+            current_slices = list(result.scalars().all())
 
-                # Add UUID to positions
-                uuid_map = {s.id: str(s.uuid) for s in current_slices}
-                for obj in positions.values():
-                    if (
-                        isinstance(obj, dict)
-                        and obj.get("type") == "CHART"
-                        and obj.get("meta", {}).get("chartId")
-                    ):
-                        chart_id = obj["meta"]["chartId"]
-                        obj["meta"]["uuid"] = uuid_map.get(chart_id)
+            await self.session.refresh(dashboard, attribute_names=["slices"])
+            dashboard.slices = current_slices
 
+            # add UUID to positions
+            uuid_map = {slc.id: str(slc.uuid) for slc in current_slices}
+            for obj in positions.values():
+                if (
+                    isinstance(obj, dict)
+                    and obj["type"] == "CHART"
+                    and obj["meta"]["chartId"]
+                ):
+                    chart_id = obj["meta"]["chartId"]
+                    obj["meta"]["uuid"] = uuid_map.get(chart_id)
+
+            # remove leading and trailing white spaces in the dumped json
             dashboard.position_json = dumps(  # type: ignore[assignment]
                 positions,
                 indent=None,
@@ -145,42 +144,56 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
                 sort_keys=True,
             )
 
-            # Filter default_filters to applicable slices only
-            if "default_filters" in data:
-                try:
-                    default_filters_data = loads(
-                        data["default_filters"]
-                        if isinstance(data["default_filters"], str)
-                        else dumps(data["default_filters"])
-                    )
-                    applicable_filters = {
-                        key: v
-                        for key, v in default_filters_data.items()
-                        if int(key) in slice_ids
+            if "filter_scopes" in data:
+                # replace filter_id and immune ids from old slice id to new slice id:
+                # and remove slice ids that are not in dash anymore
+                slc_id_dict: dict[int, int] = {}
+                if old_to_new_slice_ids:
+                    slc_id_dict = {
+                        old: new
+                        for old, new in old_to_new_slice_ids.items()
+                        if new in slice_ids
                     }
-                    md["default_filters"] = dumps(applicable_filters)
-                except (ValueError, TypeError):
-                    md["default_filters"] = data["default_filters"]
+                else:
+                    slc_id_dict = {sid: sid for sid in slice_ids if sid is not None}
+                new_filter_scopes = copy_filter_scopes(
+                    old_to_new_slc_id_dict=slc_id_dict,
+                    old_filter_scopes=loads(data["filter_scopes"] or "{}")
+                    if isinstance(data["filter_scopes"], str)
+                    else data["filter_scopes"],
+                )
 
-            # positions have their own column, no need in metadata
+            default_filters_data = loads(data.get("default_filters", "{}"))
+            applicable_filters = {
+                key: v
+                for key, v in default_filters_data.items()
+                if int(key) in slice_ids
+            }
+            md["default_filters"] = dumps(applicable_filters)
+
+            # positions have their own column, no need to store it in metadata
             md.pop("positions", None)
 
-        # Update simple metadata keys
-        for key in (
-            "color_namespace",
-            "color_scheme",
-            "label_colors",
-            "shared_label_colors",
-            "color_scheme_domain",
-            "refresh_frequency",
-            "timed_refresh_immune_slices",
-            "expanded_slices",
-            "cross_filters_enabled",
-            "native_filter_configuration",
-        ):
-            if key in data:
-                md[key] = data[key]
+        if new_filter_scopes:
+            md["filter_scopes"] = new_filter_scopes
+        else:
+            md.pop("filter_scopes", None)
 
+        md.setdefault("timed_refresh_immune_slices", [])
+
+        if data.get("color_namespace") is None:
+            md.pop("color_namespace", None)
+        else:
+            md["color_namespace"] = data.get("color_namespace")
+
+        md["expanded_slices"] = data.get("expanded_slices", {})
+        md["refresh_frequency"] = data.get("refresh_frequency", 0)
+        md["color_scheme"] = data.get("color_scheme", "")
+        md["label_colors"] = data.get("label_colors", {})
+        md["shared_label_colors"] = data.get("shared_label_colors", [])
+        md["map_label_colors"] = data.get("map_label_colors", {})
+        md["color_scheme_domain"] = data.get("color_scheme_domain", [])
+        md["cross_filters_enabled"] = data.get("cross_filters_enabled", True)
         dashboard.json_metadata = dumps(md)  # type: ignore[assignment]
 
     async def copy_dashboard(
@@ -191,76 +204,54 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
     ) -> Dashboard:
         """Create a copy of a dashboard including its slices.
 
-        When ``duplicate_slices`` is True in *data*, each slice is cloned
-        (new Slice row with a fresh ID) and ``position_json`` is updated
-        so that chartId references point to the newly created slice IDs.
-        This mirrors the Superset ``DashboardDAO.copy_dashboard`` behaviour.
+        Ports the original ``DashboardDAO.copy_dashboard`` logic:
+        - When ``duplicate_slices`` is True, each slice is cloned and
+          ``positions`` metadata is updated with new chartId references.
+        - Calls ``set_dash_metadata`` with the old-to-new slice ID mapping
+          so that filter_scopes and default_filters are properly remapped.
         """
         dash = Dashboard()
-        dash.dashboard_title = data.get(
-            "dashboard_title", original_dash.dashboard_title
-        )
-        dash.description = data.get("description", original_dash.description)
-        dash.css = data.get("css", original_dash.css)
-        dash.position_json = original_dash.position_json
-        dash.json_metadata = data.get("json_metadata", original_dash.json_metadata)
-        dash.published = original_dash.published
         dash.owners = [current_user] if current_user else []
+        dash.dashboard_title = data["dashboard_title"]
+        dash.css = data.get("css")
+
+        metadata = loads(data["json_metadata"])
+        old_to_new_slice_ids: dict[int, int] = {}
 
         # Explicitly load lazy relationship to avoid MissingGreenlet in async context
         await self.session.refresh(original_dash, attribute_names=["slices"])
 
-        duplicate_slices = data.get("duplicate_slices", False)
-
-        if original_dash.slices and duplicate_slices:
-            # Clone each slice and build old_id -> new_id mapping
-            old_to_new: dict[int, int] = {}
-            new_slices: list[Slice] = []
-            for orig_slice in original_dash.slices:
-                cloned = Slice(
-                    slice_name=orig_slice.slice_name,
-                    viz_type=orig_slice.viz_type,
-                    datasource_id=orig_slice.datasource_id,
-                    datasource_type=orig_slice.datasource_type,
-                    params=orig_slice.params,
-                    query_context=getattr(orig_slice, "query_context", None),
-                    description=getattr(orig_slice, "description", None),
-                    cache_timeout=getattr(orig_slice, "cache_timeout", None),
+        if data.get("duplicate_slices"):
+            # Duplicating slices as well, mapping old ids to new ones
+            for slc in original_dash.slices:
+                new_slice = Slice(
+                    slice_name=slc.slice_name,
+                    datasource_id=slc.datasource_id,
+                    datasource_type=slc.datasource_type,
+                    datasource_name=getattr(slc, "datasource_name", None),
+                    viz_type=slc.viz_type,
+                    params=slc.params,
+                    description=getattr(slc, "description", None),
+                    cache_timeout=getattr(slc, "cache_timeout", None),
                 )
                 if current_user is not None:
-                    cloned.created_by_fk = getattr(current_user, "id", None)
-                    cloned.changed_by_fk = getattr(current_user, "id", None)
-                    cloned.owners = [current_user]
-                self.session.add(cloned)
-                await self.session.flush()  # assigns cloned.id
-                old_to_new[orig_slice.id] = cloned.id
-                new_slices.append(cloned)
+                    new_slice.owners = [current_user]
+                self.session.add(new_slice)
+                await self.session.flush()
+                new_slice.dashboards.append(dash)
+                old_to_new_slice_ids[slc.id] = new_slice.id
 
-            dash.slices = new_slices
-
-            # Update chartId references in position_json
-            if dash.position_json:
-                try:
-                    positions = _json.loads(dash.position_json)
-                    for value in positions.values():
-                        if not isinstance(value, dict):
-                            continue
-                        meta = value.get("meta", {})
-                        old_chart_id = meta.get("chartId")
-                        if old_chart_id and old_chart_id in old_to_new:
-                            meta["chartId"] = old_to_new[old_chart_id]
-                    dash.position_json = _json.dumps(
-                        positions, separators=(",", ":"), sort_keys=True
-                    )
-                except (ValueError, TypeError):
-                    logger.warning(
-                        "Could not update position_json chartId references "
-                        "during dashboard copy"
-                    )
-        elif original_dash.slices:
-            # No duplication — share the same slice references
+            # update chartId of layout entities
+            for value in metadata.get("positions", {}).values():
+                if isinstance(value, dict) and value.get("meta", {}).get("chartId"):
+                    old_id = value["meta"]["chartId"]
+                    new_id = old_to_new_slice_ids.get(old_id)
+                    value["meta"]["chartId"] = new_id
+        else:
             dash.slices = list(original_dash.slices)
 
+        dash.params = original_dash.params
+        await self.set_dash_metadata(dash, metadata, old_to_new_slice_ids)
         self.session.add(dash)
         return dash
 
@@ -293,9 +284,15 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
             return []
         from superset.models.connectors import SqlaTable
 
-        stmt = select(SqlaTable).where(SqlaTable.id.in_(datasource_ids)).options(
-            selectinload(SqlaTable.database),
-            selectinload(SqlaTable.columns),
+        stmt = (
+            select(SqlaTable)
+            .where(SqlaTable.id.in_(datasource_ids))
+            .options(
+                selectinload(SqlaTable.database),
+                selectinload(SqlaTable.columns),
+                selectinload(SqlaTable.metrics),
+                selectinload(SqlaTable.owners),
+            )
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
@@ -349,6 +346,7 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         self,
         dashboard: Dashboard,
         data: dict[str, Any],
+        mark_updated: bool = True,
     ) -> None:
         """Update color-related keys in dashboard metadata."""
         md: dict[str, Any] = {}
@@ -368,6 +366,11 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
             if key in data:
                 md[key] = data[key]
         dashboard.json_metadata = dumps(md)  # type: ignore[assignment]
+        if not mark_updated:
+            # Preserve the current changed_on so the onupdate trigger is suppressed
+            prev_changed_on = dashboard.changed_on
+            # Re-assign to override the SQLAlchemy onupdate after flush
+            dashboard.changed_on = prev_changed_on
 
 
 class AsyncEmbeddedDashboardDAO(BaseAsyncDAO[EmbeddedDashboard]):
@@ -399,11 +402,11 @@ class AsyncEmbeddedDashboardDAO(BaseAsyncDAO[EmbeddedDashboard]):
         """Create or update embedded dashboard config."""
         existing = await self.find_by_dashboard_id(dashboard_id)
         if existing:
-            existing.allowed_domains = allowed_domains  # type: ignore[misc]
+            existing.allow_domain_list = _json.dumps(allowed_domains)  # type: ignore[assignment]
             return existing
         embedded = EmbeddedDashboard(
             dashboard_id=dashboard_id,
-            allowed_domains=allowed_domains,
+            allow_domain_list=_json.dumps(allowed_domains),
         )
         self.session.add(embedded)
         return embedded

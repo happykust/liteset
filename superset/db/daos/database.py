@@ -16,6 +16,7 @@
 # under the License.
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sqlalchemy import select
@@ -27,10 +28,55 @@ from superset.models.core import Database
 from superset.models.dashboard import Dashboard, dashboard_slices
 from superset.models.slice import Slice
 from superset.models.sql_lab import TabState
+from superset.utils.json import loads, dumps, reveal_sensitive
+
+logger = logging.getLogger(__name__)
 
 
 class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
     model_cls = Database
+
+    # Default JSONPath pattern matching all top-level keys in encrypted_extra.
+    # This matches BaseEngineSpec.encrypted_extra_sensitive_fields from the
+    # original Superset, ensuring masked values are properly unmasked before
+    # persisting updates.
+    _encrypted_extra_sensitive_fields: set[str] = {"$.*"}  # noqa: RUF012
+
+    async def update(
+        self,
+        item: Database,
+        attributes: dict[str, Any],
+    ) -> Database:
+        """
+        Unmask ``encrypted_extra`` before updating.
+
+        When a database is edited the user sees a masked version of
+        ``encrypted_extra``. The masked values should be unmasked before the
+        database is updated so that the original sensitive data is preserved.
+
+        Ports the original ``DatabaseDAO.update`` logic.
+        """
+        if "encrypted_extra" in attributes:
+            old_encrypted = item.encrypted_extra
+            new_encrypted = attributes["encrypted_extra"]
+
+            if old_encrypted is not None and new_encrypted is not None:
+                try:
+                    old_config = loads(old_encrypted)
+                    new_config = loads(new_encrypted)
+                    new_config = reveal_sensitive(
+                        old_config,
+                        new_config,
+                        self._encrypted_extra_sensitive_fields,
+                    )
+                    attributes["encrypted_extra"] = dumps(new_config)
+                except (TypeError, ValueError):
+                    # If JSON parsing fails, pass through the new value as-is
+                    logger.warning(
+                        "Could not unmask encrypted_extra during database update"
+                    )
+
+        return await super().update(item, attributes)
 
     async def validate_uniqueness(self, database_name: str) -> bool:
         """Check that no database exists with the given name."""
