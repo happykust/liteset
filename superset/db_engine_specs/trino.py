@@ -1,0 +1,562 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+"""Trino engine spec -- sync/Flask-compatible.
+
+Ported 1:1 from ``superset_old/db_engine_specs/trino.py`` with Flask
+imports removed.  Only overridden methods and attributes are included.
+
+The Presto base class is inlined here because the liteset codebase does
+not need a standalone ``presto.py`` -- Trino is the only Presto-family
+engine we support.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import logging
+import re
+from abc import ABCMeta
+from datetime import datetime
+from re import Pattern
+from typing import Any, TYPE_CHECKING
+from urllib import parse
+
+from sqlalchemy import types
+from sqlalchemy.engine.reflection import Inspector
+from sqlalchemy.engine.url import URL
+from sqlalchemy.exc import NoSuchTableError
+
+from superset.constants import TimeGrain
+from superset.db_engine_specs.base import (
+    BaseEngineSpec,
+    ColumnTypeMapping,
+    convert_inspector_columns,
+    ResultSetColumnType,
+)
+from superset.typing import GenericDataType
+from superset.utils import json as json_utils
+
+if TYPE_CHECKING:
+    from superset.models.core import Database
+    from superset.models.sql_lab import Query
+    from superset.sql.parse import Table
+
+    with contextlib.suppress(ImportError):  # trino may not be installed
+        from trino.dbapi import Cursor
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Custom Presto/Trino SQL types (minimal stubs -- enough for column mapping)
+# ---------------------------------------------------------------------------
+
+
+class TinyInteger(types.Integer):
+    """Presto ``tinyint`` type."""
+
+
+class Interval(types.TypeEngine):
+    """Presto ``interval`` type."""
+
+
+class Array(types.TypeEngine):
+    """Presto ``array`` type."""
+
+
+class Map(types.TypeEngine):
+    """Presto ``map`` type."""
+
+
+class Row(types.TypeEngine):
+    """Presto ``row`` type."""
+
+
+# ---------------------------------------------------------------------------
+# Error regexes
+# ---------------------------------------------------------------------------
+
+COLUMN_DOES_NOT_EXIST_REGEX = re.compile(
+    "line (?P<location>.+?): .*Column '(?P<column_name>.+?)' cannot be resolved"
+)
+TABLE_DOES_NOT_EXIST_REGEX = re.compile(
+    ".*Table (?P<table_name>.+?) does not exist"
+)
+SCHEMA_DOES_NOT_EXIST_REGEX = re.compile(
+    "line (?P<location>.+?): .*Schema '(?P<schema_name>.+?)' does not exist"
+)
+CONNECTION_ACCESS_DENIED_REGEX = re.compile("Access Denied: Invalid credentials")
+CONNECTION_INVALID_HOSTNAME_REGEX = re.compile(
+    r"Failed to establish a new connection: \[Errno 8\] nodename nor servname "
+    "provided, or not known"
+)
+CONNECTION_HOST_DOWN_REGEX = re.compile(
+    r"Failed to establish a new connection: \[Errno 60\] Operation timed out"
+)
+CONNECTION_PORT_CLOSED_REGEX = re.compile(
+    r"Failed to establish a new connection: \[Errno 61\] Connection refused"
+)
+CONNECTION_UNKNOWN_DATABASE_ERROR = re.compile(
+    r"line (?P<location>.+?): Catalog '(?P<catalog_name>.+?)' does not exist"
+)
+
+
+# ---------------------------------------------------------------------------
+# PrestoBaseEngineSpec -- inlined Presto base (shared with Trino)
+# ---------------------------------------------------------------------------
+
+
+class PrestoBaseEngineSpec(BaseEngineSpec, metaclass=ABCMeta):
+    """Abstract base class that shares common functions between Presto and Trino."""
+
+    supports_dynamic_schema = True
+    supports_catalog = True
+    supports_dynamic_catalog = True
+    supports_cross_catalog_queries = True
+
+    column_type_mappings: tuple[ColumnTypeMapping, ...] = (
+        (
+            re.compile(r"^boolean.*", re.IGNORECASE),
+            types.BOOLEAN(),
+            GenericDataType.BOOLEAN,
+        ),
+        (
+            re.compile(r"^tinyint.*", re.IGNORECASE),
+            TinyInteger(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^smallint.*", re.IGNORECASE),
+            types.SmallInteger(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^integer.*", re.IGNORECASE),
+            types.INTEGER(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^bigint.*", re.IGNORECASE),
+            types.BigInteger(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^real.*", re.IGNORECASE),
+            types.FLOAT(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^double.*", re.IGNORECASE),
+            types.FLOAT(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^decimal.*", re.IGNORECASE),
+            types.DECIMAL(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^varchar(\((\d+)\))*$", re.IGNORECASE),
+            lambda match: types.VARCHAR(int(match[2])) if match[2] else types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r"^char(\((\d+)\))*$", re.IGNORECASE),
+            lambda match: types.CHAR(int(match[2])) if match[2] else types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r"^varbinary.*", re.IGNORECASE),
+            types.VARBINARY(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r"^json.*", re.IGNORECASE),
+            types.JSON(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r"^date.*", re.IGNORECASE),
+            types.Date(),
+            GenericDataType.TEMPORAL,
+        ),
+        (
+            re.compile(r"^timestamp.*", re.IGNORECASE),
+            types.TIMESTAMP(),
+            GenericDataType.TEMPORAL,
+        ),
+        (
+            re.compile(r"^interval.*", re.IGNORECASE),
+            Interval(),
+            GenericDataType.TEMPORAL,
+        ),
+        (
+            re.compile(r"^time.*", re.IGNORECASE),
+            types.Time(),
+            GenericDataType.TEMPORAL,
+        ),
+        (re.compile(r"^array.*", re.IGNORECASE), Array(), GenericDataType.STRING),
+        (re.compile(r"^map.*", re.IGNORECASE), Map(), GenericDataType.STRING),
+        (re.compile(r"^row.*", re.IGNORECASE), Row(), GenericDataType.STRING),
+    )
+
+    # pylint: disable=line-too-long
+    _time_grain_expressions = {
+        None: "{col}",
+        TimeGrain.SECOND: "date_trunc('second', CAST({col} AS TIMESTAMP))",
+        TimeGrain.FIVE_SECONDS: "date_trunc('second', CAST({col} AS TIMESTAMP)) - interval '1' second * (second(CAST({col} AS TIMESTAMP)) % 5)",  # noqa: E501
+        TimeGrain.THIRTY_SECONDS: "date_trunc('second', CAST({col} AS TIMESTAMP)) - interval '1' second * (second(CAST({col} AS TIMESTAMP)) % 30)",  # noqa: E501
+        TimeGrain.MINUTE: "date_trunc('minute', CAST({col} AS TIMESTAMP))",
+        TimeGrain.FIVE_MINUTES: "date_trunc('minute', CAST({col} AS TIMESTAMP)) - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 5)",  # noqa: E501
+        TimeGrain.TEN_MINUTES: "date_trunc('minute', CAST({col} AS TIMESTAMP)) - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 10)",  # noqa: E501
+        TimeGrain.FIFTEEN_MINUTES: "date_trunc('minute', CAST({col} AS TIMESTAMP)) - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 15)",  # noqa: E501
+        TimeGrain.HALF_HOUR: "date_trunc('minute', CAST({col} AS TIMESTAMP)) - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 30)",  # noqa: E501
+        TimeGrain.HOUR: "date_trunc('hour', CAST({col} AS TIMESTAMP))",
+        TimeGrain.SIX_HOURS: "date_trunc('hour', CAST({col} AS TIMESTAMP)) - interval '1' hour * (hour(CAST({col} AS TIMESTAMP)) % 6)",  # noqa: E501
+        TimeGrain.DAY: "date_trunc('day', CAST({col} AS TIMESTAMP))",
+        TimeGrain.WEEK: "date_trunc('week', CAST({col} AS TIMESTAMP))",
+        TimeGrain.MONTH: "date_trunc('month', CAST({col} AS TIMESTAMP))",
+        TimeGrain.QUARTER: "date_trunc('quarter', CAST({col} AS TIMESTAMP))",
+        TimeGrain.YEAR: "date_trunc('year', CAST({col} AS TIMESTAMP))",
+        TimeGrain.WEEK_STARTING_SUNDAY: "date_trunc('week', CAST({col} AS TIMESTAMP) + interval '1' day) - interval '1' day",  # noqa: E501
+        TimeGrain.WEEK_STARTING_MONDAY: "date_trunc('week', CAST({col} AS TIMESTAMP))",
+        TimeGrain.WEEK_ENDING_SATURDAY: "date_trunc('week', CAST({col} AS TIMESTAMP) + interval '1' day) + interval '5' day",  # noqa: E501
+        TimeGrain.WEEK_ENDING_SUNDAY: "date_trunc('week', CAST({col} AS TIMESTAMP)) + interval '6' day",  # noqa: E501
+    }
+
+    custom_errors: dict[Pattern[str], tuple[str, str, dict[str, Any]]] = {
+        COLUMN_DOES_NOT_EXIST_REGEX: (
+            'We can\'t seem to resolve column "%(column_name)s" at '
+            "line %(location)s.",
+            "COLUMN_DOES_NOT_EXIST_ERROR",
+            {},
+        ),
+        TABLE_DOES_NOT_EXIST_REGEX: (
+            'The table "%(table_name)s" does not exist. A valid table must be '
+            "used to run this query.",
+            "TABLE_DOES_NOT_EXIST_ERROR",
+            {},
+        ),
+        SCHEMA_DOES_NOT_EXIST_REGEX: (
+            'The schema "%(schema_name)s" does not exist. A valid schema must '
+            "be used to run this query.",
+            "SCHEMA_DOES_NOT_EXIST_ERROR",
+            {},
+        ),
+        CONNECTION_ACCESS_DENIED_REGEX: (
+            "Either the username or the password is incorrect.",
+            "CONNECTION_ACCESS_DENIED_ERROR",
+            {"invalid": ["username", "password"]},
+        ),
+        CONNECTION_INVALID_HOSTNAME_REGEX: (
+            "The hostname provided can't be resolved.",
+            "CONNECTION_INVALID_HOSTNAME_ERROR",
+            {"invalid": ["host"]},
+        ),
+        CONNECTION_HOST_DOWN_REGEX: (
+            "The host might be down and can't be reached.",
+            "CONNECTION_HOST_DOWN_ERROR",
+            {"invalid": ["host", "port"]},
+        ),
+        CONNECTION_PORT_CLOSED_REGEX: (
+            "The port is closed. A valid port number is needed to connect.",
+            "CONNECTION_PORT_CLOSED_ERROR",
+            {"invalid": ["port"]},
+        ),
+        CONNECTION_UNKNOWN_DATABASE_ERROR: (
+            'Unable to connect to catalog "%(catalog_name)s".',
+            "CONNECTION_UNKNOWN_DATABASE_ERROR",
+            {"invalid": ["database"]},
+        ),
+    }
+
+    @classmethod
+    def convert_dttm(
+        cls,
+        target_type: str,
+        dttm: datetime,
+        db_extra: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Convert a Python ``datetime`` object to a SQL expression.
+
+        Superset only defines time zone naive ``datetime`` objects, though this
+        method handles both time zone naive and aware conversions.
+        """
+        sqla_type = cls.get_sqla_column_type(target_type)
+
+        if isinstance(sqla_type, types.Date):
+            return f"DATE '{dttm.date().isoformat()}'"
+        if isinstance(sqla_type, types.TIMESTAMP):
+            return (
+                f"""TIMESTAMP '{dttm.isoformat(timespec="microseconds", sep=" ")}'"""
+            )
+        return None
+
+    @classmethod
+    def epoch_to_dttm(cls) -> str:
+        return "from_unixtime({col})"
+
+    @classmethod
+    def get_default_catalog(cls, database: Database) -> str | None:
+        """Return the default catalog."""
+        if database.url_object.database is None:
+            return None
+        return database.url_object.database.split("/")[0]
+
+    @classmethod
+    def get_catalog_names(
+        cls,
+        database: Database,
+        inspector: Inspector,
+    ) -> set[str]:
+        """Get all catalogs."""
+        return {catalog for (catalog,) in inspector.bind.execute("SHOW CATALOGS")}
+
+    @classmethod
+    def adjust_engine_params(
+        cls,
+        uri: URL,
+        connect_args: dict[str, Any],
+        catalog: str | None = None,
+        schema: str | None = None,
+    ) -> tuple[URL, dict[str, Any]]:
+        if uri.database and "/" in uri.database:
+            current_catalog, current_schema = uri.database.split("/", 1)
+        else:
+            current_catalog, current_schema = uri.database, None
+
+        if schema:
+            schema = parse.quote(schema, safe="")
+
+        adjusted_database = "/".join(
+            [
+                catalog or current_catalog or "",
+                schema or current_schema or "",
+            ]
+        ).rstrip("/")
+
+        uri = uri.set(database=adjusted_database)
+        return uri, connect_args
+
+    @classmethod
+    def get_schema_from_engine_params(
+        cls,
+        sqlalchemy_uri: URL,
+        connect_args: dict[str, Any],
+    ) -> str | None:
+        """Return the configured schema.
+
+        In Presto/Trino the schema is the second part of ``catalog/schema``.
+        """
+        database = sqlalchemy_uri.database
+        if database and "/" in database:
+            return parse.unquote(database.split("/")[1])
+        return None
+
+
+# ---------------------------------------------------------------------------
+# TrinoEngineSpec
+# ---------------------------------------------------------------------------
+
+
+class TrinoEngineSpec(PrestoBaseEngineSpec):
+    engine = "trino"
+    engine_name = "Trino"
+    allows_alias_to_source_column = False
+
+    @classmethod
+    def get_allow_cost_estimate(cls, extra: dict[str, Any]) -> bool:
+        return True
+
+    @classmethod
+    def get_tracking_url(cls, cursor: Cursor) -> str | None:
+        try:
+            return cursor.info_uri
+        except AttributeError:
+            with contextlib.suppress(AttributeError):
+                conn = cursor.connection
+                return (
+                    f"{conn.http_scheme}://{conn.host}:{conn.port}"
+                    f"/ui/query.html?{cursor._query.query_id}"  # noqa: SLF001
+                )
+        return None
+
+    @classmethod
+    def cancel_query(
+        cls, cursor: Cursor, query: Query, cancel_query_id: str
+    ) -> bool:
+        """Cancel query in the underlying database.
+
+        :param cursor: New cursor instance to the db of the query
+        :param query: Query instance
+        :param cancel_query_id: Trino ``queryId``
+        :return: True if query cancelled successfully, False otherwise
+        """
+        try:
+            cursor.execute(
+                f"CALL system.runtime.kill_query(query_id => '{cancel_query_id}',"
+                "message => 'Query cancelled by Superset')"
+            )
+            cursor.fetchall()  # needed to trigger the call
+        except Exception:  # noqa: BLE001
+            return False
+
+        return True
+
+    @staticmethod
+    def get_extra_params(
+        database: Database, source: Any = None
+    ) -> dict[str, Any]:
+        """Add elements to connection parameters (e.g. certificates).
+
+        :param database: database instance from which to extract extras
+        :param source: in which context is the connection needed
+        """
+        extra: dict[str, Any] = BaseEngineSpec.get_extra_params(database, source)
+        engine_params: dict[str, Any] = extra.setdefault("engine_params", {})
+        connect_args: dict[str, Any] = engine_params.setdefault("connect_args", {})
+
+        if database.server_cert:
+            from superset.utils.core import create_ssl_cert_file
+
+            connect_args["http_scheme"] = "https"
+            connect_args["verify"] = create_ssl_cert_file(database.server_cert)
+
+        return extra
+
+    @staticmethod
+    def update_params_from_encrypted_extra(
+        database: Database,
+        params: dict[str, Any],
+    ) -> None:
+        if not database.encrypted_extra:
+            return
+        try:
+            encrypted_extra = json_utils.loads(database.encrypted_extra)
+            auth_method = encrypted_extra.pop("auth_method", None)
+            auth_params = encrypted_extra.pop("auth_params", {})
+            if not auth_method:
+                return
+
+            connect_args = params.setdefault("connect_args", {})
+            connect_args["http_scheme"] = "https"
+
+            if auth_method == "basic":
+                from trino.auth import BasicAuthentication as trino_auth  # noqa: N811
+            elif auth_method == "kerberos":
+                from trino.auth import KerberosAuthentication as trino_auth  # noqa: N811
+            elif auth_method == "certificate":
+                from trino.auth import CertificateAuthentication as trino_auth  # noqa: N811
+            elif auth_method == "jwt":
+                from trino.auth import JWTAuthentication as trino_auth  # noqa: N811
+            else:
+                raise ValueError(
+                    f"Unsupported authentication method: '{auth_method}'. "
+                    f"Supported methods: basic, kerberos, certificate, jwt."
+                )
+
+            connect_args["auth"] = trino_auth(**auth_params)
+        except json_utils.JSONDecodeError as ex:
+            logger.error(ex, exc_info=True)
+            raise
+
+    @classmethod
+    def _expand_columns(
+        cls, col: ResultSetColumnType
+    ) -> list[ResultSetColumnType]:
+        """Expand the given column out to one or more columns by analysing their
+        types, descending into ROWs and expanding out their inner fields
+        recursively.
+
+        We can only navigate named fields in ROWs in this way, so we can't
+        expand out MAP or ARRAY types, nor fields in ROWs which have no name.
+        Expanded columns are named ``foo.bar.baz`` and we provide a
+        ``query_as`` property to instruct the base engine spec how to
+        correctly query them.
+        """
+        from trino.sqlalchemy import datatype  # noqa: I001
+
+        cols: list[ResultSetColumnType] = [col]
+        col_type = col.get("type")
+
+        if not isinstance(col_type, datatype.ROW):
+            return cols
+
+        for inner_name, inner_type in col_type.attr_types:
+            outer_name = col["name"]
+            name = ".".join([outer_name, inner_name])
+            query_name = ".".join([f'"{piece}"' for piece in name.split(".")])
+            column_spec = cls.get_column_spec(str(inner_type))
+            is_dttm = column_spec.is_dttm if column_spec else False
+
+            inner_col = ResultSetColumnType(
+                name=name,
+                column_name=name,
+                type=inner_type,
+                is_dttm=is_dttm,
+                query_as=f'{query_name} AS "{name}"',
+            )
+            cols.extend(cls._expand_columns(inner_col))
+
+        return cols
+
+    @classmethod
+    def get_columns(
+        cls,
+        inspector: Inspector,
+        table: Table,
+        options: dict[str, Any] | None = None,
+    ) -> list[ResultSetColumnType]:
+        """If the ``expand_rows`` feature is enabled on the database via
+        ``schema_options``, expand the schema definition out to show all
+        subfields of nested ROWs as their appropriate dotted paths.
+        """
+        try:
+            sqla_columns = inspector.get_columns(table.table, table.schema)
+            base_cols = convert_inspector_columns(sqla_columns)
+        except NoSuchTableError:
+            base_cols = super().get_columns(inspector, table, options)
+
+        if not (options or {}).get("expand_rows"):
+            return base_cols
+
+        return [
+            col for base_col in base_cols for col in cls._expand_columns(base_col)
+        ]
+
+    @classmethod
+    def get_indexes(
+        cls,
+        database: Database,
+        inspector: Inspector,
+        table: Table,
+    ) -> list[dict[str, Any]]:
+        """Get the indexes associated with the specified schema/table.
+
+        Trino dialect raises ``NoSuchTableError`` in ``get_indexes`` if
+        the table is empty.
+        """
+        try:
+            return super().get_indexes(database, inspector, table)
+        except NoSuchTableError:
+            return []
+
+
+__all__ = [
+    "PrestoBaseEngineSpec",
+    "TrinoEngineSpec",
+]

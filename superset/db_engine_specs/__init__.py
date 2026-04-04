@@ -17,18 +17,28 @@
 """Engine-spec registry for sync/Flask-compatible engine specs.
 
 Provides:
-  - ``BaseEngineSpec``  — base class for all engine specs
-  - ``get_engine_spec(backend, driver)`` — factory to look up an engine spec
-  - ``PostgresEngineSpec`` — PostgreSQL-specific overrides
+  - ``BaseEngineSpec``  -- base class for all engine specs
+  - ``get_engine_spec(backend, driver)`` -- factory to look up an engine spec
+  - Individual engine specs for PostgreSQL, MySQL, SQLite, ClickHouse, Trino,
+    and BigQuery.
 """
 
 from __future__ import annotations
 
 from superset.db_engine_specs.base import BaseEngineSpec
+from superset.db_engine_specs.bigquery import BigQueryEngineSpec
+from superset.db_engine_specs.clickhouse import (
+    ClickHouseBaseEngineSpec,
+    ClickHouseConnectEngineSpec,
+    ClickHouseEngineSpec,
+)
+from superset.db_engine_specs.mysql import MySQLEngineSpec
 from superset.db_engine_specs.postgres import (
     PostgresBaseEngineSpec,
     PostgresEngineSpec,
 )
+from superset.db_engine_specs.sqlite import SqliteEngineSpec
+from superset.db_engine_specs.trino import PrestoBaseEngineSpec, TrinoEngineSpec
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +58,12 @@ def _register(spec: type[BaseEngineSpec]) -> None:
 
 # Register known specs.
 _register(PostgresEngineSpec)
+_register(MySQLEngineSpec)
+_register(SqliteEngineSpec)
+_register(ClickHouseEngineSpec)
+_register(ClickHouseConnectEngineSpec)
+_register(TrinoEngineSpec)
+_register(BigQueryEngineSpec)
 
 
 def get_engine_spec(
@@ -65,7 +81,15 @@ def get_engine_spec(
 
 __all__ = [
     "BaseEngineSpec",
+    "BigQueryEngineSpec",
+    "ClickHouseBaseEngineSpec",
+    "ClickHouseConnectEngineSpec",
+    "ClickHouseEngineSpec",
+    "MySQLEngineSpec",
     "PostgresBaseEngineSpec",
     "PostgresEngineSpec",
+    "PrestoBaseEngineSpec",
+    "SqliteEngineSpec",
+    "TrinoEngineSpec",
     "get_engine_spec",
 ]
