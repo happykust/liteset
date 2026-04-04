@@ -18,8 +18,10 @@
 
 Pure SQLAlchemy — no Flask dependencies.
 """
+
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime
 from typing import Any
@@ -28,8 +30,7 @@ import sqlalchemy as sa
 from sqlalchemy import Text, types as sa_types
 from sqlalchemy.dialects.mysql import LONGTEXT, MEDIUMTEXT
 from sqlalchemy.ext.declarative import declared_attr
-from sqlalchemy.orm import DeclarativeBase, relationship, RelationshipProperty
-from sqlalchemy.sql.sqltypes import Variant
+from sqlalchemy.orm import DeclarativeBase, relationship
 
 
 class Base(DeclarativeBase):
@@ -46,11 +47,11 @@ metadata = Base.metadata
 # ---------------------------------------------------------------------------
 
 
-def MediumText() -> Variant:  # noqa: N802
+def MediumText() -> sa_types.Text:  # noqa: N802
     return Text().with_variant(MEDIUMTEXT(), "mysql")
 
 
-def LongText() -> Variant:  # noqa: N802
+def LongText() -> sa_types.Text:  # noqa: N802
     return Text().with_variant(LONGTEXT(), "mysql")
 
 
@@ -142,19 +143,21 @@ class AuditMixinNullable:
 
     @declared_attr
     def created_by(cls):  # noqa: N805
+        class_name: str = getattr(cls, "__name__", type(cls).__name__)
         return relationship(
             "User",
-            primaryjoin=f"{cls.__name__}.created_by_fk == User.id",
-            foreign_keys=f"[{cls.__name__}.created_by_fk]",
+            primaryjoin=f"{class_name}.created_by_fk == User.id",
+            foreign_keys=f"[{class_name}.created_by_fk]",
             viewonly=True,
         )
 
     @declared_attr
     def changed_by(cls):  # noqa: N805
+        class_name: str = getattr(cls, "__name__", type(cls).__name__)
         return relationship(
             "User",
-            primaryjoin=f"{cls.__name__}.changed_by_fk == User.id",
-            foreign_keys=f"[{cls.__name__}.changed_by_fk]",
+            primaryjoin=f"{class_name}.changed_by_fk == User.id",
+            foreign_keys=f"[{class_name}.changed_by_fk]",
             viewonly=True,
         )
 
@@ -164,7 +167,7 @@ class AuditMixinNullable:
     def changed_on_utc(self) -> str | None:
         if self.changed_on is None:
             return None
-        import pytz
+        import pytz  # type: ignore[import-untyped]
 
         dt = self.changed_on
         if dt.tzinfo is None:
@@ -179,7 +182,8 @@ class AuditMixinNullable:
             return None
         import humanize
 
-        return humanize.naturaltime(datetime.now() - self.changed_on)
+        changed_on: datetime = self.changed_on  # type: ignore[assignment]
+        return humanize.naturaltime(datetime.now() - changed_on)
 
     @property
     def created_on_delta_humanized(self) -> str | None:
@@ -187,7 +191,8 @@ class AuditMixinNullable:
             return None
         import humanize
 
-        return humanize.naturaltime(datetime.now() - self.created_on)
+        created_on: datetime = self.created_on  # type: ignore[assignment]
+        return humanize.naturaltime(datetime.now() - created_on)
 
     @property
     def changed_by_name(self) -> str:
@@ -210,9 +215,24 @@ class ImportExportMixin(UUIDMixin):
 
 
 class ExtraJSONMixin:
-    """Provides an ``extra_json`` Text column with a default of ``'{}'``."""
+    """Provides an ``extra_json`` Text column with a parsed ``extra`` property.
+
+    Mirrors the original Flask-AppBuilder mixin: ``extra_json`` stores a JSON
+    string, ``extra`` is a property that parses/serialises it as a dict.
+    """
 
     extra_json = sa.Column("extra_json", Text, default="{}")
+
+    @property
+    def extra(self) -> dict[str, Any]:
+        try:
+            return json.loads(self.extra_json or "{}") or {}
+        except (TypeError, json.JSONDecodeError):
+            return {}
+
+    @extra.setter
+    def extra(self, extras: dict[str, Any]) -> None:
+        self.extra_json = json.dumps(extras)
 
 
 class CertificationMixin:
