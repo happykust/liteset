@@ -173,6 +173,256 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     # Feature flag functions
     "GET_FEATURE_FLAGS_FUNC": "get_feature_flags_func",
     "IS_FEATURE_ENABLED_FUNC": "is_feature_enabled_func",
+    # ── Existing fields that were missing mappings ──
+    "GUEST_ROLE_NAME": "guest_role_name",
+    "GUEST_TOKEN_JWT_SECRET": "guest_token_jwt_secret",
+    "GUEST_TOKEN_JWT_ALGO": "guest_token_jwt_algo",
+    "GUEST_TOKEN_JWT_EXP_SECONDS": "guest_token_jwt_exp_seconds",
+    "GUEST_TOKEN_HEADER_NAME": "guest_token_header_name",
+    "GUEST_TOKEN_VALIDATOR_HOOK": "guest_token_validator_hook",
+    "SQLLAB_CTAS_NO_LIMIT": "sqllab_ctas_no_limit",
+    "SQLLAB_DEFAULT_DBID": "sqllab_default_dbid",
+    # ── Stats / Event logging ──
+    "STATS_LOGGER": "stats_logger",
+    "EVENT_LOGGER": "event_logger",
+    "SUPERSET_LOG_VIEW": "superset_log_view",
+    "SUPERSET_SECURITY_VIEW_MENU": "superset_security_view_menu",
+    # ── Alembic / Versioning ──
+    "ALEMBIC_SKIP_LOG_CONFIG": "alembic_skip_log_config",
+    "VERSION_SHA_LENGTH": "version_sha_length",
+    # ── Row limits / Filters ──
+    "FILTER_SELECT_ROW_LIMIT": "filter_select_row_limit",
+    # ── SQLAlchemy engine ──
+    "SQLALCHEMY_TRACK_MODIFICATIONS": "sqlalchemy_track_modifications",
+    "SQLALCHEMY_ENGINE_OPTIONS": "sqlalchemy_engine_options",
+    "SQLALCHEMY_CUSTOM_PASSWORD_STORE": "sqlalchemy_custom_password_store",
+    "SQLALCHEMY_ENCRYPTED_FIELD_TYPE_ADAPTER": "sqlalchemy_encrypted_field_type_adapter",
+    # ── SQLGlot ──
+    "SQLGLOT_DIALECTS_EXTENSIONS": "sqlglot_dialects_extensions",
+    # ── Query ──
+    "QUERY_SEARCH_LIMIT": "query_search_limit",
+    # ── CSRF ──
+    "WTF_CSRF_EXEMPT_LIST": "wtf_csrf_exempt_list",
+    # ── Debug / Profiling ──
+    "FLASK_USE_RELOAD": "flask_use_reload",
+    "PROFILING": "profiling",
+    "SHOW_STACKTRACE": "show_stacktrace",
+    # ── Proxy fix ──
+    "ENABLE_PROXY_FIX": "enable_proxy_fix",
+    "PROXY_FIX_CONFIG": "proxy_fix_config",
+    # ── Rate limiting ──
+    "RATELIMIT_ENABLED": "ratelimit_enabled",
+    "RATELIMIT_APPLICATION": "ratelimit_application",
+    "AUTH_RATE_LIMITED": "auth_rate_limited",
+    "AUTH_RATE_LIMIT": "auth_rate_limit",
+    # ── FAB ──
+    "FAB_API_SWAGGER_UI": "fab_api_swagger_ui",
+    # ── Babel ──
+    "BABEL_DEFAULT_LOCALE": "babel_default_locale",
+    "BABEL_DEFAULT_FOLDER": "babel_default_folder",
+    # ── SSH Tunnel ──
+    "SSH_TUNNEL_MANAGER_CLASS": "ssh_tunnel_manager_class",
+    "SSH_TUNNEL_LOCAL_BIND_ADDRESS": "ssh_tunnel_local_bind_address",
+    "SSH_TUNNEL_TIMEOUT_SEC": "ssh_tunnel_timeout_sec",
+    "SSH_TUNNEL_PACKET_TIMEOUT_SEC": "ssh_tunnel_packet_timeout_sec",
+    # ── Custom font ──
+    "CUSTOM_FONT_URLS": "custom_font_urls",
+    # ── Cache warmup / Thumbnails ──
+    "CACHE_WARMUP_EXECUTORS": "cache_warmup_executors",
+    "THUMBNAIL_EXECUTORS": "thumbnail_executors",
+    "THUMBNAIL_DASHBOARD_DIGEST_FUNC": "thumbnail_dashboard_digest_func",
+    "THUMBNAIL_CHART_DIGEST_FUNC": "thumbnail_chart_digest_func",
+    "THUMBNAIL_CACHE_CONFIG": "thumbnail_cache_config",
+    "THUMBNAIL_ERROR_CACHE_TTL": "thumbnail_error_cache_ttl",
+    # ── Screenshot / Webdriver ──
+    "SCREENSHOT_LOCATE_WAIT": "screenshot_locate_wait",
+    "SCREENSHOT_LOAD_WAIT": "screenshot_load_wait",
+    "SCREENSHOT_SELENIUM_RETRIES": "screenshot_selenium_retries",
+    "SCREENSHOT_SELENIUM_HEADSTART": "screenshot_selenium_headstart",
+    "SCREENSHOT_SELENIUM_ANIMATION_WAIT": "screenshot_selenium_animation_wait",
+    "SCREENSHOT_REPLACE_UNEXPECTED_ERRORS": "screenshot_replace_unexpected_errors",
+    "SCREENSHOT_WAIT_FOR_ERROR_MODAL_VISIBLE": "screenshot_wait_for_error_modal_visible",
+    "SCREENSHOT_WAIT_FOR_ERROR_MODAL_INVISIBLE": "screenshot_wait_for_error_modal_invisible",
+    "SCREENSHOT_PLAYWRIGHT_WAIT_EVENT": "screenshot_playwright_wait_event",
+    "SCREENSHOT_PLAYWRIGHT_DEFAULT_TIMEOUT": "screenshot_playwright_default_timeout",
+    "SCREENSHOT_TILED_ENABLED": "screenshot_tiled_enabled",
+    "SCREENSHOT_TILED_CHART_THRESHOLD": "screenshot_tiled_chart_threshold",
+    "SCREENSHOT_TILED_HEIGHT_THRESHOLD": "screenshot_tiled_height_threshold",
+    "SCREENSHOT_TILED_VIEWPORT_HEIGHT": "screenshot_tiled_viewport_height",
+    # ── Upload / File ──
+    "UPLOAD_FOLDER": "upload_folder",
+    "UPLOAD_CHUNK_SIZE": "upload_chunk_size",
+    # ── Cache (extended) ──
+    "FILTER_STATE_CACHE_CONFIG": "filter_state_cache_config",
+    "EXPLORE_FORM_DATA_CACHE_CONFIG": "explore_form_data_cache_config",
+    "STORE_CACHE_KEYS_IN_METADATA_DB": "store_cache_keys_in_metadata_db",
+    # ── CORS ──
+    "ENABLE_CORS": "enable_cors",
+    "CORS_OPTIONS": "cors_options",
+    # ── Time grain ──
+    "TIME_GRAIN_DENYLIST": "time_grain_denylist",
+    "TIME_GRAIN_ADDONS": "time_grain_addons",
+    "TIME_GRAIN_ADDON_EXPRESSIONS": "time_grain_addon_expressions",
+    "TIME_GRAIN_JOIN_COLUMN_PRODUCERS": "time_grain_join_column_producers",
+    # ── Module / Middleware ──
+    "DEFAULT_MODULE_DS_MAP": "default_module_ds_map",
+    "ADDITIONAL_MODULE_DS_MAP": "additional_module_ds_map",
+    "ADDITIONAL_MIDDLEWARE": "additional_middleware",
+    # ── Logging ──
+    "LOGGING_CONFIGURATOR": "logging_configurator",
+    "LOG_FORMAT": "log_format",
+    "LOG_LEVEL": "log_level_value",
+    "ENABLE_TIME_ROTATE": "enable_time_rotate",
+    "TIME_ROTATE_LOG_LEVEL": "time_rotate_log_level",
+    "FILENAME": "log_filename",
+    "ROLLOVER": "rollover",
+    "INTERVAL": "log_interval",
+    "BACKUP_COUNT": "backup_count",
+    "QUERY_LOGGER": "query_logger",
+    # ── SQL Lab (extended) ──
+    "SUPERSET_META_DB_LIMIT": "superset_meta_db_limit",
+    "SQLLAB_SCHEDULE_WARNING_MESSAGE": "sqllab_schedule_warning_message",
+    "SQLLAB_PAYLOAD_MAX_MB": "sqllab_payload_max_mb",
+    "SQLLAB_TIMEOUT": "sqllab_timeout",
+    "SQLLAB_VALIDATION_TIMEOUT": "sqllab_validation_timeout",
+    "SQLLAB_ASYNC_TIME_LIMIT_SEC": "sqllab_async_time_limit_sec",
+    "SQLLAB_QUERY_COST_ESTIMATE_TIMEOUT": "sqllab_query_cost_estimate_timeout",
+    "QUERY_COST_FORMATTERS_BY_ENGINE": "query_cost_formatters_by_engine",
+    "SQLLAB_CTAS_SCHEMA_NAME_FUNC": "sqllab_ctas_schema_name_func",
+    # ── Celery ──
+    "CELERY_BEAT_SCHEDULER_EXPIRES": "celery_beat_scheduler_expires",
+    "CELERY_CONFIG": "celery_config",
+    # ── HTTP headers ──
+    "DEFAULT_HTTP_HEADERS": "default_http_headers",
+    "OVERRIDE_HTTP_HEADERS": "override_http_headers",
+    "HTTP_HEADERS": "http_headers",
+    # ── Database ──
+    "DEFAULT_DB_ID": "default_db_id",
+    # ── Results backend ──
+    "RESULTS_BACKEND": "results_backend",
+    "RESULTS_BACKEND_USE_MSGPACK": "results_backend_use_msgpack",
+    # ── CSV / Hive upload ──
+    "CSV_TO_HIVE_UPLOAD_S3_BUCKET": "csv_to_hive_upload_s3_bucket",
+    "CSV_TO_HIVE_UPLOAD_DIRECTORY": "csv_to_hive_upload_directory",
+    "CSV_TO_HIVE_UPLOAD_DIRECTORY_FUNC": "csv_to_hive_upload_directory_func",
+    "UPLOADED_CSV_HIVE_NAMESPACE": "uploaded_csv_hive_namespace",
+    "ALLOWED_USER_CSV_SCHEMA_FUNC": "allowed_user_csv_schema_func",
+    "CSV_DEFAULT_NA_NAMES": "csv_default_na_names",
+    # ── Jinja / Templates ──
+    "JINJA_CONTEXT_ADDONS": "jinja_context_addons",
+    "CUSTOM_TEMPLATE_PROCESSORS": "custom_template_processors",
+    # ── Roles / Permissions ──
+    "ROBOT_PERMISSION_ROLES": "robot_permission_roles",
+    # ── Flask app mutator ──
+    "FLASK_APP_MUTATOR": "flask_app_mutator",
+    # ── Misc SMTP/infra ──
+    "ENABLE_CHUNK_ENCODING": "enable_chunk_encoding",
+    # ── FAB security ──
+    "SILENCE_FAB": "silence_fab",
+    "FAB_ADD_SECURITY_VIEWS": "fab_add_security_views",
+    "FAB_ADD_SECURITY_API": "fab_add_security_api",
+    "FAB_ADD_SECURITY_PERMISSION_VIEW": "fab_add_security_permission_view",
+    "FAB_ADD_SECURITY_VIEW_MENU_VIEW": "fab_add_security_view_menu_view",
+    "FAB_ADD_SECURITY_PERMISSION_VIEWS_VIEW": "fab_add_security_permission_views_view",
+    # ── Troubleshooting / Permissions ──
+    "TROUBLESHOOTING_LINK": "troubleshooting_link",
+    "PERMISSION_INSTRUCTIONS_LINK": "permission_instructions_link",
+    # ── Blueprints ──
+    "BLUEPRINTS": "blueprints",
+    # ── Tracking / Polling ──
+    "TRACKING_URL_TRANSFORMER": "tracking_url_transformer",
+    "DB_POLL_INTERVAL_SECONDS": "db_poll_interval_seconds",
+    "PRESTO_POLL_INTERVAL": "presto_poll_interval",
+    # ── DB auth / connection ──
+    "ALLOWED_EXTRA_AUTHENTICATIONS": "allowed_extra_authentications",
+    "DASHBOARD_TEMPLATE_ID": "dashboard_template_id",
+    "ENGINE_CONTEXT_MANAGER": "engine_context_manager",
+    "DB_CONNECTION_MUTATOR": "db_connection_mutator",
+    "DB_SQLA_URI_VALIDATOR": "db_sqla_uri_validator",
+    "DISALLOWED_SQL_FUNCTIONS": "disallowed_sql_functions",
+    # ── SQL query mutator ──
+    "SQL_QUERY_MUTATOR": "sql_query_mutator",
+    "MUTATE_AFTER_SPLIT": "mutate_after_split",
+    "MUTATE_ALERT_QUERY": "mutate_alert_query",
+    # ── Email header ──
+    "EMAIL_HEADER_MUTATOR": "email_header_mutator",
+    # ── User exclusion ──
+    "EXCLUDE_USERS_FROM_LISTS": "exclude_users_from_lists",
+    # ── DB denylist ──
+    "DBS_AVAILABLE_DENYLIST": "dbs_available_denylist",
+    # ── Machine auth ──
+    "MACHINE_AUTH_PROVIDER_CLASS": "machine_auth_provider_class",
+    # ── Alerts & Reports (extended) ──
+    "ALERT_REPORTS_CRON_WINDOW_SIZE": "alert_reports_cron_window_size",
+    "ALERT_REPORTS_WORKING_TIME_OUT_KILL": "alert_reports_working_time_out_kill",
+    "ALERT_REPORTS_EXECUTORS": "alert_reports_executors",
+    "ALERT_REPORTS_WORKING_TIME_OUT_LAG": "alert_reports_working_time_out_lag",
+    "ALERT_REPORTS_WORKING_SOFT_TIME_OUT_LAG": "alert_reports_working_soft_time_out_lag",
+    "ALERT_REPORTS_QUERY_EXECUTION_MAX_TRIES": "alert_reports_query_execution_max_tries",
+    "ALERT_REPORTS_MIN_CUSTOM_SCREENSHOT_WIDTH": "alert_reports_min_custom_screenshot_width",
+    "ALERT_REPORTS_MAX_CUSTOM_SCREENSHOT_WIDTH": "alert_reports_max_custom_screenshot_width",
+    "ALERT_MINIMUM_INTERVAL": "alert_minimum_interval",
+    "REPORT_MINIMUM_INTERVAL": "report_minimum_interval",
+    # ── Slack (extended) ──
+    "SLACK_PROXY": "slack_proxy",
+    "SLACK_CACHE_TIMEOUT": "slack_cache_timeout",
+    "SLACK_API_RATE_LIMIT_RETRY_COUNT": "slack_api_rate_limit_retry_count",
+    # ── Webdriver / Screenshots ──
+    "WEBDRIVER_TYPE": "webdriver_type",
+    "WEBDRIVER_WINDOW": "webdriver_window",
+    "WEBDRIVER_AUTH_FUNC": "webdriver_auth_func",
+    "WEBDRIVER_CONFIGURATION": "webdriver_configuration",
+    "WEBDRIVER_OPTION_ARGS": "webdriver_option_args",
+    "WEBDRIVER_BASEURL": "webdriver_baseurl",
+    "WEBDRIVER_BASEURL_USER_FRIENDLY": "webdriver_baseurl_user_friendly",
+    "EMAIL_PAGE_RENDER_WAIT": "email_page_render_wait",
+    # ── Preferred databases ──
+    "PREFERRED_DATABASES": "preferred_databases",
+    "TEST_DATABASE_CONNECTION_TIMEOUT": "test_database_connection_timeout",
+    # ── OAuth2 database ──
+    "DATABASE_OAUTH2_CLIENTS": "database_oauth2_clients",
+    "DATABASE_OAUTH2_JWT_ALGORITHM": "database_oauth2_jwt_algorithm",
+    "DATABASE_OAUTH2_TIMEOUT": "database_oauth2_timeout",
+    # ── CSP / Talisman ──
+    "CONTENT_SECURITY_POLICY_WARNING": "content_security_policy_warning",
+    "TALISMAN_ENABLED": "talisman_enabled",
+    "TALISMAN_CONFIG": "talisman_config",
+    "TALISMAN_DEV_CONFIG": "talisman_dev_config",
+    # ── Session ──
+    "SESSION_SERVER_SIDE": "session_server_side",
+    "SEND_FILE_MAX_AGE_DEFAULT": "send_file_max_age_default",
+    # ── Database safety ──
+    "PREVENT_UNSAFE_DB_CONNECTIONS": "prevent_unsafe_db_connections",
+    "DATASET_IMPORT_ALLOWED_DATA_URLS": "dataset_import_allowed_data_urls",
+    "SSL_CERT_PATH": "ssl_cert_path",
+    # ── SQLA table mutator ──
+    "SQLA_TABLE_MUTATOR": "sqla_table_mutator",
+    # ── Global async queries (extended) ──
+    "GLOBAL_ASYNC_QUERY_MANAGER_CLASS": "global_async_query_manager_class",
+    "GLOBAL_ASYNC_QUERIES_REDIS_STREAM_PREFIX": "global_async_queries_redis_stream_prefix",
+    "GLOBAL_ASYNC_QUERIES_REDIS_STREAM_LIMIT": "global_async_queries_redis_stream_limit",
+    "GLOBAL_ASYNC_QUERIES_REDIS_STREAM_LIMIT_FIREHOSE": "global_async_queries_redis_stream_limit_firehose",
+    "GLOBAL_ASYNC_QUERIES_REGISTER_REQUEST_HANDLERS": "global_async_queries_register_request_handlers",
+    "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_NAME": "global_async_queries_jwt_cookie_name",
+    "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_SECURE": "global_async_queries_jwt_cookie_secure",
+    "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_SAMESITE": "global_async_queries_jwt_cookie_samesite",
+    "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_DOMAIN": "global_async_queries_jwt_cookie_domain",
+    "GLOBAL_ASYNC_QUERIES_JWT_SECRET": "global_async_queries_jwt_secret",
+    "GLOBAL_ASYNC_QUERIES_CACHE_BACKEND": "global_async_queries_cache_backend",
+    # ── Guest token (extended) ──
+    "GUEST_TOKEN_JWT_AUDIENCE": "guest_token_jwt_audience",
+    # ── Dataset health ──
+    "DATASET_HEALTH_CHECK": "dataset_health_check",
+    # ── Zip file limits ──
+    "ZIPPED_FILE_MAX_SIZE": "zipped_file_max_size",
+    "ZIP_FILE_MAX_COMPRESS_RATIO": "zip_file_max_compress_ratio",
+    # ── Query filters ──
+    "EXTRA_RELATED_QUERY_FILTERS": "extra_related_query_filters",
+    "EXTRA_DYNAMIC_QUERY_FILTERS": "extra_dynamic_query_filters",
+    # ── Catalog migration ──
+    "CATALOGS_SIMPLIFIED_MIGRATION": "catalogs_simplified_migration",
+    # ── User agent ──
+    "USER_AGENT_FUNC": "user_agent_func",
 }
 
 
@@ -548,6 +798,450 @@ class SupersetSettings(BaseSettings):
     # ── Feature flag functions (advanced) ──
     get_feature_flags_func: Any | None = None  # Callable[[dict], dict] | None
     is_feature_enabled_func: Any | None = None  # Callable[[str], bool] | None
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Remaining config variables for full backward compat with original
+    # superset_old/config.py.  Grouped by functional area.
+    # ══════════════════════════════════════════════════════════════════════
+
+    # ── Stats / Event logging ──
+    stats_logger: Any = None  # StatsLogger instance (DummyStatsLogger default in original)
+    event_logger: Any = None  # EventLogger instance (DBEventLogger default in original)
+    superset_log_view: bool = True
+    superset_security_view_menu: bool = True
+
+    # ── Alembic / Versioning ──
+    alembic_skip_log_config: bool = False
+    version_sha_length: int = 8
+
+    # ── Row limits / Filters ──
+    filter_select_row_limit: int = 10000
+
+    # ── SQLAlchemy engine ──
+    sqlalchemy_track_modifications: bool = False
+    sqlalchemy_engine_options: dict[str, Any] = {}
+    sqlalchemy_custom_password_store: Any | None = None  # Callable[[URL], str] | None
+    sqlalchemy_encrypted_field_type_adapter: Any | None = None  # EncryptedFieldTypeAdapter
+
+    # ── SQLGlot ──
+    sqlglot_dialects_extensions: Any = {}  # dict or Callable returning dict
+
+    # ── Query ──
+    query_search_limit: int = 1000
+
+    # ── CSRF (extended) ──
+    wtf_csrf_exempt_list: list[str] = [
+        "superset.charts.data.api.data",
+        "superset.dashboards.api.cache_dashboard_screenshot",
+        "superset.views.core.explore_json",
+        "superset.views.core.log",
+        "superset.views.datasource.views.samples",
+    ]
+
+    # ── Debug / Profiling ──
+    flask_use_reload: bool = True
+    profiling: bool = False
+    show_stacktrace: bool = False
+
+    # ── Proxy fix ──
+    enable_proxy_fix: bool = False
+    proxy_fix_config: dict[str, int] = {
+        "x_for": 1, "x_proto": 1, "x_host": 1, "x_port": 1, "x_prefix": 1,
+    }
+
+    # ── Rate limiting (extended) ──
+    ratelimit_enabled: bool = False
+    ratelimit_application: str = "50 per second"
+    auth_rate_limited: bool = True
+    auth_rate_limit: str = "5 per second"
+
+    # ── FAB ──
+    fab_api_swagger_ui: bool = True
+
+    # ── Babel ──
+    babel_default_locale: str = "en"
+    babel_default_folder: str = "superset/translations"
+
+    # ── SSH Tunnel ──
+    ssh_tunnel_manager_class: str = "superset.extensions.ssh.SSHManager"
+    ssh_tunnel_local_bind_address: str = "127.0.0.1"
+    ssh_tunnel_timeout_sec: float = 10.0
+    ssh_tunnel_packet_timeout_sec: float = 1.0
+
+    # ── Custom font ──
+    custom_font_urls: list[str] = []
+
+    # ── Cache warmup / Thumbnails ──
+    cache_warmup_executors: list[Any] = []  # [ExecutorType.OWNER] in original
+    thumbnail_executors: list[Any] = []  # [ExecutorType.CURRENT_USER] in original
+    thumbnail_dashboard_digest_func: Any | None = None  # Callable or None
+    thumbnail_chart_digest_func: Any | None = None  # Callable or None
+    thumbnail_cache_config: dict[str, Any] = {
+        "CACHE_TYPE": "NullCache",
+        "CACHE_DEFAULT_TIMEOUT": 604800,  # 7 days
+        "CACHE_NO_NULL_WARNING": True,
+    }
+    thumbnail_error_cache_ttl: int = 86400  # 1 day
+
+    # ── Screenshot settings ──
+    screenshot_locate_wait: int = 10
+    screenshot_load_wait: int = 60
+    screenshot_selenium_retries: int = 5
+    screenshot_selenium_headstart: int = 3
+    screenshot_selenium_animation_wait: int = 5
+    screenshot_replace_unexpected_errors: bool = False
+    screenshot_wait_for_error_modal_visible: int = 5
+    screenshot_wait_for_error_modal_invisible: int = 5
+    screenshot_playwright_wait_event: str = "domcontentloaded"
+    screenshot_playwright_default_timeout: int = 60000  # 60s in ms
+    screenshot_tiled_enabled: bool = True
+    screenshot_tiled_chart_threshold: int = 20
+    screenshot_tiled_height_threshold: int = 5000
+    screenshot_tiled_viewport_height: int = 2000
+
+    # ── Upload / File ──
+    upload_folder: str = "/static/uploads/"
+    upload_chunk_size: int = 4096
+
+    # ── Cache (extended) ──
+    filter_state_cache_config: dict[str, Any] = {
+        "CACHE_TYPE": "SupersetMetastoreCache",
+        "CACHE_DEFAULT_TIMEOUT": 7776000,  # 90 days
+        "REFRESH_TIMEOUT_ON_RETRIEVAL": True,
+    }
+    explore_form_data_cache_config: dict[str, Any] = {
+        "CACHE_TYPE": "SupersetMetastoreCache",
+        "CACHE_DEFAULT_TIMEOUT": 604800,  # 7 days
+        "REFRESH_TIMEOUT_ON_RETRIEVAL": True,
+    }
+    store_cache_keys_in_metadata_db: bool = False
+
+    # ── CORS (extended) ──
+    enable_cors: bool = True
+    cors_options: dict[str, Any] = {
+        "origins": [
+            "https://tile.openstreetmap.org",
+            "https://tile.osm.ch",
+        ],
+    }
+
+    # ── Time grain ──
+    time_grain_denylist: list[str] = []
+    time_grain_addons: dict[str, str] = {}
+    time_grain_addon_expressions: dict[str, dict[str, str]] = {}
+    time_grain_join_column_producers: dict[str, Any] = {}  # Callable values
+
+    # ── Module / Middleware ──
+    default_module_ds_map: dict[str, list[str]] = {
+        "superset.connectors.sqla.models": ["SqlaTable"],
+    }
+    additional_module_ds_map: dict[str, list[str]] = {}
+    additional_middleware: list[Any] = []  # list[Callable]
+
+    # ── Logging ──
+    logging_configurator: Any | None = None  # DefaultLoggingConfigurator in original
+    log_format: str = "%(asctime)s:%(levelname)s:%(name)s:%(message)s"
+    log_level_value: int = 20  # logging.INFO
+    enable_time_rotate: bool = False
+    time_rotate_log_level: int = 20  # logging.INFO
+    log_filename: str = ""  # os.path.join(DATA_DIR, "superset.log") in original
+    rollover: str = "midnight"
+    log_interval: int = 1
+    backup_count: int = 30
+    query_logger: Any | None = None  # Callable or None
+
+    # ── SQL Lab (extended) ──
+    superset_meta_db_limit: int | None = 1000
+    sqllab_schedule_warning_message: str | None = None
+    sqllab_payload_max_mb: int | None = None
+    sqllab_timeout: int = 30
+    sqllab_validation_timeout: int = 10
+    sqllab_async_time_limit_sec: int = 21600  # 6 hours
+    sqllab_query_cost_estimate_timeout: int = 10
+    query_cost_formatters_by_engine: dict[str, Any] = {}  # Callable values
+    sqllab_ctas_schema_name_func: Any | None = None  # Callable or None
+
+    # ── Celery ──
+    celery_beat_scheduler_expires: int = 604800  # 1 week in seconds
+    celery_config: Any | None = None  # CeleryConfig class or None
+
+    # ── HTTP headers ──
+    default_http_headers: dict[str, Any] = {}
+    override_http_headers: dict[str, Any] = {}
+    http_headers: dict[str, Any] = {}
+
+    # ── Database ──
+    default_db_id: int | None = None
+
+    # ── Results backend ──
+    results_backend: Any | None = None  # BaseCache or None
+    results_backend_use_msgpack: bool = True
+
+    # ── CSV / Hive upload ──
+    csv_to_hive_upload_s3_bucket: str | None = None
+    csv_to_hive_upload_directory: str = "EXTERNAL_HIVE_TABLES/"
+    csv_to_hive_upload_directory_func: Any | None = None  # Callable or None
+    uploaded_csv_hive_namespace: str | None = None
+    allowed_user_csv_schema_func: Any | None = None  # Callable or None
+    csv_default_na_names: list[str] = []
+
+    # ── Jinja / Templates ──
+    jinja_context_addons: dict[str, Any] = {}  # Callable values
+    custom_template_processors: dict[str, Any] = {}  # type[BaseTemplateProcessor] values
+
+    # ── Roles / Permissions ──
+    robot_permission_roles: list[str] = [
+        "Public", "Gamma", "Alpha", "Admin", "sql_lab",
+    ]
+
+    # ── Flask app mutator ──
+    flask_app_mutator: Any | None = None  # Callable or None
+
+    # ── Misc SMTP/infra ──
+    enable_chunk_encoding: bool = False
+
+    # ── FAB security ──
+    silence_fab: bool = True
+    fab_add_security_views: bool = True
+    fab_add_security_api: bool = True
+    fab_add_security_permission_view: bool = False
+    fab_add_security_view_menu_view: bool = False
+    fab_add_security_permission_views_view: bool = False
+
+    # ── Troubleshooting / Permissions ──
+    troubleshooting_link: str = ""
+    permission_instructions_link: str = ""
+
+    # ── Blueprints ──
+    blueprints: list[Any] = []  # list[Blueprint]
+
+    # ── Tracking / Polling ──
+    tracking_url_transformer: Any | None = None  # Callable[[str], str]
+    db_poll_interval_seconds: dict[str, int] = {}
+    presto_poll_interval: int = 1
+
+    # ── DB auth / connection ──
+    allowed_extra_authentications: dict[str, dict[str, Any]] = {}
+    dashboard_template_id: int | None = None
+    engine_context_manager: Any | None = None  # context manager Callable
+    db_connection_mutator: Any | None = None  # Callable or None
+    db_sqla_uri_validator: Any | None = None  # Callable[[URL], None] | None
+    disallowed_sql_functions: dict[str, set[str]] = {
+        "postgresql": {
+            "current_database", "current_schema", "current_user", "session_user",
+            "current_setting", "version", "inet_client_addr", "inet_client_port",
+            "inet_server_addr", "inet_server_port", "pg_read_file", "pg_ls_dir",
+            "pg_read_binary_file", "database_to_xml", "database_to_xmlschema",
+            "query_to_xml", "query_to_xmlschema", "table_to_xml",
+            "table_to_xml_and_xmlschema", "query_to_xml_and_xmlschema",
+            "table_to_xmlschema", "pg_sleep", "pg_terminate_backend",
+        },
+        "mysql": {
+            "database", "schema", "current_user", "session_user", "system_user",
+            "user", "version", "connection_id", "load_file", "sleep", "benchmark",
+            "kill",
+        },
+        "sqlite": {
+            "sqlite_version", "sqlite_source_id", "sqlite_offset",
+            "sqlite_compileoption_used", "sqlite_compileoption_get", "load_extension",
+        },
+        "mssql": {
+            "db_name", "suser_sname", "user_name", "host_name", "host_id",
+            "suser_id", "system_user", "current_user", "original_login",
+            "xp_cmdshell", "xp_regread", "xp_fileexist", "xp_dirtree",
+            "serverproperty", "is_srvrolemember", "has_dbaccess",
+            "fn_virtualfilestats", "fn_servershareddrives",
+        },
+        "clickhouse": {
+            "currentUser", "currentDatabase", "hostName", "currentRoles",
+            "version", "buildID", "url", "filesystemPath", "getOSInformation",
+            "getMacro", "getSetting",
+        },
+    }
+
+    # ── SQL query mutator ──
+    sql_query_mutator: Any | None = None  # Callable or None
+    mutate_after_split: bool = False
+    mutate_alert_query: bool = False
+
+    # ── Email header ──
+    email_header_mutator: Any | None = None  # Callable or None
+
+    # ── User exclusion ──
+    exclude_users_from_lists: list[str] | None = None
+
+    # ── DB denylist ──
+    dbs_available_denylist: dict[str, set[str]] = {}
+
+    # ── Machine auth ──
+    machine_auth_provider_class: str = "superset.utils.machine_auth.MachineAuthProvider"
+
+    # ── Alerts & Reports (extended) ──
+    alert_reports_cron_window_size: int = 59
+    alert_reports_working_time_out_kill: bool = True
+    alert_reports_executors: list[Any] = []  # [ExecutorType.OWNER] in original
+    alert_reports_working_time_out_lag: int = 10
+    alert_reports_working_soft_time_out_lag: int = 1
+    alert_reports_query_execution_max_tries: int = 1
+    alert_reports_min_custom_screenshot_width: int = 600
+    alert_reports_max_custom_screenshot_width: int = 2400
+    alert_minimum_interval: int = 0
+    report_minimum_interval: int = 0
+
+    # ── Slack (extended) ──
+    slack_proxy: str | None = None
+    slack_cache_timeout: int = 86400  # 1 day
+    slack_api_rate_limit_retry_count: int = 2
+
+    # ── Webdriver / Screenshots ──
+    webdriver_type: str = "firefox"
+    webdriver_window: dict[str, Any] = {
+        "dashboard": (1600, 2000),
+        "slice": (3000, 1200),
+        "pixel_density": 1,
+    }
+    webdriver_auth_func: Any | None = None  # Callable or None
+    webdriver_configuration: dict[str, Any] = {
+        "options": {"capabilities": {}, "preferences": {}, "binary_location": ""},
+        "service": {"log_output": "/dev/null", "service_args": [], "port": 0, "env": {}},
+    }
+    webdriver_option_args: list[str] = ["--headless"]
+    webdriver_baseurl: str = "http://0.0.0.0:8080/"  # noqa: S104
+    webdriver_baseurl_user_friendly: str = "http://0.0.0.0:8080/"  # noqa: S104
+    email_page_render_wait: int = 30
+
+    # ── Preferred databases ──
+    preferred_databases: list[str] = [
+        "PostgreSQL", "Presto", "MySQL", "SQLite",
+    ]
+    test_database_connection_timeout: int = 30  # seconds (timedelta(seconds=30) in original)
+
+    # ── OAuth2 database ──
+    database_oauth2_clients: dict[str, dict[str, Any]] = {}
+    database_oauth2_jwt_algorithm: str = "HS256"
+    database_oauth2_timeout: int = 30  # seconds (timedelta(seconds=30) in original)
+
+    # ── CSP / Talisman ──
+    content_security_policy_warning: bool = True
+    talisman_enabled: bool = True
+    talisman_config: dict[str, Any] = {
+        "content_security_policy": {
+            "base-uri": ["'self'"],
+            "default-src": ["'self'"],
+            "img-src": [
+                "'self'", "blob:", "data:",
+                "https://apachesuperset.gateway.scarf.sh",
+                "https://static.scarf.sh/",
+                "ows.terrestris.de",
+                "https://cdn.document360.io",
+            ],
+            "worker-src": ["'self'", "blob:"],
+            "connect-src": [
+                "'self'",
+                "https://api.mapbox.com",
+                "https://events.mapbox.com",
+                "https://tile.openstreetmap.org",
+                "https://tile.osm.ch",
+            ],
+            "object-src": "'none'",
+            "style-src": ["'self'", "'unsafe-inline'"],
+            "script-src": ["'self'", "'strict-dynamic'"],
+        },
+        "content_security_policy_nonce_in": ["script-src"],
+        "force_https": False,
+        "session_cookie_secure": False,
+    }
+    talisman_dev_config: dict[str, Any] = {
+        "content_security_policy": {
+            "base-uri": ["'self'"],
+            "default-src": ["'self'"],
+            "img-src": [
+                "'self'", "blob:", "data:",
+                "https://apachesuperset.gateway.scarf.sh",
+                "https://static.scarf.sh/",
+                "https://cdn.brandfolder.io",
+                "ows.terrestris.de",
+                "https://cdn.document360.io",
+            ],
+            "worker-src": ["'self'", "blob:"],
+            "connect-src": [
+                "'self'",
+                "https://api.mapbox.com",
+                "https://events.mapbox.com",
+                "https://tile.openstreetmap.org",
+                "https://tile.osm.ch",
+            ],
+            "object-src": "'none'",
+            "style-src": ["'self'", "'unsafe-inline'"],
+            "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        },
+        "content_security_policy_nonce_in": ["script-src"],
+        "force_https": False,
+        "session_cookie_secure": False,
+    }
+
+    # ── Session (extended) ──
+    session_server_side: bool = False
+    send_file_max_age_default: int = 31536000  # 365 days
+
+    # ── Database safety ──
+    prevent_unsafe_db_connections: bool = True
+    dataset_import_allowed_data_urls: list[str] = [".*"]
+    ssl_cert_path: str | None = None
+
+    # ── SQLA table mutator ──
+    sqla_table_mutator: Any | None = None  # Callable or None (lambda table: table)
+
+    # ── Global async queries (extended) ──
+    global_async_query_manager_class: str = (
+        "superset.async_events.async_query_manager.AsyncQueryManager"
+    )
+    global_async_queries_redis_stream_prefix: str = "async-events-"
+    global_async_queries_redis_stream_limit: int = 1000
+    global_async_queries_redis_stream_limit_firehose: int = 1000000
+    global_async_queries_register_request_handlers: bool = True
+    global_async_queries_jwt_cookie_name: str = "async-token"
+    global_async_queries_jwt_cookie_secure: bool = False
+    global_async_queries_jwt_cookie_samesite: str | None = None
+    global_async_queries_jwt_cookie_domain: str | None = None
+    global_async_queries_jwt_secret: str = "test-secret-change-me"  # noqa: S105
+    global_async_queries_cache_backend: dict[str, Any] = {
+        "CACHE_TYPE": "RedisCache",
+        "CACHE_REDIS_HOST": "localhost",
+        "CACHE_REDIS_PORT": 6379,
+        "CACHE_REDIS_USER": "",
+        "CACHE_REDIS_PASSWORD": "",
+        "CACHE_REDIS_DB": 0,
+        "CACHE_DEFAULT_TIMEOUT": 300,
+        "CACHE_REDIS_SENTINELS": [("localhost", 26379)],
+        "CACHE_REDIS_SENTINEL_MASTER": "mymaster",
+        "CACHE_REDIS_SENTINEL_PASSWORD": None,
+        "CACHE_REDIS_SSL": False,
+        "CACHE_REDIS_SSL_CERTFILE": None,
+        "CACHE_REDIS_SSL_KEYFILE": None,
+        "CACHE_REDIS_SSL_CERT_REQS": "required",
+        "CACHE_REDIS_SSL_CA_CERTS": None,
+    }
+
+    # ── Guest token (extended) ──
+    guest_token_jwt_audience: Any | None = None  # Callable[[], str] | str | None
+
+    # ── Dataset health ──
+    dataset_health_check: Any | None = None  # Callable[[SqlaTable], str] | None
+
+    # ── Zip file limits ──
+    zipped_file_max_size: int = 104857600  # 100 MB
+    zip_file_max_compress_ratio: float = 200.0
+
+    # ── Query filters ──
+    extra_related_query_filters: dict[str, Any] = {}
+    extra_dynamic_query_filters: dict[str, Any] = {}
+
+    # ── Catalog migration ──
+    catalogs_simplified_migration: bool = False
+
+    # ── User agent ──
+    user_agent_func: Any | None = None  # Callable[[Database, QuerySource], str] | None
 
     @field_validator("secret_key")
     @classmethod
