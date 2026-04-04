@@ -14,19 +14,25 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Standalone enums for migration compatibility (no SA 2.0 model import)."""
-import enum
+"""Tag enums re-exported from superset.models.tags for convenience.
 
+The canonical ORM models (Tag, TaggedObject) live in ``superset.models.tags``.
+This module re-exports the enums so that existing ``from superset.tags.models
+import TagType, ObjectType`` imports keep working.
+"""
 
-class TagType(enum.Enum):
-    custom = 1
-    type = 2
-    owner = 3
-    favorited_by = 4
+from superset.models.tags import (
+    ObjectType,
+    Tag,
+    TaggedObject,
+    TagType,
+    user_favorite_tag_table,
+)
 
-
-class ObjectType(enum.Enum):
-    query = 1
-    chart = 2
-    dashboard = 3
-    dataset = 4
+__all__ = [
+    "ObjectType",
+    "Tag",
+    "TaggedObject",
+    "TagType",
+    "user_favorite_tag_table",
+]
