@@ -47,6 +47,7 @@ from superset.models.helpers import (
     AuditMixinNullable,
     Base,
     CertificationMixin,
+    ExploreMixin,
     ImportExportMixin,
     MediumText,
     metadata,
@@ -320,7 +321,7 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
 # ---------------------------------------------------------------------------
 
 
-class SqlaTable(Base, AuditMixinNullable, ImportExportMixin, BaseDatasource):
+class SqlaTable(Base, AuditMixinNullable, ImportExportMixin, BaseDatasource, ExploreMixin):
     """A SQL dataset (table or virtual query)."""
 
     __tablename__ = "tables"

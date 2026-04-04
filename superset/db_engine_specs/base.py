@@ -1565,6 +1565,54 @@ class BaseEngineSpec:  # noqa: PLR0904
         return sqla_col.is_(value)
 
     @classmethod
+    def handle_null_filter(
+        cls,
+        sqla_col: Any,
+        op: str,
+    ) -> Any:
+        """Handle null / not-null filter operations.
+
+        :param sqla_col: SQLAlchemy column element
+        :param op: Filter operator string (``"IS NULL"`` or ``"IS NOT NULL"``)
+        :return: SQLAlchemy expression for the null filter
+        """
+        op_upper = str(op).upper().replace("_", " ")
+        if op_upper in ("IS NULL",):
+            return sqla_col.is_(None)
+        if op_upper in ("IS NOT NULL",):
+            return sqla_col.isnot(None)
+        raise ValueError(f"Invalid null filter operator: {op}")
+
+    @classmethod
+    def handle_comparison_filter(
+        cls,
+        sqla_col: Any,
+        op: str,
+        value: Any,
+    ) -> Any:
+        """Handle comparison filter operations (=, !=, >, <, >=, <=).
+
+        :param sqla_col: SQLAlchemy column element
+        :param op: Filter operator string
+        :param value: Filter value
+        :return: SQLAlchemy expression for the comparison filter
+        """
+        op_str = str(op)
+        if op_str in ("==", "EQUALS"):
+            return sqla_col == value
+        if op_str in ("!=", "NOT_EQUALS"):
+            return sqla_col != value
+        if op_str in (">", "GREATER_THAN"):
+            return sqla_col > value
+        if op_str in ("<", "LESS_THAN"):
+            return sqla_col < value
+        if op_str in (">=", "GREATER_THAN_OR_EQUALS"):
+            return sqla_col >= value
+        if op_str in ("<=", "LESS_THAN_OR_EQUALS"):
+            return sqla_col <= value
+        raise ValueError(f"Invalid comparison filter operator: {op}")
+
+    @classmethod
     def alter_new_orm_column(cls, orm_col: Any) -> None:
         """Allow altering default column attributes when first detected.
 

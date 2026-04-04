@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """Date parsing utilities ported from superset/utils/date_parser.py."""
+
 from __future__ import annotations
 
 import calendar
@@ -28,8 +29,8 @@ from time import struct_time
 
 import pandas as pd
 import parsedatetime
-from dateutil.parser import parse
-from dateutil.relativedelta import relativedelta
+from dateutil.parser import parse  # type: ignore[import-untyped]
+from dateutil.relativedelta import relativedelta  # type: ignore[import-untyped]
 from holidays import country_holidays
 from pandas.core.dtypes.common import is_numeric_dtype
 from pyparsing import (
@@ -199,9 +200,7 @@ def normalize_time_delta(human_readable: str) -> dict[str, int]:
 
 def parse_human_datetime(human_readable: str) -> datetime:
     """Returns ``datetime.datetime`` from human readable strings"""
-    x_periods = (
-        r"^\s*([0-9]+)\s+(second|minute|hour|day|week|month|quarter|year)s?\s*$"
-    )
+    x_periods = r"^\s*([0-9]+)\s+(second|minute|hour|day|week|month|quarter|year)s?\s*$"
     if re.search(x_periods, human_readable, re.IGNORECASE):
         raise TimeRangeAmbiguousError(human_readable)
     try:
@@ -296,9 +295,7 @@ def handle_modifier_and_unit(
         raise ValueError(f"Unknown modifier: {modifier}")
 
 
-def handle_scope_and_unit(
-    scope: str, delta: str, unit: str, relative_base: str
-) -> str:
+def handle_scope_and_unit(scope: str, delta: str, unit: str, relative_base: str) -> str:
     _delta = int(delta) if delta else 1
     if scope.lower() == "this":
         return f"DATETIME('{relative_base}')"
@@ -444,20 +441,20 @@ class EvalHolidayFunc:
 @lru_cache(maxsize=LRU_CACHE_MAX_SIZE)
 def datetime_parser() -> ParseResults:
     (
-        DATETIME,
-        DATEADD,
-        DATEDIFF,
-        DATETRUNC,
-        LASTDAY,
-        HOLIDAY,
-        YEAR,
-        QUARTER,
-        MONTH,
-        WEEK,
-        DAY,
-        HOUR,
-        MINUTE,
-        SECOND,
+        DATETIME,  # noqa: N806
+        DATEADD,  # noqa: N806
+        DATEDIFF,  # noqa: N806
+        DATETRUNC,  # noqa: N806
+        LASTDAY,  # noqa: N806
+        HOLIDAY,  # noqa: N806
+        YEAR,  # noqa: N806
+        QUARTER,  # noqa: N806
+        MONTH,  # noqa: N806
+        WEEK,  # noqa: N806
+        DAY,  # noqa: N806
+        HOUR,  # noqa: N806
+        MINUTE,  # noqa: N806
+        SECOND,  # noqa: N806
     ) = map(
         CaselessKeyword,
         "datetime dateadd datediff datetrunc lastday holiday "
@@ -482,10 +479,10 @@ def datetime_parser() -> ParseResults:
         pyparsing_common.signed_integer().setName("int_operand") | datediff_func
     )
 
-    datetime_func <<= (DATETIME + lparen + text_operand + rparen).setParseAction(
+    datetime_func <<= (DATETIME + lparen + text_operand + rparen).setParseAction(  # type: ignore[operator]
         EvalDateTimeFunc
     )
-    dateadd_func <<= (
+    dateadd_func <<= (  # type: ignore[operator]
         DATEADD
         + lparen
         + Group(
@@ -498,7 +495,7 @@ def datetime_parser() -> ParseResults:
         )
         + rparen
     ).setParseAction(EvalDateAddFunc)
-    datetrunc_func <<= (
+    datetrunc_func <<= (  # type: ignore[operator]
         DATETRUNC
         + lparen
         + Group(
@@ -509,13 +506,13 @@ def datetime_parser() -> ParseResults:
         )
         + rparen
     ).setParseAction(EvalDateTruncFunc)
-    lastday_func <<= (
+    lastday_func <<= (  # type: ignore[operator]
         LASTDAY
         + lparen
         + Group(date_expr + comma + (YEAR | MONTH | WEEK) + ppOptional(comma))
         + rparen
     ).setParseAction(EvalLastDayFunc)
-    holiday_func <<= (
+    holiday_func <<= (  # type: ignore[operator]
         HOLIDAY
         + lparen
         + Group(
@@ -528,7 +525,7 @@ def datetime_parser() -> ParseResults:
         )
         + rparen
     ).setParseAction(EvalHolidayFunc)
-    datediff_func <<= (
+    datediff_func <<= (  # type: ignore[operator]
         DATEDIFF
         + lparen
         + Group(
@@ -862,3 +859,27 @@ def humanize_timedelta(dt: datetime) -> str:
 
     delta = datetime.now() - dt
     return _humanize.naturaltime(delta)
+
+
+def get_since_until_from_time_range(
+    time_range: str | None = None,
+    time_shift: str | None = None,
+    extras: dict[str, Any] | None = None,
+) -> tuple[datetime | None, datetime | None]:
+    """Compute ``(since, until)`` from a *time_range* string.
+
+    Flask-free replacement for the original helper that lived in
+    ``superset.common.utils.time_range_utils``.  Instead of reading
+    ``DEFAULT_RELATIVE_START_TIME`` / ``DEFAULT_RELATIVE_END_TIME`` from
+    ``flask.current_app.config`` we fall back to sensible defaults
+    (``"today"``), which callers can override via the *extras* dict.
+    """
+    return get_since_until(
+        relative_start=(extras or {}).get("relative_start", "today"),
+        relative_end=(extras or {}).get("relative_end", "today"),
+        time_range=time_range,
+        time_shift=time_shift,
+        instant_time_comparison_range=(extras or {}).get(
+            "instant_time_comparison_range"
+        ),
+    )
