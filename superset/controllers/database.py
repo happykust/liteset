@@ -737,17 +737,22 @@ class DatabaseController(Controller):
         self,
         pk: int,
         dao: DatabaseDAOProtocol,
+        rison_params: dict[str, Any] | None,
         schema_name: str = Parameter(query="schema_name", default=""),
         catalog: str | None = Parameter(query="catalog", default=None),
         force: bool = Parameter(query="force", default=False),
     ) -> dict[str, Any]:
-        # ``force`` accepted for API parity (cache bypass); async path
-        # always fetches live metadata so it is a no-op.
-        _ = force
+        # Original Superset sends params inside Rison ``q`` parameter.
+        # Fall back to direct query params for backward compat.
+        rison = rison_params or {}
+        effective_force = rison.get("force", force)
+        effective_schema = rison.get("schema_name", schema_name) or None
+        effective_catalog = rison.get("catalog_name", catalog)
+        _ = effective_force  # async path always fetches live
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
-        schema = schema_name or None
+        schema = effective_schema
         try:
             async with get_async_connection(database) as (conn, engine_spec):
                 table_names = await engine_spec.get_table_names(conn, schema=schema)
