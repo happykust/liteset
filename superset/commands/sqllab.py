@@ -103,7 +103,7 @@ def _build_connection_uri(database: Any) -> str:
     if password:
         url = url.set(password=password)
 
-    return _to_sync_uri(str(url))
+    return _to_sync_uri(url.render_as_string(hide_password=False))
 
 
 def _execute_sql_in_thread(

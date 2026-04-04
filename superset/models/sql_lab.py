@@ -135,13 +135,23 @@ class Query(Base, ExtraJSONMixin):
         The frontend relies on these exact keys (dbId, endDttm, startDttm,
         sqlEditorId, etc.) so we must preserve the original naming.
         """
+        # Avoid lazy-loading relationships in async context.
+        # Use sa.inspect() to check if attributes are already loaded.
+        from sqlalchemy import inspect as sa_inspect
+
+        state = sa_inspect(self)
+
         user_label = ""
-        if self.user:
+        if "user" not in state.unloaded and self.user:
             user_label = (
                 getattr(self.user, "username", None)
                 or getattr(self.user, "email", None)
                 or str(self.user)
             )
+
+        db_name = None
+        if "database" not in state.unloaded and self.database is not None:
+            db_name = self.database.database_name
 
         changed_on_iso = ""
         if self.changed_on is not None:
@@ -150,11 +160,7 @@ class Query(Base, ExtraJSONMixin):
         return {
             "changed_on": changed_on_iso,
             "dbId": self.database_id,
-            "db": (
-                self.database.database_name
-                if self.database is not None
-                else None
-            ),
+            "db": db_name,
             "endDttm": self.end_time,
             "errorMessage": self.error_message,
             "executedSql": self.executed_sql,
