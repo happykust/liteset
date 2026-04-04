@@ -18,10 +18,13 @@
 
 Pure SQLAlchemy -- no Flask dependencies.
 """
+
 from __future__ import annotations
 
 import enum
+import json
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -78,20 +81,14 @@ class Query(Base, ExtraJSONMixin):
     """A SQL query executed in SQL Lab."""
 
     __tablename__ = "query"
-    __table_args__ = (
-        Index("ti_user_id_changed_on", "user_id", "changed_on"),
-    )
+    __table_args__ = (Index("ti_user_id_changed_on", "user_id", "changed_on"),)
 
     id = Column(Integer, primary_key=True)
     client_id = Column(String(11), unique=True, nullable=False)
-    database_id = Column(
-        Integer, ForeignKey("dbs.id"), nullable=False
-    )
+    database_id = Column(Integer, ForeignKey("dbs.id"), nullable=False)
     tmp_table_name = Column(String(256))
     tmp_schema_name = Column(String(256))
-    user_id = Column(
-        Integer, ForeignKey("ab_user.id"), nullable=True
-    )
+    user_id = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
     status = Column(String(16), default="pending")
     tab_name = Column(String(256))
     sql_editor_id = Column(String(256), index=True)
@@ -101,9 +98,7 @@ class Query(Base, ExtraJSONMixin):
     select_sql = Column(LongText())
     executed_sql = Column(LongText())
     limit = Column(Integer)
-    limiting_factor = Column(
-        Enum(LimitingFactor), server_default="UNKNOWN"
-    )
+    limiting_factor = Column(Enum(LimitingFactor), server_default="UNKNOWN")
     select_as_cta = Column(Boolean)
     select_as_cta_used = Column(Boolean, default=False)
     ctas_method = Column(String(16), default="TABLE")
@@ -112,13 +107,9 @@ class Query(Base, ExtraJSONMixin):
     error_message = Column(Text)
     results_key = Column(String(64), index=True)
     start_time = Column(Numeric(precision=20, scale=6))
-    start_running_time = Column(
-        Numeric(precision=20, scale=6)
-    )
+    start_running_time = Column(Numeric(precision=20, scale=6))
     end_time = Column(Numeric(precision=20, scale=6))
-    end_result_backend_time = Column(
-        Numeric(precision=20, scale=6)
-    )
+    end_result_backend_time = Column(Numeric(precision=20, scale=6))
     tracking_url_raw = Column(Text, name="tracking_url")
     changed_on = Column(
         DateTime,
@@ -150,12 +141,8 @@ class SavedQuery(Base, AuditMixinNullable, ExtraJSONMixin, ImportExportMixin):
     __tablename__ = "saved_query"
 
     id = Column(Integer, primary_key=True)
-    user_id = Column(
-        Integer, ForeignKey("ab_user.id"), nullable=True
-    )
-    db_id = Column(
-        Integer, ForeignKey("dbs.id"), nullable=True
-    )
+    user_id = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
+    db_id = Column(Integer, ForeignKey("dbs.id"), nullable=True)
     schema = Column(String(128))
     catalog = Column(String(256), nullable=True, default=None)
     label = Column(String(256))
@@ -175,6 +162,14 @@ class SavedQuery(Base, AuditMixinNullable, ExtraJSONMixin, ImportExportMixin):
         "Database",
         foreign_keys=[db_id],
     )
+    tags = relationship(
+        "Tag",
+        secondary="tagged_object",
+        primaryjoin="and_(SavedQuery.id == foreign(TaggedObject.object_id), "
+        "TaggedObject.object_type == 'saved_query')",
+        secondaryjoin="Tag.id == foreign(TaggedObject.tag_id)",
+        viewonly=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -188,9 +183,7 @@ class TabState(AuditMixinNullable, ExtraJSONMixin, Base):
     __tablename__ = "tab_state"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(
-        Integer, ForeignKey("ab_user.id"), nullable=True
-    )
+    user_id = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
     label = Column(String(256))
     active = Column(Boolean, default=False)
     database_id = Column(
@@ -236,6 +229,26 @@ class TabState(AuditMixinNullable, ExtraJSONMixin, Base):
         foreign_keys=[saved_query_id],
     )
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "label": self.label,
+            "active": self.active,
+            "database_id": self.database_id,
+            "catalog": self.catalog,
+            "schema": self.schema,
+            "table_schemas": [ts.to_dict() for ts in self.table_schemas],
+            "sql": self.sql,
+            "query_limit": self.query_limit,
+            "latest_query": self.latest_query.to_dict() if self.latest_query else None,
+            "autorun": self.autorun,
+            "template_params": self.template_params,
+            "hide_left_bar": self.hide_left_bar,
+            "saved_query": self.saved_query.to_dict() if self.saved_query else None,
+            "extra_json": self.extra,
+        }
+
 
 # ---------------------------------------------------------------------------
 # TableSchema
@@ -270,3 +283,19 @@ class TableSchema(AuditMixinNullable, ExtraJSONMixin, Base):
         "Database",
         foreign_keys=[database_id],
     )
+
+    def to_dict(self) -> dict[str, Any]:
+        try:
+            description = json.loads(self.description)
+        except (json.JSONDecodeError, TypeError):
+            description = None
+        return {
+            "id": self.id,
+            "tab_state_id": self.tab_state_id,
+            "database_id": self.database_id,
+            "catalog": self.catalog,
+            "schema": self.schema,
+            "table": self.table,
+            "description": description,
+            "expanded": self.expanded,
+        }
