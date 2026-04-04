@@ -18,7 +18,12 @@
 
 Pure SQLAlchemy -- no Flask dependencies.
 """
+
 from __future__ import annotations
+
+import json
+import logging
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -39,6 +44,8 @@ from superset.models.helpers import (
     MediumText,
     metadata,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Association tables
@@ -111,17 +118,13 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
     position_json = Column(MediumText())
     description = Column(Text)
     css = Column(MediumText())
-    theme_id = Column(
-        Integer, ForeignKey("themes.id"), nullable=True
-    )
+    theme_id = Column(Integer, ForeignKey("themes.id"), nullable=True)
     certified_by = Column(Text)
     certification_details = Column(Text)
     json_metadata = Column(MediumText())
     slug = Column(String(255), unique=True)
     published = Column(Boolean, default=False)
-    is_managed_externally = Column(
-        Boolean, nullable=False, default=False
-    )
+    is_managed_externally = Column(Boolean, nullable=False, default=False)
     external_url = Column(Text, nullable=True)
 
     # -- relationships --------------------------------------------------------
@@ -158,6 +161,19 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
         viewonly=True,
     )
 
+    export_fields = [
+        "dashboard_title",
+        "position_json",
+        "json_metadata",
+        "description",
+        "css",
+        "slug",
+        "certified_by",
+        "certification_details",
+        "published",
+    ]
+    extra_import_fields = ["is_managed_externally", "external_url", "theme_id"]
+
     # -- Computed properties (match original FAB model) ------------------------
 
     @property
@@ -167,6 +183,69 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
     @property
     def status(self) -> str:
         return "published" if self.published else "draft"
+
+    @property
+    def params(self) -> str:
+        """Alias: ``params`` reads from ``json_metadata``."""
+        return self.json_metadata
+
+    @params.setter
+    def params(self, value: str) -> None:
+        """Alias: setting ``params`` writes to ``json_metadata``."""
+        self.json_metadata = value
+
+    @property
+    def params_dict(self) -> dict[str, Any]:
+        """Parsed json_metadata as a dict."""
+        try:
+            return json.loads(self.json_metadata or "{}") or {}
+        except (TypeError, json.JSONDecodeError):
+            return {}
+
+    @property
+    def position(self) -> dict[str, Any]:
+        """Parsed position_json as a dict."""
+        if self.position_json:
+            try:
+                return json.loads(self.position_json)
+            except (TypeError, json.JSONDecodeError):
+                return {}
+        return {}
+
+    @property
+    def changed_by_name(self) -> str:
+        """Return the name of the user who last changed the dashboard."""
+        if not self.changed_by:
+            return ""
+        return str(self.changed_by)
+
+    @property
+    def data(self) -> dict[str, Any]:
+        """Full data dict for serialisation, matching the original model."""
+        positions = self.position_json
+        if positions:
+            try:
+                positions = json.loads(positions)
+            except (TypeError, json.JSONDecodeError):
+                positions = None
+        return {
+            "id": self.id,
+            "metadata": self.params_dict,
+            "certified_by": self.certified_by,
+            "certification_details": self.certification_details,
+            "css": self.css,
+            "dashboard_title": self.dashboard_title,
+            "published": self.published,
+            "slug": self.slug,
+            "slices": [slc.data for slc in (self.slices or [])],
+            "position_json": positions,
+            "last_modified_time": (
+                self.changed_on.replace(microsecond=0).timestamp()
+                if self.changed_on
+                else None
+            ),
+            "is_managed_externally": self.is_managed_externally,
+        }
 
     @property
     def thumbnail_url(self) -> str | None:

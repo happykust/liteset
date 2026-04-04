@@ -18,7 +18,12 @@
 
 Pure SQLAlchemy -- no Flask dependencies.
 """
+
 from __future__ import annotations
+
+import json
+import logging
+from typing import Any, TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -39,6 +44,11 @@ from superset.models.helpers import (
     MediumText,
     metadata,
 )
+
+if TYPE_CHECKING:
+    from superset.models.connectors import SqlaTable
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Association tables
@@ -85,14 +95,10 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
     schema_perm = Column(String(1000))
     catalog_perm = Column(String(1000))
     last_saved_at = Column(DateTime, nullable=True)
-    last_saved_by_fk = Column(
-        Integer, ForeignKey("ab_user.id"), nullable=True
-    )
+    last_saved_by_fk = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
     certified_by = Column(Text)
     certification_details = Column(Text)
-    is_managed_externally = Column(
-        Boolean, nullable=False, default=False
-    )
+    is_managed_externally = Column(Boolean, nullable=False, default=False)
     external_url = Column(Text, nullable=True)
 
     # -- relationships --------------------------------------------------------
@@ -121,11 +127,95 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
         viewonly=True,
     )
 
+    export_fields = [
+        "slice_name",
+        "description",
+        "certified_by",
+        "certification_details",
+        "datasource_type",
+        "datasource_name",
+        "viz_type",
+        "params",
+        "query_context",
+        "cache_timeout",
+    ]
+    export_parent = "table"
+    extra_import_fields = ["is_managed_externally", "external_url"]
+
     # -- Computed properties ---------------------------------------------------
 
     @property
+    def datasource(self) -> SqlaTable | None:
+        """Return the related datasource (the SqlaTable relationship)."""
+        return self.table
+
+    @property
+    def form_data(self) -> dict[str, Any]:
+        """Parsed params dict enriched with slice/datasource identifiers.
+
+        Matches the original Slice.form_data property 1:1.
+        """
+        form_data: dict[str, Any] = {}
+        try:
+            form_data = json.loads(self.params) if self.params else {}
+        except (TypeError, json.JSONDecodeError):
+            logger.error("Malformed json in slice's params", exc_info=True)
+
+        form_data.update(
+            {
+                "slice_id": self.id,
+                "viz_type": self.viz_type,
+                "datasource": f"{self.datasource_id}__{self.datasource_type}",
+            }
+        )
+
+        if self.cache_timeout:
+            form_data["cache_timeout"] = self.cache_timeout
+        return form_data
+
+    @property
+    def params_dict(self) -> dict[str, Any]:
+        """Parsed params as a dict."""
+        try:
+            return json.loads(self.params or "{}") or {}
+        except (TypeError, json.JSONDecodeError):
+            return {}
+
+    @property
+    def data(self) -> dict[str, Any]:
+        """Data used to render slice in templates.
+
+        Matches the original Slice.data property.
+        """
+        return {
+            "cache_timeout": self.cache_timeout,
+            "changed_on": (
+                self.changed_on.isoformat() if self.changed_on else ""
+            ),
+            "changed_on_humanized": getattr(
+                self, "changed_on_delta_humanized", ""
+            ),
+            "datasource": self.datasource_name,
+            "description": self.description,
+            "description_markeddown": self.description or "",
+            "edit_url": self.edit_url,
+            "form_data": self.form_data,
+            "query_context": self.query_context,
+            "modified": (
+                self.changed_on.isoformat() if self.changed_on else ""
+            ),
+            "owners": [owner.id for owner in (self.owners or [])],
+            "slice_id": self.id,
+            "slice_name": self.slice_name,
+            "slice_url": self.slice_url,
+            "certified_by": self.certified_by,
+            "certification_details": self.certification_details,
+            "is_managed_externally": self.is_managed_externally,
+        }
+
+    @property
     def url(self) -> str:
-        return f"/explore/?form_data=%7B%22slice_id%22%3A%20{self.id}%7D"
+        return f"/explore/?slice_id={self.id}"
 
     @property
     def edit_url(self) -> str:
@@ -138,16 +228,15 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
     @property
     def datasource_name_text(self) -> str | None:
         if self.table:
+            if self.table.schema:
+                return f"{self.table.schema}.{self.table.table_name}"
             return self.table.table_name
         return None
 
     @property
     def datasource_url(self) -> str | None:
         if self.table:
-            return (
-                f"/explore/?datasource_type=table"
-                f"&datasource_id={self.datasource_id}"
-            )
+            return f"/explore/?datasource_type=table&datasource_id={self.datasource_id}"
         return None
 
     @property
