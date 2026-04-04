@@ -17,9 +17,15 @@
 """Report scheduler Celery tasks for Superset.
 
 Self-contained implementations that use :func:`superset.db.session.get_sync_session`
-for synchronous DB access inside Celery workers.  Complex report execution
-(notification, screenshot) is stubbed and will be expanded incrementally.
+for synchronous DB access inside Celery workers.
+
+The ``execute`` task delegates to
+:class:`~superset.commands.report_execute.ExecuteReportScheduleCommand`,
+which runs the full state-machine pipeline: alert condition checking,
+notification sending (email / Slack), and execution log management.
+Screenshot/webdriver support is stubbed pending browser runtime integration.
 """
+
 from __future__ import annotations
 
 import logging
@@ -84,46 +90,74 @@ def scheduler(self: Task) -> None:
 def execute(self: Task, report_schedule_id: int) -> None:
     """Execute a single alert/report schedule.
 
-    Loads the report, runs the associated query / generates output, and
-    sends notifications.  The complex execution pipeline (screenshots,
-    email/Slack delivery) is currently stubbed.
+    Loads the report via :class:`~superset.commands.report_execute.ExecuteReportScheduleCommand`,
+    which runs the full state-machine pipeline:
+
+    1. Load the ``ReportSchedule`` model.
+    2. For ALERT type: execute the SQL query and check conditions.
+    3. For REPORT type: generate output (screenshot/CSV -- screenshot stubbed).
+    4. Send notifications (email / Slack) via notification handlers.
+    5. Update ``last_state``, ``last_eval_dttm``.
+    6. Create ``ReportExecutionLog`` entry.
+
+    Ported 1:1 from ``superset_old/tasks/scheduler.py::execute``.
     """
+    from superset.commands.report_exceptions import (
+        ReportScheduleUnexpectedError,
+    )
+    from superset.commands.report_execute import ExecuteReportScheduleCommand
     from superset.db.session import get_sync_session
+    from superset.exceptions import CommandException
 
     session = get_sync_session()
+    task_id = None
     try:
         task_id = execute.request.id
         scheduled_dttm = execute.request.eta
         logger.info(
-            "Executing alert/report %s, task_id=%s, scheduled_dttm=%s",
-            report_schedule_id,
+            "Executing alert/report, task id: %s, scheduled_dttm: %s",
             task_id,
             scheduled_dttm,
         )
-
-        row = session.execute(
-            text("SELECT id, name, type FROM report_schedule WHERE id = :rid"),
-            {"rid": report_schedule_id},
-        ).fetchone()
-        if not row:
-            logger.warning("Report schedule %s not found", report_schedule_id)
-            return
-
-        logger.info(
-            "Report schedule loaded: id=%s name=%s type=%s", row[0], row[1], row[2]
-        )
-        # TODO: implement full execution pipeline:
-        # 1. Run alert query if applicable
-        # 2. Generate screenshot/CSV/dataframe if report
-        # 3. Send notifications (email, Slack)
-        # 4. Update last_state, last_eval_dttm
-        # 5. Create ReportExecutionLog entry
-    except Exception:
-        logger.exception(
-            "An unexpected error occurred while executing report: %s",
+        ExecuteReportScheduleCommand(
+            task_id,
             report_schedule_id,
+            scheduled_dttm,
+            session,
+        ).run()
+    except ReportScheduleUnexpectedError:
+        logger.exception(
+            "An unexpected error occurred while executing the report: %s",
+            task_id,
         )
         self.update_state(state="FAILURE")
+    except CommandException as ex:
+        # Map status code to log level (same logic as original)
+        status = getattr(ex, "status_code", 500)
+        status_prefix = str(status)[0]
+        if status_prefix == "5":
+            logger.exception(
+                "A downstream exception occurred while generating a report: "
+                "%s. %s",
+                task_id,
+                ex.message,
+            )
+            self.update_state(state="FAILURE")
+        elif status_prefix == "4":
+            logger.warning(
+                "A downstream warning occurred while generating a report: "
+                "%s. %s",
+                task_id,
+                ex.message,
+                exc_info=True,
+            )
+        else:
+            logger.info(
+                "Report execution completed with status %s: %s. %s",
+                status,
+                task_id,
+                ex.message,
+            )
     finally:
         session.close()
 
@@ -158,7 +192,7 @@ def prune_log() -> None:
                 ),
                 {"sid": schedule_id, "cutoff": cutoff},
             )
-            total_deleted += result.rowcount
+            total_deleted += result.rowcount  # type: ignore[attr-defined]
 
         session.commit()
         logger.info("Pruned %d report execution log entries", total_deleted)
@@ -200,7 +234,7 @@ def prune_query(
             {"cutoff": cutoff},
         )
         session.commit()
-        logger.info("Pruned %d query records", result.rowcount)
+        logger.info("Pruned %d query records", result.rowcount)  # type: ignore[attr-defined]
     except Exception:
         session.rollback()
         logger.exception("An error occurred while pruning queries")
@@ -239,7 +273,7 @@ def prune_logs(
             {"cutoff": cutoff},
         )
         session.commit()
-        logger.info("Pruned %d application log records", result.rowcount)
+        logger.info("Pruned %d application log records", result.rowcount)  # type: ignore[attr-defined]
     except Exception:
         session.rollback()
         logger.exception("An error occurred while pruning logs")
