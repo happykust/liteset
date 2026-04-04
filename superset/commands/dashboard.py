@@ -19,12 +19,24 @@
 from __future__ import annotations
 
 import io
+import json as _json
 import logging
+import random
+import string
 from typing import Any, TYPE_CHECKING
+from uuid import UUID as _UUID
 
 import yaml  # type: ignore[import-untyped]
 
 from superset.commands.base import AsyncBaseCommand
+from superset.commands.chart import (
+    _get_filename,
+    _import_chart,
+    _import_database,
+    _import_dataset,
+    EXPORT_VERSION,
+    update_chart_config_dataset,
+)
 from superset.exceptions import (
     CommandInvalidError,
     ImportFailedError,
@@ -36,11 +48,342 @@ from superset.utils import mask_uri_password
 
 logger = logging.getLogger(__name__)
 
+# JSON keys that are stored as JSON strings in the DB but exported as dicts
+_JSON_KEYS_EXPORT = {"position_json": "position", "json_metadata": "metadata"}
+_JSON_KEYS_IMPORT = {"position": "position_json", "metadata": "json_metadata"}
+
+DEFAULT_CHART_HEIGHT = 50
+DEFAULT_CHART_WIDTH = 4
+
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from superset.db.daos.dashboard import AsyncDashboardDAO, AsyncEmbeddedDashboardDAO
     from superset.models.dashboard import Dashboard
     from superset.models.embedded_dashboard import EmbeddedDashboard
+
+
+# ---------------------------------------------------------------------------
+# Dashboard import/export helper functions (ported 1:1 from original)
+# ---------------------------------------------------------------------------
+
+
+def _suffix(length: int = 8) -> str:
+    return "".join(
+        random.SystemRandom().choice(string.ascii_uppercase + string.digits)
+        for _ in range(length)
+    )
+
+
+def _get_default_position(title: str) -> dict[str, Any]:
+    return {
+        "DASHBOARD_VERSION_KEY": "v2",
+        "ROOT_ID": {"children": ["GRID_ID"], "id": "ROOT_ID", "type": "ROOT"},
+        "GRID_ID": {
+            "children": [],
+            "id": "GRID_ID",
+            "parents": ["ROOT_ID"],
+            "type": "GRID",
+        },
+        "HEADER_ID": {"id": "HEADER_ID", "meta": {"text": title}, "type": "HEADER"},
+    }
+
+
+def _append_charts(position: dict[str, Any], charts: set[Any]) -> dict[str, Any]:
+    """Append orphan charts to a new row inside the grid."""
+    chart_hashes = [f"CHART-{_suffix()}" for _ in charts]
+
+    row_hash = None
+    if "ROOT_ID" in position and "GRID_ID" in position["ROOT_ID"]["children"]:
+        row_hash = f"ROW-N-{_suffix()}"
+        position["GRID_ID"]["children"].append(row_hash)
+        position[row_hash] = {
+            "children": chart_hashes,
+            "id": row_hash,
+            "meta": {"0": "ROOT_ID", "background": "BACKGROUND_TRANSPARENT"},
+            "type": "ROW",
+            "parents": ["ROOT_ID", "GRID_ID"],
+        }
+
+    for chart_hash, chart in zip(chart_hashes, charts, strict=False):
+        position[chart_hash] = {
+            "children": [],
+            "id": chart_hash,
+            "meta": {
+                "chartId": chart.id,
+                "height": DEFAULT_CHART_HEIGHT,
+                "sliceName": chart.slice_name,
+                "uuid": str(chart.uuid),
+                "width": DEFAULT_CHART_WIDTH,
+            },
+            "type": "CHART",
+        }
+        if row_hash:
+            position[chart_hash]["parents"] = ["ROOT_ID", "GRID_ID", row_hash]
+
+    return position
+
+
+def find_chart_uuids(position: dict[str, Any]) -> set[str]:
+    """Extract chart UUIDs from dashboard position dict."""
+    return set(_build_uuid_to_id_map(position))
+
+
+def find_native_filter_datasets(metadata: dict[str, Any]) -> set[str]:
+    """Extract dataset UUIDs referenced by native filters."""
+    uuids: set[str] = set()
+    for native_filter in metadata.get("native_filter_configuration", []):
+        for target in native_filter.get("targets", []):
+            dataset_uuid = target.get("datasetUuid")
+            if dataset_uuid:
+                uuids.add(dataset_uuid)
+    return uuids
+
+
+def _build_uuid_to_id_map(position: dict[str, Any]) -> dict[str, int]:
+    """Build mapping {chart_uuid: chart_id} from position dict."""
+    return {
+        child["meta"]["uuid"]: child["meta"]["chartId"]
+        for child in position.values()
+        if (
+            isinstance(child, dict)
+            and child.get("type") == "CHART"
+            and "uuid" in child.get("meta", {})
+        )
+    }
+
+
+def update_id_refs(  # noqa: C901
+    config: dict[str, Any],
+    chart_ids: dict[str, int],
+    dataset_info: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Update dashboard metadata to use new IDs.
+
+    Ported 1:1 from superset_old/commands/dashboard/importers/v1/utils.py.
+    """
+    fixed = config.copy()
+
+    # Build map old_id => new_id
+    old_ids = _build_uuid_to_id_map(fixed.get("position", {}))
+    id_map: dict[int, int] = {
+        old_id: chart_ids[uuid] for uuid, old_id in old_ids.items() if uuid in chart_ids
+    }
+
+    # Fix metadata
+    metadata = fixed.get("metadata", {})
+    if "timed_refresh_immune_slices" in metadata:
+        metadata["timed_refresh_immune_slices"] = [
+            id_map[old_id]
+            for old_id in metadata["timed_refresh_immune_slices"]
+            if old_id in id_map
+        ]
+
+    if "filter_scopes" in metadata:
+        metadata["filter_scopes"] = {
+            str(id_map[int(old_id)]): columns
+            for old_id, columns in metadata["filter_scopes"].items()
+            if int(old_id) in id_map
+        }
+        for columns in metadata["filter_scopes"].values():
+            for attributes in columns.values():
+                attributes["immune"] = [
+                    id_map[old_id]
+                    for old_id in attributes["immune"]
+                    if old_id in id_map
+                ]
+
+    if "expanded_slices" in metadata:
+        metadata["expanded_slices"] = {
+            str(id_map[int(old_id)]): value
+            for old_id, value in metadata["expanded_slices"].items()
+            if int(old_id) in id_map
+        }
+
+    if "default_filters" in metadata:
+        default_filters = _json.loads(metadata["default_filters"])
+        metadata["default_filters"] = _json.dumps(
+            {
+                str(id_map[int(old_id)]): value
+                for old_id, value in default_filters.items()
+                if int(old_id) in id_map
+            }
+        )
+
+    # Fix position — update chartId in each CHART component
+    position = fixed.get("position", {})
+    for child in position.values():
+        if (
+            isinstance(child, dict)
+            and child.get("type") == "CHART"
+            and "uuid" in child.get("meta", {})
+            and child["meta"]["uuid"] in chart_ids
+        ):
+            child["meta"]["chartId"] = chart_ids[child["meta"]["uuid"]]
+
+    # Fix native filter references
+    native_filter_configuration = fixed.get("metadata", {}).get(
+        "native_filter_configuration", []
+    )
+    for native_filter in native_filter_configuration:
+        targets = native_filter.get("targets", [])
+        for target in targets:
+            dataset_uuid = target.pop("datasetUuid", None)
+            if dataset_uuid and dataset_uuid in dataset_info:
+                target["datasetId"] = dataset_info[dataset_uuid]["datasource_id"]
+
+        scope_excluded = native_filter.get("scope", {}).get("excluded", [])
+        if scope_excluded:
+            native_filter["scope"]["excluded"] = [
+                id_map[old_id] for old_id in scope_excluded if old_id in id_map
+            ]
+
+    fixed = _update_cross_filter_scoping(fixed, id_map)
+    return fixed
+
+
+def _update_cross_filter_scoping(
+    config: dict[str, Any],
+    id_map: dict[int, int],
+) -> dict[str, Any]:
+    """Fix cross-filter references in dashboard metadata.
+
+    Ported 1:1 from superset_old/commands/dashboard/importers/v1/utils.py.
+    """
+    fixed = config.copy()
+
+    cross_filter_global_config = fixed.get("metadata", {}).get(
+        "global_chart_configuration", {}
+    )
+    scope_excluded = cross_filter_global_config.get("scope", {}).get("excluded", [])
+    if scope_excluded:
+        cross_filter_global_config["scope"]["excluded"] = [
+            id_map[old_id] for old_id in scope_excluded if old_id in id_map
+        ]
+
+    if "chart_configuration" in (metadata := fixed.get("metadata", {})):
+        new_chart_configuration: dict[str, Any] = {}
+        for old_id_str, chart_config in metadata["chart_configuration"].items():
+            try:
+                old_id_int = int(old_id_str)
+            except (TypeError, ValueError):
+                continue
+
+            new_id = id_map.get(old_id_int)
+            if new_id is None:
+                continue
+
+            if isinstance(chart_config, dict):
+                chart_config["id"] = new_id
+                scope = chart_config.get("crossFilters", {}).get("scope", {})
+                if isinstance(scope, dict):
+                    excluded_scope = scope.get("excluded", [])
+                    if excluded_scope:
+                        chart_config["crossFilters"]["scope"]["excluded"] = [
+                            id_map[old_id]
+                            for old_id in excluded_scope
+                            if old_id in id_map
+                        ]
+
+            new_chart_configuration[str(new_id)] = chart_config
+
+        metadata["chart_configuration"] = new_chart_configuration
+    return fixed
+
+
+async def _import_dashboard(  # noqa: C901
+    session: AsyncSession,
+    config: dict[str, Any],
+    overwrite: bool = False,
+    security_manager: Any | None = None,
+    current_user: Any | None = None,
+) -> Dashboard:
+    """Import a single dashboard from config dict.
+
+    Ported 1:1 from superset_old/commands/dashboard/importers/v1/utils.py.
+    Handles UUID-based dedup, JSON serialization, and owner management.
+    """
+    from sqlalchemy import select as sa_select
+
+    from superset.models.dashboard import Dashboard
+
+    can_write = True
+    if security_manager is not None:
+        can_write = await security_manager.can_access("can_write", "Dashboard")
+
+    # UUID-based dedup
+    stmt = sa_select(Dashboard).where(Dashboard.uuid == _UUID(str(config["uuid"])))
+    result = await session.execute(stmt)
+    existing = result.scalars().one_or_none()
+
+    if existing:
+        if overwrite and can_write and current_user:
+            if security_manager is not None:
+                can_access = await security_manager.can_access_dashboard(existing)
+                is_admin = await security_manager.is_admin()
+                if not can_access or (
+                    current_user not in existing.owners and not is_admin
+                ):
+                    raise ImportFailedError(
+                        "A dashboard already exists and user doesn't "
+                        "have permissions to overwrite it"
+                    )
+        elif not overwrite or not can_write:
+            return existing
+        config["id"] = existing.id
+    elif not can_write:
+        raise ImportFailedError(
+            "Dashboard doesn't exist and user doesn't "
+            "have permission to create dashboards"
+        )
+
+    config = config.copy()
+
+    # Remove deprecated show_native_filters
+    if "metadata" in config and "show_native_filters" in config.get("metadata", {}):
+        del config["metadata"]["show_native_filters"]
+
+    # Serialize position/metadata dicts to JSON strings for DB storage
+    for key, new_name in _JSON_KEYS_IMPORT.items():
+        if config.get(key) is not None:
+            value = config.pop(key)
+            try:
+                config[new_name] = _json.dumps(value)
+            except TypeError:
+                logger.info("Unable to encode `%s` field: %s", key, value)
+
+    # Build the dashboard model
+    dashboard_id = config.pop("id", None)
+    _NON_MODEL_FIELDS = {  # noqa: N806
+        "dataset_uuid",
+        "database_uuid",
+        "version",
+        "tags",
+        "theme_uuid",
+    }
+    model_data = {k: v for k, v in config.items() if k not in _NON_MODEL_FIELDS}
+
+    if dashboard_id is not None:
+        stmt = sa_select(Dashboard).where(Dashboard.id == dashboard_id)
+        result = await session.execute(stmt)
+        dashboard = result.scalars().one()
+        for key, value in model_data.items():
+            if hasattr(dashboard, key):
+                setattr(dashboard, key, value)
+    else:
+        dashboard = Dashboard(
+            **{k: v for k, v in model_data.items() if hasattr(Dashboard, k)}
+        )
+        session.add(dashboard)
+
+    await session.flush()
+
+    # Owner management
+    if current_user is not None and current_user not in dashboard.owners:
+        dashboard.owners.append(current_user)
+
+    return dashboard
 
 
 class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
@@ -142,7 +485,7 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
             if not is_unique:
                 raise CommandInvalidError(f"slug '{slug}' already exists")
 
-    async def run(self) -> "Dashboard":
+    async def run(self) -> "Dashboard":  # noqa: C901
         assert self._dashboard is not None
 
         # Capture the old position_json before mutation so that
@@ -205,16 +548,20 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         new_position = self._data.get("position_json", "")
 
         try:
-            old_tabs = {
-                k for k in _json.loads(old_position) if k.startswith("TAB-")
-            } if old_position else set()
+            old_tabs = (
+                {k for k in _json.loads(old_position) if k.startswith("TAB-")}
+                if old_position
+                else set()
+            )
         except (ValueError, TypeError):
             old_tabs = set()
 
         try:
-            new_tabs = {
-                k for k in _json.loads(new_position) if k.startswith("TAB-")
-            } if new_position else set()
+            new_tabs = (
+                {k for k in _json.loads(new_position) if k.startswith("TAB-")}
+                if new_position
+                else set()
+            )
         except (ValueError, TypeError):
             new_tabs = set()
 
@@ -304,7 +651,7 @@ class BulkDeleteDashboardsCommand(AsyncBaseCommand[None]):
         if not self._dashboard_ids:
             raise CommandInvalidError("No dashboard IDs provided")
         self._dashboards = await self._dao.find_by_ids(self._dashboard_ids)
-        found_ids = {d.id for d in self._dashboards}
+        found_ids = {int(d.id) for d in self._dashboards}
         missing = set(self._dashboard_ids) - found_ids
         if missing:
             raise ObjectNotFoundError("Dashboard", str(missing))
@@ -431,12 +778,14 @@ class UpdateDashboardColorsCommand(AsyncBaseCommand["Dashboard"]):
         data: dict[str, Any],
         security_manager: Any | None = None,
         user_id: int | None = None,
+        mark_updated: bool = True,
     ) -> None:
         self._dao = dao
         self._dashboard_id = dashboard_id
         self._data = data
         self._security_manager = security_manager
         self._user_id = user_id
+        self._mark_updated = mark_updated
         self._dashboard: Any | None = None
 
     async def validate(self) -> None:
@@ -450,12 +799,22 @@ class UpdateDashboardColorsCommand(AsyncBaseCommand["Dashboard"]):
 
     async def run(self) -> "Dashboard":
         assert self._dashboard is not None
-        await self._dao.update_colors_config(self._dashboard, self._data)
+        await self._dao.update_colors_config(
+            self._dashboard, self._data, mark_updated=self._mark_updated
+        )
         await self._dao.session.flush()
         return self._dashboard
 
 
 class ExportDashboardsCommand(AsyncExportModelsCommand):
+    """Export dashboards to a ZIP bundle.
+
+    Ported 1:1 from superset_old/commands/dashboard/export.py.
+    Includes JSON key conversion, native filter dataset UUID resolution,
+    position handling with orphan chart support, and related chart/dataset/database
+    export.
+    """
+
     _resource_type = "Dashboard"
 
     def __init__(
@@ -464,244 +823,408 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
         super().__init__(model_ids)
         self._dao = dao
 
-    async def _export_single(self, model_id: int) -> list[tuple[str, str]]:
+    async def _export_single(self, model_id: int) -> list[tuple[str, str]]:  # noqa: C901
+        from sqlalchemy import select as sa_select
+        from sqlalchemy.orm import selectinload
+
         if self._dao is None:
             raise CommandInvalidError("DAO not provided for export")
-        dashboard = await self._dao.find_by_id(model_id)
+
+        from superset.models.connectors import SqlaTable
+        from superset.models.dashboard import Dashboard
+        from superset.models.slice import Slice
+
+        # Eagerly load slices -> table -> database
+        stmt = (
+            sa_select(Dashboard)
+            .where(Dashboard.id == model_id)
+            .options(
+                selectinload(Dashboard.slices)
+                .selectinload(Slice.table)
+                .selectinload(SqlaTable.database),
+            )
+        )
+        result = await self._dao.session.execute(stmt)
+        dashboard = result.scalars().one_or_none()
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", model_id)
 
-        dash_data = {
+        # Build payload — convert JSON string fields to dicts
+        payload: dict[str, Any] = {
             "dashboard_title": dashboard.dashboard_title,
-            "slug": dashboard.slug,
-            "position_json": dashboard.position_json,
+            "description": dashboard.description,
             "css": dashboard.css,
-            "json_metadata": dashboard.json_metadata,
-            "published": dashboard.published,
+            "slug": dashboard.slug,
             "uuid": str(dashboard.uuid) if dashboard.uuid else None,
+            "certified_by": dashboard.certified_by,
+            "certification_details": dashboard.certification_details,
+            "published": dashboard.published,
+            "is_managed_externally": getattr(dashboard, "is_managed_externally", False),
+            "external_url": getattr(dashboard, "external_url", None),
         }
-        files: list[tuple[str, str]] = [
-            (
-                f"dashboards/{dashboard.dashboard_title}.yaml",
-                yaml.safe_dump(dash_data, sort_keys=False),
-            ),
-        ]
+
+        # Convert position_json and json_metadata from JSON strings to dicts
+        for key, new_name in _JSON_KEYS_EXPORT.items():
+            value: str | None = getattr(dashboard, key, None)
+            if value:
+                try:
+                    payload[new_name] = _json.loads(value)
+                except (_json.JSONDecodeError, TypeError):
+                    logger.info("Unable to decode `%s` field: %s", key, value)
+                    payload[new_name] = {}
+            else:
+                payload[new_name] = {}
+
+        # Replace native filter dataset IDs with UUIDs
+        for native_filter in payload.get("metadata", {}).get(
+            "native_filter_configuration", []
+        ):
+            for target in native_filter.get("targets", []):
+                dataset_id = target.pop("datasetId", None)
+                if dataset_id is not None:
+                    # Look up dataset UUID
+                    ds_stmt = sa_select(SqlaTable).where(SqlaTable.id == dataset_id)
+                    ds_result = await self._dao.session.execute(ds_stmt)
+                    ds = ds_result.scalars().one_or_none()
+                    if ds:
+                        target["datasetUuid"] = str(ds.uuid)
+
+        # Ensure position exists — if not, create a default
+        if not payload.get("position"):
+            payload["position"] = _get_default_position(dashboard.dashboard_title or "")
+
+        # Find orphan charts not referenced in position and append them
+        referenced_charts = find_chart_uuids(payload["position"])
+        slices = dashboard.slices or []
+        orphan_charts = {
+            chart for chart in slices if str(chart.uuid) not in referenced_charts
+        }
+        if orphan_charts:
+            payload["position"] = _append_charts(payload["position"], orphan_charts)
+
+        payload["version"] = EXPORT_VERSION
+
+        file_name = _get_filename(dashboard.dashboard_title or "", dashboard.id)
+        dash_yaml = yaml.safe_dump(payload, sort_keys=False)
+        files: list[tuple[str, str]] = [(f"dashboards/{file_name}.yaml", dash_yaml)]
+
         # Bundle dependent resources: charts + datasets + databases
         seen_datasets: set[int] = set()
         seen_databases: set[int] = set()
-        for chart in getattr(dashboard, "slices", []):
-            chart_data = {
+
+        for chart in slices:
+            chart_payload: dict[str, Any] = {
                 "slice_name": chart.slice_name,
                 "viz_type": chart.viz_type,
                 "params": chart.params,
-                "uuid": str(chart.uuid) if getattr(chart, "uuid", None) else None,
+                "query_context": chart.query_context,
+                "cache_timeout": chart.cache_timeout,
+                "uuid": str(chart.uuid) if chart.uuid else None,
+                "certified_by": chart.certified_by,
+                "certification_details": chart.certification_details,
+                "description": chart.description,
+                "version": EXPORT_VERSION,
             }
+            # Decode params
+            if chart_payload.get("params"):
+                try:
+                    chart_payload["params"] = _json.loads(chart_payload["params"])
+                except (_json.JSONDecodeError, TypeError):
+                    pass
+
+            ds = chart.table
+            if ds:
+                chart_payload["dataset_uuid"] = str(ds.uuid)
+
+            chart_file = _get_filename(chart.slice_name, chart.id)
             files.append(
                 (
-                    f"charts/{chart.slice_name}.yaml",
-                    yaml.safe_dump(chart_data, sort_keys=False),
+                    f"charts/{chart_file}.yaml",
+                    yaml.safe_dump(chart_payload, sort_keys=False),
                 )
             )
-            ds = getattr(chart, "datasource", None)
-            if ds and getattr(ds, "id", None) not in seen_datasets:
+
+            if ds and ds.id not in seen_datasets:
                 seen_datasets.add(ds.id)
-                ds_data = {
-                    "table_name": getattr(ds, "table_name", ""),
+                ds_data: dict[str, Any] = {
+                    "table_name": ds.table_name,
                     "schema": getattr(ds, "schema", None),
-                    "uuid": str(ds.uuid) if getattr(ds, "uuid", None) else None,
+                    "sql": getattr(ds, "sql", None),
+                    "description": getattr(ds, "description", None),
+                    "cache_timeout": getattr(ds, "cache_timeout", None),
+                    "uuid": str(ds.uuid) if ds.uuid else None,
+                    "version": EXPORT_VERSION,
                 }
-                files.append(
-                    (
-                        f"datasets/{getattr(ds, 'table_name', 'unknown')}.yaml",
-                        yaml.safe_dump(ds_data, sort_keys=False),
-                    )
-                )
                 db = getattr(ds, "database", None)
-                if db and getattr(db, "id", None) not in seen_databases:
-                    seen_databases.add(db.id)
-                    db_data = {
-                        "database_name": db.database_name,
-                        "sqlalchemy_uri": mask_uri_password(
-                            getattr(db, "sqlalchemy_uri", "")
-                        ),
-                        "uuid": str(db.uuid) if getattr(db, "uuid", None) else None,
-                    }
+                if db:
+                    ds_data["database_uuid"] = str(db.uuid) if db.uuid else None
+                    ds_file = _get_filename(ds.table_name, ds.id)
                     files.append(
                         (
-                            f"databases/{db.database_name}.yaml",
-                            yaml.safe_dump(db_data, sort_keys=False),
+                            f"datasets/{ds_file}.yaml",
+                            yaml.safe_dump(ds_data, sort_keys=False),
                         )
                     )
+                    if db.id not in seen_databases:
+                        seen_databases.add(db.id)
+                        db_data: dict[str, Any] = {
+                            "database_name": db.database_name,
+                            "sqlalchemy_uri": mask_uri_password(
+                                getattr(db, "sqlalchemy_uri", "")
+                            ),
+                            "uuid": str(db.uuid) if db.uuid else None,
+                            "version": EXPORT_VERSION,
+                        }
+                        db_file = _get_filename(db.database_name, db.id)
+                        files.append(
+                            (
+                                f"databases/{db_file}.yaml",
+                                yaml.safe_dump(db_data, sort_keys=False),
+                            )
+                        )
+
+        # Also export native-filter-referenced datasets that aren't chart datasources
+        for native_filter in payload.get("metadata", {}).get(
+            "native_filter_configuration", []
+        ):
+            for target in native_filter.get("targets", []):
+                ds_uuid = target.get("datasetUuid")
+                if ds_uuid:
+                    ds_stmt = (
+                        sa_select(SqlaTable)
+                        .where(SqlaTable.uuid == _UUID(ds_uuid))
+                        .options(selectinload(SqlaTable.database))
+                    )
+                    ds_result = await self._dao.session.execute(ds_stmt)
+                    ds = ds_result.scalars().one_or_none()
+                    if ds and ds.id not in seen_datasets:
+                        seen_datasets.add(ds.id)
+                        ds_data = {
+                            "table_name": ds.table_name,
+                            "schema": getattr(ds, "schema", None),
+                            "sql": getattr(ds, "sql", None),
+                            "uuid": str(ds.uuid) if ds.uuid else None,
+                            "version": EXPORT_VERSION,
+                        }
+                        db = getattr(ds, "database", None)
+                        if db:
+                            ds_data["database_uuid"] = str(db.uuid) if db.uuid else None
+                        ds_file = _get_filename(ds.table_name, ds.id)
+                        files.append(
+                            (
+                                f"datasets/{ds_file}.yaml",
+                                yaml.safe_dump(ds_data, sort_keys=False),
+                            )
+                        )
+                        if db and db.id not in seen_databases:
+                            seen_databases.add(db.id)
+                            db_data = {
+                                "database_name": db.database_name,
+                                "sqlalchemy_uri": mask_uri_password(
+                                    getattr(db, "sqlalchemy_uri", "")
+                                ),
+                                "uuid": str(db.uuid) if db.uuid else None,
+                                "version": EXPORT_VERSION,
+                            }
+                            db_file = _get_filename(db.database_name, db.id)
+                            files.append(
+                                (
+                                    f"databases/{db_file}.yaml",
+                                    yaml.safe_dump(db_data, sort_keys=False),
+                                )
+                            )
+
         return files
 
 
 class ImportDashboardsCommand(AsyncImportModelsCommand):
+    """Import dashboards from a ZIP bundle.
+
+    Ported 1:1 from superset_old/commands/dashboard/importers/v1/.
+    This is the MOST COMPLEX import. Resolves dependencies:
+    databases -> datasets -> charts -> dashboards.
+
+    Handles:
+    - UUID-based dedup at every level
+    - position_json and json_metadata JSON deserialization/serialization
+    - update_id_refs — full ID reference update (chart IDs, filter scopes,
+      expanded slices, default filters, native filters, cross-filter scoping)
+    - dashboard_slices M2M relationship management via explicit inserts
+    - All dashboard fields (css, certified_by, certification_details, etc.)
+    - Owner management
+    """
+
     def __init__(
         self,
         contents: io.BytesIO,
         dao: AsyncDashboardDAO | None = None,
+        security_manager: Any | None = None,
+        current_user: Any | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(contents, **kwargs)
         self._dao = dao
-
-    _IMPORT_ORDER = ("databases/", "datasets/", "charts/", "dashboards/")
+        self._security_manager = security_manager
+        self._current_user = current_user
 
     async def _validate(self, configs: dict[str, dict[str, Any]]) -> None:
         for name, config in configs.items():
             if name.startswith("dashboards/") and not config.get("dashboard_title"):
                 raise CommandInvalidError(f"Missing dashboard_title in {name}")
 
-    async def run(self) -> None:
-        """Override to ensure dependency order:
-        databases -> datasets -> charts -> dashboards.
-        """
-        if self._configs is None:
-            raise CommandInvalidError(
-                "validate() must be called before run()"
-            )
-        configs = self._configs
-
-        # Sort files by dependency order
-        def _sort_key(item: tuple[str, Any]) -> int:
-            name = item[0]
-            for idx, prefix in enumerate(self._IMPORT_ORDER):
-                if name.startswith(prefix):
-                    return idx
-            return len(self._IMPORT_ORDER)
-
-        for file_name, content in sorted(configs.items(), key=_sort_key):
-            if file_name == "metadata.yaml":
-                continue
-            await self._import_single(file_name, content)
-
-    async def _import_single(self, file_name: str, content: dict[str, Any]) -> None:
-        if self._dao is None:
-            raise CommandInvalidError("DAO not provided for import")
-
-        # Process dependent resources in correct order: databases -> datasets -> charts
-        if file_name.startswith("databases/"):
-            await self._import_database(file_name, content)
-            return
-        if file_name.startswith("datasets/"):
-            await self._import_dataset(file_name, content)
-            return
-        if file_name.startswith("charts/"):
-            await self._import_chart(file_name, content)
-            return
-        if not file_name.startswith("dashboards/"):
-            return
-
-        from superset.models.dashboard import Dashboard
-
-        dashboard = Dashboard(
-            dashboard_title=content.get("dashboard_title", ""),
-            slug=content.get("slug"),
-            css=content.get("css"),
-            published=content.get("published", False),
-        )
-        self._dao.session.add(dashboard)
-        await self._dao.session.flush()
-
     async def _check_existing(self, uuid_val: str) -> bool:
-        """Check if a dashboard with this UUID already exists."""
-        from uuid import UUID as _UUID
-
         if self._dao is None:
             return False
         result = await self._dao.find_one_or_none(uuid=_UUID(uuid_val))
         return result is not None
 
-    async def _import_database(
-        self, file_name: str, content: dict[str, Any]
-    ) -> None:
-        """Import a database from the bundle (dependency of datasets)."""
-        try:
-            from superset.models.core import Database
+    async def run(self) -> None:  # noqa: C901
+        """Orchestrate import: databases -> datasets -> charts -> dashboards.
 
-            db = Database(
-                database_name=content.get("database_name", ""),
-                sqlalchemy_uri=content.get("sqlalchemy_uri", ""),
-            )
-            uuid_val = content.get("uuid")
-            if uuid_val and hasattr(db, "uuid"):
-                from uuid import UUID as _UUID
+        Ported 1:1 from ImportDashboardsCommand._import in the original.
+        """
+        if self._configs is None:
+            raise CommandInvalidError("validate() must be called before run()")
+        if self._dao is None:
+            raise CommandInvalidError("DAO not provided for import")
 
-                db.uuid = _UUID(uuid_val)
-            self._dao.session.add(db)
-            await self._dao.session.flush()
-        except (ValueError, TypeError, KeyError) as exc:
-            logger.warning(
-                "Could not import dependent database from %s: %s",
-                file_name,
-                exc,
-            )
-        except Exception as exc:
-            raise ImportFailedError(
-                f"Unexpected error importing database from {file_name}: {exc}"
-            ) from exc
+        from sqlalchemy import select as sa_select
 
-    async def _import_dataset(
-        self, file_name: str, content: dict[str, Any]
-    ) -> None:
-        """Import a dataset from the bundle (dependency of charts)."""
-        try:
-            from superset.models.connectors import SqlaTable
+        from superset.models.dashboard import dashboard_slices
 
-            dataset = SqlaTable(
-                table_name=content.get("table_name", ""),
-                schema=content.get("schema"),
-                sql=content.get("sql"),
-            )
-            uuid_val = content.get("uuid")
-            if uuid_val and hasattr(dataset, "uuid"):
-                from uuid import UUID as _UUID
+        configs = self._configs
+        session = self._dao.session
 
-                dataset.uuid = _UUID(uuid_val)
-            self._dao.session.add(dataset)
-            await self._dao.session.flush()
-        except (ValueError, TypeError, KeyError) as exc:
-            logger.warning(
-                "Could not import dependent dataset from %s: %s",
-                file_name,
-                exc,
-            )
-        except Exception as exc:
-            raise ImportFailedError(
-                f"Unexpected error importing dataset from {file_name}: {exc}"
-            ) from exc
+        # 1. Discover charts, datasets associated with dashboards
+        chart_uuids: set[str] = set()
+        dataset_uuids: set[str] = set()
+        for file_name, config in configs.items():
+            if file_name.startswith("dashboards/") and isinstance(config, dict):
+                chart_uuids.update(find_chart_uuids(config.get("position", {})))
+                dataset_uuids.update(
+                    find_native_filter_datasets(config.get("metadata", {}))
+                )
 
-    async def _import_chart(
-        self, file_name: str, content: dict[str, Any]
-    ) -> None:
-        """Import a chart from the bundle (dependency of dashboards)."""
-        try:
-            from superset.models.slice import Slice
+        # 2. Discover datasets associated with needed charts
+        for file_name, config in configs.items():
+            if (
+                file_name.startswith("charts/")
+                and isinstance(config, dict)
+                and config.get("uuid") in chart_uuids
+            ):
+                ds_uuid = config.get("dataset_uuid")
+                if ds_uuid:
+                    dataset_uuids.add(ds_uuid)
 
-            chart = Slice(
-                slice_name=content.get("slice_name", ""),
-                viz_type=content.get("viz_type", "table"),
-                params=content.get("params", "{}"),
-                datasource_id=content.get("datasource_id"),
-                datasource_type=content.get("datasource_type", "table"),
-            )
-            uuid_val = content.get("uuid")
-            if uuid_val and hasattr(chart, "uuid"):
-                from uuid import UUID as _UUID
+        # 3. Discover databases associated with needed datasets
+        database_uuids: set[str] = set()
+        for file_name, config in configs.items():
+            if (
+                file_name.startswith("datasets/")
+                and isinstance(config, dict)
+                and config.get("uuid") in dataset_uuids
+            ):
+                db_uuid = config.get("database_uuid")
+                if db_uuid:
+                    database_uuids.add(db_uuid)
 
-                chart.uuid = _UUID(uuid_val)
-            self._dao.session.add(chart)
-            await self._dao.session.flush()
-        except (ValueError, TypeError, KeyError) as exc:
-            logger.warning(
-                "Could not import dependent chart from %s: %s",
-                file_name,
-                exc,
-            )
-        except Exception as exc:
-            raise ImportFailedError(
-                f"Unexpected error importing chart from {file_name}: {exc}"
-            ) from exc
+        # 4. Import related databases (overwrite=False)
+        database_ids: dict[str, int] = {}
+        for file_name, config in configs.items():
+            if (
+                file_name.startswith("databases/")
+                and isinstance(config, dict)
+                and config.get("uuid") in database_uuids
+            ):
+                db = await _import_database(session, config)
+                database_ids[str(db.uuid)] = db.id
+
+        # 5. Import datasets with correct parent ref (overwrite=False)
+        dataset_info: dict[str, dict[str, Any]] = {}
+        for file_name, config in configs.items():
+            if (
+                file_name.startswith("datasets/")
+                and isinstance(config, dict)
+                and config.get("database_uuid") in database_ids
+            ):
+                config["database_id"] = database_ids[config["database_uuid"]]
+                dataset = await _import_dataset(session, config)
+                dataset_info[str(dataset.uuid)] = {
+                    "datasource_id": dataset.id,
+                    "datasource_type": getattr(dataset, "datasource_type", "table"),
+                    "datasource_name": dataset.table_name,
+                }
+
+        # 6. Import charts with correct parent ref (overwrite=False)
+        charts: list[Any] = []
+        chart_ids: dict[str, int] = {}
+        for file_name, config in configs.items():
+            if (
+                file_name.startswith("charts/")
+                and isinstance(config, dict)
+                and config.get("dataset_uuid") in dataset_info
+            ):
+                # Update datasource id, type, and name
+                dataset_dict = dataset_info[config["dataset_uuid"]]
+                config = update_chart_config_dataset(config, dataset_dict)
+
+                chart = await _import_chart(
+                    session,
+                    config,
+                    overwrite=False,
+                    security_manager=self._security_manager,
+                    current_user=self._current_user,
+                )
+                charts.append(chart)
+                chart_ids[str(chart.uuid)] = chart.id
+
+        # 7. Get existing dashboard-chart relationships
+        existing_relationships_stmt = sa_select(
+            dashboard_slices.c.dashboard_id,
+            dashboard_slices.c.slice_id,
+        )
+        existing_result = await session.execute(existing_relationships_stmt)
+        existing_relationships = set(existing_result.fetchall())
+
+        # 8. Import dashboards
+        dashboards: list[Dashboard] = []
+        dashboard_chart_ids: list[tuple[int, int]] = []
+        for file_name, config in configs.items():
+            if file_name.startswith("dashboards/") and isinstance(config, dict):
+                config = update_id_refs(config, chart_ids, dataset_info)
+                dashboard = await _import_dashboard(
+                    session,
+                    config,
+                    overwrite=self._overwrite,
+                    security_manager=self._security_manager,
+                    current_user=self._current_user,
+                )
+                dashboards.append(dashboard)
+
+                # Build M2M dashboard-chart entries
+                for uuid_str in find_chart_uuids(config.get("position", {})):
+                    if uuid_str not in chart_ids:
+                        continue
+                    chart_id = chart_ids[uuid_str]
+                    if (dashboard.id, chart_id) not in existing_relationships:
+                        dashboard_chart_ids.append((dashboard.id, chart_id))
+
+        # 9. Insert dashboard_slices M2M relationships via explicit inserts
+        if dashboard_chart_ids:
+            values = [
+                {"dashboard_id": dashboard_id, "slice_id": chart_id}
+                for (dashboard_id, chart_id) in dashboard_chart_ids
+            ]
+            await session.execute(dashboard_slices.insert(), values)
+
+        # 10. Remove obsolete filter-box charts
+        for chart in charts:
+            if getattr(chart, "viz_type", None) == "filter_box":
+                await session.delete(chart)
+
+    async def _import_single(self, file_name: str, content: dict[str, Any]) -> None:
+        # Not used — run() handles the full orchestration
+        pass
 
 
 def parse_tab_structure(position_json: str | None) -> list[dict[str, Any]]:
@@ -792,3 +1315,57 @@ class DeleteEmbeddedDashboardCommand(AsyncBaseCommand[None]):
         if embedded:
             await self._embedded_dao.session.delete(embedded)
             await self._embedded_dao.session.flush()
+
+
+class AddFavoriteDashboardCommand(AsyncBaseCommand[None]):
+    """Add a dashboard to a user's favorites.
+
+    Ported 1:1 from superset_old/commands/dashboard/fave.py.
+    The original validates dashboard existence, then delegates
+    to DashboardDAO.add_favorite.
+    """
+
+    def __init__(
+        self,
+        dao: AsyncDashboardDAO,
+        dashboard_id: int,
+        user_id: int,
+    ) -> None:
+        self._dao = dao
+        self._dashboard_id = dashboard_id
+        self._user_id = user_id
+
+    async def validate(self) -> None:
+        dashboard = await self._dao.get_by_id_or_slug(self._dashboard_id)
+        if not dashboard:
+            raise ObjectNotFoundError("Dashboard", self._dashboard_id)
+
+    async def run(self) -> None:
+        await self._dao.add_favorite(self._dashboard_id, user_id=self._user_id)
+
+
+class RemoveFavoriteDashboardCommand(AsyncBaseCommand[None]):
+    """Remove a dashboard from a user's favorites.
+
+    Ported 1:1 from superset_old/commands/dashboard/unfave.py.
+    The original validates dashboard existence, then delegates
+    to DashboardDAO.remove_favorite.
+    """
+
+    def __init__(
+        self,
+        dao: AsyncDashboardDAO,
+        dashboard_id: int,
+        user_id: int,
+    ) -> None:
+        self._dao = dao
+        self._dashboard_id = dashboard_id
+        self._user_id = user_id
+
+    async def validate(self) -> None:
+        dashboard = await self._dao.get_by_id_or_slug(self._dashboard_id)
+        if not dashboard:
+            raise ObjectNotFoundError("Dashboard", self._dashboard_id)
+
+    async def run(self) -> None:
+        await self._dao.remove_favorite(self._dashboard_id, user_id=self._user_id)
