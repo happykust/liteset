@@ -16,14 +16,13 @@
 # under the License.
 """msgspec Structs for the Dataset API — replaces Marshmallow schemas."""
 
-# ruff: noqa: N815  — camelCase field names required for JSON API contract parity
 from __future__ import annotations
 
 from typing import Any
 
 import msgspec
 
-from superset.schemas.base import ApiListResponse, ApiResponse
+from superset.schemas.base import ApiListResponse, ApiResponse, ModelStruct, UserRef
 
 # ---------------------------------------------------------------------------
 # Request bodies
@@ -33,7 +32,7 @@ from superset.schemas.base import ApiListResponse, ApiResponse
 class DatasetPostSchema(msgspec.Struct):
     table_name: str
     database: int
-    schema_name: str | None = None
+    schema: str | None = None
     sql: str | None = None
     owners: list[int] | None = None
     is_managed_externally: bool = False
@@ -63,9 +62,9 @@ class DatasetColumnsPut(msgspec.Struct):
     advanced_data_type: str | None = None
 
 
-class DatasetMetricCurrency(msgspec.Struct):
+class DatasetMetricCurrency(msgspec.Struct, rename="camel"):
     symbol: str
-    symbolPosition: str = "prefix"
+    symbol_position: str = "prefix"
 
 
 class DatasetMetricsPut(msgspec.Struct):
@@ -86,7 +85,7 @@ class DatasetPutSchema(msgspec.Struct):
     table_name: str | None | msgspec.UnsetType = msgspec.UNSET
     database_id: int | None | msgspec.UnsetType = msgspec.UNSET
     sql: str | None | msgspec.UnsetType = msgspec.UNSET
-    schema_name: str | None | msgspec.UnsetType = msgspec.UNSET
+    schema: str | None | msgspec.UnsetType = msgspec.UNSET
     description: str | None | msgspec.UnsetType = msgspec.UNSET
     main_dttm_col: str | None | msgspec.UnsetType = msgspec.UNSET
     offset: int | None | msgspec.UnsetType = msgspec.UNSET
@@ -107,6 +106,7 @@ class DatasetPutSchema(msgspec.Struct):
     fetch_values_predicate: str | None | msgspec.UnsetType = msgspec.UNSET
     catalog: str | None | msgspec.UnsetType = msgspec.UNSET
     uuid: str | None | msgspec.UnsetType = msgspec.UNSET
+    folders: list[Any] | None | msgspec.UnsetType = msgspec.UNSET
 
 
 class DatasetDuplicateSchema(msgspec.Struct):
@@ -116,8 +116,9 @@ class DatasetDuplicateSchema(msgspec.Struct):
 
 class GetOrCreateDatasetSchema(msgspec.Struct):
     table_name: str
-    database: int
-    schema_name: str | None = None
+    database_id: int
+    catalog: str | None = None
+    schema: str | None = None
     template_params: str | None = None
     normalize_columns: bool = False
     always_filter_main_dttm: bool = False
@@ -151,7 +152,7 @@ class ImportV1Metric(msgspec.Struct):
     verbose_name: str | None = None
     description: str | None = None
     d3format: str | None = None
-    currency: str | None = None
+    currency: dict[str, Any] | None = None
     warning_text: str | None = None
     extra: str | None = None
     uuid: str | None = None
@@ -167,7 +168,7 @@ class ImportV1Dataset(msgspec.Struct):
     default_endpoint: str | None = None
     offset: int = 0
     cache_timeout: int | None = None
-    schema_name: str | None = None
+    schema: str | None = None
     sql: str | None = None
     params: dict[str, Any] = {}
     template_params: dict[str, Any] | None = None
@@ -177,6 +178,11 @@ class ImportV1Dataset(msgspec.Struct):
     columns: list[ImportV1Column] = []
     metrics: list[ImportV1Metric] = []
     is_managed_externally: bool = False
+    catalog: str | None = None
+    external_url: str | None = None
+    normalize_columns: bool = False
+    always_filter_main_dttm: bool = False
+    folders: list[Any] = []
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +211,222 @@ class DatasetDrillInfo(msgspec.Struct):
 
 class DatasetDrillResponse(msgspec.Struct):
     columns: list[DatasetDrillInfo] = []
+
+
+# ---------------------------------------------------------------------------
+# Detail result Structs for GET /{pk}
+# ---------------------------------------------------------------------------
+
+
+class ColumnRef(ModelStruct):
+    """Column reference in a dataset detail response."""
+
+    id: int | None = None
+    column_name: str = ""
+    verbose_name: str | None = None
+    description: str | None = None
+    expression: str | None = None
+    type: str | None = None
+    type_generic: int | None = None
+    python_date_format: str | None = None
+    is_dttm: bool = False
+    is_active: bool = True
+    groupby: bool = True
+    filterable: bool = True
+    uuid: str | None = None
+    advanced_data_type: str | None = None
+    extra: str | None = None
+    changed_on: str | None = None
+    created_on: str | None = None
+
+
+class MetricRef(ModelStruct):
+    """Metric reference in a dataset detail response."""
+
+    id: int | None = None
+    metric_name: str = ""
+    verbose_name: str | None = None
+    description: str | None = None
+    expression: str = ""
+    metric_type: str | None = None
+    d3format: str | None = None
+    currency: Any = None
+    warning_text: str | None = None
+    extra: str | None = None
+    uuid: str | None = None
+    changed_on: str | None = None
+    created_on: str | None = None
+
+
+class DatabaseRef(ModelStruct):
+    """Database reference embedded in a dataset detail response."""
+
+    id: int
+    database_name: str = ""
+    uuid: str | None = None
+    backend: str | None = None
+
+
+class DatasetDetailResult(ModelStruct):
+    """Full dataset detail returned by GET /api/v1/dataset/{pk}."""
+
+    # --- identifiers ---
+    table_name: str = ""
+    datasource_name: str = ""
+    name: str = ""
+    uid: str = ""
+    uuid: str | None = None
+    url: str = ""
+    # --- core fields ---
+    schema: str | None = None
+    catalog: str | None = None
+    sql: str | None = None
+    description: str | None = None
+    cache_timeout: int | None = None
+    main_dttm_col: str | None = None
+    template_params: str | None = None
+    datasource_type: str = "table"
+    kind: str | None = None
+    filter_select_enabled: bool = True
+    fetch_values_predicate: str | None = None
+    normalize_columns: bool = False
+    always_filter_main_dttm: bool = False
+    offset: int = 0
+    default_endpoint: str | None = None
+    is_sqllab_view: bool = False
+    extra: str | None = None
+    is_managed_externally: bool = False
+    folders: Any = None
+    select_star: str | None = None
+    # --- audit timestamps ---
+    created_on: str | None = None
+    changed_on: str | None = None
+    changed_on_humanized: str | None = None
+    created_on_humanized: str | None = None
+    # --- audit users ---
+    created_by: UserRef | None = None
+    changed_by: UserRef | None = None
+    # --- database ---
+    database: DatabaseRef | None = None
+    # --- relationships ---
+    owners: list[UserRef] = []
+    columns: list[ColumnRef] = []
+    metrics: list[MetricRef] = []
+    # --- computed fields ---
+    granularity_sqla: list[str] = []
+    time_grain_sqla: list[Any] = []
+    order_by_choices: list[list[Any]] = []
+    verbose_map: dict[str, str | None] = {}
+    column_formats: dict[str, Any] = {}
+    # --- optional (include_rendered_sql) ---
+    rendered_sql: str | None = None
+
+    # -- custom resolvers for computed / derived fields --
+
+    @classmethod
+    def _resolve_owners(cls, obj: Any) -> list[UserRef]:
+        owners = getattr(obj, "owners", None) or []
+        return [UserRef.from_model(u) for u in owners]
+
+    @classmethod
+    def _resolve_changed_by(cls, obj: Any) -> UserRef | None:
+        user = getattr(obj, "changed_by", None)
+        return UserRef.from_model(user) if user else None
+
+    @classmethod
+    def _resolve_created_by(cls, obj: Any) -> UserRef | None:
+        user = getattr(obj, "created_by", None)
+        return UserRef.from_model(user) if user else None
+
+    @classmethod
+    def _resolve_datasource_name(cls, obj: Any) -> str:
+        return getattr(obj, "table_name", "")
+
+    @classmethod
+    def _resolve_name(cls, obj: Any) -> str:
+        return getattr(obj, "table_name", "")
+
+    @classmethod
+    def _resolve_uid(cls, obj: Any) -> str:
+        ds_type = getattr(obj, "datasource_type", "table")
+        return f"{obj.id}__{ds_type}"
+
+    @classmethod
+    def _resolve_url(cls, obj: Any) -> str:
+        return f"/explore/?datasource_type=table&datasource_id={obj.id}"
+
+    @classmethod
+    def _resolve_changed_on_humanized(cls, obj: Any) -> str | None:
+        return getattr(obj, "changed_on_delta_humanized", None)
+
+    @classmethod
+    def _resolve_created_on_humanized(cls, obj: Any) -> str | None:
+        return getattr(obj, "created_on_delta_humanized", None)
+
+    @classmethod
+    def _resolve_database(cls, obj: Any) -> DatabaseRef | None:
+        database = getattr(obj, "database", None)
+        if database is None:
+            return None
+        # Derive backend from sqlalchemy_uri
+        backend: str | None = None
+        uri = getattr(database, "sqlalchemy_uri", None) or ""
+        if "://" in uri:
+            backend = uri.split("://")[0].split("+")[0]
+        return DatabaseRef.from_model(database, backend=backend)  # type: ignore[return-value]
+
+    @classmethod
+    def _resolve_granularity_sqla(cls, obj: Any) -> list[str]:
+        return [
+            getattr(col, "column_name", "")
+            for col in (getattr(obj, "columns", None) or [])
+            if getattr(col, "is_dttm", False)
+        ]
+
+    @classmethod
+    def _resolve_verbose_map(cls, obj: Any) -> dict[str, str | None]:
+        return {
+            getattr(col, "column_name", ""): getattr(col, "verbose_name", None)
+            for col in (getattr(obj, "columns", None) or [])
+        }
+
+    @classmethod
+    def _resolve_order_by_choices(cls, obj: Any) -> list[list[Any]]:
+        choices: list[list[Any]] = []
+        for col in getattr(obj, "columns", None) or []:
+            col_name = getattr(col, "column_name", "")
+            choices.append([col_name, True])
+            choices.append([col_name, False])
+        return choices
+
+    @classmethod
+    def _resolve_time_grain_sqla(cls, obj: Any) -> list[Any]:
+        return []
+
+    @classmethod
+    def _resolve_column_formats(cls, obj: Any) -> dict[str, Any]:
+        return {}
+
+    @classmethod
+    def _resolve_select_star(cls, obj: Any) -> None:
+        return None
+
+    @classmethod
+    def _resolve_rendered_sql(cls, obj: Any) -> None:
+        return None
+
+    @classmethod
+    def from_model(
+        cls,
+        obj: Any,
+        *,
+        rendered_sql: str | None = None,
+        **overrides: Any,
+    ) -> DatasetDetailResult:
+        """Build from ORM model with optional rendered_sql."""
+        if rendered_sql is not None:
+            overrides["rendered_sql"] = rendered_sql
+        return super().from_model(obj, **overrides)  # type: ignore[return-value]
 
 
 DatasetGetResponse = ApiResponse
