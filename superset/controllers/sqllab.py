@@ -46,22 +46,24 @@ from superset.schemas.sqllab import (
 from superset.typing import QueryDAOProtocol, UserProtocol
 
 # Keys to expose for each database in the bootstrap response.
-_DATABASE_KEYS = frozenset({
-    "allow_file_upload",
-    "allow_ctas",
-    "allow_cvas",
-    "allow_dml",
-    "allow_run_async",
-    "allows_subquery",
-    "backend",
-    "database_name",
-    "expose_in_sqllab",
-    "force_ctas_schema",
-    "id",
-    "disable_data_preview",
-    "disable_drill_to_detail",
-    "allow_multi_catalog",
-})
+_DATABASE_KEYS = frozenset(
+    {
+        "allow_file_upload",
+        "allow_ctas",
+        "allow_cvas",
+        "allow_dml",
+        "allow_run_async",
+        "allows_subquery",
+        "backend",
+        "database_name",
+        "expose_in_sqllab",
+        "force_ctas_schema",
+        "id",
+        "disable_data_preview",
+        "disable_drill_to_detail",
+        "allow_multi_catalog",
+    }
+)
 
 
 class SqlLabController(Controller):
@@ -102,25 +104,31 @@ class SqlLabController(Controller):
             # Always include backend from the property
             if hasattr(db_row, "backend"):
                 db_dict["backend"] = db_row.backend
-            databases[db_row.id] = db_dict
+            databases[int(db_row.id)] = db_dict
 
         # 2. Load tab state IDs for the current user
-        tab_stmt = (
-            select(TabState.id, TabState.label)
-            .where(TabState.user_id == current_user.id)
+        tab_stmt = select(TabState.id, TabState.label).where(
+            TabState.user_id == current_user.id
         )
         tab_result = await session.execute(tab_stmt)
         tab_state_ids: list[dict[str, Any]] = [
-            {"id": row.id, "label": row.label}
-            for row in tab_result.all()
+            {"id": row.id, "label": row.label} for row in tab_result.all()
         ]
 
         # 3. Load the active tab (first active, or first available)
+        #    Eager-load relationships to avoid MissingGreenlet on to_dict().
+        from sqlalchemy.orm import selectinload
+
         active_tab_stmt = (
             select(TabState)
             .where(TabState.user_id == current_user.id)
             .order_by(TabState.active.desc())
             .limit(1)
+            .options(
+                selectinload(TabState.table_schemas),
+                selectinload(TabState.latest_query),
+                selectinload(TabState.saved_query),
+            )
         )
         active_tab_result = await session.execute(active_tab_stmt)
         active_tab_row = active_tab_result.scalars().first()
@@ -202,9 +210,7 @@ class SqlLabController(Controller):
             content="",
             status_code=200,
             media_type="text/csv",
-            headers={
-                "Content-Disposition": f"attachment; filename={csv_name}.csv"
-            },
+            headers={"Content-Disposition": f"attachment; filename={csv_name}.csv"},
         )
 
     @get(
@@ -232,7 +238,7 @@ class SqlLabController(Controller):
         current_user: UserProtocol,
     ) -> dict[str, Any]:
         cmd = ExecuteSQLCommand(
-            dao=dao,
+            dao=dao,  # type: ignore[arg-type]
             database_id=data.database_id,
             sql=data.sql,
             schema=data.schema,
@@ -240,8 +246,8 @@ class SqlLabController(Controller):
             select_as_cta=data.select_as_cta,
             ctas_method=data.ctas_method,
             tmp_table_name=data.tmp_table_name,
-            query_limit=data.queryLimit,
-            run_async=data.runAsync,
+            query_limit=data.query_limit,
+            run_async=data.run_async,
             client_id=data.client_id,
             user_id=current_user.id,
         )
