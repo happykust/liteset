@@ -43,7 +43,7 @@ class ExploreController(Controller):
         "/",
         guards=[require_permission("can_read", "Explore")],
     )
-    async def get_explore(
+    async def get_explore(  # noqa: C901
         self,
         request: Request[Any, Any, Any],
         chart_dao: ChartDAOProtocol,
@@ -79,9 +79,7 @@ class ExploreController(Controller):
                     if isinstance(entry, dict):
                         # Permalink stores formData/form_data directly
                         fd = entry.get("formData") or entry.get("form_data") or {}
-                        form_data = (
-                            json.loads(fd) if isinstance(fd, str) else fd
-                        )
+                        form_data = json.loads(fd) if isinstance(fd, str) else fd
                 except (json.JSONDecodeError, TypeError):
                     pass
 
@@ -131,19 +129,91 @@ class ExploreController(Controller):
             except (ValueError, TypeError):
                 pass
 
-        # 3. Load dataset defaults
+        # 3. Resolve datasource from form_data or query params (original logic)
+        ds_id: int | None = None
+        ds_type: str = datasource_type or "table"
+
+        # If datasource_id is in query params, use it directly
         if datasource_id_raw:
             try:
                 ds_id = int(datasource_id_raw)
-                dataset = await dataset_dao.find_by_id(ds_id)
-                if dataset is not None:
+            except (ValueError, TypeError):
+                pass
+
+        # If not in query params, extract from form_data["datasource"] = "21__table"
+        if ds_id is None and "datasource" in form_data:
+            ds_str = str(form_data["datasource"])
+            if "__" in ds_str:
+                parts = ds_str.split("__")
+                try:
+                    ds_id = int(parts[0])
+                    ds_type = parts[1] if len(parts) > 1 else "table"
+                except (ValueError, IndexError):
+                    pass
+
+        # Load the dataset
+        if ds_id is not None:
+            try:
+                from sqlalchemy.orm import selectinload
+
+                from superset.models.connectors import SqlaTable
+
+                results = await dataset_dao.find_all(
+                    filters=[SqlaTable.id == ds_id],
+                    page=0,
+                    page_size=1,
+                    options=[
+                        selectinload(SqlaTable.database),
+                        selectinload(SqlaTable.columns),
+                        selectinload(SqlaTable.metrics),
+                    ],
+                )
+                if results:
+                    dataset = results[0]
+                    # Build dataset_data matching original datasource.data structure
+                    db_obj = getattr(dataset, "database", None)
                     dataset_data = {
                         "id": dataset.id,
-                        "type": datasource_type,
+                        "type": ds_type,
                         "name": getattr(dataset, "table_name", "")
                         or getattr(dataset, "name", ""),
+                        "database": {
+                            "id": db_obj.id if db_obj else 0,
+                            "backend": (
+                                getattr(db_obj, "backend", "")
+                                if db_obj
+                                else ""
+                            ),
+                        },
+                        "schema": getattr(dataset, "schema", None),
+                        "columns": [
+                            {
+                                "column_name": getattr(c, "column_name", ""),
+                                "type": getattr(c, "type", ""),
+                                "is_dttm": getattr(c, "is_dttm", False),
+                                "filterable": getattr(c, "filterable", True),
+                                "groupby": getattr(c, "groupby", True),
+                                "verbose_name": getattr(c, "verbose_name", None),
+                                "description": getattr(c, "description", None),
+                                "expression": getattr(c, "expression", None),
+                            }
+                            for c in (getattr(dataset, "columns", None) or [])
+                        ],
+                        "metrics": [
+                            {
+                                "metric_name": getattr(m, "metric_name", ""),
+                                "verbose_name": getattr(m, "verbose_name", None),
+                                "expression": getattr(m, "expression", ""),
+                                "description": getattr(m, "description", None),
+                            }
+                            for m in (getattr(dataset, "metrics", None) or [])
+                        ],
+                        "main_dttm_col": getattr(dataset, "main_dttm_col", None),
+                        "filter_select_enabled": getattr(
+                            dataset, "filter_select_enabled", True
+                        ),
                     }
-            except (ValueError, TypeError):
+            except Exception:  # noqa: BLE001
                 pass
 
         return {
