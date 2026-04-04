@@ -18,6 +18,7 @@
 
 Pure SQLAlchemy -- no Flask dependencies.
 """
+
 from __future__ import annotations
 
 import enum
@@ -83,7 +84,8 @@ class Tag(Base, AuditMixinNullable):
 
     id = Column(Integer, primary_key=True)
     name = Column(String(250), unique=True)
-    type = Column(Enum(TagType))
+    # DB stores as VARCHAR, not native ENUM
+    type = Column(String(12))
     description = Column(Text)
 
     # -- relationships --------------------------------------------------------
@@ -112,9 +114,7 @@ class TaggedObject(Base, AuditMixinNullable):
     )
 
     id = Column(Integer, primary_key=True)
-    tag_id = Column(
-        Integer, ForeignKey("tag.id"), nullable=True
-    )
+    tag_id = Column(Integer, ForeignKey("tag.id"), nullable=True)
     object_id = Column(Integer)
     object_type = Column(String(255))
 
