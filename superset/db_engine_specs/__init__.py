@@ -14,15 +14,40 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Compatibility shim for ``superset.db_engine_specs``.
+"""Engine-spec registry for sync/Flask-compatible engine specs.
 
-Legacy migrations import:
-  - ``BaseEngineSpec``
-  - ``get_engine_spec``
+Provides:
+  - ``BaseEngineSpec``  — base class for all engine specs
+  - ``get_engine_spec(backend, driver)`` — factory to look up an engine spec
+  - ``PostgresEngineSpec`` — PostgreSQL-specific overrides
 """
+
 from __future__ import annotations
 
 from superset.db_engine_specs.base import BaseEngineSpec
+from superset.db_engine_specs.postgres import (
+    PostgresBaseEngineSpec,
+    PostgresEngineSpec,
+)
+
+
+# ---------------------------------------------------------------------------
+# Registry of known engine specs keyed by engine name + aliases.
+# ---------------------------------------------------------------------------
+
+_REGISTRY: dict[str, type[BaseEngineSpec]] = {}
+
+
+def _register(spec: type[BaseEngineSpec]) -> None:
+    """Register a spec under its ``engine`` and all ``engine_aliases``."""
+    if engine := getattr(spec, "engine", ""):
+        _REGISTRY[engine] = spec
+    for alias in getattr(spec, "engine_aliases", set()):
+        _REGISTRY[alias] = spec
+
+
+# Register known specs.
+_register(PostgresEngineSpec)
 
 
 def get_engine_spec(
@@ -31,10 +56,16 @@ def get_engine_spec(
 ) -> type[BaseEngineSpec]:
     """Return the engine spec for *backend* (and optionally *driver*).
 
-    This shim always returns ``BaseEngineSpec`` since the migration only needs
-    basic engine-spec functionality and the full plugin registry is not available.
+    Falls back to ``BaseEngineSpec`` when no specific spec is registered.
     """
+    if spec := _REGISTRY.get(backend):
+        return spec
     return BaseEngineSpec
 
 
-__all__ = ["BaseEngineSpec", "get_engine_spec"]
+__all__ = [
+    "BaseEngineSpec",
+    "PostgresBaseEngineSpec",
+    "PostgresEngineSpec",
+    "get_engine_spec",
+]
