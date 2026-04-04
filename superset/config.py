@@ -324,7 +324,7 @@ class SupersetSettings(BaseSettings):
     viz_type_denylist: list[str] = []
 
     # Session cookie max age (seconds), applied to FlaskSessionDecoder
-    session_max_age: int = 86400
+    session_max_age: int = 2678400  # 31 days in seconds (matches original timedelta(days=31))
 
     # Redis (used for auth cache and general caching)
     redis_url: str = ""
@@ -564,16 +564,32 @@ class SupersetSettings(BaseSettings):
                 return v.replace(sync_prefix, async_prefix, 1)
         return v
 
+    @field_validator("session_max_age", mode="before")
+    @classmethod
+    def coerce_session_max_age(cls, v: Any) -> int:
+        """Accept timedelta (original Superset format) or int (seconds)."""
+        if hasattr(v, "total_seconds"):
+            return int(v.total_seconds())
+        return int(v)
+
     @model_validator(mode="after")
     def _merge_feature_flags(self) -> SupersetSettings:
-        """Merge user-provided feature_flags with _DEFAULT_FEATURE_FLAGS.
+        """Merge feature flags: defaults <- user config <- SUPERSET_FEATURE_* env vars.
 
-        Mirrors the original Superset behaviour where
-        ``DEFAULT_FEATURE_FLAGS.copy().update(FEATURE_FLAGS)`` produces
-        the effective flags.
+        Mirrors the original Superset behaviour:
+        1. Start with _DEFAULT_FEATURE_FLAGS
+        2. Merge user-provided FEATURE_FLAGS (from superset_config.py)
+        3. Merge SUPERSET_FEATURE_* env vars (highest priority)
         """
+        import re
+
         merged = _DEFAULT_FEATURE_FLAGS.copy()
         merged.update(self.feature_flags)
+        # Apply SUPERSET_FEATURE_* env vars (matches original config.py:647-653)
+        for k, v in os.environ.items():
+            if re.match(r"^SUPERSET_FEATURE_\w+", k):
+                flag_name = k[len("SUPERSET_FEATURE_"):]
+                merged[flag_name] = v.lower() in ("true", "1", "yes", "y", "on")
         self.feature_flags = merged
         return self
 
