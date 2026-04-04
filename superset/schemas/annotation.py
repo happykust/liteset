@@ -66,9 +66,9 @@ class AnnotationPostSchema(msgspec.Struct):
     """POST /api/v1/annotation_layer/<layer_pk>/annotation/"""
 
     short_descr: Annotated[str, Meta(min_length=1)]
+    start_dttm: str
+    end_dttm: str
     long_descr: str = ""
-    start_dttm: str | None = None
-    end_dttm: str | None = None
     json_metadata: str = ""
 
 

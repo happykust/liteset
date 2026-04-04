@@ -23,10 +23,20 @@ from typing import Annotated, Any
 import msgspec
 from msgspec import Meta
 
+from superset.schemas.base import ModelStruct, UserRef
+
+
+class ReportRecipientConfigJSON(msgspec.Struct):
+    """Nested config for a report recipient — matches ReportRecipientConfigJSONSchema."""
+
+    target: str | None = None
+    ccTarget: str | None = None  # noqa: N815
+    bccTarget: str | None = None  # noqa: N815
+
 
 class ReportRecipientSchema(msgspec.Struct):
     type: str  # "Email" | "Slack"
-    recipient_config_json: str
+    recipient_config_json: ReportRecipientConfigJSON
 
 
 class ReportSchedulePostSchema(msgspec.Struct):
@@ -42,9 +52,15 @@ class ReportSchedulePostSchema(msgspec.Struct):
     owners: list[int] = []
     recipients: list[ReportRecipientSchema] = []
     validator_type: str | None = None
-    validator_config_json: str = ""
+    validator_config_json: dict[str, Any] | None = None
     log_retention: int = 90
     grace_period: int = 14400
+    email_subject: str | None = None
+    context_markdown: str | None = None
+    creation_method: str | None = None
+    working_timeout: int = 3600
+    selected_tabs: list[int] | None = None
+    report_format: str | None = None
     active: bool = True
     force_screenshot: bool = False
     custom_width: int | None = None
@@ -65,11 +81,89 @@ class ReportSchedulePutSchema(msgspec.Struct):
     owners: list[int] | None | msgspec.UnsetType = msgspec.UNSET
     recipients: list[ReportRecipientSchema] | None | msgspec.UnsetType = msgspec.UNSET
     validator_type: str | None | msgspec.UnsetType = msgspec.UNSET
-    validator_config_json: str | None | msgspec.UnsetType = msgspec.UNSET
+    validator_config_json: dict[str, Any] | None | msgspec.UnsetType = msgspec.UNSET
     log_retention: int | None | msgspec.UnsetType = msgspec.UNSET
     grace_period: int | None | msgspec.UnsetType = msgspec.UNSET
+    email_subject: str | None | msgspec.UnsetType = msgspec.UNSET
+    context_markdown: str | None | msgspec.UnsetType = msgspec.UNSET
+    creation_method: str | None | msgspec.UnsetType = msgspec.UNSET
+    working_timeout: int | None | msgspec.UnsetType = msgspec.UNSET
+    selected_tabs: list[int] | None | msgspec.UnsetType = msgspec.UNSET
+    report_format: str | None | msgspec.UnsetType = msgspec.UNSET
     active: bool | None | msgspec.UnsetType = msgspec.UNSET
     force_screenshot: bool | None | msgspec.UnsetType = msgspec.UNSET
     custom_width: int | None | msgspec.UnsetType = msgspec.UNSET
     custom_height: int | None | msgspec.UnsetType = msgspec.UNSET
     extra: dict[str, Any] | None | msgspec.UnsetType = msgspec.UNSET
+
+
+# ---------------------------------------------------------------------------
+# Detail result Structs for GET /{pk}
+# ---------------------------------------------------------------------------
+
+
+class ChartRef(ModelStruct):
+    """Chart reference embedded in report detail response."""
+
+    id: int
+    slice_name: str | None = None
+    viz_type: str | None = None
+
+
+class ReportDashboardRef(ModelStruct):
+    """Dashboard reference embedded in report detail response."""
+
+    id: int
+    dashboard_title: str | None = None
+
+
+class ReportDatabaseRef(ModelStruct):
+    """Database reference embedded in report detail response."""
+
+    id: int
+    database_name: str | None = None
+
+
+class RecipientRef(ModelStruct):
+    """Recipient reference in report detail response."""
+
+    id: int
+    type: str | None = None
+    recipient_config_json: str | None = None
+
+
+class ReportDetailResult(ModelStruct):
+    """Full report schedule detail returned by GET /api/v1/report/{pk}."""
+
+    name: str = ""
+    type: str = ""
+    description: str | None = None
+    crontab: str | None = None
+    timezone: str = "UTC"
+    active: bool = True
+    chart_id: int | None = None
+    dashboard_id: int | None = None
+    database_id: int | None = None
+    sql: str | None = None
+    validator_type: str | None = None
+    validator_config_json: str | None = None
+    log_retention: int | None = None
+    grace_period: int | None = None
+    force_screenshot: bool = False
+    custom_width: int | None = None
+    custom_height: int | None = None
+    last_eval_dttm: str | None = None
+    last_state: str | None = None
+    context_markdown: str | None = None
+    creation_method: str | None = None
+    extra: dict[str, Any] | None = None
+    last_value: float | None = None
+    last_value_row_json: str | None = None
+    report_format: str | None = None
+    working_timeout: int | None = None
+    email_subject: str | None = None
+    chart: ChartRef | None = None
+    dashboard: ReportDashboardRef | None = None
+    database: ReportDatabaseRef | None = None
+    owners: list[UserRef] = []
+    recipients: list[RecipientRef] = []

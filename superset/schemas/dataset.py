@@ -68,8 +68,8 @@ class DatasetMetricCurrency(msgspec.Struct, rename="camel"):
 
 
 class DatasetMetricsPut(msgspec.Struct):
-    metric_name: str | None = None
-    expression: str | None = None
+    metric_name: str
+    expression: str
     metric_type: str | None = None
     verbose_name: str | None = None
     description: str | None = None
