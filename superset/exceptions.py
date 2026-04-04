@@ -92,7 +92,7 @@ class SupersetTimeoutException(SupersetException):
     message = "Request timed out"
 
 
-# --- Command-layer exceptions (replaces superset/commands/base.py::CommandException) ---
+# --- Command-layer exceptions (replaces commands/base.py::CommandException) ---
 
 
 class CommandException(SupersetException):
@@ -159,6 +159,42 @@ class QueryObjectValidationError(SupersetValidationException):
 
 
 class InvalidPostProcessingError(SupersetValidationException):
+    status_code = 400
+
+
+class SupersetParseError(SupersetValidationException):
+    """Exception raised when we fail to parse SQL."""
+
+    status_code = 422
+
+    def __init__(
+        self,
+        sql: str,
+        engine: str | None = None,
+        message: str | None = None,
+        highlight: str | None = None,
+        line: int | None = None,
+        column: int | None = None,
+    ) -> None:
+        if message is None:
+            parts = ["Error parsing"]
+            if highlight:
+                parts.append(f" near '{highlight}'")
+            if line:
+                parts.append(f" at line {line}")
+                if column:
+                    parts.append(f":{column}")
+            message = "".join(parts)
+
+        super().__init__(
+            message=message,
+            extra={"sql": sql, "engine": engine, "line": line, "column": column},
+        )
+
+
+class QueryClauseValidationException(SupersetException):
+    """Exception raised when a SQL clause is invalid."""
+
     status_code = 400
 
 
