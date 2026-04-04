@@ -55,7 +55,8 @@ class ExecutePayloadSchema(msgspec.Struct):
     tmp_table_name: str | None = None
     select_as_cta: bool = False
     ctas_method: str = "TABLE"
-    template_params: str | None = None
+    # camelCase — frontend sends "templateParams", not "template_params"
+    templateParams: str | None = None  # noqa: N815
     # camelCase — frontend sends "queryLimit", not "query_limit"
     queryLimit: int | None = None  # noqa: N815
     # camelCase — frontend sends "runAsync", not "run_async"
