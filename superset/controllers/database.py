@@ -19,6 +19,7 @@ metadata, export/import, upload."""
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -76,6 +77,8 @@ from superset.schemas.database import (
     DatabasePutSchema,
     DatabaseTestConnectionSchema,
     DatabaseValidateParamsSchema,
+    FileMetadataItem,
+    FileMetadataResponse,
     SchemaAccessForUploadResponse,
     SchemasResponse,
     SelectStarResponse,
@@ -83,7 +86,6 @@ from superset.schemas.database import (
     TableMetadataColumn,
     TableMetadataIndex,
     TableMetadataResponse,
-    UploadMetadataSchema,
     ValidateSQLSchema,
 )
 from superset.typing import DatabaseDAOProtocol, SecurityManagerProtocol, UserProtocol
@@ -1396,10 +1398,116 @@ class DatabaseController(Controller):
     @post(
         "/upload_metadata/",
         guards=[require_permission("can_write", "Database")],
+        media_type="application/json",
     )
-    async def upload_metadata(self, data: UploadMetadataSchema) -> dict[str, Any]:
-        # Upload metadata stub; production logic deferred to engine
-        return {"result": {}}
+    async def upload_metadata(
+        self,
+        data: UploadFile = Body(media_type=RequestEncodingType.MULTI_PART),  # noqa: B008
+        type: str = Parameter(query="type", default="csv"),  # noqa: A002, B008
+        delimiter: str = Parameter(query="delimiter", default=","),  # noqa: B008
+        header_row: int = Parameter(query="header_row", default=0),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Upload a file and return file metadata (column names per sheet).
+
+        Mirrors the original ``DatabaseRestApi.upload_metadata`` endpoint.
+        Reads only a minimal number of rows to extract column headers.
+
+        Supported file types (via the ``type`` query parameter):
+        - ``csv``  -- comma/delimiter-separated values
+        - ``excel`` -- .xlsx / .xls
+        - ``columnar`` -- Apache Parquet (single file or ZIP of Parquet files)
+        """
+        ROWS_TO_READ: int = 2  # noqa: N806
+        file_bytes = await data.read()
+
+        def _parse_csv() -> FileMetadataResponse:
+            import pandas as pd
+
+            buf = io.BytesIO(file_bytes)
+            df = pd.read_csv(
+                buf,
+                nrows=ROWS_TO_READ,
+                header=header_row,
+                sep=delimiter,
+            )
+            return FileMetadataResponse(
+                items=[
+                    FileMetadataItem(
+                        column_names=df.columns.tolist(),
+                        sheet_name=None,
+                    )
+                ]
+            )
+
+        def _parse_excel() -> FileMetadataResponse:
+            import pandas as pd
+
+            buf = io.BytesIO(file_bytes)
+            try:
+                excel_file = pd.ExcelFile(buf)
+            except (ValueError, AssertionError) as exc:
+                raise CommandInvalidError(
+                    message="Excel file format cannot be determined",
+                ) from exc
+
+            items: list[FileMetadataItem] = []
+            for sheet in excel_file.sheet_names:
+                df = excel_file.parse(sheet, nrows=ROWS_TO_READ)
+                items.append(
+                    FileMetadataItem(
+                        column_names=df.columns.tolist(),
+                        sheet_name=sheet,
+                    )
+                )
+            return FileMetadataResponse(items=items)
+
+        def _parse_columnar() -> FileMetadataResponse:
+            import pyarrow.parquet as pq
+            from zipfile import BadZipFile, is_zipfile, ZipFile
+
+            buf = io.BytesIO(file_bytes)
+            column_names: set[str] = set()
+
+            if is_zipfile(buf):
+                buf.seek(0)
+                try:
+                    with ZipFile(buf) as zf:
+                        for name in zf.namelist():
+                            with zf.open(name) as f:
+                                pf = pq.ParquetFile(io.BytesIO(f.read()))
+                                column_names.update(pf.metadata.schema.names)
+                except BadZipFile as exc:
+                    raise CommandInvalidError(
+                        message="Not a valid ZIP file",
+                    ) from exc
+            else:
+                buf.seek(0)
+                pf = pq.ParquetFile(buf)
+                column_names.update(pf.metadata.schema.names)
+
+            return FileMetadataResponse(
+                items=[
+                    FileMetadataItem(
+                        column_names=list(column_names),
+                        sheet_name=None,
+                    )
+                ]
+            )
+
+        file_type = type.lower()
+        if file_type == "csv":
+            result = await asyncio.to_thread(_parse_csv)
+        elif file_type == "excel":
+            result = await asyncio.to_thread(_parse_excel)
+        elif file_type == "columnar":
+            result = await asyncio.to_thread(_parse_columnar)
+        else:
+            return Response(
+                content={"message": f"Unsupported file type: {type}"},
+                status_code=400,
+            )
+
+        return {"result": msgspec.to_builtins(result)}
 
     @get(
         "/oauth2/",

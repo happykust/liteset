@@ -16,18 +16,29 @@
 # under the License.
 """msgspec Structs for the Database API — replaces Marshmallow schemas."""
 
-# ruff: noqa: N815  — camelCase field names required for JSON API contract parity
 from __future__ import annotations
 
 from typing import Any
 
 import msgspec
 
-from superset.schemas.base import ApiListResponse, ApiResponse
+from superset.schemas.base import ApiListResponse, ApiResponse, ModelStruct
 
 # ---------------------------------------------------------------------------
 # Request bodies
 # ---------------------------------------------------------------------------
+
+
+class DatabaseSSHTunnel(msgspec.Struct):
+    """SSH tunnel configuration for database connections."""
+
+    id: int | None = None
+    server_address: str = ""
+    server_port: int = 22
+    username: str = ""
+    password: str | None = None
+    private_key: str | None = None
+    private_key_password: str | None = None
 
 
 class DatabasePostSchema(msgspec.Struct):
@@ -43,7 +54,7 @@ class DatabasePostSchema(msgspec.Struct):
     is_managed_externally: bool = False
     external_url: str | None = None
     uuid: str | None = None
-    ssh_tunnel: dict[str, Any] | None = None
+    ssh_tunnel: DatabaseSSHTunnel | None = None
     parameters: dict[str, Any] = {}
     cache_timeout: int | None = None
     expose_in_sqllab: bool = True
@@ -67,7 +78,7 @@ class DatabasePutSchema(msgspec.Struct):
     server_cert: str | None | msgspec.UnsetType = msgspec.UNSET
     is_managed_externally: bool | None | msgspec.UnsetType = msgspec.UNSET
     external_url: str | None | msgspec.UnsetType = msgspec.UNSET
-    ssh_tunnel: dict[str, Any] | None | msgspec.UnsetType = msgspec.UNSET
+    ssh_tunnel: DatabaseSSHTunnel | None | msgspec.UnsetType = msgspec.UNSET
     parameters: dict[str, Any] | None | msgspec.UnsetType = msgspec.UNSET
     cache_timeout: int | None | msgspec.UnsetType = msgspec.UNSET
     expose_in_sqllab: bool | None | msgspec.UnsetType = msgspec.UNSET
@@ -89,21 +100,30 @@ class DatabaseTestConnectionSchema(msgspec.Struct):
     extra: str | None = None
     impersonate_user: bool = False
     server_cert: str | None = None
-    ssh_tunnel: dict[str, Any] | None = None
+    ssh_tunnel: DatabaseSSHTunnel | None = None
     parameters: dict[str, Any] = {}
+    catalog: str | None = None
 
 
 class ValidateSQLSchema(msgspec.Struct):
     sql: str
     schema: str | None = None
     catalog: str | None = None
+    template_params: dict[str, Any] | None = None
 
 
 class DatabaseValidateParamsSchema(msgspec.Struct):
     engine: str
+    configuration_method: str = "sqlalchemy_form"
     parameters: dict[str, Any] = {}
     database_name: str | None = None
-    configuration_method: str = "sqlalchemy_form"
+    id: int | None = None
+    driver: str | None = None
+    catalog: dict[str, Any] | None = None
+    impersonate_user: bool = False
+    extra: str | None = None
+    masked_encrypted_extra: str | None = None
+    server_cert: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -116,10 +136,10 @@ class DatabaseConnectionResponse(msgspec.Struct):
     result: dict[str, Any] = {}
 
 
-class TableMetadataColumn(msgspec.Struct):
+class TableMetadataColumn(msgspec.Struct, rename="camel"):
     name: str
     type: str = ""
-    longType: str | None = None
+    long_type: str | None = None
     keys: list[dict[str, Any]] = []
     duplicates_constraint: str | None = None
     is_dttm: bool = False
@@ -133,13 +153,13 @@ class TableMetadataIndex(msgspec.Struct):
     options: dict[str, Any] = {}
 
 
-class TableMetadataResponse(msgspec.Struct):
+class TableMetadataResponse(msgspec.Struct, rename="camel"):
     name: str
     columns: list[TableMetadataColumn] = []
-    foreignKeys: list[TableMetadataIndex] = []
+    foreign_keys: list[TableMetadataIndex] = []
     indexes: list[TableMetadataIndex] = []
-    primaryKey: dict[str, Any] = {}
-    selectStar: str | None = None
+    primary_key: dict[str, Any] = {}
+    select_star: str | None = None
     comment: str | None = None
 
 
@@ -171,11 +191,20 @@ class ImportV1DatabaseExtra(msgspec.Struct):
     engine_params: dict[str, Any] = {}
     metadata_cache_timeout: dict[str, int] = {}
     schemas_allowed_for_file_upload: list[str] = []
+    cost_estimate_enabled: bool = False
+    allows_virtual_table_explore: bool = True
+    cancel_query_on_windows_unload: bool = False
+    disable_data_preview: bool = False
+    disable_drill_to_detail: bool = False
+    allow_multi_catalog: bool = False
+    version: str | None = None
+    schema_options: dict[str, Any] = {}
+    schemas_allowed_for_csv_upload: list[str] = []
 
 
 class ImportV1Database(msgspec.Struct):
     database_name: str
-    sqlalchemy_uri: str = ""
+    sqlalchemy_uri: str
     cache_timeout: int | None = None
     expose_in_sqllab: bool = True
     allow_run_async: bool = False
@@ -187,6 +216,11 @@ class ImportV1Database(msgspec.Struct):
     uuid: str | None = None
     version: str = "1.0.0"
     is_managed_externally: bool = False
+    password: str | None = None
+    encrypted_extra: str | None = None
+    impersonate_user: bool = False
+    external_url: str | None = None
+    ssh_tunnel: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -206,8 +240,28 @@ class UploadSchema(msgspec.Struct):
 
 
 class UploadMetadataSchema(msgspec.Struct):
+    """Schema for upload_metadata — not used as a request body directly.
+
+    The endpoint accepts multipart/form-data with individual parameters
+    (``file``, ``type``, ``delimiter``, ``header_row``).  This struct is
+    kept for potential programmatic use / documentation purposes.
+    """
+
     table_name: str
     schema_name: str | None = None
+
+
+class FileMetadataItem(msgspec.Struct, rename="camel"):
+    """Single item in the upload-metadata response."""
+
+    column_names: list[str]
+    sheet_name: str | None = None
+
+
+class FileMetadataResponse(msgspec.Struct, rename="camel"):
+    """Response body for POST /upload_metadata/."""
+
+    items: list[FileMetadataItem] = []
 
 
 # ---------------------------------------------------------------------------
@@ -227,12 +281,89 @@ class SchemaAccessForUploadResponse(msgspec.Struct):
 class EngineInformation(msgspec.Struct):
     supports_file_upload: bool = False
     disable_ssh_tunneling: bool = False
+    supports_dynamic_catalog: bool = False
+    supports_oauth2: bool = False
 
 
 class QualifiedTable(msgspec.Struct):
     catalog: str | None = None
     schema_name: str | None = None
     table_name: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Detail result Struct for GET /{pk}
+# ---------------------------------------------------------------------------
+
+
+class EngineInformationRef(msgspec.Struct, omit_defaults=True):
+    """Engine information embedded in database detail response."""
+
+    supports_file_upload: bool = False
+    disable_ssh_tunneling: bool = False
+    supports_dynamic_catalog: bool = False
+    supports_oauth2: bool = False
+
+
+class DatabaseDetailResult(ModelStruct):
+    """Full database detail returned by GET /api/v1/database/{pk}."""
+
+    database_name: str = ""
+    backend: str = ""
+    expose_in_sqllab: bool = True
+    allow_run_async: bool = False
+    cache_timeout: int | None = None
+    uuid: str | None = None
+    configuration_method: str | None = None
+    allow_ctas: bool = False
+    allow_cvas: bool = False
+    allow_dml: bool = False
+    allow_file_upload: bool = False
+    driver: str | None = None
+    force_ctas_schema: str | None = None
+    impersonate_user: bool = False
+    is_managed_externally: bool = False
+    sqlalchemy_uri: str = ""
+    extra: str | None = None
+    server_cert: str | None = None
+    masked_encrypted_extra: str | None = None
+    ssh_tunnel: Any = None
+    parameters: dict[str, Any] = {}
+    engine_information: EngineInformationRef | dict[str, Any] | None = None
+
+    @classmethod
+    def _resolve_parameters(cls, obj: Any) -> dict[str, Any]:
+        return getattr(obj, "parameters", None) or {}
+
+    @classmethod
+    def _resolve_engine_information(
+        cls,
+        obj: Any,
+    ) -> EngineInformationRef | dict[str, Any]:
+        raw = getattr(obj, "engine_information", None)
+        if raw and isinstance(raw, dict):
+            return raw
+        return EngineInformationRef(
+            supports_file_upload=getattr(obj, "allow_file_upload", False),
+        )
+
+    @classmethod
+    def from_model(
+        cls,
+        obj: Any,
+        *,
+        mask_uri: Any = None,
+        **overrides: Any,
+    ) -> DatabaseDetailResult:
+        """Build from a Database ORM model.
+
+        *mask_uri* should be the ``mask_uri_password`` callable when the
+        SQLAlchemy URI should be masked in the response.
+        """
+        if mask_uri is not None:
+            uri = getattr(obj, "sqlalchemy_uri", "")
+            overrides["sqlalchemy_uri"] = mask_uri(uri)
+        return super().from_model(obj, **overrides)  # type: ignore[return-value]
 
 
 DatabaseGetResponse = ApiResponse
