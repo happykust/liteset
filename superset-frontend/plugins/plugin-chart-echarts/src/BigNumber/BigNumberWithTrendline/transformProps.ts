@@ -281,7 +281,7 @@ export default function transformProps(
                 },
                 {
                   offset: 1,
-                  color: theme.colorBgContainer ?? '#ffffff',
+                  color: theme.colorBgContainer,
                 },
               ]),
             },
