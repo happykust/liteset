@@ -23,7 +23,7 @@ import io
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, cast, TYPE_CHECKING
 
 import msgspec
 from litestar import Controller, delete, get, post, put
@@ -61,8 +61,8 @@ from superset.controllers.base import (
 from superset.events import event_logger
 from superset.exceptions import (
     CommandInvalidError,
-    SupersetSecurityException,
     ObjectNotFoundError,
+    SupersetSecurityException,
 )
 from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
@@ -70,6 +70,7 @@ from superset.providers import provide_database_dao
 from superset.schemas.database import (
     CatalogsResponse,
     DatabaseConnectionResponse,
+    DatabaseDetailResult,
     DatabaseGetResponse,
     DatabasePostSchema,
     DatabasePutSchema,
@@ -79,54 +80,191 @@ from superset.schemas.database import (
     SchemasResponse,
     SelectStarResponse,
     TableExtraMetadata,
+    TableMetadataColumn,
+    TableMetadataIndex,
     TableMetadataResponse,
     UploadMetadataSchema,
     ValidateSQLSchema,
 )
 from superset.typing import DatabaseDAOProtocol, SecurityManagerProtocol, UserProtocol
-from superset.utils import filter_unset, mask_uri_password
+from superset.utils import filter_none, filter_unset, mask_uri_password
 from superset.utils.database import get_async_connection
+
+if TYPE_CHECKING:
+    from superset.db.daos.database import AsyncDatabaseDAO
 
 _log = logging.getLogger(__name__)
 
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z0-9_][a-zA-Z0-9_.$]*$")
 
 
-def _build_database_result(db: Any) -> dict[str, Any]:
-    """Build a full database result dict from a Database model instance.
+# ---------------------------------------------------------------------------
+# Sync helpers executed inside ``conn.run_sync`` for Inspector-based work
+# ---------------------------------------------------------------------------
+
+
+def _get_col_type(col: dict[str, Any]) -> str:
+    """Stringify a column type, handling broken ``__str__`` impls."""
+    try:
+        dtype = f"{col['type']}"
+    except Exception:  # noqa: BLE001
+        dtype = col["type"].__class__.__name__
+    return dtype
+
+
+def _inspect_table_metadata(sync_conn: Any, table_name: str, schema: str | None) -> dict[str, Any]:
+    """Run all Inspector calls synchronously and return the raw metadata dict.
+
+    This function is designed to be called via ``async_conn.run_sync()``.
+    It mirrors the original ``superset_old/databases/utils.py:get_table_metadata``
+    logic exactly.
+    """
+    from sqlalchemy import inspect as sa_inspect, select, text
+
+    inspector = sa_inspect(sync_conn)
+
+    # --- columns -----------------------------------------------------------
+    try:
+        raw_columns = inspector.get_columns(table_name, schema=schema)
+    except Exception:  # noqa: BLE001
+        raw_columns = []
+
+    # --- primary key -------------------------------------------------------
+    try:
+        pk_constraint = inspector.get_pk_constraint(table_name, schema=schema) or {}
+    except Exception:  # noqa: BLE001
+        pk_constraint = {}
+
+    primary_key: dict[str, Any] = {}
+    if pk_constraint and pk_constraint.get("constrained_columns"):
+        primary_key = dict(pk_constraint)
+        primary_key["column_names"] = primary_key.pop("constrained_columns")
+        primary_key["type"] = "pk"
+
+    # --- foreign keys ------------------------------------------------------
+    try:
+        raw_fks = inspector.get_foreign_keys(table_name, schema=schema)
+    except Exception:  # noqa: BLE001
+        raw_fks = []
+
+    foreign_keys: list[dict[str, Any]] = []
+    for fk in raw_fks:
+        fk_entry = dict(fk)
+        fk_entry["column_names"] = fk_entry.pop("constrained_columns", [])
+        fk_entry["type"] = "fk"
+        foreign_keys.append(fk_entry)
+
+    # --- indexes -----------------------------------------------------------
+    try:
+        raw_indexes = inspector.get_indexes(table_name, schema=schema)
+    except Exception:  # noqa: BLE001
+        raw_indexes = []
+
+    indexes: list[dict[str, Any]] = []
+    for idx in raw_indexes:
+        idx_entry = dict(idx)
+        idx_entry["type"] = "index"
+        indexes.append(idx_entry)
+
+    # Aggregate keys list: pk + fks + indexes (matches original exactly)
+    keys: list[dict[str, Any]] = []
+    if primary_key:
+        keys.append(primary_key)
+    keys += foreign_keys + indexes
+
+    # --- table comment -----------------------------------------------------
+    table_comment: str | None = None
+    try:
+        comment_result = inspector.get_table_comment(table_name, schema=schema)
+        if isinstance(comment_result, dict):
+            table_comment = comment_result.get("text")
+    except (NotImplementedError, Exception):  # noqa: BLE001
+        pass
+
+    # --- columns payload ---------------------------------------------------
+    columns_payload: list[dict[str, Any]] = []
+    for col in raw_columns:
+        dtype = _get_col_type(col)
+        col_name = col.get("name", col.get("column_name", ""))
+        columns_payload.append({
+            "name": col_name,
+            "type": dtype.split("(")[0] if "(" in dtype else dtype,
+            "longType": dtype,
+            "keys": [
+                k for k in keys if col_name in k.get("column_names", [])
+            ],
+            "comment": col.get("comment"),
+        })
+
+    # --- select star -------------------------------------------------------
+    # Generate SELECT * using the connection's dialect for proper quoting.
+    dialect = sync_conn.dialect
+    quoted_table = dialect.identifier_preparer.quote_identifier(table_name)
+    if schema:
+        quoted_schema = dialect.identifier_preparer.quote_identifier(schema)
+        full_name = f"{quoted_schema}.{quoted_table}"
+    else:
+        full_name = quoted_table
+
+    qry = select(text("*")).select_from(text(full_name)).limit(100)
+    select_star_sql = str(
+        qry.compile(dialect=dialect, compile_kwargs={"literal_binds": True})
+    )
+
+    return {
+        "name": table_name,
+        "columns": columns_payload,
+        "selectStar": select_star_sql,
+        "primaryKey": primary_key,
+        "foreignKeys": foreign_keys,
+        "indexes": keys,
+        "comment": table_comment,
+    }
+
+
+def _inspect_table_extra_metadata(
+    sync_conn: Any,
+    table_name: str,
+    schema: str | None,
+) -> dict[str, Any]:
+    """Run extra metadata inspection synchronously.
+
+    Designed to be called via ``async_conn.run_sync()``.
+    Mirrors ``db_engine_spec.get_extra_table_metadata`` base implementation
+    which returns empty dicts by default (engine-specific overrides may
+    provide partitions, clustering info, etc.).
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    result: dict[str, Any] = {
+        "metadata": {},
+        "partitions": {},
+        "clustering": {},
+    }
+
+    inspector = sa_inspect(sync_conn)
+
+    # Attempt to gather partition/clustering info from table comment or
+    # options if the dialect supports it.  The base engine spec in the
+    # original Superset simply returns ``{}`` — we replicate that and let
+    # callers layer on engine-specific enrichment later.
+    try:
+        comment = inspector.get_table_comment(table_name, schema=schema)
+        if isinstance(comment, dict) and comment.get("text"):
+            result["metadata"]["comment"] = comment["text"]
+    except (NotImplementedError, Exception):  # noqa: BLE001
+        pass
+
+    return result
+
+
+def _build_database_result(db: Any) -> DatabaseDetailResult:
+    """Build a full database result from a Database model instance.
 
     Used by create, update, and GET /{pk} to return a consistent,
     expanded response matching Superset's original API contract.
     """
-    return {
-        "database_name": db.database_name,
-        "backend": getattr(db, "backend", ""),
-        "expose_in_sqllab": getattr(db, "expose_in_sqllab", True),
-        "allow_run_async": getattr(db, "allow_run_async", False),
-        "cache_timeout": getattr(db, "cache_timeout", None),
-        "uuid": str(db.uuid) if getattr(db, "uuid", None) else None,
-        "configuration_method": getattr(db, "configuration_method", None),
-        "allow_ctas": getattr(db, "allow_ctas", False),
-        "allow_cvas": getattr(db, "allow_cvas", False),
-        "allow_dml": getattr(db, "allow_dml", False),
-        "allow_file_upload": getattr(db, "allow_file_upload", False),
-        "driver": getattr(db, "driver", None),
-        "force_ctas_schema": getattr(db, "force_ctas_schema", None),
-        "impersonate_user": getattr(db, "impersonate_user", False),
-        "is_managed_externally": getattr(db, "is_managed_externally", False),
-        "sqlalchemy_uri": mask_uri_password(
-            getattr(db, "sqlalchemy_uri", "")
-        ),
-        "parameters": getattr(db, "parameters", None) or {},
-        "engine_information": (
-            getattr(db, "engine_information", None)
-            or {
-                "supports_file_upload": getattr(
-                    db, "allow_file_upload", False
-                )
-            }
-        ),
-    }
+    return DatabaseDetailResult.from_model(db, mask_uri=mask_uri_password)
 
 
 class DatabaseController(Controller):
@@ -154,7 +292,8 @@ class DatabaseController(Controller):
         from superset.models.core import Database
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
-            Database, rison_params,
+            Database,
+            rison_params,
         )
         if not order_by:
             order_by = [Database.changed_on.desc()]
@@ -189,6 +328,7 @@ class DatabaseController(Controller):
                 "extra",
                 "configuration_method",
                 "is_managed_externally",
+                "changed_on",
                 "changed_on_delta_humanized",
                 "changed_on_utc",
                 "changed_by.first_name",
@@ -197,6 +337,23 @@ class DatabaseController(Controller):
                 "created_by.last_name",
             ],
         )
+        # Post-process: add computed columns that normally come from
+        # engine_spec but are needed by the frontend to avoid undefined.
+        for row in payload.get("result", []):
+            allow_upload = row.get("allow_file_upload", False)
+            row["allows_cost_estimate"] = False
+            row["allows_subquery"] = True
+            row["allows_virtual_table_explore"] = True
+            row["explore_database_id"] = row.get("id")
+            row["disable_data_preview"] = False
+            row["disable_drill_to_detail"] = False
+            row["allow_multi_catalog"] = False
+            row["engine_information"] = {
+                "supports_file_upload": bool(allow_upload),
+                "disable_ssh_tunneling": False,
+                "supports_dynamic_catalog": False,
+                "supports_oauth2": False,
+            }
         return payload
 
     # ------------------------------------------------------------------
@@ -273,6 +430,31 @@ class DatabaseController(Controller):
                     getattr(database, "sqlalchemy_uri", "")
                 ),
                 "backend": getattr(database, "backend", ""),
+                "allow_ctas": getattr(database, "allow_ctas", False),
+                "allow_cvas": getattr(database, "allow_cvas", False),
+                "allow_dml": getattr(database, "allow_dml", False),
+                "allow_run_async": getattr(database, "allow_run_async", False),
+                "allow_file_upload": getattr(database, "allow_file_upload", False),
+                "cache_timeout": getattr(database, "cache_timeout", None),
+                "configuration_method": getattr(database, "configuration_method", None),
+                "database_name": getattr(database, "database_name", ""),
+                "driver": getattr(database, "driver", None),
+                "expose_in_sqllab": getattr(database, "expose_in_sqllab", True),
+                "extra": getattr(database, "extra", None),
+                "force_ctas_schema": getattr(database, "force_ctas_schema", None),
+                "impersonate_user": getattr(database, "impersonate_user", False),
+                "is_managed_externally": getattr(
+                    database, "is_managed_externally", False
+                ),
+                "masked_encrypted_extra": getattr(
+                    database, "masked_encrypted_extra", None
+                ),
+                "parameters": getattr(database, "parameters", None) or {},
+                "server_cert": getattr(database, "server_cert", None),
+                "ssh_tunnel": getattr(database, "ssh_tunnel", None),
+                "uuid": (
+                    str(database.uuid) if getattr(database, "uuid", None) else None
+                ),
             },
         )
 
@@ -308,39 +490,48 @@ class DatabaseController(Controller):
         dao: DatabaseDAOProtocol,
         current_user: UserProtocol,
     ) -> DatabaseGetResponse:
-        create_data: dict[str, Any] = {
-            "database_name": data.database_name,
-            "sqlalchemy_uri": data.sqlalchemy_uri or "",
-            "configuration_method": data.configuration_method,
-            "impersonate_user": data.impersonate_user,
-            "is_managed_externally": data.is_managed_externally,
-        }
-        if data.engine is not None:
-            create_data["engine"] = data.engine  # type: ignore[assignment]
+        create_data: dict[str, Any] = filter_none(
+            {
+                "database_name": data.database_name,
+                "sqlalchemy_uri": data.sqlalchemy_uri or "",
+                "configuration_method": data.configuration_method,
+                "impersonate_user": data.impersonate_user,
+                "is_managed_externally": data.is_managed_externally,
+                "engine": data.engine,
+                "driver": data.driver,
+                "extra": data.extra,
+                "server_cert": data.server_cert,
+                "external_url": data.external_url,
+                "uuid": data.uuid,
+                "ssh_tunnel": data.ssh_tunnel,
+                "parameters": data.parameters or None,
+                "cache_timeout": data.cache_timeout,
+                "expose_in_sqllab": data.expose_in_sqllab,
+                "allow_run_async": data.allow_run_async,
+                "allow_ctas": data.allow_ctas,
+                "allow_cvas": data.allow_cvas,
+                "allow_dml": data.allow_dml,
+                "allow_file_upload": data.allow_file_upload,
+                "force_ctas_schema": data.force_ctas_schema,
+            }
+        )
         if data.masked_encrypted_extra is not None:
             create_data["encrypted_extra"] = data.masked_encrypted_extra
-        if data.extra is not None:
-            create_data["extra"] = data.extra
-        if data.server_cert is not None:
-            create_data["server_cert"] = data.server_cert
-        if data.external_url is not None:
-            create_data["external_url"] = data.external_url
-        if data.uuid is not None:
-            create_data["uuid"] = data.uuid
 
         cmd = CreateDatabaseCommand(
-            dao=dao,
+            dao=cast("AsyncDatabaseDAO", dao),
             data=create_data,
             user_id=current_user.id,
         )
         db = await cmd.execute()
+        db_id = int(db.id)
         event_logger.log(
             "database.create",
-            object_ref=f"database:{db.id}",
+            object_ref=f"database:{db_id}",
             user_id=current_user.id,
         )
         return DatabaseGetResponse(
-            id=db.id,
+            id=db_id,
             result=_build_database_result(db),
         )
 
@@ -363,6 +554,7 @@ class DatabaseController(Controller):
                 "database_name": data.database_name,
                 "sqlalchemy_uri": data.sqlalchemy_uri,
                 "engine": data.engine,
+                "driver": data.driver,
                 "configuration_method": data.configuration_method,
                 "extra": data.extra,
                 "impersonate_user": data.impersonate_user,
@@ -388,7 +580,7 @@ class DatabaseController(Controller):
                 update_data["encrypted_extra"] = None
 
         cmd = UpdateDatabaseCommand(
-            dao=dao,
+            dao=cast("AsyncDatabaseDAO", dao),
             database_id=pk,
             data=update_data,
             user_id=current_user.id,
@@ -400,7 +592,7 @@ class DatabaseController(Controller):
             user_id=current_user.id,
         )
         return DatabaseGetResponse(
-            id=db.id,
+            id=int(db.id),
             result=_build_database_result(db),
         )
 
@@ -415,7 +607,7 @@ class DatabaseController(Controller):
     async def delete_database(
         self, pk: int, dao: DatabaseDAOProtocol
     ) -> dict[str, str]:
-        cmd = DeleteDatabaseCommand(dao=dao, database_id=pk)
+        cmd = DeleteDatabaseCommand(dao=cast("AsyncDatabaseDAO", dao), database_id=pk)
         await cmd.execute()
         event_logger.log("database.delete", object_ref=f"database:{pk}")
         return {"message": "OK"}
@@ -430,7 +622,7 @@ class DatabaseController(Controller):
     async def sync_permissions(
         self, pk: int, dao: DatabaseDAOProtocol
     ) -> dict[str, Any]:
-        cmd = SyncPermissionsCommand(dao=dao, database_id=pk)
+        cmd = SyncPermissionsCommand(dao=cast("AsyncDatabaseDAO", dao), database_id=pk)
         result = await cmd.execute()
         event_logger.log("database.sync_permissions")
         return result
@@ -508,9 +700,7 @@ class DatabaseController(Controller):
         _ = force
         try:
             async with get_async_connection(database) as (conn, engine_spec):
-                schema_names = await engine_spec.get_schema_names(
-                    conn, catalog=catalog
-                )
+                schema_names = await engine_spec.get_schema_names(conn, catalog=catalog)
             schemas_list = await security_manager.get_schemas_accessible_by_user(
                 database,
                 sorted(schema_names),
@@ -525,16 +715,12 @@ class DatabaseController(Controller):
                     try:
                         extra_parsed = json.loads(extra_raw)
                         allowed_schemas = set(
-                            extra_parsed.get(
-                                "schemas_allowed_for_file_upload", []
-                            )
+                            extra_parsed.get("schemas_allowed_for_file_upload", [])
                         )
                     except (json.JSONDecodeError, TypeError):
                         pass
                 if allowed_schemas:
-                    schemas_list = [
-                        s for s in schemas_list if s in allowed_schemas
-                    ]
+                    schemas_list = [s for s in schemas_list if s in allowed_schemas]
             return SchemasResponse(result=schemas_list)
         except Exception as exc:
             _log.warning("Failed to fetch schemas for database %s: %s", pk, exc)
@@ -564,25 +750,56 @@ class DatabaseController(Controller):
         schema = schema_name or None
         try:
             async with get_async_connection(database) as (conn, engine_spec):
-                table_names = await engine_spec.get_table_names(
-                    conn, schema=schema
+                table_names = await engine_spec.get_table_names(conn, schema=schema)
+                view_names = await engine_spec.get_view_names(conn, schema=schema)
+            # Batch-fetch extra (certification info) from SqlaTable for
+            # all discovered tables/views so the frontend gets it.
+            all_names = set(table_names) | set(view_names)
+            extra_lookup: dict[str, dict[str, Any]] = {}
+            if all_names:
+                from sqlalchemy import select as sa_select
+
+                from superset.models.connectors import SqlaTable
+
+                stmt = sa_select(SqlaTable.table_name, SqlaTable.extra).where(
+                    SqlaTable.database_id == pk,
+                    SqlaTable.table_name.in_(all_names),
                 )
-                view_names = await engine_spec.get_view_names(
-                    conn, schema=schema
-                )
-            options = sorted(
-                [{"value": t, "type": "table"} for t in table_names]
-                + [{"value": v, "type": "view"} for v in view_names],
-                key=lambda item: item["value"],
+                if schema:
+                    stmt = stmt.where(SqlaTable.schema == schema)
+                rows = (await dao.session.execute(stmt)).all()
+                for tbl_name, extra_raw in rows:
+                    if extra_raw:
+                        try:
+                            extra_lookup[tbl_name] = json.loads(extra_raw)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
+            options: list[dict[str, Any]] = sorted(
+                [
+                    {
+                        "value": str(t),
+                        "type": "table",
+                        "extra": extra_lookup.get(str(t), {}),
+                    }
+                    for t in table_names
+                ]
+                + [
+                    {
+                        "value": str(v),
+                        "type": "view",
+                        "extra": extra_lookup.get(str(v), {}),
+                    }
+                    for v in view_names
+                ],
+                key=lambda item: str(item["value"]),
             )
             return {
                 "count": len(options),
                 "result": options,
             }
         except Exception as exc:
-            _log.warning(
-                "Failed to fetch tables for database %s: %s", pk, exc
-            )
+            _log.warning("Failed to fetch tables for database %s: %s", pk, exc)
             return {"count": 0, "result": []}
 
     # ------------------------------------------------------------------
@@ -604,7 +821,7 @@ class DatabaseController(Controller):
         catalog: str | None = Parameter(query="catalog", default=None),
     ) -> TableMetadataResponse:
         # Accept both ``schema`` (original Superset) and ``schema_name`` (alias)
-        effective_schema = schema_name or schema
+        effective_schema = schema_name or schema or None
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
@@ -612,12 +829,81 @@ class DatabaseController(Controller):
             await security_manager.raise_for_access(
                 database=database,
                 catalog=catalog,
-                schema=effective_schema or None,
+                schema=effective_schema,
                 user=current_user,
             )
-        except (SupersetSecurityException, ObjectNotFoundError):
-            raise ObjectNotFoundError("Table", name)
-        return TableMetadataResponse(name=name)
+        except (SupersetSecurityException, ObjectNotFoundError) as exc:
+            raise ObjectNotFoundError("Table", name) from exc
+
+        if not name:
+            raise CommandInvalidError("Missing required parameter: name")
+
+        try:
+            async with get_async_connection(database) as (conn, _engine_spec):
+                raw = await conn.run_sync(
+                    _inspect_table_metadata,
+                    name,
+                    effective_schema,
+                )
+        except Exception as exc:
+            _log.warning(
+                "Failed to fetch table metadata for %s.%s on database %s: %s",
+                effective_schema,
+                name,
+                pk,
+                exc,
+            )
+            raise CommandInvalidError(
+                f"Error fetching metadata for table '{name}': {exc}"
+            ) from exc
+
+        # Convert raw dicts into typed response structs
+        columns = [
+            TableMetadataColumn(
+                name=c["name"],
+                type=c.get("type", ""),
+                long_type=c.get("longType"),
+                keys=c.get("keys", []),
+                comment=c.get("comment"),
+            )
+            for c in raw.get("columns", [])
+        ]
+        foreign_keys = [
+            TableMetadataIndex(
+                column_names=fk.get("column_names", []),
+                name=fk.get("name"),
+                type=fk.get("type", "fk"),
+                options={
+                    k: v
+                    for k, v in fk.items()
+                    if k not in ("column_names", "name", "type")
+                },
+            )
+            for fk in raw.get("foreignKeys", [])
+        ]
+        indexes = [
+            TableMetadataIndex(
+                column_names=idx.get("column_names", []),
+                name=idx.get("name"),
+                type=idx.get("type", "index"),
+                options={
+                    k: v
+                    for k, v in idx.items()
+                    if k not in ("column_names", "name", "type")
+                },
+            )
+            for idx in raw.get("indexes", [])
+        ]
+
+        return TableMetadataResponse(
+            name=raw.get("name", name),
+            columns=columns,
+            foreign_keys=foreign_keys,
+            indexes=indexes,
+            primary_key=raw.get("primaryKey", {}),
+            select_star=raw.get("selectStar"),
+            comment=raw.get("comment"),
+        )
 
     # ------------------------------------------------------------------
     # GET /{pk}/table_metadata/extra/ — extra metadata
@@ -638,7 +924,7 @@ class DatabaseController(Controller):
         catalog: str | None = Parameter(query="catalog", default=None),
     ) -> TableExtraMetadata:
         # Accept both ``schema`` (original Superset) and ``schema_name`` (alias)
-        effective_schema = schema_name or schema
+        effective_schema = schema_name or schema or None
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
@@ -646,12 +932,38 @@ class DatabaseController(Controller):
             await security_manager.raise_for_access(
                 database=database,
                 catalog=catalog,
-                schema=effective_schema or None,
+                schema=effective_schema,
                 user=current_user,
             )
-        except (SupersetSecurityException, ObjectNotFoundError):
-            raise ObjectNotFoundError("Table", name)
-        return TableExtraMetadata()
+        except (SupersetSecurityException, ObjectNotFoundError) as exc:
+            raise ObjectNotFoundError("Table", name) from exc
+
+        if not name:
+            raise CommandInvalidError("Missing required parameter: name")
+
+        try:
+            async with get_async_connection(database) as (conn, _engine_spec):
+                raw = await conn.run_sync(
+                    _inspect_table_extra_metadata,
+                    name,
+                    effective_schema,
+                )
+        except Exception as exc:
+            _log.warning(
+                "Failed to fetch extra table metadata for %s.%s on database %s: %s",
+                effective_schema,
+                name,
+                pk,
+                exc,
+            )
+            # Return empty metadata on failure (matches original behaviour)
+            return TableExtraMetadata()
+
+        return TableExtraMetadata(
+            metadata=raw.get("metadata", {}),
+            partitions=raw.get("partitions", {}),
+            clustering=raw.get("clustering", {}),
+        )
 
     # ------------------------------------------------------------------
     # GET /{pk}/select_star/{table_name}/ — SELECT * SQL
@@ -714,16 +1026,24 @@ class DatabaseController(Controller):
         dao: DatabaseDAOProtocol,
     ) -> dict[str, Any]:
         cmd = DatabaseTestConnectionCommand(
-            dao=dao,
+            dao=cast("AsyncDatabaseDAO", dao),
             data={
                 "database_name": data.database_name,
                 "sqlalchemy_uri": data.sqlalchemy_uri,
                 "engine": data.engine,
+                "driver": data.driver,
                 "configuration_method": data.configuration_method,
                 "masked_encrypted_extra": data.masked_encrypted_extra,
                 "extra": data.extra,
                 "impersonate_user": data.impersonate_user,
                 "server_cert": data.server_cert,
+                "ssh_tunnel": (
+                    msgspec.structs.asdict(data.ssh_tunnel)
+                    if data.ssh_tunnel is not None
+                    else None
+                ),
+                "parameters": data.parameters,
+                "catalog": data.catalog,
             },
         )
         result = await cmd.execute()
@@ -747,7 +1067,11 @@ class DatabaseController(Controller):
             "charts": {
                 "count": len(related.get("charts", [])),
                 "result": [
-                    {"id": c.id, "slice_name": getattr(c, "slice_name", "")}
+                    {
+                        "id": c.id,
+                        "slice_name": getattr(c, "slice_name", ""),
+                        "viz_type": getattr(c, "viz_type", None),
+                    }
                     for c in related.get("charts", [])
                 ],
             },
@@ -757,13 +1081,22 @@ class DatabaseController(Controller):
                     {
                         "id": d.id,
                         "title": getattr(d, "dashboard_title", ""),
+                        "json_metadata": getattr(d, "json_metadata", None),
+                        "slug": getattr(d, "slug", None),
                     }
                     for d in related.get("dashboards", [])
                 ],
             },
             "sqllab_tab_states": {
                 "count": len(related.get("sqllab_tab_states", [])),
-                "result": [{"id": t.id} for t in related.get("sqllab_tab_states", [])],
+                "result": [
+                    {
+                        "id": t.id,
+                        "label": getattr(t, "label", None),
+                        "active": getattr(t, "active", None),
+                    }
+                    for t in related.get("sqllab_tab_states", [])
+                ],
             },
         }
 
@@ -781,7 +1114,7 @@ class DatabaseController(Controller):
         dao: DatabaseDAOProtocol,
     ) -> dict[str, Any]:
         cmd = ValidateSQLCommand(
-            dao=dao,
+            dao=cast("AsyncDatabaseDAO", dao),
             database_id=pk,
             sql=data.sql,
             schema=data.schema,
@@ -807,7 +1140,7 @@ class DatabaseController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
-        cmd = ExportDatabasesCommand(model_ids=ids, dao=dao)
+        cmd = ExportDatabasesCommand(model_ids=ids, dao=cast("AsyncDatabaseDAO", dao))
         buf = await cmd.execute()
         event_logger.log("database.export", extra={"count": len(ids)})
         return Stream(
@@ -837,17 +1170,19 @@ class DatabaseController(Controller):
         buf = io.BytesIO(contents)
         try:
             passwords_dict: dict[str, str] = json.loads(passwords) if passwords else {}
-        except (ValueError, json.JSONDecodeError):
-            raise CommandInvalidError("Invalid JSON in 'passwords' field")
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise CommandInvalidError("Invalid JSON in 'passwords' field") from exc
         try:
             ssh_dict: dict[str, str] = (
                 json.loads(ssh_tunnel_passwords) if ssh_tunnel_passwords else {}
             )
-        except (ValueError, json.JSONDecodeError):
-            raise CommandInvalidError("Invalid JSON in 'ssh_tunnel_passwords' field")
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise CommandInvalidError(
+                "Invalid JSON in 'ssh_tunnel_passwords' field"
+            ) from exc
         cmd = ImportDatabasesCommand(
             contents=buf,
-            dao=dao,
+            dao=cast("AsyncDatabaseDAO", dao),
             overwrite=overwrite,
             passwords=passwords_dict,
             ssh_tunnel_passwords=ssh_dict,
@@ -878,7 +1213,7 @@ class DatabaseController(Controller):
         guards=[require_permission("can_read", "Database")],
     )
     async def available(self) -> dict[str, Any]:
-        from superset.db.engine_specs import _NATIVE_SPECS, _get_sync_spec_map
+        from superset.db.engine_specs import _get_sync_spec_map, _NATIVE_SPECS
 
         databases: list[dict[str, Any]] = []
 
@@ -894,8 +1229,7 @@ class DatabaseController(Controller):
                     ],
                     "default_driver": getattr(spec_cls, "default_driver", ""),
                     "sqlalchemy_uri_placeholder": (
-                        f"{engine_key}+"
-                        f"{getattr(spec_cls, 'default_driver', '')}://"
+                        f"{engine_key}+{getattr(spec_cls, 'default_driver', '')}://"
                     ),
                     "parameters": {
                         "properties": {
@@ -910,6 +1244,10 @@ class DatabaseController(Controller):
                     "engine_information": {
                         "supports_file_upload": False,
                         "disable_ssh_tunneling": False,
+                        "supports_dynamic_catalog": getattr(
+                            spec_cls, "supports_dynamic_catalog", False
+                        ),
+                        "supports_oauth2": getattr(spec_cls, "supports_oauth2", False),
                     },
                 }
             )
@@ -951,6 +1289,10 @@ class DatabaseController(Controller):
                         "disable_ssh_tunneling": getattr(
                             spec_cls, "disable_ssh_tunneling", False
                         ),
+                        "supports_dynamic_catalog": getattr(
+                            spec_cls, "supports_dynamic_catalog", False
+                        ),
+                        "supports_oauth2": getattr(spec_cls, "supports_oauth2", False),
                     },
                 }
             )
@@ -1034,7 +1376,7 @@ class DatabaseController(Controller):
     ) -> dict[str, Any]:
         file_contents = await data.read()
         cmd = UploadCommand(
-            dao=dao,
+            dao=cast("AsyncDatabaseDAO", dao),
             database_id=pk,
             data={"table_name": table_name, "schema_name": schema_name},
             file_contents=file_contents,
@@ -1063,7 +1405,7 @@ class DatabaseController(Controller):
         dao: DatabaseDAOProtocol,
         oauth_state: str = Parameter(query="state", default=""),
         code: str = Parameter(query="code", default=""),
-    ) -> "Response[str]":
+    ) -> "Response[Any]":
         """GET /api/v1/database/oauth2/ — OAuth2 provider redirect.
 
         Decodes the ``state`` parameter to recover the originating
@@ -1073,7 +1415,11 @@ class DatabaseController(Controller):
         """
         if not oauth_state:
             return Response(
-                content={"message": "OAuth2 endpoint. Provide 'state' and 'code' query parameters."},
+                content={
+                    "message": (
+                        "OAuth2 endpoint. Provide 'state' and 'code' query parameters."
+                    )
+                },
                 status_code=200,
             )
 
@@ -1088,11 +1434,11 @@ class DatabaseController(Controller):
                 media_type="text/html",
             )
 
-        database_id = decoded.get("database_id")
+        database_id: Any = decoded.get("database_id")
         tab_id = decoded.get("tab_id", "")
 
         if database_id is not None:
-            database = await dao.find_by_id(int(database_id))
+            database = await dao.find_by_id(int(str(database_id)))
             if database is None:
                 return Response(
                     content="<html><body>Database not found</body></html>",
@@ -1108,7 +1454,7 @@ class DatabaseController(Controller):
             f'"database_id": {json.dumps(database_id)}, '
             f'"tab_id": {json.dumps(tab_id)}, '
             f'"code": {json.dumps(code)}}}, '
-            '    window.location.origin'
+            "    window.location.origin"
             "  );"
             "}"
             "window.close();"
@@ -1154,7 +1500,7 @@ class DatabaseController(Controller):
     async def delete_ssh_tunnel(
         self, pk: int, dao: DatabaseDAOProtocol
     ) -> dict[str, str]:
-        cmd = DeleteSSHTunnelCommand(dao=dao, database_id=pk)
+        cmd = DeleteSSHTunnelCommand(dao=cast("AsyncDatabaseDAO", dao), database_id=pk)
         await cmd.execute()
         event_logger.log("database.delete_ssh_tunnel", object_ref=f"database:{pk}")
         return {"message": "OK"}
