@@ -84,8 +84,7 @@ class Tag(Base, AuditMixinNullable):
 
     id = Column(Integer, primary_key=True)
     name = Column(String(250), unique=True)
-    # DB stores as VARCHAR, not native ENUM
-    type = Column(String(12))
+    type = Column(Enum(TagType))
     description = Column(Text)
 
     # -- relationships --------------------------------------------------------
