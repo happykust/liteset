@@ -57,6 +57,8 @@ from superset.exceptions import (
 )
 from superset.logging import configure_logging
 from superset.middleware.auth import SupersetAuthMiddleware
+from superset.middleware.locale import LocaleMiddleware
+from superset.middleware.proxy_fix import ProxyFixMiddleware
 from superset.middleware.rate_limit import RateLimitMiddleware
 from superset.middleware.security_headers import SecurityHeadersMiddleware
 
@@ -663,8 +665,14 @@ def create_app(  # noqa: C901
             "event_manager": Provide(provide_event_manager),
         },
         middleware=[
+            *(
+                [ProxyFixMiddleware(**settings.proxy_fix_config)]
+                if settings.enable_proxy_fix
+                else []
+            ),
             SecurityHeadersMiddleware(),
             RateLimitMiddleware(),
+            LocaleMiddleware(),
             SupersetAuthMiddleware,
             *([csrf_middleware] if csrf_middleware else []),
         ],
