@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import Any, Literal
 
 import jwt as pyjwt
 import msgspec
@@ -33,7 +33,7 @@ from litestar.exceptions import NotAuthorizedException, ValidationException
 
 from superset.controllers.base import extract_pagination
 from superset.events import event_logger
-from superset.guards.rbac import require_permission
+from superset.guards.rbac import require_authentication, require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_role_dao
 from superset.security.guest import validate_guest_token_resources
@@ -131,10 +131,13 @@ class GuestTokenUser(msgspec.Struct):
     last_name: str = ""
 
 
+GuestTokenResourceType = Literal["dashboard"]
+
+
 class GuestTokenResource(msgspec.Struct):
     """Resource access entry (type + id)."""
 
-    type: str
+    type: GuestTokenResourceType
     id: str | int
 
 
@@ -165,6 +168,7 @@ class SecurityController(Controller):
 
     @get(
         "/csrf_token/",
+        guards=[require_authentication],
     )
     async def csrf_token(
         self,
@@ -181,7 +185,9 @@ class SecurityController(Controller):
         )
 
         settings = getattr(
-            request.app.state, "settings", None,
+            request.app.state,
+            "settings",
+            None,
         )
         secret = ""
         if settings:
@@ -226,8 +232,11 @@ class SecurityController(Controller):
             {"type": r.type, "id": r.id} for r in data.resources
         ]
 
-        # Validate resource entries
-        errors = validate_guest_token_resources(resources_raw)
+        # Validate resource entries (schema + DB existence checks)
+        # The session is obtained from the security_manager's DAO, which
+        # shares the same request-scoped AsyncSession.
+        session = security_manager.dao.session  # type: ignore[attr-defined]
+        errors = await validate_guest_token_resources(resources_raw, session)
         if errors:
             raise SupersetValidationException(
                 f"Invalid guest token resources: {'; '.join(errors)}"
@@ -254,9 +263,7 @@ class SecurityController(Controller):
                 "rls": [msgspec.structs.asdict(r) for r in data.rls],
             }
             if not guest_token_validator_hook(token_payload):
-                raise SupersetValidationException(
-                    "Guest token validation failed"
-                )
+                raise SupersetValidationException("Guest token validation failed")
 
         secret_key = getattr(settings, "guest_token_jwt_secret", "")
         if not secret_key:
@@ -275,18 +282,14 @@ class SecurityController(Controller):
                 "(guest_token_jwt_secret or secret_key)"
             )
 
-        exp_seconds: int = getattr(
-            settings, "guest_token_jwt_exp_seconds", 3600
-        )
+        exp_seconds: int = getattr(settings, "guest_token_jwt_exp_seconds", 3600)
 
         user_dict: dict[str, Any] = {
             "username": data.user.username,
             "first_name": data.user.first_name,
             "last_name": data.user.last_name,
         }
-        rls_raw: list[dict[str, Any]] = [
-            msgspec.structs.asdict(r) for r in data.rls
-        ]
+        rls_raw: list[dict[str, Any]] = [msgspec.structs.asdict(r) for r in data.rls]
 
         token = security_manager.create_guest_access_token(
             secret_key=secret_key,
@@ -345,6 +348,7 @@ class SecurityController(Controller):
                 name=role.name,
                 user_ids=[u.id for u in (role.user or [])],
                 permission_ids=[p.id for p in (role.permissions or [])],
+                group_ids=[g.id for g in (role.groups or [])],
             )
             for role in roles
         ]
@@ -391,18 +395,14 @@ class SecurityController(Controller):
         allow_multiple = getattr(settings, "api_login_allow_multiple_providers", False)
         provider_type_map = {"db": 1, "ldap": 2}
         if not allow_multiple and provider_type_map.get(data.provider) != auth_type:
-            raise ValidationException(
-                detail=f"Provider '{data.provider}' not allowed"
-            )
+            raise ValidationException(detail=f"Provider '{data.provider}' not allowed")
 
         if not data.username:
             raise ValidationException(detail="Username is required")
 
         # Only DB auth is implemented
         if data.provider == "ldap":
-            raise ValidationException(
-                detail="LDAP provider not yet implemented"
-            )
+            raise ValidationException(detail="LDAP provider not yet implemented")
 
         # Authenticate via DAO
         from superset.security.dao import AsyncSecurityDAO
@@ -479,13 +479,13 @@ class SecurityController(Controller):
 
         try:
             payload = pyjwt.decode(token, secret_key, algorithms=["HS256"])
-        except pyjwt.PyJWTError:
-            raise NotAuthorizedException(detail="Invalid or expired refresh token")
+        except pyjwt.PyJWTError as exc:
+            raise NotAuthorizedException(
+                detail="Invalid or expired refresh token"
+            ) from exc
 
         if payload.get("type") != "refresh":
-            raise NotAuthorizedException(
-                detail="Invalid token type (expected refresh)"
-            )
+            raise NotAuthorizedException(detail="Invalid token type (expected refresh)")
 
         user_id_str = payload.get("sub")
         if not user_id_str:
@@ -493,8 +493,10 @@ class SecurityController(Controller):
 
         try:
             user_id = int(user_id_str)
-        except (ValueError, TypeError):
-            raise NotAuthorizedException(detail="Invalid refresh token (bad sub)")
+        except (ValueError, TypeError) as exc:
+            raise NotAuthorizedException(
+                detail="Invalid refresh token (bad sub)"
+            ) from exc
 
         access_expires = getattr(settings, "jwt_access_token_expires", 900)
         access_token = _create_api_access_token(

@@ -59,6 +59,7 @@ _DATABASE_PERM_RE = re.compile(r"^\[.+\]\.\(id:(?P<id>\d+)\)$")
 # Query-context modification check (guest user safety)
 # ---------------------------------------------------------------------------
 
+
 def _freeze_value(value: Any) -> str:
     """Deterministic JSON serialization for comparing column/metric sets."""
     if isinstance(value, str):
@@ -99,9 +100,7 @@ def query_context_modified(query_context: Any) -> bool:
         ("groupby", ["columns", "groupby"]),
         ("orderby", ["orderby"]),
     ]:
-        requested_values = {
-            _freeze_value(value) for value in form_data.get(key) or []
-        }
+        requested_values = {_freeze_value(value) for value in form_data.get(key) or []}
         stored_values = {
             _freeze_value(value)
             for value in getattr(stored_chart, "params_dict", {}).get(key) or []
@@ -434,7 +433,7 @@ class AsyncSecurityManager:
             return await self.can_access_schema(database, schema, user=user)
         return False
 
-    async def can_access_dashboard(self, dashboard: Any, *, user: Any) -> bool:
+    async def can_access_dashboard(self, dashboard: Any, *, user: Any) -> bool:  # noqa: C901
         """Check if user can access a dashboard."""
         if self.is_admin(user):
             return True
@@ -475,6 +474,7 @@ class AsyncSecurityManager:
 
     def is_owner(self, resource: Any, user: Any) -> bool:
         """Check if user is an owner of the resource (owners M2M only)."""
+        user_id: int | None
         if isinstance(user, int):
             user_id = user
         else:
@@ -548,9 +548,8 @@ class AsyncSecurityManager:
         user_roles = [r.id for r in getattr(user, "roles", [])]
 
         # Sub-query: RLS filter IDs that apply to this table
-        filter_tables_sq = (
-            select(RLSFilterTables.c.rls_filter_id)
-            .where(RLSFilterTables.c.table_id == table.id)
+        filter_tables_sq = select(RLSFilterTables.c.rls_filter_id).where(
+            RLSFilterTables.c.table_id == table.id
         )
 
         # Sub-query: Regular filters where user has the role
@@ -596,20 +595,67 @@ class AsyncSecurityManager:
         result = await self.dao.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_rls_cache_key(
-        self, datasource: Any, *, user: Any
-    ) -> list[str]:
+    async def get_rls_sorted(self, table: Any, *, user: Any) -> list[Any]:
+        """Retrieve RLS filters sorted by ID for deterministic cache keys.
+
+        :param table: The datasource/table to check against.
+        :param user: The current user.
+        :returns: A list of RowLevelSecurityFilter objects sorted by ID.
+        """
+        filters = await self.get_rls_filters(table, user=user)
+        filters.sort(key=lambda f: f.id)
+        return filters
+
+    def get_guest_rls_filters(
+        self, dataset: Any, *, user: Any
+    ) -> list[dict[str, Any]]:
+        """Retrieve RLS filters from a guest token for the given dataset.
+
+        Matches the original SupersetSecurityManager.get_guest_rls_filters:
+        returns rules from the guest token that either have no dataset
+        restriction or match the given dataset's ID.
+
+        :param dataset: The datasource to check against.
+        :param user: The current user (may be a GuestUser with rls_rules).
+        :returns: A list of RLS rule dicts from the guest token.
+        """
+        if not self.is_guest_user(user):
+            return []
+        rls_rules: list[dict[str, Any]] = getattr(user, "rls_rules", [])
+        return [
+            rule
+            for rule in rls_rules
+            if not rule.get("dataset")
+            or str(rule.get("dataset")) == str(dataset.id)
+        ]
+
+    def get_guest_rls_filters_str(self, table: Any, *, user: Any) -> list[str]:
+        """Return guest RLS filter clauses as strings.
+
+        :param table: The datasource to check against.
+        :param user: The current user.
+        :returns: A list of clause strings from guest token RLS rules.
+        """
+        return [
+            f.get("clause", "") for f in self.get_guest_rls_filters(table, user=user)
+        ]
+
+    async def get_rls_cache_key(self, datasource: Any, *, user: Any) -> list[str]:
         """Return cache key components representing active RLS filters.
 
-        Calls get_rls_filters(), sorts by ID, and builds a deterministic
-        list of ``clause-group_key`` strings for cache differentiation.
+        Combines both regular RLS filters (from DB, sorted by ID) and
+        guest token RLS filters to build a deterministic list of strings
+        for cache differentiation. This matches the original
+        SupersetSecurityManager.get_rls_cache_key exactly.
         """
-        if not getattr(datasource, "is_rls_supported", False):
-            return []
-
-        filters = await self.get_rls_filters(datasource, user=user)
-        filters.sort(key=lambda f: f.id)
-        return [f"{f.clause}-{f.group_key or ''}" for f in filters]
+        rls_clauses_with_group_key: list[str] = []
+        if getattr(datasource, "is_rls_supported", False):
+            rls_clauses_with_group_key = [
+                f"{f.clause}-{f.group_key or ''}"
+                for f in await self.get_rls_sorted(datasource, user=user)
+            ]
+        guest_rls = self.get_guest_rls_filters_str(datasource, user=user)
+        return guest_rls + rls_clauses_with_group_key
 
     async def invalidate_user_cache(self, redis: Redis, user: Any) -> None:
         """Invalidate Redis auth cache for a user.

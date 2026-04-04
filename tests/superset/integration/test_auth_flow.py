@@ -597,9 +597,9 @@ async def test_catalog_access_hierarchy():
 
 async def test_guest_token_with_invalid_resources():
     """Guest tokens with invalid resource entries should fail validation."""
-    from superset.security.guest import validate_guest_token_resources
+    from superset.security.guest import validate_guest_token_resources_schema
 
-    errors = validate_guest_token_resources(
+    errors = validate_guest_token_resources_schema(
         [
             {"type": "dashboard", "id": "valid-uuid"},
             {"type": "invalid_type", "id": "some-id"},

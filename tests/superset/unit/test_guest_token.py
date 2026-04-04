@@ -122,10 +122,10 @@ def test_guest_user_roles_empty():
     assert guest.roles == []
 
 
-def test_validate_guest_token_resources_valid():
-    from superset.security.guest import validate_guest_token_resources
+def test_validate_guest_token_resources_schema_valid():
+    from superset.security.guest import validate_guest_token_resources_schema
 
-    errors = validate_guest_token_resources(
+    errors = validate_guest_token_resources_schema(
         [
             {"type": "dashboard", "id": "uuid-1"},
             {"type": "chart", "id": "uuid-2"},
@@ -134,10 +134,10 @@ def test_validate_guest_token_resources_valid():
     assert errors == []
 
 
-def test_validate_guest_token_resources_invalid():
-    from superset.security.guest import validate_guest_token_resources
+def test_validate_guest_token_resources_schema_invalid():
+    from superset.security.guest import validate_guest_token_resources_schema
 
-    errors = validate_guest_token_resources(
+    errors = validate_guest_token_resources_schema(
         [
             {"type": "invalid_type", "id": "uuid-1"},
             {"id": "missing-type"},

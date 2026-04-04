@@ -157,10 +157,10 @@ def parse_guest_token(
     return payload
 
 
-def validate_guest_token_resources(
+def validate_guest_token_resources_schema(
     resources: list[dict[str, Any]],
 ) -> list[str]:
-    """Validate guest token resource entries.
+    """Validate guest token resource entries (schema-level only).
 
     Verifies each resource has required fields (type, id) and that
     the resource type is supported (dashboard, chart).
@@ -188,4 +188,57 @@ def validate_guest_token_resources(
             )
         if not res_id:
             errors.append(f"Resource {i}: missing 'id' field")
+    return errors
+
+
+async def validate_guest_token_resources(
+    resources: list[dict[str, Any]],
+    session: Any,
+) -> list[str]:
+    """Validate guest token resources: schema + DB existence checks.
+
+    Matches the original SupersetSecurityManager.validate_guest_token_resources:
+    1. Schema validation (type, id fields present and supported).
+    2. For dashboard resources, verify the dashboard exists in the DB.
+       First checks Dashboard by ID/slug, then checks EmbeddedDashboard
+       by UUID. If neither found, reports an error.
+
+    Args:
+        resources: List of resource dicts from the guest token payload.
+        session: AsyncSession for database lookups.
+
+    Returns:
+        List of validation error messages. Empty list means all valid.
+    """
+    # Phase 1: schema validation
+    errors = validate_guest_token_resources_schema(resources)
+    if errors:
+        return errors
+
+    # Phase 2: DB existence checks for dashboard resources
+    from superset.db.daos.dashboard import (
+        AsyncDashboardDAO,
+        AsyncEmbeddedDashboardDAO,
+    )
+
+    dashboard_dao = AsyncDashboardDAO(session)
+    embedded_dao = AsyncEmbeddedDashboardDAO(session)
+
+    for i, resource in enumerate(resources):
+        if resource.get("type") == "dashboard":
+            resource_id = str(resource["id"])
+
+            # Check 1: Dashboard.get(str(resource["id"]))
+            # Uses get_by_id_or_slug which tries int ID, UUID, then slug
+            dashboard = await dashboard_dao.get_by_id_or_slug(resource_id)
+            if not dashboard:
+                # Check 2: EmbeddedDashboardDAO.find_by_id(str(resource["id"]))
+                # The original uses id_column_name = "uuid", so find_by_id
+                # looks up by UUID
+                embedded = await embedded_dao.find_by_uuid(resource_id)
+                if not embedded:
+                    errors.append(
+                        f"Resource {i}: embedded dashboard not found "
+                        f"for id '{resource_id}'"
+                    )
     return errors
