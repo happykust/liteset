@@ -50,6 +50,7 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "CORS_ALLOW_ORIGINS": "cors_allow_origins",
     "GLOBAL_ASYNC_QUERIES": "global_async_queries",
     "STATIC_ASSETS_PREFIX": "static_assets_prefix",
+    "DEBUG": "debug",
     # Phase 4: query processing and SqlLab config
     "ROW_LIMIT": "row_limit",
     "SAMPLES_ROW_LIMIT": "samples_row_limit",
