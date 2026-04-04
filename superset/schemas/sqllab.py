@@ -16,7 +16,6 @@
 # under the License.
 """msgspec Structs for the SqlLab API."""
 
-# ruff: noqa: N815  — camelCase field names required for JSON API contract parity
 from __future__ import annotations
 
 from typing import Any
@@ -42,7 +41,11 @@ class FormatSQLSchema(msgspec.Struct):
 
 
 class ExecutePayloadSchema(msgspec.Struct):
-    """POST /api/v1/sqllab/execute/"""
+    """POST /api/v1/sqllab/execute/
+
+    Field names match the frontend's mixed snake_case / camelCase
+    payload exactly (same as original Marshmallow schema).
+    """
 
     database_id: int
     sql: str
@@ -52,12 +55,16 @@ class ExecutePayloadSchema(msgspec.Struct):
     tmp_table_name: str | None = None
     select_as_cta: bool = False
     ctas_method: str = "TABLE"
-    templateParams: str | None = None
-    queryLimit: int | None = None
-    runAsync: bool = False
+    template_params: str | None = None
+    # camelCase — frontend sends "queryLimit", not "query_limit"
+    queryLimit: int | None = None  # noqa: N815
+    # camelCase — frontend sends "runAsync", not "run_async"
+    runAsync: bool = False  # noqa: N815
     expand_data: bool = True
     client_id: str | None = None
     sql_editor_id: str | None = None
+    # frontend sends "json": true — ignored but accepted
+    json: bool = True
 
 
 class QueryResult(msgspec.Struct):
@@ -91,11 +98,11 @@ class SQLLabBootstrap(msgspec.Struct):
     user: dict[str, Any] = {}
 
 
-class SqlLabPermalinkSchema(msgspec.Struct):
+class SqlLabPermalinkSchema(msgspec.Struct, rename="camel"):
     """POST /api/v1/sqllab/permalink
 
     Accepts either a raw ``state`` dict (original contract) or typed
-    top-level fields (``dbId``, ``sql``, ``schema``, etc.) which are
+    top-level fields (``db_id``, ``sql``, ``schema``, etc.) which are
     merged into ``state`` during normalization.
     """
 
@@ -103,25 +110,25 @@ class SqlLabPermalinkSchema(msgspec.Struct):
     state: dict[str, Any] = {}
 
     # Typed aliases for common fields (frontend may send these directly)
-    dbId: int | None = None
+    db_id: int | None = None
     sql: str | None = None
     schema: str | None = None
     catalog: str | None = None
     autorun: bool | None = None
-    templateParams: str | None = None
-    queryLimit: int | None = None
+    template_params: str | None = None
+    query_limit: int | None = None
     name: str | None = None
 
     def __post_init__(self) -> None:
         """Merge typed fields into state when state is empty."""
         typed_fields = {
-            "dbId": self.dbId,
+            "dbId": self.db_id,
             "sql": self.sql,
             "schema": self.schema,
             "catalog": self.catalog,
             "autorun": self.autorun,
-            "templateParams": self.templateParams,
-            "queryLimit": self.queryLimit,
+            "templateParams": self.template_params,
+            "queryLimit": self.query_limit,
             "name": self.name,
         }
         # Only merge non-None typed fields that are not already in state

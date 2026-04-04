@@ -246,8 +246,8 @@ class SqlLabController(Controller):
             select_as_cta=data.select_as_cta,
             ctas_method=data.ctas_method,
             tmp_table_name=data.tmp_table_name,
-            query_limit=data.query_limit,
-            run_async=data.run_async,
+            query_limit=data.queryLimit,
+            run_async=data.runAsync,
             client_id=data.client_id,
             user_id=current_user.id,
         )
