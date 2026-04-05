@@ -226,11 +226,23 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
 
     # -- Computed properties ---------------------------------------------------
 
-    _NUMERIC_TYPES = frozenset({
-        "INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT",
-        "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "REAL",
-        "DOUBLE PRECISION", "MONEY", "NUMBER",
-    })
+    _NUMERIC_TYPES = frozenset(
+        {
+            "INT",
+            "INTEGER",
+            "BIGINT",
+            "SMALLINT",
+            "TINYINT",
+            "FLOAT",
+            "DOUBLE",
+            "DECIMAL",
+            "NUMERIC",
+            "REAL",
+            "DOUBLE PRECISION",
+            "MONEY",
+            "NUMBER",
+        }
+    )
 
     @property
     def is_numeric(self) -> bool:
@@ -321,7 +333,9 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
 # ---------------------------------------------------------------------------
 
 
-class SqlaTable(Base, AuditMixinNullable, ImportExportMixin, BaseDatasource, ExploreMixin):
+class SqlaTable(
+    Base, AuditMixinNullable, ImportExportMixin, BaseDatasource, ExploreMixin
+):
     """A SQL dataset (table or virtual query)."""
 
     __tablename__ = "tables"
@@ -426,9 +440,7 @@ class SqlaTable(Base, AuditMixinNullable, ImportExportMixin, BaseDatasource, Exp
     @property
     def name(self) -> str:
         """Fully-qualified name: schema.table_name or just table_name."""
-        return (
-            f"{self.schema}.{self.table_name}" if self.schema else self.table_name
-        )
+        return f"{self.schema}.{self.table_name}" if self.schema else self.table_name
 
     @property
     def full_name(self) -> str:
@@ -449,6 +461,127 @@ class SqlaTable(Base, AuditMixinNullable, ImportExportMixin, BaseDatasource, Exp
             parts.append(f"[{self.schema}]")
         parts.append(f"[{self.table_name}]")
         return ".".join(parts)
+
+    @property
+    def select_star(self) -> str | None:
+        """Generate a SELECT * query for this table.
+
+        Matches original SqlaTable.select_star (line 1331-1338):
+        calls Database.select_star with show_cols=False and
+        latest_partition=False to avoid expensive DB inspection.
+        """
+        if sa.inspect(self).unloaded.intersection({"database"}):
+            return None
+        if self.database is None:
+            return None
+
+        from superset.db_engine_specs.base import BaseEngineSpec
+
+        table = Table(
+            str(self.table_name),
+            self.schema or None,
+            self.catalog or None,
+        )
+
+        try:
+            return BaseEngineSpec.select_star(
+                database=self.database,
+                table=table,
+                engine=None,  # Not needed when indent=False
+                limit=100,
+                show_cols=False,
+                indent=False,
+                latest_partition=False,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to generate select_star for table '%s'",
+                self.table_name,
+                exc_info=True,
+            )
+            return None
+
+    def external_metadata(self) -> list[dict[str, Any]]:
+        """Fetch column metadata from the underlying database.
+
+        Matches original SqlaTable.external_metadata (line 1313-1321):
+        - Virtual datasets (with custom SQL) -> get_virtual_table_metadata
+        - Physical tables -> get_physical_table_metadata
+        """
+        from superset.utils.database import get_engine_spec_for_database
+
+        if self.sql:
+            return self._get_virtual_table_metadata()
+        return self._get_physical_table_metadata()
+
+    def _get_virtual_table_metadata(self) -> list[dict[str, Any]]:
+        """Get column metadata for a virtual dataset (custom SQL query).
+
+        Executes the SQL with a LIMIT 0 to get column names and types
+        from the result set metadata.
+        """
+        if not self.sql:
+            return []
+
+        # Strip trailing semicolon and wrap in a subquery
+        inner_sql = self.sql.strip().rstrip(";")
+        metadata_sql = f"SELECT * FROM ({inner_sql}) AS virtual_table LIMIT 0"
+
+        try:
+            from sqlalchemy import text as sa_text
+
+            from superset.utils.database import get_sync_connection
+
+            with get_sync_connection(self.database) as (conn, spec):
+                result = conn.execute(sa_text(metadata_sql))
+                columns: list[dict[str, Any]] = []
+                for col in result.cursor.description or []:
+                    columns.append(
+                        {
+                            "column_name": col[0],
+                            "type": col[1] if len(col) > 1 else None,
+                        }
+                    )
+                return columns
+        except Exception:
+            logger.warning(
+                "Failed to get virtual table metadata for '%s'",
+                self.table_name,
+                exc_info=True,
+            )
+            return []
+
+    def _get_physical_table_metadata(self) -> list[dict[str, Any]]:
+        """Get column metadata for a physical table.
+
+        Uses the database engine spec's get_columns method to fetch
+        metadata from the actual database table.
+        """
+        from superset.utils.database import get_engine_spec_for_database
+
+        table = Table(
+            str(self.table_name),
+            self.schema or None,
+            self.catalog or None,
+        )
+
+        try:
+            from superset.utils.database import get_sync_connection
+
+            with get_sync_connection(self.database) as (conn, spec):
+                return spec.get_columns(
+                    database=self.database,
+                    table=table,
+                    conn=conn,
+                    schema=self.schema,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to get physical table metadata for '%s'",
+                self.table_name,
+                exc_info=True,
+            )
+            return []
 
     def get_perm(self) -> str:
         """Return this dataset's permission name.
@@ -567,7 +700,7 @@ class SqlaTable(Base, AuditMixinNullable, ImportExportMixin, BaseDatasource, Exp
             "order_by_choices": [],
             "owners": [owner.id for owner in (self.owners or [])],
             "verbose_map": self.verbose_map,
-            "select_star": None,
+            "select_star": self.select_star,
         }
 
         # SqlaTable-specific extensions (matches original .data property)
@@ -626,6 +759,112 @@ class SqlaTable(Base, AuditMixinNullable, ImportExportMixin, BaseDatasource, Exp
     def get_extra_cache_keys(self, query_dict: dict[str, Any]) -> list[str]:
         """Return extra cache keys for per-query cache isolation."""
         return []
+
+    def clone(self) -> SqlaTable:
+        """Create a copy of this dataset.
+
+        Ported from superset_old/commands/dataset/duplicate.py.
+        Copies key fields and deep-copies columns and metrics into new
+        instances (without IDs) so the clone can be persisted independently.
+        """
+        table = SqlaTable(
+            table_name=self.table_name,
+            database_id=self.database_id,
+            schema=self.schema,
+            catalog=self.catalog,
+            sql=self.sql,
+            is_sqllab_view=self.is_sqllab_view,
+            template_params=self.template_params,
+            normalize_columns=self.normalize_columns,
+            always_filter_main_dttm=self.always_filter_main_dttm,
+            main_dttm_col=self.main_dttm_col,
+            fetch_values_predicate=self.fetch_values_predicate,
+            extra=self.extra,
+            description=self.description,
+            default_endpoint=self.default_endpoint,
+            offset=self.offset,
+            cache_timeout=self.cache_timeout,
+            params=self.params,
+            filter_select_enabled=self.filter_select_enabled,
+            folders=self.folders,
+        )
+
+        # Deep-copy columns
+        cols: list[TableColumn] = []
+        for c in self.columns or []:
+            cols.append(
+                TableColumn(
+                    column_name=c.column_name,
+                    verbose_name=c.verbose_name,
+                    expression=c.expression,
+                    filterable=c.filterable,
+                    groupby=c.groupby,
+                    is_dttm=c.is_dttm,
+                    type=c.type,
+                    description=c.description,
+                    is_active=c.is_active,
+                    advanced_data_type=c.advanced_data_type,
+                    python_date_format=c.python_date_format,
+                    extra=c.extra,
+                )
+            )
+        table.columns = cols
+
+        # Deep-copy metrics
+        mets: list[SqlMetric] = []
+        for m in self.metrics or []:
+            mets.append(
+                SqlMetric(
+                    metric_name=m.metric_name,
+                    verbose_name=m.verbose_name,
+                    expression=m.expression,
+                    metric_type=m.metric_type,
+                    description=m.description,
+                    d3format=m.d3format,
+                    currency=m.currency,
+                    warning_text=m.warning_text,
+                    extra=m.extra,
+                )
+            )
+        table.metrics = mets
+
+        return table
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize this dataset to a plain dictionary.
+
+        Returns a dict of the key model fields suitable for JSON
+        serialization or comparison.  Does NOT include relationships
+        (columns, metrics, owners) to avoid lazy-load side-effects;
+        use the ``data`` property for the full frontend payload.
+        """
+        return {
+            "id": self.id,
+            "table_name": self.table_name,
+            "database_id": self.database_id,
+            "schema": self.schema,
+            "catalog": self.catalog,
+            "sql": self.sql,
+            "is_sqllab_view": self.is_sqllab_view,
+            "template_params": self.template_params,
+            "main_dttm_col": self.main_dttm_col,
+            "fetch_values_predicate": self.fetch_values_predicate,
+            "description": self.description,
+            "default_endpoint": self.default_endpoint,
+            "offset": self.offset,
+            "cache_timeout": self.cache_timeout,
+            "params": self.params,
+            "perm": self.perm,
+            "schema_perm": self.schema_perm,
+            "catalog_perm": self.catalog_perm,
+            "filter_select_enabled": self.filter_select_enabled,
+            "extra": self.extra,
+            "normalize_columns": self.normalize_columns,
+            "always_filter_main_dttm": self.always_filter_main_dttm,
+            "folders": self.folders,
+            "is_managed_externally": self.is_managed_externally,
+            "external_url": self.external_url,
+        }
 
     # -- SQL generation -------------------------------------------------------
 

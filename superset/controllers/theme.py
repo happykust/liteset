@@ -21,12 +21,17 @@ from __future__ import annotations
 from typing import Any
 
 from litestar import Controller, delete, get, post, put
+from litestar.datastructures import UploadFile
 from litestar.di import Provide
+from litestar.enums import RequestEncodingType
+from litestar.params import Body
 
 from superset.commands.theme import (
     BulkDeleteThemeCommand,
     CreateThemeCommand,
     DeleteThemeCommand,
+    ExportThemesCommand,
+    ImportThemesCommand,
     SetSystemDarkCommand,
     SetSystemDefaultCommand,
     UnsetSystemDarkCommand,
@@ -78,8 +83,14 @@ class ThemeController(Controller):
         return serialize_list_response(
             themes,
             total,
-            ["id", "theme_name", "css", "json_metadata", "description",
-             "is_system_default"],
+            [
+                "id",
+                "theme_name",
+                "css",
+                "json_metadata",
+                "description",
+                "is_system_default",
+            ],
         )
 
     # ------------------------------------------------------------------
@@ -129,10 +140,11 @@ class ThemeController(Controller):
         from msgspec import structs as _structs
 
         payload = _structs.asdict(data)
-        cmd = CreateThemeCommand(dao=dao, data=payload)
+        cmd = CreateThemeCommand(dao=dao, data=payload)  # type: ignore[arg-type]
         theme = await cmd.execute()
-        event_logger.log("theme.create", object_ref=str(theme.id),
-                         user_id=current_user.id)
+        event_logger.log(
+            "theme.create", object_ref=str(theme.id), user_id=current_user.id
+        )
         return {"id": theme.id, "result": {"id": theme.id}}
 
     # ------------------------------------------------------------------
@@ -153,10 +165,9 @@ class ThemeController(Controller):
         from msgspec import structs as _structs
 
         payload = filter_unset(_structs.asdict(data))
-        cmd = UpdateThemeCommand(dao=dao, pk=pk, data=payload)
+        cmd = UpdateThemeCommand(dao=dao, pk=pk, data=payload)  # type: ignore[arg-type]
         theme = await cmd.execute()
-        event_logger.log("theme.update", object_ref=str(pk),
-                         user_id=current_user.id)
+        event_logger.log("theme.update", object_ref=str(pk), user_id=current_user.id)
         return {"id": theme.id, "result": {"id": theme.id}}
 
     # ------------------------------------------------------------------
@@ -174,10 +185,9 @@ class ThemeController(Controller):
         current_user: UserProtocol,
     ) -> dict[str, Any]:
         """DELETE /api/v1/theme/{pk} — delete a theme."""
-        cmd = DeleteThemeCommand(dao=dao, pk=pk)
+        cmd = DeleteThemeCommand(dao=dao, pk=pk)  # type: ignore[arg-type]
         await cmd.execute()
-        event_logger.log("theme.delete", object_ref=str(pk),
-                         user_id=current_user.id)
+        event_logger.log("theme.delete", object_ref=str(pk), user_id=current_user.id)
         return {"message": "OK"}
 
     # ------------------------------------------------------------------
@@ -225,8 +235,9 @@ class ThemeController(Controller):
         """PUT /api/v1/theme/{pk}/set_system_default — set as system default."""
         cmd = SetSystemDefaultCommand(dao=dao, pk=pk)
         theme = await cmd.execute()
-        event_logger.log("theme.set_system_default", object_ref=str(pk),
-                         user_id=current_user.id)
+        event_logger.log(
+            "theme.set_system_default", object_ref=str(pk), user_id=current_user.id
+        )
         return {"id": theme.id, "result": {"id": theme.id}}
 
     # ------------------------------------------------------------------
@@ -261,7 +272,7 @@ class ThemeController(Controller):
     ) -> dict[str, str]:
         """DELETE /api/v1/theme/?q=(ids:!(...)) -- bulk delete themes."""
         ids = extract_ids_required(rison_params)
-        cmd = BulkDeleteThemeCommand(dao=dao, ids=ids)
+        cmd = BulkDeleteThemeCommand(dao=dao, ids=ids)  # type: ignore[arg-type]
         count = await cmd.execute()
         event_logger.log(
             "theme.bulk_delete",
@@ -308,15 +319,45 @@ class ThemeController(Controller):
 
     @get(
         "/export/",
-        guards=[require_permission("can_read", "Theme")],
+        guards=[require_permission("can_export", "Theme")],
     )
     async def export_themes(
         self,
+        dao: Any,
         current_user: UserProtocol,
-    ) -> dict[str, str]:
-        """GET /api/v1/theme/export/ -- export themes (stub)."""
+    ) -> dict[str, Any]:
+        """GET /api/v1/theme/export/ -- export themes as YAML in a ZIP bundle.
+
+        Ported from superset_old/themes/api.py ``ThemeRestApi.export``.
+        Queries all themes, serializes each to YAML, packages them into
+        a ZIP archive, and returns the file list as a dict.  The original
+        returns a binary ZIP via ``send_file``; here we return the dict
+        of filename -> YAML content for JSON transport.  Callers that
+        need a real ZIP download can wrap this response.
+        """
+        from datetime import datetime
+        from io import BytesIO
+        from zipfile import ZipFile
+
+        cmd = ExportThemesCommand(dao=dao)
+        files = await cmd.execute()
         event_logger.log("theme.export", user_id=current_user.id)
-        return {"message": "Theme export not yet implemented"}
+
+        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        root = f"theme_export_{timestamp}"
+
+        # Build ZIP in-memory (matching original format)
+        buf = BytesIO()
+        with ZipFile(buf, "w") as bundle:
+            for file_name, file_content in files:
+                with bundle.open(f"{root}/{file_name}", "w") as fp:
+                    fp.write(file_content.encode())
+        buf.seek(0)
+
+        # Return as dict for JSON response; binary ZIP download would
+        # be handled by a dedicated streaming endpoint if needed.
+        result = {name: content for name, content in files}
+        return {"result": result}
 
     @post(
         "/import/",
@@ -324,11 +365,67 @@ class ThemeController(Controller):
     )
     async def import_themes(
         self,
+        dao: Any,
         current_user: UserProtocol,
-    ) -> dict[str, str]:
-        """POST /api/v1/theme/import/ -- import themes (stub)."""
+        data: UploadFile = Body(media_type=RequestEncodingType.MULTI_PART),  # noqa: B008
+    ) -> dict[str, Any]:
+        """POST /api/v1/theme/import/ -- import themes from a ZIP file.
+
+        Ported from superset_old/themes/api.py ``ThemeRestApi.import_``.
+        Accepts a multipart/form-data upload containing a ZIP file with
+        YAML theme definitions.  Each YAML file under ``themes/`` in the
+        archive is parsed and imported via ``ImportThemesCommand``.
+        """
+        import yaml
+        from io import BytesIO
+        from zipfile import ZipFile
+
+        file_bytes = await data.read()
+        if not file_bytes:
+            return {"message": "No file uploaded", "errors": ["Empty upload"]}
+
+        # Parse ZIP contents into a dict of filename -> parsed YAML config
+        contents: dict[str, Any] = {}
+        try:
+            with ZipFile(BytesIO(file_bytes)) as bundle:
+                for zip_entry in bundle.namelist():
+                    # Only process YAML files under themes/ paths
+                    # Strip the root export directory prefix if present
+                    # (e.g. "theme_export_20240101T000000/themes/My Theme.yaml")
+                    parts = zip_entry.split("/")
+                    # Find the "themes" segment and reconstruct relative path
+                    relative_path: str | None = None
+                    for i, part in enumerate(parts):
+                        if part == "themes" and i + 1 < len(parts):
+                            relative_path = "/".join(parts[i:])
+                            break
+
+                    if relative_path is None:
+                        continue
+                    if not relative_path.endswith((".yaml", ".yml")):
+                        continue
+
+                    raw = bundle.read(zip_entry)
+                    try:
+                        config = yaml.safe_load(raw)
+                    except yaml.YAMLError:
+                        continue
+
+                    if isinstance(config, dict):
+                        contents[relative_path] = config
+        except Exception:
+            return {"message": "Invalid ZIP file", "errors": ["Could not read ZIP"]}
+
+        if not contents:
+            return {
+                "message": "No valid theme files found",
+                "errors": ["No YAML files under themes/ in the uploaded ZIP"],
+            }
+
+        cmd = ImportThemesCommand(dao=dao, contents=contents, overwrite=True)
+        count = await cmd.execute()
         event_logger.log("theme.import", user_id=current_user.id)
-        return {"message": "Theme import not yet implemented"}
+        return {"message": f"Imported {count} themes"}
 
     @get(
         "/_info",

@@ -319,18 +319,12 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
             return {"message": "OK"}
 
         except (NoSuchModuleError, ModuleNotFoundError) as ex:
-            raise CommandInvalidError(
-                f"Could not load database driver: {ex}"
-            ) from ex
+            raise CommandInvalidError(f"Could not load database driver: {ex}") from ex
         except DBAPIError as ex:
-            raise CommandInvalidError(
-                f"Connection failed: {ex}"
-            ) from ex
+            raise CommandInvalidError(f"Connection failed: {ex}") from ex
         except Exception as ex:
             logger.exception("Unexpected error during connection test")
-            raise CommandInvalidError(
-                f"Connection failed: {ex}"
-            ) from ex
+            raise CommandInvalidError(f"Connection failed: {ex}") from ex
 
 
 class ValidateSQLCommand(AsyncBaseCommand[dict[str, Any]]):
@@ -441,20 +435,98 @@ class ValidateSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         return backend_to_dialect.get(backend)
 
 
+BYPASS_VALIDATION_ENGINES = {"bigquery", "snowflake"}
+
+
 class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
+    """Validate database engine parameters.
+
+    Ported from superset_old/commands/database/validate.py.
+    Delegates validation to the engine spec's ``validate_parameters``
+    method, then optionally builds an ephemeral database and tries to
+    connect.  Engines that are only validated on-create (BigQuery,
+    Snowflake) are bypassed.
+    """
+
     def __init__(
         self,
         data: dict[str, Any],
+        dao: AsyncDatabaseDAO | None = None,
     ) -> None:
         self._data = data
+        self._dao = dao
+        self._model: Database | None = None
 
     async def validate(self) -> None:
         if not self._data.get("engine"):
             raise CommandInvalidError("engine is required")
 
+        # If an existing database ID is provided, load it so we can
+        # unmask encrypted extras later.
+        database_id = self._data.get("id")
+        if database_id is not None and self._dao is not None:
+            self._model = await self._dao.find_by_id(database_id)
+
     async def run(self) -> dict[str, Any]:
-        # Parameter validation is engine-specific; return empty errors stub
-        return {"errors": []}
+        from superset.db_engine_specs import get_engine_spec
+
+        engine = self._data["engine"]
+        driver = self._data.get("driver")
+
+        # Skip engines that are only validated on-create
+        if engine in BYPASS_VALIDATION_ENGINES:
+            return {"errors": []}
+
+        spec_class = get_engine_spec(engine, driver)
+
+        # Check that the engine supports parameter-based configuration
+        if not hasattr(spec_class, "parameters_schema"):
+            return {
+                "errors": [
+                    {
+                        "message": (
+                            f'Engine "{engine}" cannot be configured '
+                            f"through parameters."
+                        ),
+                    }
+                ]
+            }
+
+        errors: list[dict[str, Any]] = []
+
+        # Run engine-specific parameter validation
+        try:
+            spec_errors = spec_class.validate_parameters(self._data)
+            if spec_errors:
+                for err in spec_errors:
+                    if isinstance(err, dict):
+                        errors.append(err)
+                    else:
+                        # SupersetError objects
+                        errors.append({"message": str(err)})
+        except NotImplementedError:
+            # Engine doesn't implement custom validation — fall through
+            # to basic checks below.
+            pass
+        except Exception as ex:
+            errors.append({"message": str(ex)})
+
+        if errors:
+            return {"errors": errors}
+
+        # Basic required-field checks for parameter-based configs
+        parameters = self._data.get("parameters", {})
+        if parameters:
+            for field_name in ("host", "database"):
+                if not parameters.get(field_name):
+                    errors.append(
+                        {
+                            "message": f"{field_name} is required",
+                            "field": field_name,
+                        }
+                    )
+
+        return {"errors": errors}
 
 
 class ExportDatabasesCommand(AsyncExportModelsCommand):
@@ -843,6 +915,14 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
 
 
 class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
+    """Upload a file to a database as a new table.
+
+    Ported from superset_old/commands/database/uploaders/base.py.
+    Reads file contents into a DataFrame and uploads to the database
+    using the engine spec's df_to_sql method. Creates a SqlaTable
+    entry if it doesn't exist.
+    """
+
     def __init__(
         self,
         dao: AsyncDatabaseDAO,
@@ -863,19 +943,99 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
         if not self._database:
             raise ObjectNotFoundError("Database", self._database_id)
 
+        # Check if file upload is allowed for this database/schema
+        if not getattr(self._database, "allow_file_upload", False):
+            raise CommandInvalidError("File upload is not enabled for this database")
+
     async def run(self) -> dict[str, Any]:
-        # File upload processing is delegated to the engine in production
-        return {"message": "OK"}
+        import io
+
+        import pandas as pd
+
+        from superset.sql.parse import Table
+
+        table_name = self._data["table_name"]
+        schema_name = self._data.get("schema")
+        file_type = self._data.get("file_type", "csv")
+
+        # Read file into DataFrame
+        df = self._read_file(file_type)
+
+        # Upload DataFrame to database
+        data_table = Table(table=table_name, schema=schema_name)
+        to_sql_kwargs = {
+            "chunksize": 1000,
+            "if_exists": self._data.get("if_exists", "fail"),
+            "index": self._data.get("dataframe_index", False),
+        }
+        if self._data.get("index_label") and self._data.get("dataframe_index"):
+            to_sql_kwargs["index_label"] = self._data["index_label"]
+
+        self._database.db_engine_spec.df_to_sql(
+            self._database,
+            data_table,
+            df,
+            to_sql_kwargs=to_sql_kwargs,
+        )
+
+        # Create or update SqlaTable entry
+        from sqlalchemy import select
+
+        from superset.models.connectors import SqlaTable
+
+        stmt = select(SqlaTable).where(
+            SqlaTable.table_name == table_name,
+            SqlaTable.schema == schema_name,
+            SqlaTable.database_id == self._database_id,
+        )
+        result = await self._dao.session.execute(stmt)
+        sqla_table = result.scalars().one_or_none()
+
+        if not sqla_table:
+            sqla_table = SqlaTable(
+                table_name=table_name,
+                database_id=self._database_id,
+                schema=schema_name,
+            )
+            self._dao.session.add(sqla_table)
+
+        await self._dao.session.flush()
+
+        return {"message": "OK", "table_id": sqla_table.id}
+
+    def _read_file(self, file_type: str) -> pd.DataFrame:
+        """Read file contents into a pandas DataFrame."""
+        file_obj = io.BytesIO(self._file_contents)
+
+        if file_type == "csv":
+            return pd.read_csv(file_obj)
+        elif file_type == "excel":
+            return pd.read_excel(file_obj)
+        elif file_type == "columnar":
+            return pd.read_parquet(file_obj)
+        else:
+            raise CommandInvalidError(f"Unsupported file type: {file_type}")
 
 
 class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
+    """Sync database permissions.
+
+    Ported from superset_old/commands/database/sync_permissions.py.
+    Syncs catalog and schema permissions from the database to the
+    security manager, creating new permission entries as needed.
+    """
+
     def __init__(
         self,
         dao: AsyncDatabaseDAO,
         database_id: int,
+        security_manager: Any | None = None,
+        username: str | None = None,
     ) -> None:
         self._dao = dao
         self._database_id = database_id
+        self._security_manager = security_manager
+        self._username = username
         self._database: Any | None = None
 
     async def validate(self) -> None:
@@ -884,8 +1044,133 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
             raise ObjectNotFoundError("Database", self._database_id)
 
     async def run(self) -> dict[str, Any]:
-        # FAB permission sync is delegated to security manager in production
-        return {"message": "OK"}
+        from sqlalchemy import select
+
+        from superset.models.connectors import SqlaTable
+
+        if self._security_manager is None:
+            return {"message": "Security manager not provided"}
+
+        catalog_perm_count = 0
+        schema_perm_count = 0
+
+        # Get catalog names from the database
+        catalogs = await self._get_catalog_names()
+
+        for catalog in catalogs:
+            try:
+                schemas = await self._get_schema_names(catalog)
+
+                # Process catalog permissions
+                if catalog:
+                    perm = self._security_manager.get_catalog_perm(
+                        self._database.database_name,
+                        catalog,
+                    )
+                    existing_pvm = self._security_manager.find_permission_view_menu(
+                        "catalog_access",
+                        perm,
+                    )
+                    if not existing_pvm:
+                        # New catalog - add permission
+                        self._security_manager.add_permission_view_menu(
+                            "catalog_access",
+                            perm,
+                        )
+                        catalog_perm_count += 1
+
+                        # Add schema permissions for this catalog
+                        for schema in schemas:
+                            schema_perm = self._security_manager.get_schema_perm(
+                                self._database.database_name,
+                                catalog,
+                                schema,
+                            )
+                            existing_schema_pvm = (
+                                self._security_manager.find_permission_view_menu(
+                                    "schema_access",
+                                    schema_perm,
+                                )
+                            )
+                            if not existing_schema_pvm:
+                                self._security_manager.add_permission_view_menu(
+                                    "schema_access",
+                                    schema_perm,
+                                )
+                                schema_perm_count += 1
+                        continue
+
+                # Add new schemas that don't have permissions yet
+                for schema in schemas:
+                    schema_perm = self._security_manager.get_schema_perm(
+                        self._database.database_name,
+                        catalog,
+                        schema,
+                    )
+                    existing_schema_pvm = (
+                        self._security_manager.find_permission_view_menu(
+                            "schema_access",
+                            schema_perm,
+                        )
+                    )
+                    if not existing_schema_pvm:
+                        self._security_manager.add_permission_view_menu(
+                            "schema_access",
+                            schema_perm,
+                        )
+                        schema_perm_count += 1
+
+            except Exception:
+                logger.warning(
+                    "Error processing catalog %s",
+                    catalog or "(default)",
+                    exc_info=True,
+                )
+                continue
+
+        await self._dao.session.flush()
+
+        return {
+            "message": "OK",
+            "catalog_permissions_added": catalog_perm_count,
+            "schema_permissions_added": schema_perm_count,
+        }
+
+    async def _get_catalog_names(self) -> set[str | None]:
+        """Get all catalog names from the database."""
+        if not getattr(self._database.db_engine_spec, "supports_catalog", False):
+            return {None}
+
+        try:
+            # If the database doesn't support cross-catalog queries or
+            # multi-catalog is not enabled, only use the default catalog
+            if getattr(
+                self._database.db_engine_spec, "supports_cross_catalog_queries", False
+            ) or getattr(self._database, "allow_multi_catalog", False):
+                return self._database.get_all_catalog_names(force=True)
+            else:
+                return {self._database.get_default_catalog()}
+        except Exception:
+            logger.warning(
+                "Failed to get catalog names",
+                exc_info=True,
+            )
+            return {None}
+
+    async def _get_schema_names(self, catalog: str | None) -> set[str]:
+        """Get all schema names for a catalog."""
+        try:
+            return self._database.get_all_schema_names(
+                force=True,
+                catalog=catalog,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to get schema names for catalog %s",
+                catalog or "(default)",
+                exc_info=True,
+            )
+            return set()
 
 
 class DeleteSSHTunnelCommand(AsyncBaseCommand[None]):
