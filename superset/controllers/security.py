@@ -190,13 +190,20 @@ class SecurityController(Controller):
             None,
         )
         secret = ""
+        cookie_name = "session"
         if settings:
             sk = settings.secret_key
             if hasattr(sk, "get_secret_value"):
                 sk = sk.get_secret_value()
             secret = str(sk)
+            cookie_name = getattr(
+                settings, "session_cookie_name", "session"
+            )
 
-        token = generate_csrf_token(secret)
+        # Extract the session cookie to bind the token
+        session_id = request.cookies.get(cookie_name, "")
+
+        token = generate_csrf_token(secret, session_id=session_id)
         event_logger.log("security.csrf_token")
         return {"result": token}
 

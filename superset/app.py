@@ -650,6 +650,11 @@ def create_app(  # noqa: C901
                 "/superset/log",
                 "/datasource/samples",
             ],
+            session_cookie_name=getattr(
+                settings,
+                "session_cookie_name",
+                "session",
+            ),
         )
 
     return Litestar(

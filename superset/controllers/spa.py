@@ -47,6 +47,7 @@ SPA_ROUTE_PREFIXES: frozenset[str] = frozenset(
         "csstemplate",
         "csstemplatemodelview",
         "annotationlayer",
+        "tags",
         "rowlevelsecurity",
         "tablemodelview",
         "theme",
@@ -131,13 +132,16 @@ _FRONTEND_CONF_KEYS: tuple[str, ...] = (
 _CONF_KEY_DEFAULTS: dict[str, tuple[str, Any]] = {
     "SUPERSET_WEBSERVER_TIMEOUT": ("superset_webserver_timeout", 60),
     "SUPERSET_DASHBOARD_POSITION_DATA_LIMIT": (
-        "superset_dashboard_position_data_limit", 65535,
+        "superset_dashboard_position_data_limit",
+        65535,
     ),
     "SUPERSET_DASHBOARD_PERIODICAL_REFRESH_LIMIT": (
-        "superset_dashboard_periodical_refresh_limit", 0,
+        "superset_dashboard_periodical_refresh_limit",
+        0,
     ),
     "SUPERSET_DASHBOARD_PERIODICAL_REFRESH_WARNING_MESSAGE": (
-        "superset_dashboard_periodical_refresh_warning_message", None,
+        "superset_dashboard_periodical_refresh_warning_message",
+        None,
     ),
     "ENABLE_JAVASCRIPT_CONTROLS": ("enable_javascript_controls", False),
     "DEFAULT_SQLLAB_LIMIT": ("default_sqllab_limit", 1000),
@@ -148,10 +152,12 @@ _CONF_KEY_DEFAULTS: dict[str, tuple[str, Any]] = {
     "SQLLAB_DEFAULT_DBID": ("sqllab_default_dbid", None),
     "DISPLAY_MAX_ROW": ("display_max_row", 10000),
     "GLOBAL_ASYNC_QUERIES_TRANSPORT": (
-        "global_async_queries_transport", "polling",
+        "global_async_queries_transport",
+        "polling",
     ),
     "GLOBAL_ASYNC_QUERIES_POLLING_DELAY": (
-        "global_async_queries_polling_delay", 500,
+        "global_async_queries_polling_delay",
+        500,
     ),
     "SQL_VALIDATORS_BY_ENGINE": ("sql_validators_by_engine", {}),
     "SQLALCHEMY_DOCS_URL": (
@@ -159,10 +165,12 @@ _CONF_KEY_DEFAULTS: dict[str, tuple[str, Any]] = {
         "https://docs.sqlalchemy.org/en/latest/",
     ),
     "SQLALCHEMY_DISPLAY_TEXT": (
-        "sqlalchemy_display_text", "Change your database",
+        "sqlalchemy_display_text",
+        "Change your database",
     ),
     "GLOBAL_ASYNC_QUERIES_WEBSOCKET_URL": (
-        "global_async_queries_websocket_url", "ws://127.0.0.1:8080/",
+        "global_async_queries_websocket_url",
+        "ws://127.0.0.1:8080/",
     ),
     "DASHBOARD_AUTO_REFRESH_MODE": ("dashboard_auto_refresh_mode", "force"),
     "DASHBOARD_AUTO_REFRESH_INTERVALS": (
@@ -193,47 +201,60 @@ _CONF_KEY_DEFAULTS: dict[str, tuple[str, Any]] = {
     "DEFAULT_TIME_FILTER": ("default_time_filter", "No filter"),
     "HTML_SANITIZATION": ("html_sanitization", True),
     "HTML_SANITIZATION_SCHEMA_EXTENSIONS": (
-        "html_sanitization_schema_extensions", {},
+        "html_sanitization_schema_extensions",
+        {},
     ),
     "WELCOME_PAGE_LAST_TAB": ("welcome_page_last_tab", "all"),
     "VIZ_TYPE_DENYLIST": ("viz_type_denylist", []),
     "ALERT_REPORTS_DEFAULT_CRON_VALUE": (
-        "alert_reports_default_cron_value", "0 0 * * *",
+        "alert_reports_default_cron_value",
+        "0 0 * * *",
     ),
     "ALERT_REPORTS_DEFAULT_RETENTION": (
-        "alert_reports_default_retention", 90,
+        "alert_reports_default_retention",
+        90,
     ),
     "ALERT_REPORTS_DEFAULT_WORKING_TIMEOUT": (
-        "alert_reports_default_working_timeout", 3600,
+        "alert_reports_default_working_timeout",
+        3600,
     ),
     "NATIVE_FILTER_DEFAULT_ROW_LIMIT": (
-        "native_filter_default_row_limit", 1000,
+        "native_filter_default_row_limit",
+        1000,
     ),
     "SUPERSET_CLIENT_RETRY_ATTEMPTS": (
-        "superset_client_retry_attempts", 3,
+        "superset_client_retry_attempts",
+        3,
     ),
     "SUPERSET_CLIENT_RETRY_DELAY": ("superset_client_retry_delay", 1000),
     "SUPERSET_CLIENT_RETRY_BACKOFF_MULTIPLIER": (
-        "superset_client_retry_backoff_multiplier", 2,
+        "superset_client_retry_backoff_multiplier",
+        2,
     ),
     "SUPERSET_CLIENT_RETRY_MAX_DELAY": (
-        "superset_client_retry_max_delay", 10000,
+        "superset_client_retry_max_delay",
+        10000,
     ),
     "SUPERSET_CLIENT_RETRY_JITTER_MAX": (
-        "superset_client_retry_jitter_max", 1000,
+        "superset_client_retry_jitter_max",
+        1000,
     ),
     "SUPERSET_CLIENT_RETRY_STATUS_CODES": (
-        "superset_client_retry_status_codes", [502, 503, 504],
+        "superset_client_retry_status_codes",
+        [502, 503, 504],
     ),
     "PREVENT_UNSAFE_DEFAULT_URLS_ON_DATASET": (
-        "prevent_unsafe_default_urls_on_dataset", True,
+        "prevent_unsafe_default_urls_on_dataset",
+        True,
     ),
     "JWT_ACCESS_CSRF_COOKIE_NAME": (
-        "jwt_access_csrf_cookie_name", "access_csrf_token",
+        "jwt_access_csrf_cookie_name",
+        "access_csrf_token",
     ),
     "SQLLAB_QUERY_RESULT_TIMEOUT": ("sqllab_query_result_timeout", 0),
     "SYNC_DB_PERMISSIONS_IN_ASYNC_MODE": (
-        "sync_db_permissions_in_async_mode", False,
+        "sync_db_permissions_in_async_mode",
+        False,
     ),
     "TABLE_VIZ_MAX_ROW_SERVER": ("table_viz_max_row_server", 500000),
 }
@@ -299,7 +320,7 @@ _MENU_ITEMS: list[dict[str, Any]] = [
                 "name": "Databases",
                 "label": "Database Connections",
                 "icon": "fa-database",
-                "url": "/database/list/",
+                "url": "/databaseview/list/",
             },
         ],
     },
@@ -312,13 +333,13 @@ _MENU_ITEMS: list[dict[str, Any]] = [
                 "name": "List Roles",
                 "label": "List Roles",
                 "icon": "",
-                "url": "/roles/list/",
+                "url": "/roles/",
             },
             {
                 "name": "List Users",
                 "label": "List Users",
                 "icon": "",
-                "url": "/users/list/",
+                "url": "/users/",
             },
             {
                 "name": "Row Level Security",
@@ -330,7 +351,7 @@ _MENU_ITEMS: list[dict[str, Any]] = [
                 "name": "Action Log",
                 "label": "Action Log",
                 "icon": "fa-list-ol",
-                "url": "/logmodelview/list/",
+                "url": "/actionlog/list",
             },
         ],
     },
@@ -355,20 +376,23 @@ _MENU_ITEMS: list[dict[str, Any]] = [
                 "name": "CSS Templates",
                 "label": "CSS Templates",
                 "icon": "fa-css3",
-                "url": "/csstemplate/list/",
+                "url": "/csstemplatemodelview/list/",
             },
             {
                 "name": "Tags",
                 "label": "Tags",
                 "icon": "",
-                "url": "/tags/list/",
+                "url": "/superset/tags/",
             },
         ],
     },
 ]
 
 
-def _get_csrf_token(settings: Any) -> str:
+def _get_csrf_token(
+    settings: Any,
+    session_id: str = "",
+) -> str:
     """Generate a CSRF token for the SPA hidden input."""
     from superset.middleware.csrf import generate_csrf_token
 
@@ -378,7 +402,7 @@ def _get_csrf_token(settings: Any) -> str:
         if hasattr(sk, "get_secret_value"):
             sk = sk.get_secret_value()
         secret = str(sk)
-    return generate_csrf_token(secret)
+    return generate_csrf_token(secret, session_id=session_id)
 
 
 def _get_conf_value(settings: Any, key: str) -> Any:
@@ -397,7 +421,9 @@ def _get_environment_tag(settings: Any) -> dict[str, str]:
     Mirrors the original ``get_environment_tag()`` from views/base.py.
     """
     env_tag_config: dict[str, Any] = getattr(
-        settings, "environment_tag_config", {
+        settings,
+        "environment_tag_config",
+        {
             "variable": "SUPERSET_ENV",
             "values": {
                 "debug": {"color": "error", "text": "flask-debug"},
@@ -416,6 +442,14 @@ def _get_environment_tag(settings: Any) -> dict[str, str]:
 
     tag = values.get(env_name) if env_name else None
     return tag or {"text": "", "color": ""}
+
+
+# Mapping of menu child item names to required feature flags.
+# Mirrors the ``menu_cond`` lambdas from the original Superset initialization.
+_MENU_ITEM_FEATURE_FLAGS: dict[str, str] = {
+    "CSS Templates": "CSS_TEMPLATES",
+    "Tags": "TAGGING_SYSTEM",
+}
 
 
 def _build_menu_data(user: Any, settings: Any) -> dict[str, Any]:
@@ -439,7 +473,10 @@ def _build_menu_data(user: Any, settings: Any) -> dict[str, Any]:
             is_admin = True
             break
 
-    # Filter menu items by permissions.
+    # Feature flags for conditional menu items
+    feature_flags: dict[str, bool] = getattr(settings, "feature_flags", {})
+
+    # Filter menu items by permissions and feature flags.
     # Admins see everything; other users need ``menu_access`` on the item.
     user_perms: set[str] = getattr(user, "permissions", set())
     filtered_menu: list[dict[str, Any]] = []
@@ -452,19 +489,46 @@ def _build_menu_data(user: Any, settings: Any) -> dict[str, Any]:
             continue
         # Admins see all menu categories.
         if is_admin:
-            filtered_menu.append(item)
+            # Deep-copy item to avoid mutating the module-level constant
+            # when filtering child items by feature flags.
+            import copy
+
+            item_copy = copy.deepcopy(item)
+            if "childs" in item_copy:
+                item_copy["childs"] = [
+                    child
+                    for child in item_copy["childs"]
+                    if child.get("name", "") not in _MENU_ITEM_FEATURE_FLAGS
+                    or feature_flags.get(
+                        _MENU_ITEM_FEATURE_FLAGS[child["name"]], False
+                    )
+                ]
+            filtered_menu.append(item_copy)
             continue
         # Non-admin users need menu_access permission for the category.
         perm_key = f"menu_access_{item_name}"
         if perm_key in user_perms:
-            filtered_menu.append(item)
+            import copy
+
+            item_copy = copy.deepcopy(item)
+            if "childs" in item_copy:
+                item_copy["childs"] = [
+                    child
+                    for child in item_copy["childs"]
+                    if child.get("name", "") not in _MENU_ITEM_FEATURE_FLAGS
+                    or feature_flags.get(
+                        _MENU_ITEM_FEATURE_FLAGS[child["name"]], False
+                    )
+                ]
+            filtered_menu.append(item_copy)
 
     # Brand configuration
     logo_target = getattr(settings, "logo_target_path", None)
     brand_path = logo_target or "/superset/welcome/"
 
     app_icon = getattr(
-        settings, "app_icon",
+        settings,
+        "app_icon",
         "/static/assets/images/superset-logo-horiz.png",
     )
     app_name = getattr(settings, "app_name", "Superset")
@@ -476,7 +540,8 @@ def _build_menu_data(user: Any, settings: Any) -> dict[str, Any]:
 
     # Navbar right
     hide_user_info = getattr(settings, "feature_flags", {}).get(
-        "MENU_HIDE_USER_INFO", False,
+        "MENU_HIDE_USER_INFO",
+        False,
     )
     version_string = getattr(settings, "version_string", "")
     version_sha = getattr(settings, "version_sha", "")
@@ -487,12 +552,16 @@ def _build_menu_data(user: Any, settings: Any) -> dict[str, Any]:
     documentation_url = getattr(settings, "documentation_url", None)
     documentation_icon = getattr(settings, "documentation_icon", None)
     documentation_text = getattr(
-        settings, "documentation_text", "Documentation",
+        settings,
+        "documentation_text",
+        "Documentation",
     )
 
     # Languages
     languages: dict[str, dict[str, str]] = getattr(
-        settings, "languages", {
+        settings,
+        "languages",
+        {
             "en": {"flag": "us", "name": "English", "url": "/lang/en"},
         },
     )
@@ -549,10 +618,7 @@ def _build_user_data(user: Any) -> dict[str, Any]:
         user_perms: set[str] = getattr(user, "permissions", set())
         for role in user_roles:
             role_name = getattr(role, "name", "Public")
-            roles[role_name] = [
-                p.rsplit("_", 1) for p in user_perms
-                if "_" in p
-            ]
+            roles[role_name] = [p.rsplit("_", 1) for p in user_perms if "_" in p]
         permissions = _extract_data_permissions(user_perms)
         return {
             "username": "",
@@ -635,9 +701,9 @@ def _extract_data_permissions(
         if not isinstance(perm, str):
             continue
         if perm.startswith("database_access_"):
-            db_access.append(perm[len("database_access_"):])
+            db_access.append(perm[len("database_access_") :])
         elif perm.startswith("datasource_access_"):
-            ds_access.append(perm[len("datasource_access_"):])
+            ds_access.append(perm[len("datasource_access_") :])
     return {
         "database_access": db_access,
         "datasource_access": ds_access,
@@ -652,7 +718,9 @@ def _build_theme_data(settings: Any) -> dict[str, Any]:
     default_theme = getattr(settings, "theme_default", {"algorithm": "default"})
     dark_theme = getattr(settings, "theme_dark", {"algorithm": "dark"})
     enable_ui_admin = getattr(
-        settings, "enable_ui_theme_administration", False,
+        settings,
+        "enable_ui_theme_administration",
+        False,
     )
 
     if callable(default_theme):
@@ -682,33 +750,43 @@ def _build_bootstrap_data(user: Any, settings: Any, **kw: Any) -> dict[str, Any]
     slack_token = getattr(settings, "slack_api_token", None)
     if slack_token:
         frontend_config["ALERT_REPORTS_NOTIFICATION_METHODS"] = [
-            "Email", "Slack", "SlackV2",
+            "Email",
+            "Slack",
+            "SlackV2",
         ]
     else:
         frontend_config["ALERT_REPORTS_NOTIFICATION_METHODS"] = ["Email"]
 
     # HAS_GSHEETS_INSTALLED — default False in Liteset (no engine_spec registry)
     frontend_config["HAS_GSHEETS_INSTALLED"] = getattr(
-        settings, "has_gsheets_installed", False,
+        settings,
+        "has_gsheets_installed",
+        False,
     )
 
     # AUTH_TYPE and AUTH_USER_REGISTRATION
     auth_type = getattr(settings, "auth_type", 1)  # 1 = AUTH_DB
     auth_user_registration = getattr(
-        settings, "auth_user_registration", False,
+        settings,
+        "auth_user_registration",
+        False,
     )
     frontend_config["AUTH_TYPE"] = auth_type
     frontend_config["AUTH_USER_REGISTRATION"] = auth_user_registration
 
     if auth_user_registration:
         frontend_config["AUTH_USER_REGISTRATION_ROLE"] = getattr(
-            settings, "auth_user_registration_role", "Public",
+            settings,
+            "auth_user_registration_role",
+            "Public",
         )
         # RECAPTCHA only for non-OAuth registration
         # AUTH_OAUTH = 4 in FAB
         if auth_type != 4:
             frontend_config["RECAPTCHA_PUBLIC_KEY"] = getattr(
-                settings, "recaptcha_public_key", "",
+                settings,
+                "recaptcha_public_key",
+                "",
             )
 
     # OAuth providers
@@ -729,7 +807,8 @@ def _build_bootstrap_data(user: Any, settings: Any, **kw: Any) -> dict[str, Any]
 
     # --- currencies ---
     currencies = getattr(
-        settings, "currencies",
+        settings,
+        "currencies",
         ["USD", "EUR", "GBP", "INR", "MXN", "JPY", "CNY"],
     )
 
@@ -738,10 +817,14 @@ def _build_bootstrap_data(user: Any, settings: Any, **kw: Any) -> dict[str, Any]
 
     # --- color schemes ---
     extra_cat_schemes = getattr(
-        settings, "extra_categorical_color_schemes", [],
+        settings,
+        "extra_categorical_color_schemes",
+        [],
     )
     extra_seq_schemes = getattr(
-        settings, "extra_sequential_color_schemes", [],
+        settings,
+        "extra_sequential_color_schemes",
+        [],
     )
 
     # --- menu_data ---
@@ -782,7 +865,9 @@ def _build_bootstrap_data(user: Any, settings: Any, **kw: Any) -> dict[str, Any]
 
     # --- COMMON_BOOTSTRAP_OVERRIDES_FUNC ---
     overrides_func = getattr(
-        settings, "common_bootstrap_overrides_func", None,
+        settings,
+        "common_bootstrap_overrides_func",
+        None,
     )
     if callable(overrides_func):
         common.update(overrides_func(common))
@@ -821,9 +906,7 @@ class SPAController(Controller):
         # Check authentication
         user = getattr(request, "user", None)
         is_auth = getattr(user, "is_authenticated", False)
-        has_perms = bool(
-            getattr(user, "permissions", None)
-        )
+        has_perms = bool(getattr(user, "permissions", None))
 
         # Unauthenticated without Public perms -> login
         if not is_auth and not has_perms:
@@ -844,17 +927,27 @@ class SPAController(Controller):
                 "entry": "spa",
                 "title": "Superset",
                 "assets_prefix": getattr(
-                    settings, "static_assets_prefix", "",
+                    settings,
+                    "static_assets_prefix",
+                    "",
                 ),
                 "standalone_mode": False,
                 "favicons": [
                     {
-                        "href": (
-                            "/static/assets/images/favicon.png"
-                        ),
+                        "href": ("/static/assets/images/favicon.png"),
                     },
                 ],
-                "csrf_token": _get_csrf_token(settings),
+                "csrf_token": _get_csrf_token(
+                    settings,
+                    session_id=request.cookies.get(
+                        getattr(
+                            settings,
+                            "session_cookie_name",
+                            "session",
+                        ),
+                        "",
+                    ),
+                ),
             },
         )
 
@@ -900,26 +993,21 @@ class SPAController(Controller):
 
             async with session_factory() as session:
                 for evt in events:
-                    action = evt.get(
-                        "action", evt.get("event_name", "")
-                    )
+                    action = evt.get("action", evt.get("event_name", ""))
                     log_obj = Log(
                         action=action,
                         json=json.dumps(evt),
                         user_id=user_id,
-                        dashboard_id=evt.get(
-                            "dashboard_id"
-                        ),
+                        dashboard_id=evt.get("dashboard_id"),
                         slice_id=evt.get("slice_id"),
-                        duration_ms=evt.get(
-                            "duration_ms", 0
-                        ),
+                        duration_ms=evt.get("duration_ms", 0),
                     )
                     session.add(log_obj)
                 await session.commit()
 
             logger.debug(
-                "Logged %d frontend events", len(events),
+                "Logged %d frontend events",
+                len(events),
             )
         except Exception:  # noqa: BLE001
             logger.debug("Frontend log failed", exc_info=True)

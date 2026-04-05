@@ -29,9 +29,7 @@ import hmac
 import logging
 import os
 import time
-from typing import Any
 
-from litestar.connection import ASGIConnection
 from litestar.middleware.base import (
     DefineMiddleware,
     MiddlewareProtocol,
@@ -48,38 +46,91 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 _csrf_tokens: dict[str, str] = {}
 
 
-def generate_csrf_token(secret: str) -> str:
-    """Generate an HMAC-signed CSRF token (compatible with
-    Flask-WTF's ``generate_csrf`` output format).
+def _hash_session_id(session_id: str) -> str:
+    """Return a truncated SHA-256 hex digest of *session_id*.
+
+    The hash is included in the token so that a token generated
+    for one session cannot be reused by a different session.
+    An empty string yields a deterministic hash for the
+    unauthenticated case (e.g. login page).
+    """
+    return hashlib.sha256(session_id.encode()).hexdigest()[:16]
+
+
+def generate_csrf_token(
+    secret: str,
+    session_id: str = "",
+) -> str:
+    """Generate an HMAC-signed CSRF token bound to a session.
+
+    The token format is ``salt.timestamp.session_hash.signature``
+    where *session_hash* is a truncated SHA-256 of the session
+    cookie value.  Including the session hash in the HMAC payload
+    means tokens cannot be replayed across sessions.
+
+    When *session_id* is empty (e.g. the login page), the token
+    is still valid but bound to the empty-session hash.
     """
     salt = os.urandom(8).hex()
     ts = str(int(time.time()))
-    data = f"{salt}{ts}"
+    sess_hash = _hash_session_id(session_id)
+    payload = f"{salt}.{ts}.{sess_hash}"
     sig = hmac.new(
-        secret.encode(), data.encode(), hashlib.sha256,
+        secret.encode(),
+        payload.encode(),
+        hashlib.sha256,
     ).hexdigest()
-    return f"{salt}.{ts}.{sig}"
+    return f"{salt}.{ts}.{sess_hash}.{sig}"
 
 
 def validate_csrf_token(
-    token: str, secret: str, max_age: int = 604800,
+    token: str,
+    secret: str,
+    max_age: int = 604800,
+    session_id: str = "",
 ) -> bool:
-    """Validate an HMAC-signed CSRF token."""
+    """Validate an HMAC-signed, session-bound CSRF token.
+
+    The token must have been generated with the same *session_id*
+    (or the same empty string for unauthenticated pages).
+    """
     if not token or "." not in token:
         return False
     try:
-        parts = token.split(".", 2)
-        if len(parts) != 3:
-            return False
-        salt, ts_str, sig = parts
-        # Check signature
-        data = f"{salt}{ts_str}"
-        expected = hmac.new(
-            secret.encode(),
-            data.encode(),
-            hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(sig, expected):
+        parts = token.split(".")
+        # New 4-part format: salt.ts.session_hash.sig
+        if len(parts) == 4:
+            salt, ts_str, token_sess_hash, sig = parts
+            # Verify the session hash matches the current session
+            expected_sess_hash = _hash_session_id(session_id)
+            if not hmac.compare_digest(
+                token_sess_hash, expected_sess_hash
+            ):
+                return False
+            payload = f"{salt}.{ts_str}.{token_sess_hash}"
+            expected_sig = hmac.new(
+                secret.encode(),
+                payload.encode(),
+                hashlib.sha256,
+            ).hexdigest()
+            if not hmac.compare_digest(sig, expected_sig):
+                return False
+        # Legacy 3-part format: salt.ts.sig (transition period)
+        elif len(parts) == 3:
+            salt, ts_str, sig = parts
+            data = f"{salt}{ts_str}"
+            expected_sig = hmac.new(
+                secret.encode(),
+                data.encode(),
+                hashlib.sha256,
+            ).hexdigest()
+            if not hmac.compare_digest(sig, expected_sig):
+                return False
+            logger.warning(
+                "Legacy CSRF token without session binding accepted; "
+                "this will be rejected in a future release."
+            )
+        else:
             return False
         # Check expiry
         if max_age:
@@ -89,6 +140,28 @@ def validate_csrf_token(
         return True
     except (ValueError, TypeError):
         return False
+
+
+def _extract_cookie(
+    headers: dict[bytes, bytes],
+    cookie_name: str,
+) -> str:
+    """Extract a named cookie value from raw ASGI headers.
+
+    Returns an empty string when the cookie is not present.
+    """
+    raw_cookie = headers.get(b"cookie", b"")
+    if not raw_cookie:
+        return ""
+    cookie_str = raw_cookie.decode("utf-8", errors="ignore")
+    for pair in cookie_str.split(";"):
+        pair = pair.strip()
+        if "=" not in pair:
+            continue
+        name, _, value = pair.partition("=")
+        if name.strip() == cookie_name:
+            return value.strip()
+    return ""
 
 
 class CSRFMiddleware(MiddlewareProtocol):
@@ -110,12 +183,14 @@ class CSRFMiddleware(MiddlewareProtocol):
         header_name: str = "x-csrftoken",
         max_age: int = 604800,
         exclude_paths: list[str] | None = None,
+        session_cookie_name: str = "session",
     ) -> None:
         self.app = app
         self.secret = secret
         self.header_name = header_name.lower()
         self.max_age = max_age
         self.exclude_paths = set(exclude_paths or [])
+        self.session_cookie_name = session_cookie_name
 
     async def __call__(
         self,
@@ -152,47 +227,61 @@ class CSRFMiddleware(MiddlewareProtocol):
         # Extract token from header
         headers = dict(scope.get("headers", []))
         token_bytes = headers.get(
-            self.header_name.encode(), b"",
+            self.header_name.encode(),
+            b"",
         )
         token = token_bytes.decode(
-            "utf-8", errors="ignore",
+            "utf-8",
+            errors="ignore",
+        )
+
+        # Extract session cookie for session-bound validation
+        session_id = _extract_cookie(
+            headers, self.session_cookie_name
         )
 
         if not token or not validate_csrf_token(
-            token, self.secret, self.max_age,
+            token,
+            self.secret,
+            self.max_age,
+            session_id=session_id,
         ):
             # Return 403 with JSON error
             import json
 
-            body = json.dumps({
-                "errors": [{
-                    "message": (
-                        "CSRF token verification failed"
-                    ),
-                    "error_type": "CSRF_ERROR",
-                    "level": "error",
-                    "extra": {},
-                }],
-                "message": (
-                    "CSRF token verification failed"
-                ),
-            }).encode()
+            body = json.dumps(
+                {
+                    "errors": [
+                        {
+                            "message": ("CSRF token verification failed"),
+                            "error_type": "CSRF_ERROR",
+                            "level": "error",
+                            "extra": {},
+                        }
+                    ],
+                    "message": ("CSRF token verification failed"),
+                }
+            ).encode()
 
-            await send({
-                "type": "http.response.start",
-                "status": 403,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (
-                        b"content-length",
-                        str(len(body)).encode(),
-                    ),
-                ],
-            })
-            await send({
-                "type": "http.response.body",
-                "body": body,
-            })
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 403,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (
+                            b"content-length",
+                            str(len(body)).encode(),
+                        ),
+                    ],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": body,
+                }
+            )
             return
 
         await self.app(scope, receive, send)
@@ -204,6 +293,7 @@ def create_csrf_middleware(
     header_name: str = "X-CSRFToken",
     max_age: int = 604800,
     exclude_paths: list[str] | None = None,
+    session_cookie_name: str = "session",
 ) -> DefineMiddleware:
     """Create CSRF middleware definition."""
     return DefineMiddleware(
@@ -212,4 +302,5 @@ def create_csrf_middleware(
         header_name=header_name,
         max_age=max_age,
         exclude_paths=exclude_paths,
+        session_cookie_name=session_cookie_name,
     )
