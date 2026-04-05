@@ -18,6 +18,7 @@
 
 Pure SQLAlchemy -- no Flask dependencies.
 """
+
 from __future__ import annotations
 
 import enum
@@ -36,11 +37,11 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
-from superset.models.helpers import BinaryUUID
 
 from superset.models.helpers import (
     AuditMixinNullable,
     Base,
+    BinaryUUID,
     ExtraJSONMixin,
     metadata,
 )
@@ -85,6 +86,7 @@ class ReportState(str, enum.Enum):
 class ReportDataFormat(str, enum.Enum):
     """Format of the data attached to a report."""
 
+    PDF = "PDF"
     VISUALIZATION = "PNG"
     DATA = "CSV"
     TEXT = "TEXT"
@@ -149,19 +151,11 @@ class ReportSchedule(AuditMixinNullable, ExtraJSONMixin, Base):
         server_default=ReportCreationMethod.ALERTS_REPORTS.value,
     )
     timezone = Column(String(100), default="UTC")
-    report_format = Column(
-        String(50), default=ReportDataFormat.VISUALIZATION.value
-    )
+    report_format = Column(String(50), default=ReportDataFormat.VISUALIZATION.value)
     sql = Column(Text)
-    chart_id = Column(
-        Integer, ForeignKey("slices.id"), nullable=True
-    )
-    dashboard_id = Column(
-        Integer, ForeignKey("dashboards.id"), nullable=True
-    )
-    database_id = Column(
-        Integer, ForeignKey("dbs.id"), nullable=True
-    )
+    chart_id = Column(Integer, ForeignKey("slices.id"), nullable=True)
+    dashboard_id = Column(Integer, ForeignKey("dashboards.id"), nullable=True)
+    database_id = Column(Integer, ForeignKey("dbs.id"), nullable=True)
     last_eval_dttm = Column(DateTime)
     last_state = Column(String(50))
     last_value = Column(Float)
@@ -213,7 +207,7 @@ class ReportSchedule(AuditMixinNullable, ExtraJSONMixin, Base):
 
             return get_description(self.crontab) if self.crontab else ""
         except Exception:
-            return self.crontab or ""
+            return str(self.crontab) if self.crontab else ""
 
 
 class ReportRecipients(Base, AuditMixinNullable):
@@ -237,9 +231,7 @@ class ReportExecutionLog(Base):
     __tablename__ = "report_execution_log"
 
     id = Column(Integer, primary_key=True)
-    uuid = Column(
-        BinaryUUID(), default=uuid_mod.uuid4
-    )
+    uuid = Column(BinaryUUID(), default=uuid_mod.uuid4)
     scheduled_dttm = Column(DateTime)
     start_dttm = Column(DateTime)
     end_dttm = Column(DateTime)

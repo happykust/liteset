@@ -30,17 +30,21 @@ Execution flow:
 3. State handlers call ``AlertCommand`` for ALERT type reports,
    generate notification content, and send via email/Slack handlers.
 
-Screenshot/webdriver support is stubbed (TODO) since it requires a
-browser runtime.  Notification sending via email and Slack is fully
-wired.
+Screenshot/webdriver support is wired to ``ChartScreenshot`` and
+``DashboardScreenshot`` from ``superset.utils.screenshots``.
+CSV/DataFrame data generation uses ``get_chart_csv_data`` and
+``get_chart_dataframe`` from ``superset.utils.csv``.
+Notification sending via email and Slack is fully wired.
 """
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Optional, Union
 from uuid import UUID
 
+import pandas as pd
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -48,10 +52,15 @@ from superset.commands.report_alert import AlertCommand
 from superset.commands.report_exceptions import (
     ReportScheduleAlertGracePeriodError,
     ReportScheduleClientErrorsException,
+    ReportScheduleCsvFailedError,
+    ReportScheduleCsvTimeout,
+    ReportScheduleDataFrameFailedError,
+    ReportScheduleDataFrameTimeout,
     ReportScheduleExecuteUnexpectedError,
     ReportScheduleNotFoundError,
     ReportSchedulePreviousWorkingError,
     ReportScheduleScreenshotFailedError,
+    ReportScheduleScreenshotTimeout,
     ReportScheduleStateNotFoundError,
     ReportScheduleSystemErrorsException,
     ReportScheduleUnexpectedError,
@@ -73,6 +82,7 @@ from superset.models.reports import (
     ReportSourceFormat,
     ReportState,
 )
+from superset.models.security import User
 from superset.reports.notifications import create_notification
 from superset.reports.notifications.base import NotificationContent
 from superset.reports.notifications.exceptions import (
@@ -80,7 +90,11 @@ from superset.reports.notifications.exceptions import (
     NotificationParamException,
     SlackV1NotificationError,
 )
+from superset.tasks.utils import get_executor
 from superset.utils import json
+from superset.utils.csv import get_chart_csv_data, get_chart_dataframe
+from superset.utils.pdf import build_pdf_from_screenshots
+from superset.utils.screenshots import ChartScreenshot, DashboardScreenshot
 
 logger = logging.getLogger(__name__)
 
@@ -183,16 +197,30 @@ class BaseReportState:
     # URL helpers
     # ------------------------------------------------------------------
 
-    def _get_url(self, user_friendly: bool = False, **kwargs: Any) -> str:
+    def _get_url(
+        self,
+        user_friendly: bool = False,
+        result_format: str | None = None,
+        **kwargs: Any,
+    ) -> str:
         """Get the URL for this report schedule: chart or dashboard.
 
         Uses the settings-based base URL instead of Flask url_for.
+
+        :param result_format: If ``"csv"`` or ``"json"``, return the chart
+            data API endpoint instead of the explore view.
         """
         settings = _get_settings()
         base_url = settings.webdriver_baseurl_user_friendly.rstrip("/")
 
         force = "true" if self._report_schedule.force_screenshot else "false"
         if self._report_schedule.chart:
+            if result_format in {"csv", "json"}:
+                return (
+                    f"{base_url}/api/v1/chart/{self._report_schedule.chart_id}"
+                    f"/data/?format={result_format}"
+                    f"&type=post_processed&force={force}"
+                )
             return (
                 f"{base_url}/explore/?form_data="
                 f'{json.dumps({"slice_id": self._report_schedule.chart_id})}'
@@ -209,16 +237,209 @@ class BaseReportState:
     # Content generation
     # ------------------------------------------------------------------
 
+    def _find_user(self, username: str) -> User | None:
+        """Find a user by username using the sync session."""
+        return (
+            self._session.query(User)
+            .filter(User.username == username)
+            .one_or_none()
+        )
+
+    @staticmethod
+    def _get_auth_cookies(user: User | None) -> dict[str, str] | None:
+        """Get authentication cookies for the given user.
+
+        Uses the Flask ``machine_auth_provider_factory`` which is
+        initialised by the Flask app in the Celery worker.
+        """
+        try:
+            from superset_old.extensions import machine_auth_provider_factory
+
+            return machine_auth_provider_factory.instance.get_auth_cookies(user)
+        except (ImportError, AttributeError):
+            logger.warning(
+                "machine_auth_provider_factory not available; "
+                "CSV/DataFrame data fetching may fail."
+            )
+            return None
+
     def _get_screenshots(self) -> list[bytes]:
         """Get chart or dashboard screenshots.
 
-        TODO: Screenshot/webdriver support requires a browser runtime
-        (Selenium/Playwright). Stubbed for now.
+        :raises: ReportScheduleScreenshotFailedError
+        :raises: ReportScheduleScreenshotTimeout
         """
-        raise ReportScheduleScreenshotFailedError(
-            "Screenshot generation is not yet implemented in the Litestar backend. "
-            "This feature requires webdriver integration."
+        settings = _get_settings()
+
+        _, username = get_executor(
+            executors=settings.alert_reports_executors,
+            model=self._report_schedule,
         )
+        user = self._find_user(username)
+
+        max_width = settings.alert_reports_max_custom_screenshot_width
+
+        if self._report_schedule.chart:
+            url = self._get_url()
+
+            window_width, window_height = settings.webdriver_window["slice"]
+            width = min(
+                max_width,
+                self._report_schedule.custom_width or window_width,
+            )
+            height = self._report_schedule.custom_height or window_height
+            window_size = (width, height)
+
+            screenshots: list[Union[ChartScreenshot, DashboardScreenshot]] = [
+                ChartScreenshot(
+                    url,
+                    self._report_schedule.chart.digest,
+                    window_size=window_size,
+                    thumb_size=settings.webdriver_window["slice"],
+                )
+            ]
+        else:
+            url = self._get_url()
+
+            window_width, window_height = settings.webdriver_window["dashboard"]
+            width = min(
+                max_width,
+                self._report_schedule.custom_width or window_width,
+            )
+            height = self._report_schedule.custom_height or window_height
+            window_size = (width, height)
+
+            screenshots = [
+                DashboardScreenshot(
+                    url,
+                    self._report_schedule.dashboard.digest,
+                    window_size=window_size,
+                    thumb_size=settings.webdriver_window["dashboard"],
+                )
+            ]
+
+        try:
+            images: list[bytes] = []
+            for screenshot in screenshots:
+                if image := screenshot.get_screenshot(user=user):
+                    images.append(image)
+        except SoftTimeLimitExceeded as ex:
+            logger.warning("A timeout occurred while taking a screenshot.")
+            raise ReportScheduleScreenshotTimeout() from ex
+        except Exception as ex:
+            raise ReportScheduleScreenshotFailedError(
+                f"Failed taking a screenshot {ex!s}"
+            ) from ex
+        if not images:
+            raise ReportScheduleScreenshotFailedError()
+        return images
+
+    def _get_pdf(self) -> bytes:
+        """Get chart or dashboard as PDF.
+
+        :raises: ReportScheduleScreenshotFailedError
+        """
+        screenshots = self._get_screenshots()
+        return build_pdf_from_screenshots(screenshots)
+
+    def _get_csv_data(self) -> bytes:
+        """Get chart data as CSV bytes.
+
+        :raises: ReportScheduleCsvFailedError
+        :raises: ReportScheduleCsvTimeout
+        """
+        settings = _get_settings()
+        url = self._get_url(result_format="csv")
+        _, username = get_executor(
+            executors=settings.alert_reports_executors,
+            model=self._report_schedule,
+        )
+        user = self._find_user(username)
+
+        auth_cookies = self._get_auth_cookies(user)
+
+        if self._report_schedule.chart.query_context is None:
+            logger.warning(
+                "No query context found, taking a screenshot to generate it"
+            )
+            self._update_query_context()
+
+        try:
+            logger.info(
+                "Getting chart from %s as user %s",
+                url,
+                username,
+            )
+            csv_data = get_chart_csv_data(chart_url=url, auth_cookies=auth_cookies)
+        except SoftTimeLimitExceeded as ex:
+            raise ReportScheduleCsvTimeout() from ex
+        except Exception as ex:
+            raise ReportScheduleCsvFailedError(
+                f"Failed generating csv {ex!s}"
+            ) from ex
+        if not csv_data:
+            raise ReportScheduleCsvFailedError()
+        return csv_data
+
+    def _get_embedded_data(self) -> pd.DataFrame:
+        """Return data as a Pandas dataframe, to embed in notifications
+        as a table.
+
+        :raises: ReportScheduleDataFrameFailedError
+        :raises: ReportScheduleDataFrameTimeout
+        """
+        settings = _get_settings()
+        url = self._get_url(result_format="json")
+        _, username = get_executor(
+            executors=settings.alert_reports_executors,
+            model=self._report_schedule,
+        )
+        user = self._find_user(username)
+
+        auth_cookies = self._get_auth_cookies(user)
+
+        if self._report_schedule.chart.query_context is None:
+            logger.warning(
+                "No query context found, taking a screenshot to generate it"
+            )
+            self._update_query_context()
+
+        try:
+            logger.info(
+                "Getting chart from %s as user %s",
+                url,
+                username,
+            )
+            dataframe = get_chart_dataframe(url, auth_cookies)
+        except SoftTimeLimitExceeded as ex:
+            raise ReportScheduleDataFrameTimeout() from ex
+        except Exception as ex:
+            raise ReportScheduleDataFrameFailedError(
+                f"Failed generating dataframe {ex!s}"
+            ) from ex
+        if dataframe is None:
+            raise ReportScheduleCsvFailedError()
+        return dataframe
+
+    def _update_query_context(self) -> None:
+        """Update chart query context.
+
+        To load CSV data from the endpoint the chart must have been saved
+        with its query context.  For charts without saved query context we
+        get a screenshot to force the chart to produce and save the query
+        context.
+        """
+        try:
+            self._get_screenshots()
+        except (
+            ReportScheduleScreenshotFailedError,
+            ReportScheduleScreenshotTimeout,
+        ) as ex:
+            raise ReportScheduleCsvFailedError(
+                "Unable to fetch data because the chart has no query context "
+                "saved, and an error occurred when fetching it via a screenshot. "
+                "Please try loading the chart and saving it again."
+            ) from ex
 
     def _get_log_data(self) -> dict[str, Any]:
         chart_id = None
@@ -252,7 +473,7 @@ class BaseReportState:
         }
         return log_data
 
-    def _get_notification_content(self) -> NotificationContent:
+    def _get_notification_content(self) -> NotificationContent:  # noqa: C901
         """Get a notification content composed by a title and data.
 
         :raises: ReportScheduleScreenshotFailedError
@@ -271,17 +492,20 @@ class BaseReportState:
             or self._report_schedule.type == ReportScheduleType.REPORT
         ):
             if self._report_schedule.report_format == ReportDataFormat.VISUALIZATION:
-                # TODO: Screenshot generation not yet implemented
-                error_text = (
-                    "Screenshot generation is not yet available. "
-                    "Please use CSV or TEXT format."
-                )
-            elif self._report_schedule.report_format == ReportDataFormat.DATA:
-                # TODO: CSV data generation requires chart endpoint access
-                error_text = (
-                    "CSV data generation via chart endpoint is not yet available."
-                )
-
+                screenshot_data = self._get_screenshots()
+                if not screenshot_data:
+                    error_text = "Unexpected missing screenshot"
+            elif self._report_schedule.report_format == ReportDataFormat.PDF:
+                pdf_data = self._get_pdf()
+                if not pdf_data:
+                    error_text = "Unexpected missing pdf"
+            elif (
+                self._report_schedule.chart
+                and self._report_schedule.report_format == ReportDataFormat.DATA
+            ):
+                csv_data = self._get_csv_data()
+                if not csv_data:
+                    error_text = "Unexpected missing csv file"
             if error_text:
                 return NotificationContent(
                     name=self._report_schedule.name,
@@ -289,6 +513,12 @@ class BaseReportState:
                     header_data=header_data,
                     url=url,
                 )
+
+        if (
+            self._report_schedule.chart
+            and self._report_schedule.report_format == ReportDataFormat.TEXT
+        ):
+            embedded_data = self._get_embedded_data()
 
         if self._report_schedule.email_subject:
             name = self._report_schedule.email_subject
@@ -309,7 +539,7 @@ class BaseReportState:
         return NotificationContent(
             name=name,
             url=url,
-            screenshots=screenshot_data if screenshot_data else None,
+            screenshots=screenshot_data,
             pdf=pdf_data,
             description=self._report_schedule.description,
             csv=csv_data,
