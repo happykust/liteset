@@ -35,6 +35,11 @@ from superset.exceptions import (
 )
 from superset.importexport.export_base import AsyncExportModelsCommand
 from superset.importexport.import_base import AsyncImportModelsCommand
+from superset.tags.core import (
+    add_implicit_tags_after_insert,
+    delete_tagged_objects,
+    sync_owner_tags_after_update,
+)
 from superset.utils import mask_uri_password
 
 logger = logging.getLogger(__name__)
@@ -376,6 +381,13 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
 
         self._dao.session.add(chart)
         await self._dao.session.flush()
+
+        # Add implicit type: and owner: tags (async port of ChartUpdater.after_insert)
+        owner_ids = [o.id for o in chart.owners] if hasattr(chart, "owners") else []
+        await add_implicit_tags_after_insert(
+            self._dao.session, "chart", chart.id, owner_ids
+        )
+
         return chart
 
 
@@ -492,6 +504,17 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
             self._chart.last_saved_by_fk = self._user_id
         self._chart.last_saved_at = datetime.now()
         await self._dao.session.flush()
+
+        # Sync implicit owner: tags (async port of ChartUpdater.after_update)
+        owner_ids = (
+            [o.id for o in self._chart.owners]
+            if hasattr(self._chart, "owners")
+            else []
+        )
+        await sync_owner_tags_after_update(
+            self._dao.session, "chart", self._chart.id, owner_ids
+        )
+
         return self._chart
 
 
@@ -526,6 +549,9 @@ class DeleteChartCommand(AsyncBaseCommand[None]):
 
     async def run(self) -> None:
         assert self._chart is not None
+        chart_id = self._chart.id
+        # Remove implicit tags before deleting (async port of ChartUpdater.after_delete)
+        await delete_tagged_objects(self._dao.session, "chart", chart_id)
         await self._dao.delete([self._chart])
         await self._dao.session.flush()
 

@@ -44,6 +44,11 @@ from superset.exceptions import (
 )
 from superset.importexport.export_base import AsyncExportModelsCommand
 from superset.importexport.import_base import AsyncImportModelsCommand
+from superset.tags.core import (
+    add_implicit_tags_after_insert,
+    delete_tagged_objects,
+    sync_owner_tags_after_update,
+)
 from superset.utils import mask_uri_password
 
 logger = logging.getLogger(__name__)
@@ -450,6 +455,14 @@ class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
                     roles.append(role)
             dashboard.roles = roles
 
+        # Add implicit type: and owner: tags (async port of DashboardUpdater.after_insert)
+        owner_ids = (
+            [o.id for o in dashboard.owners] if hasattr(dashboard, "owners") else []
+        )
+        await add_implicit_tags_after_insert(
+            self._dao.session, "dashboard", dashboard.id, owner_ids
+        )
+
         return dashboard
 
 
@@ -529,6 +542,17 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
             self._dashboard.roles = roles
 
         await self._dao.session.flush()
+
+        # Sync implicit owner: tags (async port of DashboardUpdater.after_update)
+        owner_ids = (
+            [o.id for o in self._dashboard.owners]
+            if hasattr(self._dashboard, "owners")
+            else []
+        )
+        await sync_owner_tags_after_update(
+            self._dao.session, "dashboard", self._dashboard.id, owner_ids
+        )
+
         return self._dashboard
 
     async def _process_tab_diff(self, old_position_json: str | None) -> None:
@@ -629,6 +653,9 @@ class DeleteDashboardCommand(AsyncBaseCommand[None]):
 
     async def run(self) -> None:
         assert self._dashboard is not None
+        dashboard_id = self._dashboard.id
+        # Remove implicit tags before deleting (async port of DashboardUpdater.after_delete)
+        await delete_tagged_objects(self._dao.session, "dashboard", dashboard_id)
         await self._dao.delete([self._dashboard])
         await self._dao.session.flush()
 

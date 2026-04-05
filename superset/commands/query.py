@@ -27,6 +27,11 @@ from superset.commands.base import AsyncBaseCommand
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.importexport.export_base import AsyncExportModelsCommand
 from superset.importexport.import_base import AsyncImportModelsCommand
+from superset.tags.core import (
+    add_implicit_tags_after_insert,
+    delete_tagged_objects,
+    sync_owner_tags_after_update,
+)
 from superset.utils import mask_uri_password
 
 if TYPE_CHECKING:
@@ -68,15 +73,13 @@ class BulkDeleteSavedQueriesCommand(AsyncBaseCommand[None]):
         if not self._ids:
             raise CommandInvalidError("No saved query IDs provided")
         self._queries = await self._dao.find_by_ids(self._ids)
-        found_ids = {q.id for q in self._queries}
+        found_ids = {int(q.id) for q in self._queries}
         missing = set(self._ids) - found_ids
         if missing:
             raise ObjectNotFoundError("SavedQuery", str(missing))
         if self._security_manager is not None:
             for query in self._queries:
-                await self._security_manager.raise_for_ownership(
-                    query, self._user_id
-                )
+                await self._security_manager.raise_for_ownership(query, self._user_id)
 
     async def run(self) -> None:
         for q in self._queries:
@@ -175,6 +178,13 @@ class CreateSavedQueryCommand(AsyncBaseCommand["SavedQuery"]):
             query.changed_by_fk = self._user_id
         self._dao.session.add(query)
         await self._dao.session.flush()
+
+        # Add implicit type: and owner: tags (async port of QueryUpdater.after_insert)
+        owner_ids = [self._user_id] if self._user_id is not None else []
+        await add_implicit_tags_after_insert(
+            self._dao.session, "query", query.id, owner_ids
+        )
+
         return query
 
 
@@ -205,6 +215,14 @@ class UpdateSavedQueryCommand(AsyncBaseCommand["SavedQuery"]):
         if self._user_id is not None:
             self._query.changed_by_fk = self._user_id
         await self._dao.session.flush()
+
+        # Sync implicit owner: tags (async port of QueryUpdater.after_update)
+        query_user_id = getattr(self._query, "user_id", None)
+        owner_ids = [query_user_id] if query_user_id is not None else []
+        await sync_owner_tags_after_update(
+            self._dao.session, "query", self._query.id, owner_ids
+        )
+
         return self._query
 
 
@@ -221,5 +239,8 @@ class DeleteSavedQueryCommand(AsyncBaseCommand[None]):
 
     async def run(self) -> None:
         assert self._query is not None
+        query_id = self._query.id
+        # Remove implicit tags before deleting (async port of QueryUpdater.after_delete)
+        await delete_tagged_objects(self._dao.session, "query", query_id)
         await self._dao.session.delete(self._query)
         await self._dao.session.flush()
