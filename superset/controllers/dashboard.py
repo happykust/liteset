@@ -20,9 +20,10 @@ embedded, screenshots, and related objects."""
 from __future__ import annotations
 
 import io
-from typing import Any
+from typing import Any, cast, TYPE_CHECKING
 
 from litestar import Controller, delete, get, post, put
+from litestar.connection import Request
 from litestar.datastructures import State, UploadFile
 from litestar.di import Provide
 from litestar.enums import RequestEncodingType
@@ -72,7 +73,7 @@ from superset.schemas.base import FavoriteStatusItem, FavoriteStatusResponse
 from superset.schemas.dashboard import (
     DashboardColorsUpdateSchema,
     DashboardCopySchema,
-    DashboardDataset,
+    DashboardDetailResult,
     DashboardFiltersUpdateSchema,
     DashboardGetResponse,
     DashboardPermalinkSchema,
@@ -81,7 +82,6 @@ from superset.schemas.dashboard import (
     DashboardScreenshotSchema,
     EmbeddedDashboardConfig,
     EmbeddedDashboardResponse,
-    TabInfo,
 )
 from superset.typing import (
     DashboardDAOProtocol,
@@ -91,6 +91,10 @@ from superset.typing import (
     UserProtocol,
 )
 from superset.utils import filter_none, filter_unset
+
+if TYPE_CHECKING:
+    from superset.db.daos.dashboard import AsyncDashboardDAO, AsyncEmbeddedDashboardDAO
+    from superset.db.daos.key_value import AsyncKeyValueDAO
 
 
 class DashboardController(Controller):
@@ -124,7 +128,8 @@ class DashboardController(Controller):
         from superset.models.dashboard import Dashboard
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
-            Dashboard, rison_params,
+            Dashboard,
+            rison_params,
         )
         # Default ordering: changed_on desc (matches original base_order)
         if order_by is None:
@@ -158,13 +163,10 @@ class DashboardController(Controller):
                 "status",
                 "slug",
                 "url",
-                "css",
                 "dashboard_title",
                 "thumbnail_url",
                 "certified_by",
                 "certification_details",
-                "json_metadata",
-                "position_json",
                 "changed_by_name",
                 "changed_by.first_name",
                 "changed_by.last_name",
@@ -269,90 +271,43 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> DashboardGetResponse:
-        dashboard = await dao.get_by_id_or_slug(id_or_slug)
+        from sqlalchemy import select as sa_select
+        from sqlalchemy.orm import selectinload
+
+        from superset.db.filters import dashboard_access_filters
+        from superset.models.dashboard import Dashboard
+
+        # Build query with eager loading for all relationships
+        id_filter = (
+            Dashboard.id == int(id_or_slug)
+            if id_or_slug.isdigit()
+            else Dashboard.slug == id_or_slug
+        )
+        base_filters = await dashboard_access_filters(security_manager, current_user)
+        all_filters = [id_filter] + (base_filters or [])
+
+        stmt = (
+            sa_select(Dashboard)
+            .where(*all_filters)
+            .options(
+                selectinload(Dashboard.owners),
+                selectinload(Dashboard.roles),
+                selectinload(Dashboard.tags),
+                selectinload(Dashboard.changed_by),
+                selectinload(Dashboard.created_by),
+                selectinload(Dashboard.slices),
+                selectinload(Dashboard.theme),
+            )
+        )
+        result = await dao.session.execute(stmt)
+        dashboard = result.scalars().unique().one_or_none()
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
-        # Verify object-level access
-        from superset.db.filters import dashboard_access_filters
 
-        base_filters = await dashboard_access_filters(security_manager, current_user)
-        if base_filters:
-            from sqlalchemy import select as sa_select
-
-            model_cls = getattr(dao, "model_cls", None)
-            if model_cls is not None:
-                stmt = sa_select(model_cls.id).where(
-                    model_cls.id == dashboard.id, *base_filters
-                )
-                result = await dao.session.scalar(stmt)
-                if result is None:
-                    raise ObjectNotFoundError("Dashboard", id_or_slug)
-        owners = getattr(dashboard, "owners", []) or []
-        roles = getattr(dashboard, "roles", []) or []
-        tags = getattr(dashboard, "tags", []) or []
-        changed_by = getattr(dashboard, "changed_by", None)
-        created_by = getattr(dashboard, "created_by", None)
-        changed_on = getattr(dashboard, "changed_on", None)
-        created_on = getattr(dashboard, "created_on", None)
-        charts = getattr(dashboard, "slices", []) or []
         event_logger.log("dashboard.get", object_ref=f"dashboard:{id_or_slug}")
         return DashboardGetResponse(
             id=dashboard.id,
-            result={
-                "dashboard_title": dashboard.dashboard_title,
-                "slug": dashboard.slug,
-                "position_json": dashboard.position_json,
-                "css": dashboard.css,
-                "json_metadata": dashboard.json_metadata,
-                "published": dashboard.published,
-                "description": getattr(dashboard, "description", None),
-                "uuid": str(dashboard.uuid)
-                if getattr(dashboard, "uuid", None)
-                else None,
-                "changed_on": changed_on.isoformat() if changed_on else None,
-                "created_on": created_on.isoformat() if created_on else None,
-                "changed_by": {
-                    "id": changed_by.id,
-                    "first_name": getattr(changed_by, "first_name", ""),
-                    "last_name": getattr(changed_by, "last_name", ""),
-                }
-                if changed_by
-                else None,
-                "created_by": {
-                    "id": created_by.id,
-                    "first_name": getattr(created_by, "first_name", ""),
-                    "last_name": getattr(created_by, "last_name", ""),
-                }
-                if created_by
-                else None,
-                "owners": [
-                    {
-                        "id": o.id,
-                        "first_name": getattr(o, "first_name", ""),
-                        "last_name": getattr(o, "last_name", ""),
-                        "username": getattr(o, "username", ""),
-                    }
-                    for o in owners
-                ],
-                "roles": [
-                    {"id": r.id, "name": getattr(r, "name", str(r))} for r in roles
-                ],
-                "charts": [
-                    getattr(c, "slice_name", str(c)) for c in charts
-                ],
-                "certified_by": getattr(dashboard, "certified_by", None),
-                "thumbnail_url": getattr(dashboard, "thumbnail_url", None),
-                "is_managed_externally": getattr(
-                    dashboard, "is_managed_externally", False
-                ),
-                "tags": [
-                    {"id": t.id, "name": getattr(t, "name", str(t))} for t in tags
-                ],
-                "table_names": getattr(dashboard, "table_names", None),
-                "changed_on_delta_humanized": getattr(
-                    dashboard, "changed_on_delta_humanized", None
-                ),
-            },
+            result=DashboardDetailResult.from_model(dashboard),
         )
 
     # ------------------------------------------------------------------
@@ -371,21 +326,114 @@ class DashboardController(Controller):
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
         datasets = await dao.get_datasets_for_dashboard(dashboard)
-        return {
-            "result": [
-                DashboardDataset(
-                    id=ds.id,
-                    uid=getattr(ds, "uid", None),
-                    column_names=[
-                        c.column_name
-                        for c in getattr(ds, "columns", [])
-                        if hasattr(c, "column_name")
-                    ],
-                    verbose_map=getattr(ds, "verbose_map", {}),
-                )
-                for ds in datasets
+
+        def _build_dataset_dict(ds: Any) -> dict[str, Any]:
+            columns = getattr(ds, "columns", []) or []
+            metrics = getattr(ds, "metrics", []) or []
+            owners = getattr(ds, "owners", []) or []
+            database = getattr(ds, "database", None)
+            table_name = getattr(ds, "table_name", None) or ""
+            ds_id: int = ds.id
+            main_dttm_col = getattr(ds, "main_dttm_col", None)
+
+            column_names = [
+                c.column_name for c in columns if getattr(c, "column_name", None)
             ]
-        }
+            verbose_map = {
+                c.column_name: (getattr(c, "verbose_name", None) or c.column_name)
+                for c in columns
+                if getattr(c, "column_name", None)
+            }
+            cols_dicts = [
+                {
+                    "column_name": c.column_name,
+                    "verbose_name": getattr(c, "verbose_name", None),
+                    "is_dttm": getattr(c, "is_dttm", False),
+                    "type": getattr(c, "type", None),
+                    "groupby": getattr(c, "groupby", True),
+                    "filterable": getattr(c, "filterable", True),
+                    "expression": getattr(c, "expression", None),
+                }
+                for c in columns
+                if getattr(c, "column_name", None)
+            ]
+            metrics_dicts = [
+                {
+                    "metric_name": m.metric_name,
+                    "verbose_name": getattr(m, "verbose_name", None),
+                    "expression": getattr(m, "expression", None),
+                }
+                for m in metrics
+                if getattr(m, "metric_name", None)
+            ]
+            granularity_sqla = [
+                c.column_name
+                for c in columns
+                if getattr(c, "is_dttm", False) and getattr(c, "column_name", None)
+            ]
+            order_by_choices: list[list[Any]] = []
+            for c in columns:
+                col_name = getattr(c, "column_name", None)
+                if col_name:
+                    order_by_choices.append([col_name, True])
+                    order_by_choices.append([col_name, False])
+            owners_list = [
+                {
+                    "id": o.id,
+                    "first_name": getattr(o, "first_name", ""),
+                    "last_name": getattr(o, "last_name", ""),
+                }
+                for o in owners
+            ]
+            db_dict = (
+                {
+                    "id": database.id,
+                    "database_name": getattr(database, "database_name", ""),
+                    "backend": getattr(database, "backend", None),
+                }
+                if database
+                else None
+            )
+            return {
+                "id": ds_id,
+                "uid": f"{ds_id}__table",
+                "table_name": table_name,
+                "name": table_name,
+                "datasource_name": table_name,
+                "type": "table",
+                "schema": getattr(ds, "schema", None),
+                "catalog": getattr(ds, "catalog", None),
+                "database": db_dict,
+                "filter_select_enabled": getattr(ds, "filter_select_enabled", False),
+                "is_sqllab_view": getattr(ds, "is_sqllab_view", False),
+                "main_dttm_col": main_dttm_col,
+                "offset": getattr(ds, "offset", 0),
+                "cache_timeout": getattr(ds, "cache_timeout", None),
+                "default_endpoint": getattr(ds, "default_endpoint", None),
+                "fetch_values_predicate": getattr(ds, "fetch_values_predicate", None),
+                "template_params": getattr(ds, "template_params", None),
+                "params": getattr(ds, "params", None),
+                "perm": getattr(ds, "perm", None),
+                "sql": getattr(ds, "sql", None),
+                "extra": getattr(ds, "extra", None),
+                "normalize_columns": getattr(ds, "normalize_columns", False),
+                "always_filter_main_dttm": getattr(
+                    ds, "always_filter_main_dttm", False
+                ),
+                "edit_url": f"/tablemodelview/edit/{ds_id}",
+                "column_names": column_names,
+                "column_formats": {},
+                "verbose_map": verbose_map,
+                "columns": cols_dicts,
+                "metrics": metrics_dicts,
+                "granularity_sqla": granularity_sqla,
+                "time_grain_sqla": [],
+                "order_by_choices": order_by_choices,
+                "owners": owners_list,
+                "select_star": None,
+            }
+
+        return {"result": [_build_dataset_dict(ds) for ds in datasets]}
 
     # ------------------------------------------------------------------
     # GET — tab structure
@@ -394,21 +442,69 @@ class DashboardController(Controller):
         "/{id_or_slug:str}/tabs",
         guards=[require_permission("can_read", "Dashboard")],
     )
-    async def get_tabs(
+    async def get_tabs(  # noqa: C901
         self,
         id_or_slug: str,
         dao: DashboardDAOProtocol,
     ) -> dict[str, Any]:
-        from superset.commands.dashboard import parse_tab_structure
+        import json as _json
+        from collections import deque
 
         dashboard = await dao.get_by_id_or_slug(id_or_slug)
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
+
         if not dashboard.position_json:
-            return {"tabs": []}
-        raw_tabs = parse_tab_structure(dashboard.position_json)
-        tabs = [TabInfo(**t) for t in raw_tabs]
-        return {"result": tabs}
+            return {"all_tabs": {}, "tab_tree": []}
+
+        try:
+            position = _json.loads(dashboard.position_json)
+        except (ValueError, TypeError):
+            return {"all_tabs": {}, "tab_tree": []}
+
+        all_tabs: dict[str, str] = {}
+        tab_tree: list[dict[str, Any]] = []
+
+        def get_node(node_id: str) -> dict[str, Any]:
+            return position.get(node_id, {})
+
+        def build_tab_tree(
+            node: dict[str, Any], children: list[dict[str, Any]]
+        ) -> None:
+            new_children: list[dict[str, Any]] = []
+            for child_id in node.get("children", []):
+                child = get_node(child_id)
+                if not child:
+                    continue
+                node_type = node.get("type", "")
+                if node_type == "TABS":
+                    children.append(child)
+                    queue.append((child, new_children))
+                elif node_type in ("GRID", "ROOT"):
+                    queue.append((child, children))
+                elif node_type == "TAB":
+                    queue.append((child, new_children))
+            if node.get("type") == "TAB":
+                meta = node.get("meta", {})
+                title = meta.get("text") or meta.get("defaultText") or ""
+                node_id = node.get("id", "")
+                node["children"] = new_children
+                node["title"] = title
+                node["value"] = node_id
+                node["parents"] = node.get("parents", [])
+                all_tabs[node_id] = title
+
+        root = get_node("ROOT_ID")
+        if not root:
+            return {"all_tabs": {}, "tab_tree": []}
+
+        queue: deque[tuple[dict[str, Any], list[dict[str, Any]]]] = deque()
+        queue.append((root, tab_tree))
+        while queue:
+            node, children = queue.popleft()
+            build_tab_tree(node, children)
+
+        return {"all_tabs": all_tabs, "tab_tree": tab_tree}
 
     # ------------------------------------------------------------------
     # GET — related charts
@@ -426,16 +522,44 @@ class DashboardController(Controller):
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
         charts = await dao.get_charts_for_dashboard(dashboard)
-        return {
-            "result": [
+        import json as _json
+
+        result = []
+        for chart in charts:
+            # Build form_data matching original model property
+            try:
+                fd = _json.loads(chart.params or "{}")
+            except (ValueError, TypeError):
+                fd = {}
+            fd.update(
+                {
+                    "slice_id": chart.id,
+                    "viz_type": chart.viz_type,
+                    "datasource": f"{chart.datasource_id}__{chart.datasource_type}",
+                }
+            )
+
+            result.append(
                 {
                     "id": chart.id,
                     "slice_name": chart.slice_name,
                     "viz_type": chart.viz_type,
+                    "cache_timeout": getattr(chart, "cache_timeout", None),
+                    "changed_on": (
+                        chart.changed_on.isoformat()
+                        if getattr(chart, "changed_on", None)
+                        else None
+                    ),
+                    "description": getattr(chart, "description", None),
+                    "form_data": fd,
+                    "slice_url": getattr(chart, "slice_url", None),
+                    "certified_by": getattr(chart, "certified_by", None),
+                    "certification_details": getattr(
+                        chart, "certification_details", None
+                    ),
                 }
-                for chart in charts
-            ]
-        }
+            )
+        return {"result": result}
 
     # ------------------------------------------------------------------
     # POST — create
@@ -452,7 +576,7 @@ class DashboardController(Controller):
         current_user: UserProtocol,
     ) -> DashboardGetResponse:
         cmd = CreateDashboardCommand(
-            dao=dao,
+            dao=cast("AsyncDashboardDAO", dao),
             data=filter_none(
                 {
                     "dashboard_title": data.dashboard_title,
@@ -465,22 +589,25 @@ class DashboardController(Controller):
                     "certification_details": data.certification_details,
                     "is_managed_externally": data.is_managed_externally,
                     "external_url": data.external_url,
+                    "owners": data.owners,
+                    "roles": data.roles,
+                    "tags": data.tags,
+                    "theme_id": data.theme_id,
+                    "uuid": data.uuid,
                 }
             ),
             user_id=current_user.id,
         )
         dashboard = await cmd.execute()
+        dashboard_id = int(dashboard.id)
         event_logger.log(
             "dashboard.create",
-            object_ref=f"dashboard:{dashboard.id}",
+            object_ref=f"dashboard:{dashboard_id}",
             user_id=current_user.id,
         )
         return DashboardGetResponse(
-            id=dashboard.id,
-            result={
-                "dashboard_title": dashboard.dashboard_title,
-                "slug": dashboard.slug,
-            },
+            id=dashboard_id,
+            result=DashboardDetailResult.from_model_brief(dashboard),
         )
 
     # ------------------------------------------------------------------
@@ -510,10 +637,15 @@ class DashboardController(Controller):
                 "certification_details": data.certification_details,
                 "is_managed_externally": data.is_managed_externally,
                 "external_url": data.external_url,
+                "owners": data.owners,
+                "roles": data.roles,
+                "tags": data.tags,
+                "theme_id": data.theme_id,
+                "uuid": data.uuid,
             }
         )
         cmd = UpdateDashboardCommand(
-            dao=dao,
+            dao=cast("AsyncDashboardDAO", dao),
             dashboard_id=pk,
             data=update_data,
             security_manager=security_manager,
@@ -526,64 +658,12 @@ class DashboardController(Controller):
             user_id=current_user.id,
         )
         changed_on = getattr(dashboard, "changed_on", None)
-        created_on = getattr(dashboard, "created_on", None)
-        changed_by = getattr(dashboard, "changed_by", None)
-        created_by = getattr(dashboard, "created_by", None)
-        owners = getattr(dashboard, "owners", []) or []
-        roles = getattr(dashboard, "roles", []) or []
-        tags = getattr(dashboard, "tags", []) or []
         last_modified_time = (
             changed_on.replace(microsecond=0).timestamp() if changed_on else None
         )
         return DashboardGetResponse(
-            id=dashboard.id,
-            result={
-                "dashboard_title": dashboard.dashboard_title,
-                "slug": dashboard.slug,
-                "position_json": dashboard.position_json,
-                "css": dashboard.css,
-                "json_metadata": dashboard.json_metadata,
-                "published": dashboard.published,
-                "description": getattr(dashboard, "description", None),
-                "uuid": str(dashboard.uuid)
-                if getattr(dashboard, "uuid", None)
-                else None,
-                "changed_on": changed_on.isoformat() if changed_on else None,
-                "created_on": created_on.isoformat() if created_on else None,
-                "changed_by": {
-                    "id": changed_by.id,
-                    "first_name": getattr(changed_by, "first_name", ""),
-                    "last_name": getattr(changed_by, "last_name", ""),
-                }
-                if changed_by
-                else None,
-                "created_by": {
-                    "id": created_by.id,
-                    "first_name": getattr(created_by, "first_name", ""),
-                    "last_name": getattr(created_by, "last_name", ""),
-                }
-                if created_by
-                else None,
-                "owners": [
-                    {
-                        "id": o.id,
-                        "first_name": getattr(o, "first_name", ""),
-                        "last_name": getattr(o, "last_name", ""),
-                        "username": getattr(o, "username", ""),
-                    }
-                    for o in owners
-                ],
-                "roles": [
-                    {"id": r.id, "name": getattr(r, "name", str(r))} for r in roles
-                ],
-                "certified_by": getattr(dashboard, "certified_by", None),
-                "is_managed_externally": getattr(
-                    dashboard, "is_managed_externally", False
-                ),
-                "tags": [
-                    {"id": t.id, "name": getattr(t, "name", str(t))} for t in tags
-                ],
-            },
+            id=int(dashboard.id),
+            result=DashboardDetailResult.from_model(dashboard),
             last_modified_time=last_modified_time,
         )
 
@@ -603,7 +683,7 @@ class DashboardController(Controller):
         current_user: UserProtocol,
     ) -> dict[str, Any]:
         cmd = UpdateDashboardFiltersCommand(
-            dao=dao,
+            dao=cast("AsyncDashboardDAO", dao),
             dashboard_id=pk,
             data={
                 "deleted": data.deleted,
@@ -623,9 +703,12 @@ class DashboardController(Controller):
         import json as _json
 
         nfc: list[dict[str, Any]] = []
-        if dashboard.json_metadata:
+        json_metadata = (
+            str(dashboard.json_metadata) if dashboard.json_metadata else None
+        )
+        if json_metadata:
             try:
-                meta = _json.loads(dashboard.json_metadata)
+                meta = _json.loads(json_metadata)
                 nfc = meta.get("native_filter_configuration", [])
             except (ValueError, TypeError):
                 pass
@@ -645,9 +728,10 @@ class DashboardController(Controller):
         dao: DashboardDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
+        mark_updated: bool = Parameter(query="mark_updated", default=True),  # noqa: B008
     ) -> Response[None]:
         cmd = UpdateDashboardColorsCommand(
-            dao=dao,
+            dao=cast("AsyncDashboardDAO", dao),
             dashboard_id=pk,
             data={
                 "color_namespace": data.color_namespace,
@@ -659,6 +743,7 @@ class DashboardController(Controller):
             },
             security_manager=security_manager,
             user_id=current_user.id,
+            mark_updated=mark_updated,
         )
         await cmd.execute()
         event_logger.log(
@@ -684,7 +769,7 @@ class DashboardController(Controller):
         current_user: UserProtocol,
     ) -> dict[str, str]:
         cmd = DeleteDashboardCommand(
-            dao=dao,
+            dao=cast("AsyncDashboardDAO", dao),
             dashboard_id=pk,
             security_manager=security_manager,
             user_id=current_user.id,
@@ -714,7 +799,7 @@ class DashboardController(Controller):
     ) -> dict[str, str]:
         ids = extract_ids_required(rison_params)
         cmd = BulkDeleteDashboardsCommand(
-            dao=dao,
+            dao=cast("AsyncDashboardDAO", dao),
             dashboard_ids=ids,
             security_manager=security_manager,
             user_id=current_user.id,
@@ -744,7 +829,7 @@ class DashboardController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
-        cmd = ExportDashboardsCommand(model_ids=ids, dao=dao)
+        cmd = ExportDashboardsCommand(model_ids=ids, dao=cast("AsyncDashboardDAO", dao))
         buf = await cmd.execute()
         event_logger.log("dashboard.export", extra={"count": len(ids)})
         return Stream(
@@ -767,7 +852,7 @@ class DashboardController(Controller):
         data: DashboardScreenshotSchema,
         dao: DashboardDAOProtocol,
         state: State,
-    ) -> dict[str, Any]:
+    ) -> Response[dict[str, Any]]:
         settings = getattr(state, "settings", None)
         flags = getattr(settings, "feature_flags", {}) or {}
         if not flags.get("THUMBNAILS", False) or not flags.get(
@@ -779,11 +864,17 @@ class DashboardController(Controller):
             raise ObjectNotFoundError("Dashboard", pk)
         # Trigger Celery screenshot task (actual dispatch in thumbnails module)
         cache_key = f"dashboard_{pk}_screenshot"
-        return {
-            "cache_key": cache_key,
-            "dashboard_url": f"/superset/dashboard/{pk}/",
-            "image_url": f"/api/v1/dashboard/{pk}/screenshot/{cache_key}/",
-        }
+        return Response(
+            content={
+                "cache_key": cache_key,
+                "dashboard_url": f"/superset/dashboard/{pk}/",
+                "image_url": f"/api/v1/dashboard/{pk}/screenshot/{cache_key}/",
+                "task_status": "not_available",
+                "task_updated_at": None,
+            },
+            status_code=202,
+            media_type="application/json",
+        )
 
     # ------------------------------------------------------------------
     # GET — screenshot
@@ -794,23 +885,68 @@ class DashboardController(Controller):
         media_type="image/png",
     )
     async def screenshot(
-        self, pk: int, digest: str, dao: DashboardDAOProtocol, state: State
+        self,
+        pk: int,
+        digest: str,
+        dao: DashboardDAOProtocol,
+        state: State,
+        request: Request,  # type: ignore[type-arg]
     ) -> Response[bytes]:
+        """Get a computed dashboard screenshot from cache.
+
+        The *digest* path parameter is the cache key.  If the cache
+        contains an image we serve it (as PNG or converted to PDF
+        depending on the ``download_format`` query parameter);
+        otherwise we return 404.
+        """
+        import asyncio
+
+        from superset.utils.screenshots import (
+            DashboardScreenshot,
+            ScreenshotImageNotAvailableException,
+        )
+
         settings = getattr(state, "settings", None)
         flags = getattr(settings, "feature_flags", {}) or {}
         if not flags.get("THUMBNAILS", False) or not flags.get(
             "ENABLE_DASHBOARD_SCREENSHOT_ENDPOINTS", False
         ):
             raise ObjectNotFoundError("Dashboard screenshot", pk)
+
         dashboard = await dao.find_by_id(pk)
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", pk)
-        # Return placeholder — actual screenshot retrieval from cache
-        return Response(
-            content=b"",
-            status_code=202,
-            media_type="image/png",
+
+        download_format = request.query_params.get("download_format", "png")
+
+        cache_payload = await asyncio.to_thread(
+            DashboardScreenshot.get_from_cache_key, digest
         )
+        if cache_payload is not None:
+            try:
+                image = cache_payload.get_image()
+            except ScreenshotImageNotAvailableException:
+                return Response(content=b"", status_code=404, media_type="image/png")
+
+            if download_format == "pdf":
+                from superset.utils.pdf import build_pdf_from_screenshots
+
+                pdf_data = build_pdf_from_screenshots([image.getvalue()])
+                return Response(
+                    content=pdf_data,
+                    status_code=200,
+                    media_type="application/pdf",
+                    headers={
+                        "Content-Disposition": "inline; filename=dashboard.pdf",
+                    },
+                )
+            # Default: PNG
+            return Response(
+                content=image.getvalue(),
+                status_code=200,
+                media_type="image/png",
+            )
+        return Response(content=b"", status_code=404, media_type="image/png")
 
     # ------------------------------------------------------------------
     # GET — thumbnail
@@ -821,18 +957,98 @@ class DashboardController(Controller):
         media_type="image/png",
     )
     async def thumbnail(
-        self, pk: int, digest: str, dao: DashboardDAOProtocol, state: State
+        self,
+        pk: int,
+        digest: str,
+        dao: DashboardDAOProtocol,
+        state: State,
+        current_user: UserProtocol,
     ) -> Response[bytes]:
+        """Compute or get already computed dashboard thumbnail from cache.
+
+        If the dashboard's current digest differs from *digest* we redirect
+        to the canonical URL.  Otherwise we check the thumbnail cache: if
+        the image exists we serve it directly; if not we queue a Celery task
+        and return 202.
+        """
+        import asyncio
+
+        from litestar.response import Redirect
+
+        from superset.utils.screenshots import (
+            DashboardScreenshot,
+            ScreenshotCachePayload,
+            ScreenshotImageNotAvailableException,
+        )
+
         settings = getattr(state, "settings", None)
         flags = getattr(settings, "feature_flags", {}) or {}
         if not flags.get("THUMBNAILS", False):
             raise ObjectNotFoundError("Dashboard thumbnail", pk)
+
         dashboard = await dao.find_by_id(pk)
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", pk)
+
+        # Redirect to canonical digest URL if stale
+        dashboard_digest = getattr(dashboard, "digest", None)
+        if dashboard_digest and dashboard_digest != digest:
+            return Redirect(  # type: ignore[return-value]
+                path=f"/api/v1/dashboard/{pk}/thumbnail/{dashboard_digest}/",
+            )
+
+        # Build screenshot object and compute cache key
+        dashboard_url = f"/superset/dashboard/{pk}/"
+        screenshot_obj = DashboardScreenshot(
+            dashboard_url, dashboard_digest or digest
+        )
+        cache_key = await asyncio.to_thread(screenshot_obj.get_cache_key)
+        cache_payload = (
+            await asyncio.to_thread(
+                DashboardScreenshot.get_from_cache_key, cache_key
+            )
+            or ScreenshotCachePayload()
+        )
+
+        if cache_payload.should_trigger_task():
+            # Mark as pending in cache and dispatch Celery task
+            await asyncio.to_thread(
+                screenshot_obj.cache.set,
+                cache_key,
+                ScreenshotCachePayload().to_dict(),
+            )
+            from superset.tasks.thumbnails import cache_dashboard_thumbnail
+
+            cache_dashboard_thumbnail.delay(
+                current_user=getattr(current_user, "username", None),
+                dashboard_id=dashboard.id,
+                force=False,
+                cache_key=cache_key,
+            )
+            return Response(
+                content=b"",
+                status_code=202,
+                media_type="image/png",
+            )
+
+        # Serve from cache
+        try:
+            image = cache_payload.get_image()
+            # Validate the BytesIO object
+            if not image or not hasattr(image, "read"):
+                return Response(
+                    content=b"", status_code=404, media_type="image/png"
+                )
+            if image.getbuffer().nbytes == 0:
+                return Response(
+                    content=b"", status_code=404, media_type="image/png"
+                )
+            image.seek(0)
+        except ScreenshotImageNotAvailableException:
+            return Response(content=b"", status_code=404, media_type="image/png")
         return Response(
-            content=b"",
-            status_code=202,
+            content=image.read(),
+            status_code=200,
             media_type="image/png",
         )
 
@@ -877,7 +1093,7 @@ class DashboardController(Controller):
             object_ref=f"dashboard:{pk}",
             user_id=current_user.id,
         )
-        return {"message": "OK"}
+        return {"result": "OK"}
 
     # ------------------------------------------------------------------
     # DELETE — remove favorite
@@ -899,7 +1115,7 @@ class DashboardController(Controller):
             object_ref=f"dashboard:{pk}",
             user_id=current_user.id,
         )
-        return {"message": "OK"}
+        return {"result": "OK"}
 
     # ------------------------------------------------------------------
     # POST — import
@@ -916,6 +1132,8 @@ class DashboardController(Controller):
         overwrite: bool = False,
         passwords: str | None = None,
         ssh_tunnel_passwords: str | None = None,
+        ssh_tunnel_private_keys: str | None = None,
+        ssh_tunnel_private_key_passwords: str | None = None,
     ) -> dict[str, str]:
         import json as _json
 
@@ -923,20 +1141,42 @@ class DashboardController(Controller):
         buf = io.BytesIO(contents)
         try:
             passwords_dict: dict[str, str] = _json.loads(passwords) if passwords else {}
-        except (ValueError, _json.JSONDecodeError):
-            raise CommandInvalidError("Invalid JSON in 'passwords' field")
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError("Invalid JSON in 'passwords' field") from exc
         try:
             ssh_dict: dict[str, str] = (
                 _json.loads(ssh_tunnel_passwords) if ssh_tunnel_passwords else {}
             )
-        except (ValueError, _json.JSONDecodeError):
-            raise CommandInvalidError("Invalid JSON in 'ssh_tunnel_passwords' field")
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError(
+                "Invalid JSON in 'ssh_tunnel_passwords' field"
+            ) from exc
+        try:
+            ssh_private_keys_dict: dict[str, str] = (
+                _json.loads(ssh_tunnel_private_keys) if ssh_tunnel_private_keys else {}
+            )
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError(
+                "Invalid JSON in 'ssh_tunnel_private_keys' field"
+            ) from exc
+        try:
+            ssh_private_key_passwords_dict: dict[str, str] = (
+                _json.loads(ssh_tunnel_private_key_passwords)
+                if ssh_tunnel_private_key_passwords
+                else {}
+            )
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError(
+                "Invalid JSON in 'ssh_tunnel_private_key_passwords' field"
+            ) from exc
         cmd = ImportDashboardsCommand(
             contents=buf,
-            dao=dao,
+            dao=cast("AsyncDashboardDAO", dao),
             overwrite=overwrite,
             passwords=passwords_dict,
             ssh_tunnel_passwords=ssh_dict,
+            ssh_tunnel_private_keys=ssh_private_keys_dict,
+            ssh_tunnel_private_key_passwords=ssh_private_key_passwords_dict,
         )
         await cmd.execute()
         event_logger.log("dashboard.import")
@@ -989,8 +1229,8 @@ class DashboardController(Controller):
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
         cmd = UpsertEmbeddedDashboardCommand(
-            dao=dao,
-            embedded_dao=embedded_dao,
+            dao=cast("AsyncDashboardDAO", dao),
+            embedded_dao=cast("AsyncEmbeddedDashboardDAO", embedded_dao),
             dashboard_id=dashboard.id,
             allowed_domains=data.allowed_domains,
         )
@@ -999,10 +1239,12 @@ class DashboardController(Controller):
             "dashboard.create_embedded",
             object_ref=f"dashboard:{id_or_slug}",
         )
+        _raw = embedded.allow_domain_list
+        _domains: list[str] = [d for d in (_raw or "").split(",") if d]
         return {
             "result": EmbeddedDashboardResponse(
                 uuid=str(embedded.uuid),
-                allowed_domains=embedded.allowed_domains or [],
+                allowed_domains=_domains,
                 dashboard_id=str(dashboard.id),
             )
         }
@@ -1026,8 +1268,8 @@ class DashboardController(Controller):
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
         cmd = UpsertEmbeddedDashboardCommand(
-            dao=dao,
-            embedded_dao=embedded_dao,
+            dao=cast("AsyncDashboardDAO", dao),
+            embedded_dao=cast("AsyncEmbeddedDashboardDAO", embedded_dao),
             dashboard_id=dashboard.id,
             allowed_domains=data.allowed_domains,
         )
@@ -1036,10 +1278,12 @@ class DashboardController(Controller):
             "dashboard.update_embedded",
             object_ref=f"dashboard:{id_or_slug}",
         )
+        _raw2 = embedded.allow_domain_list
+        _domains2: list[str] = [d for d in (_raw2 or "").split(",") if d]
         return {
             "result": EmbeddedDashboardResponse(
                 uuid=str(embedded.uuid),
-                allowed_domains=embedded.allowed_domains or [],
+                allowed_domains=_domains2,
                 dashboard_id=str(dashboard.id),
             )
         }
@@ -1062,8 +1306,8 @@ class DashboardController(Controller):
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
         cmd = DeleteEmbeddedDashboardCommand(
-            dao=dao,
-            embedded_dao=embedded_dao,
+            dao=cast("AsyncDashboardDAO", dao),
+            embedded_dao=cast("AsyncEmbeddedDashboardDAO", embedded_dao),
             dashboard_id=dashboard.id,
         )
         await cmd.execute()
@@ -1093,7 +1337,7 @@ class DashboardController(Controller):
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
         cmd = CopyDashboardCommand(
-            dao=dao,
+            dao=cast("AsyncDashboardDAO", dao),
             dashboard_id=dashboard.id,
             data={
                 "dashboard_title": data.dashboard_title,
@@ -1110,10 +1354,15 @@ class DashboardController(Controller):
             object_ref=f"dashboard:{id_or_slug}",
             user_id=current_user.id,
         )
+        changed_on = getattr(new_dash, "changed_on", None)
         return {
             "result": {
                 "id": new_dash.id,
-                "last_modified_time": getattr(new_dash, "changed_on", None),
+                "last_modified_time": (
+                    changed_on.replace(microsecond=0).timestamp()
+                    if changed_on
+                    else None
+                ),
             }
         }
 
@@ -1138,13 +1387,13 @@ class DashboardController(Controller):
             raise ObjectNotFoundError("Dashboard", pk)
         dashboard_uuid = str(getattr(dashboard, "uuid", "")) or None
         state: dict[str, Any] = {
-            "dataMask": data.dataMask,
-            "activeTabs": data.activeTabs,
+            "dataMask": data.data_mask,
+            "activeTabs": data.active_tabs,
             "anchor": data.anchor,
-            "urlParams": data.urlParams,
+            "urlParams": data.url_params,
         }
         cmd = CreateDashboardPermalinkCommand(
-            dao=kv_dao,
+            dao=cast("AsyncKeyValueDAO", kv_dao),
             dashboard_id=pk,
             state=state,
             dashboard_uuid=dashboard_uuid,
@@ -1160,7 +1409,9 @@ class DashboardController(Controller):
     async def get_permalink(
         self, key: str, kv_dao: KeyValueDAOProtocol
     ) -> dict[str, Any]:
-        cmd = GetDashboardPermalinkCommand(dao=kv_dao, key=key)
+        cmd = GetDashboardPermalinkCommand(
+            dao=cast("AsyncKeyValueDAO", kv_dao), key=key
+        )
         state = await cmd.execute()
         event_logger.log("dashboard.get_permalink", object_ref=f"permalink:{key}")
         return state

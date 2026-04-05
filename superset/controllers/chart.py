@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import io
 import json as _json
+import math
 import uuid
-from typing import Any
+from typing import Any, cast, TYPE_CHECKING
 
 from litestar import Controller, delete, get, post, put
 from litestar.connection import Request
@@ -67,6 +68,7 @@ from superset.schemas.chart import (
     ChartCacheScreenshotResponse,
     ChartCacheWarmUpRequest,
     ChartDataQueryContext,
+    ChartDetailResult,
     ChartGetResponse,
     ChartPostSchema,
     ChartPutSchema,
@@ -78,6 +80,62 @@ from superset.typing import (
     UserProtocol,
 )
 from superset.utils import filter_none, filter_unset
+
+if TYPE_CHECKING:
+    from superset.config import SupersetSettings
+    from superset.db.daos.chart import AsyncChartDAO
+
+# ---------------------------------------------------------------------------
+# Markdown helper — converts description to sanitised HTML
+# ---------------------------------------------------------------------------
+_SAFE_MD_TAGS = {
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "b",
+    "i",
+    "strong",
+    "em",
+    "tt",
+    "p",
+    "br",
+    "span",
+    "div",
+    "blockquote",
+    "code",
+    "hr",
+    "ul",
+    "ol",
+    "li",
+    "dd",
+    "dt",
+    "img",
+    "a",
+}
+_SAFE_MD_ATTRS: dict[str, set[str]] = {
+    "img": {"src", "alt", "title"},
+    "a": {"href", "alt", "title"},
+}
+
+
+def _md_to_html(raw: str) -> str:
+    """Convert a markdown string to sanitised HTML, matching the original
+    ``superset.utils.core.markdown`` behaviour."""
+    import markdown as md  # type: ignore[import-untyped]
+    import nh3
+
+    html = md.markdown(
+        raw,
+        extensions=[
+            "markdown.extensions.tables",
+            "markdown.extensions.fenced_code",
+            "markdown.extensions.codehilite",
+        ],
+    )
+    return nh3.clean(html, tags=_SAFE_MD_TAGS, attributes=_SAFE_MD_ATTRS)
 
 
 class ChartController(Controller):
@@ -107,7 +165,8 @@ class ChartController(Controller):
         from superset.models.slice import Slice
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
-            Slice, rison_params,
+            Slice,
+            rison_params,
         )
         base_filters = await chart_access_filters(security_manager, current_user)
         all_filters = (base_filters or []) + rison_filters
@@ -123,7 +182,7 @@ class ChartController(Controller):
                 selectinload(Slice.created_by),
                 selectinload(Slice.last_saved_by),
                 selectinload(Slice.table),
-                selectinload(Slice.dashboards),
+                selectinload(Slice.dashboards),  # type: ignore[attr-defined]
                 selectinload(Slice.tags),
             ],
         )
@@ -175,18 +234,68 @@ class ChartController(Controller):
                 ln = changed_by.get("last_name", "") or ""
                 item["changed_by_name"] = f"{fn} {ln}".strip()
 
+            # created_by_name — same pattern as changed_by_name
+            created_by = item.get("created_by")
+            if created_by and isinstance(created_by, dict):
+                cb_fn = created_by.get("first_name", "") or ""
+                cb_ln = created_by.get("last_name", "") or ""
+                item["created_by_name"] = f"{cb_fn} {cb_ln}".strip()
+            else:
+                item["created_by_name"] = ""
+
             # Find the matching ORM object for computed properties
             chart_obj = next((c for c in charts if c.id == chart_id), None)
             if chart_obj:
                 item["changed_on_utc"] = chart_obj.changed_on_utc
-                item["changed_on_delta_humanized"] = chart_obj.changed_on_delta_humanized
-                item["created_on_delta_humanized"] = chart_obj.created_on_delta_humanized
+                item["changed_on_delta_humanized"] = (
+                    chart_obj.changed_on_delta_humanized
+                )
+                item["created_on_delta_humanized"] = (
+                    chart_obj.created_on_delta_humanized
+                )
                 item["datasource_name_text"] = chart_obj.datasource_name_text
                 item["datasource_url"] = chart_obj.datasource_url
                 item["thumbnail_url"] = chart_obj.thumbnail_url
                 item["url"] = chart_obj.url
                 item["edit_url"] = chart_obj.edit_url
                 item["slice_url"] = chart_obj.slice_url
+
+                # changed_on_dttm — epoch float of changed_on
+                item["changed_on_dttm"] = (
+                    float(chart_obj.changed_on.timestamp())
+                    if chart_obj.changed_on
+                    else None
+                )
+
+                # description_markeddown — HTML from markdown description
+                desc = chart_obj.description or ""
+                if desc:
+                    item["description_markeddown"] = _md_to_html(desc)
+                else:
+                    item["description_markeddown"] = ""
+
+                # form_data — dict from params JSON + slice_id/viz_type/datasource
+                try:
+                    fd: dict[str, Any] = _json.loads(chart_obj.params or "{}")
+                except Exception:
+                    fd = {}
+                fd.update(
+                    {
+                        "slice_id": chart_obj.id,
+                        "viz_type": chart_obj.viz_type,
+                        "datasource": (
+                            f"{chart_obj.datasource_id}__{chart_obj.datasource_type}"
+                        ),
+                    }
+                )
+                if chart_obj.cache_timeout:
+                    fd["cache_timeout"] = chart_obj.cache_timeout
+                item["form_data"] = fd
+
+                # table.default_endpoint and table.table_name
+                tbl = chart_obj.table
+                item["table.default_endpoint"] = tbl.default_endpoint if tbl else None
+                item["table.table_name"] = tbl.table_name if tbl else None
 
         return payload
 
@@ -274,8 +383,8 @@ class ChartController(Controller):
             try:
                 uuid_val = uuid.UUID(str(id_or_uuid))
                 id_filter = [Slice.uuid == uuid_val]
-            except ValueError:
-                raise ObjectNotFoundError("Chart", id_or_uuid)
+            except ValueError as exc:
+                raise ObjectNotFoundError("Chart", id_or_uuid) from exc
 
         base_filters = await chart_access_filters(security_manager, current_user)
         all_filters = id_filter + (base_filters or [])
@@ -290,67 +399,17 @@ class ChartController(Controller):
                 selectinload(Slice.created_by),
                 selectinload(Slice.last_saved_by),
                 selectinload(Slice.table),
-                selectinload(Slice.dashboards),
+                selectinload(Slice.dashboards),  # type: ignore[attr-defined]
                 selectinload(Slice.tags),
             ],
         )
         if not results:
             raise ObjectNotFoundError("Chart", id_or_uuid)
         chart = results[0]
-
-        owners = chart.owners or []
-        dashboards = chart.dashboards or []
-        tags = chart.tags or []
-        changed_by = chart.changed_by
-        created_by = chart.created_by
-        changed_on = chart.changed_on
-        created_on = chart.created_on
         event_logger.log("chart.get", object_ref=f"chart:{id_or_uuid}")
         return ChartGetResponse(
             id=chart.id,
-            result={
-                "slice_name": chart.slice_name,
-                "viz_type": chart.viz_type,
-                "params": chart.params,
-                "cache_timeout": chart.cache_timeout,
-                "description": chart.description,
-                "datasource_id": chart.datasource_id,
-                "datasource_type": chart.datasource_type,
-                "query_context": chart.query_context,
-                "uuid": str(chart.uuid) if chart.uuid else None,
-                "changed_on": changed_on.isoformat() if changed_on else None,
-                "created_on": created_on.isoformat() if created_on else None,
-                "changed_by": {
-                    "id": changed_by.id,
-                    "first_name": getattr(changed_by, "first_name", ""),
-                    "last_name": getattr(changed_by, "last_name", ""),
-                }
-                if changed_by
-                else None,
-                "created_by": {
-                    "id": created_by.id,
-                    "first_name": getattr(created_by, "first_name", ""),
-                    "last_name": getattr(created_by, "last_name", ""),
-                }
-                if created_by
-                else None,
-                "owners": [{"id": o.id, "name": str(o)} for o in owners],
-                "dashboards": [
-                    {
-                        "id": d.id,
-                        "dashboard_title": getattr(d, "dashboard_title", str(d)),
-                    }
-                    for d in dashboards
-                ],
-                "certified_by": chart.certified_by,
-                "thumbnail_url": chart.thumbnail_url,
-                "is_managed_externally": chart.is_managed_externally,
-                "tags": [
-                    {"id": t.id, "name": getattr(t, "name", str(t))} for t in tags
-                ],
-                "datasource_name_text": chart.datasource_name_text,
-                "datasource_url": chart.datasource_url,
-            },
+            result=ChartDetailResult.from_model(chart),
         )
 
     @post(
@@ -365,7 +424,7 @@ class ChartController(Controller):
         current_user: UserProtocol,
     ) -> ChartGetResponse:
         cmd = CreateChartCommand(
-            dao=dao,
+            dao=cast("AsyncChartDAO", dao),
             data=filter_none(
                 {
                     "slice_name": data.slice_name,
@@ -374,40 +433,32 @@ class ChartController(Controller):
                     "datasource_type": data.datasource_type,
                     "params": data.params,
                     "query_context": data.query_context,
+                    "query_context_generation": data.query_context_generation,
                     "cache_timeout": data.cache_timeout,
                     "description": data.description,
+                    "certified_by": data.certified_by,
+                    "certification_details": data.certification_details,
+                    "is_managed_externally": data.is_managed_externally,
+                    "external_url": data.external_url,
+                    "tags": data.tags,
+                    "owners": data.owners,
+                    "dashboards": data.dashboards,
+                    "datasource_name": data.datasource_name,
+                    "uuid": data.uuid,
                 }
             ),
             user_id=current_user.id,
         )
         chart = await cmd.execute()
+        chart_id = int(chart.id)
         event_logger.log(
             "chart.create",
-            object_ref=f"chart:{chart.id}",
+            object_ref=f"chart:{chart_id}",
             user_id=current_user.id,
         )
-        # BL-M7: Return full response including all important fields
         return ChartGetResponse(
-            id=chart.id,
-            result={
-                "slice_name": chart.slice_name,
-                "viz_type": chart.viz_type,
-                "uuid": str(chart.uuid) if getattr(chart, "uuid", None) else None,
-                "datasource_id": getattr(chart, "datasource_id", None),
-                "datasource_type": getattr(chart, "datasource_type", None),
-                "params": getattr(chart, "params", None),
-                "query_context": getattr(chart, "query_context", None),
-                "cache_timeout": getattr(chart, "cache_timeout", None),
-                "description": getattr(chart, "description", None),
-                "certified_by": getattr(chart, "certified_by", None),
-                "is_managed_externally": getattr(
-                    chart, "is_managed_externally", False
-                ),
-                "owners": [
-                    {"id": o.id, "name": str(o)}
-                    for o in (getattr(chart, "owners", []) or [])
-                ],
-            },
+            id=chart_id,
+            result=ChartDetailResult.from_model(chart),
         )
 
     @put(
@@ -430,12 +481,20 @@ class ChartController(Controller):
                 "datasource_type": data.datasource_type,
                 "params": data.params,
                 "query_context": data.query_context,
+                "query_context_generation": data.query_context_generation,
                 "cache_timeout": data.cache_timeout,
                 "description": data.description,
+                "certified_by": data.certified_by,
+                "certification_details": data.certification_details,
+                "is_managed_externally": data.is_managed_externally,
+                "external_url": data.external_url,
+                "tags": data.tags,
+                "owners": data.owners,
+                "dashboards": data.dashboards,
             }
         )
         cmd = UpdateChartCommand(
-            dao=dao,
+            dao=cast("AsyncChartDAO", dao),
             chart_id=pk,
             data=update_data,
             user_id=current_user.id,
@@ -447,65 +506,9 @@ class ChartController(Controller):
             object_ref=f"chart:{pk}",
             user_id=current_user.id,
         )
-        owners = getattr(chart, "owners", []) or []
-        dashboards = getattr(chart, "dashboards", []) or []
-        tags = getattr(chart, "tags", []) or []
-        changed_by = getattr(chart, "changed_by", None)
-        created_by = getattr(chart, "created_by", None)
-        changed_on = getattr(chart, "changed_on", None)
-        created_on = getattr(chart, "created_on", None)
         return ChartGetResponse(
-            id=chart.id,
-            result={
-                "slice_name": chart.slice_name,
-                "viz_type": chart.viz_type,
-                "params": chart.params,
-                "cache_timeout": chart.cache_timeout,
-                "description": getattr(chart, "description", None),
-                "datasource_id": getattr(chart, "datasource_id", None),
-                "datasource_type": getattr(chart, "datasource_type", None),
-                "query_context": getattr(chart, "query_context", None),
-                "uuid": str(chart.uuid) if getattr(chart, "uuid", None) else None,
-                "changed_on": changed_on.isoformat() if changed_on else None,
-                "created_on": created_on.isoformat() if created_on else None,
-                "changed_by": {
-                    "id": changed_by.id,
-                    "first_name": getattr(changed_by, "first_name", ""),
-                    "last_name": getattr(changed_by, "last_name", ""),
-                }
-                if changed_by
-                else None,
-                "created_by": {
-                    "id": created_by.id,
-                    "first_name": getattr(created_by, "first_name", ""),
-                    "last_name": getattr(created_by, "last_name", ""),
-                }
-                if created_by
-                else None,
-                "owners": [{"id": o.id, "name": str(o)} for o in owners],
-                "dashboards": [
-                    {"id": d.id, "name": getattr(d, "dashboard_title", str(d))}
-                    for d in dashboards
-                ],
-                "certified_by": getattr(chart, "certified_by", None),
-                "thumbnail_url": (
-                    f"/api/v1/chart/{chart.id}/thumbnail/"
-                    f"{getattr(chart, 'digest', '')}/"
-                    if getattr(chart, "digest", None)
-                    else None
-                ),
-                "is_managed_externally": getattr(chart, "is_managed_externally", False),
-                "tags": [
-                    {"id": t.id, "name": getattr(t, "name", str(t))} for t in tags
-                ],
-                "datasource_name_text": getattr(chart, "datasource_name_text", None),
-                "datasource_url": getattr(chart, "datasource_url", None),
-                "datasource_uuid": (
-                    str(getattr(chart, "datasource_uuid", None))
-                    if getattr(chart, "datasource_uuid", None)
-                    else None
-                ),
-            },
+            id=int(chart.id),
+            result=ChartDetailResult.from_model(chart),
         )
 
     @delete(
@@ -521,7 +524,7 @@ class ChartController(Controller):
         current_user: UserProtocol,
     ) -> dict[str, str]:
         cmd = DeleteChartCommand(
-            dao=dao,
+            dao=cast("AsyncChartDAO", dao),
             chart_id=pk,
             security_manager=security_manager,
             user_id=current_user.id,
@@ -548,7 +551,7 @@ class ChartController(Controller):
     ) -> dict[str, str]:
         ids = extract_ids_required(rison_params)
         cmd = BulkDeleteChartsCommand(
-            dao=dao,
+            dao=cast("AsyncChartDAO", dao),
             chart_ids=ids,
             security_manager=security_manager,
             user_id=current_user.id,
@@ -566,7 +569,11 @@ class ChartController(Controller):
         guards=[require_permission("can_read", "Chart")],
     )
     async def cache_screenshot(
-        self, pk: int, dao: ChartDAOProtocol, state: State
+        self,
+        pk: int,
+        dao: ChartDAOProtocol,
+        state: State,
+        rison_params: dict[str, Any] | None,
     ) -> ChartCacheScreenshotResponse | Response[Any]:
         # BL-C1: Gate on THUMBNAILS feature flag
         feature_flags = getattr(state.settings, "feature_flags", {})
@@ -575,12 +582,19 @@ class ChartController(Controller):
         chart = await dao.find_by_id(pk)
         if not chart:
             raise ObjectNotFoundError("Chart", pk)
+        # Extract optional rison query params (mirrors screenshot_query_schema)
+        rison_dict: dict[str, Any] = rison_params or {}
+        _force: bool = bool(rison_dict.get("force", False))  # noqa: F841
+        _window_size: tuple[int, int] | None = rison_dict.get("window_size")  # noqa: F841
+        _thumb_size: tuple[int, int] | None = rison_dict.get("thumb_size")  # noqa: F841
         # Trigger Celery screenshot task (actual dispatch happens in thumbnails module)
         cache_key = f"chart_{pk}_screenshot"
         return ChartCacheScreenshotResponse(
             cache_key=cache_key,
             chart_url=f"/explore/?slice_id={pk}",
             image_url=f"/api/v1/chart/{pk}/screenshot/{cache_key}/",
+            task_status="not_available",
+            task_updated_at=None,
         )
 
     @get(
@@ -591,19 +605,42 @@ class ChartController(Controller):
     async def screenshot(
         self, pk: int, digest: str, dao: ChartDAOProtocol, state: State
     ) -> Response[bytes]:
-        # BL-C1: Gate on THUMBNAILS feature flag
+        """Get a computed screenshot from cache.
+
+        The *digest* path parameter is the cache key written by the Celery
+        screenshot task.  If the cache contains an image we serve it;
+        otherwise we return 404.
+        """
+        import asyncio
+
+        from superset.utils.screenshots import (
+            ChartScreenshot,
+            ScreenshotImageNotAvailableException,
+            StatusValues,
+        )
+
         feature_flags = getattr(state.settings, "feature_flags", {})
         if not feature_flags.get("THUMBNAILS", False):
             return Response(content=b"", status_code=404, media_type="image/png")
+
         chart = await dao.find_by_id(pk)
         if not chart:
             raise ObjectNotFoundError("Chart", pk)
-        # Return placeholder — actual screenshot retrieval from cache
-        return Response(
-            content=b"",
-            status_code=202,
-            media_type="image/png",
+
+        cache_payload = await asyncio.to_thread(
+            ChartScreenshot.get_from_cache_key, digest
         )
+        if cache_payload and cache_payload.status == StatusValues.UPDATED:
+            try:
+                image = cache_payload.get_image()
+            except ScreenshotImageNotAvailableException:
+                return Response(content=b"", status_code=404, media_type="image/png")
+            return Response(
+                content=image.getvalue(),
+                status_code=200,
+                media_type="image/png",
+            )
+        return Response(content=b"", status_code=404, media_type="image/png")
 
     @get(
         "/{pk:int}/thumbnail/{digest:str}/",
@@ -611,18 +648,84 @@ class ChartController(Controller):
         media_type="image/png",
     )
     async def thumbnail(
-        self, pk: int, digest: str, dao: ChartDAOProtocol, state: State
+        self,
+        pk: int,
+        digest: str,
+        dao: ChartDAOProtocol,
+        state: State,
+        current_user: UserProtocol,
     ) -> Response[bytes]:
-        # BL-C1: Gate on THUMBNAILS feature flag
+        """Compute or get already computed chart thumbnail from cache.
+
+        If the chart's current digest differs from *digest* we redirect to
+        the canonical URL.  Otherwise we check the thumbnail cache: if the
+        image exists we serve it directly; if not we queue a Celery task and
+        return 202.
+        """
+        import asyncio
+
+        from litestar.response import Redirect
+
+        from superset.utils.screenshots import (
+            ChartScreenshot,
+            ScreenshotCachePayload,
+            ScreenshotImageNotAvailableException,
+        )
+
         feature_flags = getattr(state.settings, "feature_flags", {})
         if not feature_flags.get("THUMBNAILS", False):
             return Response(content=b"", status_code=404, media_type="image/png")
+
         chart = await dao.find_by_id(pk)
         if not chart:
             raise ObjectNotFoundError("Chart", pk)
+
+        # Redirect to the canonical digest URL if stale
+        chart_digest = getattr(chart, "digest", None)
+        if chart_digest and chart_digest != digest:
+            return Redirect(  # type: ignore[return-value]
+                path=f"/api/v1/chart/{pk}/thumbnail/{chart_digest}/",
+            )
+
+        # Build screenshot object and compute cache key
+        chart_url = f"/explore/?slice_id={pk}"
+        screenshot_obj = ChartScreenshot(chart_url, chart_digest or digest)
+        cache_key = await asyncio.to_thread(screenshot_obj.get_cache_key)
+        cache_payload = (
+            await asyncio.to_thread(
+                ChartScreenshot.get_from_cache_key, cache_key
+            )
+            or ScreenshotCachePayload()
+        )
+
+        if cache_payload.should_trigger_task():
+            # Mark as pending in cache and dispatch Celery task
+            await asyncio.to_thread(
+                screenshot_obj.cache.set,
+                cache_key,
+                ScreenshotCachePayload().to_dict(),
+            )
+            from superset.tasks.thumbnails import cache_chart_thumbnail
+
+            cache_chart_thumbnail.delay(
+                current_user=getattr(current_user, "username", None),
+                chart_id=str(chart.id),
+                force=False,
+            )
+            return Response(
+                content=b"",
+                status_code=202,
+                media_type="image/png",
+            )
+
+        # Serve from cache
+        try:
+            image = cache_payload.get_image()
+        except ScreenshotImageNotAvailableException:
+            return Response(content=b"", status_code=404, media_type="image/png")
         return Response(
-            content=b"",
-            status_code=202,
+            content=image.getvalue(),
+            status_code=200,
             media_type="image/png",
         )
 
@@ -640,7 +743,7 @@ class ChartController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
-        cmd = ExportChartsCommand(model_ids=ids, dao=dao)
+        cmd = ExportChartsCommand(model_ids=ids, dao=cast("AsyncChartDAO", dao))
         buf = await cmd.execute()
         event_logger.log("chart.export", extra={"count": len(ids)})
         return Stream(
@@ -714,13 +817,14 @@ class ChartController(Controller):
         self, data: ChartCacheWarmUpRequest, dao: ChartDAOProtocol
     ) -> dict[str, Any]:
         cmd = WarmUpChartCacheCommand(
-            dao=dao,
+            dao=cast("AsyncChartDAO", dao),
             chart_id=data.chart_id,
             dashboard_id=data.dashboard_id,
+            extra_filters=data.extra_filters,
         )
         result = await cmd.execute()
         event_logger.log("chart.warm_up_cache", object_ref=f"chart:{data.chart_id}")
-        return {"result": result}
+        return {"result": [result]}
 
     @post(
         "/import/",
@@ -734,25 +838,49 @@ class ChartController(Controller):
         overwrite: bool = False,
         passwords: str | None = None,
         ssh_tunnel_passwords: str | None = None,
+        ssh_tunnel_private_keys: str | None = None,
+        ssh_tunnel_private_key_passwords: str | None = None,
     ) -> dict[str, str]:
         contents = await data.read()
         buf = io.BytesIO(contents)
         try:
             passwords_dict: dict[str, str] = _json.loads(passwords) if passwords else {}
-        except (ValueError, _json.JSONDecodeError):
-            raise CommandInvalidError("Invalid JSON in 'passwords' field")
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError("Invalid JSON in 'passwords' field") from exc
         try:
             ssh_dict: dict[str, str] = (
                 _json.loads(ssh_tunnel_passwords) if ssh_tunnel_passwords else {}
             )
-        except (ValueError, _json.JSONDecodeError):
-            raise CommandInvalidError("Invalid JSON in 'ssh_tunnel_passwords' field")
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError(
+                "Invalid JSON in 'ssh_tunnel_passwords' field"
+            ) from exc
+        try:
+            ssh_private_keys_dict: dict[str, str] = (
+                _json.loads(ssh_tunnel_private_keys) if ssh_tunnel_private_keys else {}
+            )
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError(
+                "Invalid JSON in 'ssh_tunnel_private_keys' field"
+            ) from exc
+        try:
+            ssh_private_key_passwords_dict: dict[str, str] = (
+                _json.loads(ssh_tunnel_private_key_passwords)
+                if ssh_tunnel_private_key_passwords
+                else {}
+            )
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError(
+                "Invalid JSON in 'ssh_tunnel_private_key_passwords' field"
+            ) from exc
         cmd = ImportChartsCommand(
             contents=buf,
-            dao=dao,
+            dao=cast("AsyncChartDAO", dao),
             overwrite=overwrite,
             passwords=passwords_dict,
             ssh_tunnel_passwords=ssh_dict,
+            ssh_tunnel_private_keys=ssh_private_keys_dict,
+            ssh_tunnel_private_key_passwords=ssh_private_key_passwords_dict,
         )
         await cmd.execute()
         event_logger.log("chart.import")
@@ -856,7 +984,7 @@ class ChartController(Controller):
         "/{pk:int}/data/",
         guards=[require_permission("can_read", "Chart")],
     )
-    async def get_chart_data(
+    async def get_chart_data(  # noqa: C901
         self,
         pk: int,
         dao: ChartDAOProtocol,
@@ -872,7 +1000,9 @@ class ChartController(Controller):
         from superset.exceptions import SupersetValidationException
 
         # BL-C2: Check GLOBAL_ASYNC_QUERIES feature flag
-        settings = getattr(state, "settings", None)
+        settings: SupersetSettings = cast(
+            "SupersetSettings", getattr(state, "settings", None)
+        )
         if getattr(settings, "global_async_queries", False):
             result_format = (format or "json").lower()
             result_type = (type or "full").lower()
@@ -891,10 +1021,10 @@ class ChartController(Controller):
                     )
                 try:
                     form_data = _json.loads(query_context_str)
-                except (ValueError, TypeError):
+                except (ValueError, TypeError) as exc:
                     raise SupersetValidationException(
                         "Chart has invalid query context"
-                    )
+                    ) from exc
 
                 channel_id = str(uuid.uuid4())
                 job_id = str(uuid.uuid4())
@@ -920,8 +1050,10 @@ class ChartController(Controller):
 
         try:
             qc_data = _json.loads(query_context_str)
-        except (ValueError, TypeError):
-            raise SupersetValidationException("Chart has invalid query context")
+        except (ValueError, TypeError) as exc:
+            raise SupersetValidationException(
+                "Chart has invalid query context"
+            ) from exc
 
         # Apply query param overrides
         if format is not None:
@@ -939,7 +1071,7 @@ class ChartController(Controller):
         if not datasource:
             raise ObjectNotFoundError("Datasource", ds_ref.get("id", 0))
 
-        settings = getattr(state, "settings", None)
+        settings = cast("SupersetSettings", getattr(state, "settings", None))
         queries_data = qc_data.get("queries", [])
         ds_dict = {"type": ds_ref.get("type", "table"), "id": ds_ref.get("id", 0)}
         query_objects = [
@@ -977,7 +1109,7 @@ class ChartController(Controller):
         "/data",
         guards=[require_permission("can_read", "Chart")],
     )
-    async def data(
+    async def data(  # noqa: C901
         self,
         request: Request[Any, Any, Any],
         ds_dao: DatasourceDAOProtocol,
@@ -999,7 +1131,7 @@ class ChartController(Controller):
             content_type_str = request.content_type[0] if request.content_type else ""
             if "multipart" in content_type_str or "form" in content_type_str:
                 form = await request.form()
-                form_data_str = form.get("form_data")  # type: ignore[assignment]
+                form_data_str = form.get("form_data")
             if form_data_str is None:
                 # Also try raw body as JSON
                 body = await request.body()
@@ -1023,12 +1155,17 @@ class ChartController(Controller):
                     status_code=400,
                 )
 
-        settings = getattr(state, "settings", None)
+        import numpy as np
+        import pandas as pd
+
+        settings: SupersetSettings = cast(
+            "SupersetSettings", getattr(state, "settings", None)
+        )
+        result_format = (getattr(data, "result_format", None) or "json").lower()
+        result_type = (getattr(data, "result_type", None) or "full").lower()
 
         # BL-C2: Check GLOBAL_ASYNC_QUERIES feature flag
         if getattr(settings, "global_async_queries", False):
-            result_format = (getattr(data, "result_format", None) or "json").lower()
-            result_type = (getattr(data, "result_type", None) or "full").lower()
             if result_format == "json" and result_type == "full":
                 from superset.async_events.manager import build_job_metadata
                 from superset.tasks.async_queries import load_chart_data_into_cache
@@ -1054,25 +1191,67 @@ class ChartController(Controller):
         if not datasource:
             raise ObjectNotFoundError("Datasource", data.datasource.id)
 
-        ds_ref = {"type": data.datasource.type, "id": data.datasource.id}
-        query_objects = [AsyncQueryObject.from_request(q, ds_ref) for q in data.queries]
-        query_context = AsyncQueryContext(
-            datasource=datasource,
-            queries=query_objects,
-            force=data.force,
-            result_format=getattr(data, "result_format", None),
-        )
-        processor = AsyncQueryContextProcessor(
-            datasource=datasource,
-            settings=settings,
-            security_manager=security_manager,
-            user=current_user,
-            query_context=query_context,
-        )
-        cmd = ChartDataCommand(query_context=query_context, processor=processor)
-        result = await cmd.execute()
+        # --- P1-5: result_type dispatch -------------------------------------------
 
-        result_format = getattr(data, "result_format", None) or "json"
+        ds_ref = {"type": data.datasource.type, "id": data.datasource.id}
+
+        if result_type == "query":
+            # Return generated SQL without executing the query
+            query_results: list[dict[str, Any]] = []
+            for q_schema in data.queries:
+                qobj = AsyncQueryObject.from_request(q_schema, ds_ref)
+                query_dict = qobj.to_dict()
+                sql, _from_dttm, _to_dttm = datasource._build_sql(query_dict)
+                query_results.append(
+                    {
+                        "query": sql,
+                        "status": "success",
+                        "language": "sql",
+                    }
+                )
+            event_logger.log("chart.data_post")
+            return Response(
+                content={"result": query_results},
+                media_type="application/json",
+            )
+
+        if result_type == "samples":
+            # Execute a simple SELECT * without metrics/filters
+            row_limit = (
+                data.queries[0].row_limit
+                if data.queries and getattr(data.queries[0], "row_limit", None)
+                else 1000
+            )
+            sql = f"SELECT * FROM {datasource.table_name} LIMIT {row_limit}"  # noqa: S608
+
+            try:
+                df = await datasource._execute_sql(sql)
+                if not isinstance(df, pd.DataFrame):
+                    df = pd.DataFrame()
+            except Exception:
+                df = pd.DataFrame()
+
+            records = df.to_dict(orient="records")
+            sample_result: dict[str, Any] = {
+                "queries": [
+                    {
+                        "data": records,
+                        "colnames": list(df.columns),
+                        "coltypes": [],
+                        "indexnames": list(range(len(records))),
+                        "rowcount": len(records),
+                        "status": "success",
+                    }
+                ],
+            }
+            event_logger.log("chart.data_post")
+            return Response(
+                content=sample_result,
+                media_type="application/json",
+            )
+
+        # --- result_format: csv / xlsx (early return) ----------------------------
+
         if result_format in ("csv", "xlsx"):
             # Check can_csv permission
             if not await security_manager.can_access(
@@ -1084,9 +1263,26 @@ class ChartController(Controller):
                     message="You don't have permission to download data"
                 )
 
-            import zipfile
+            query_objects = [
+                AsyncQueryObject.from_request(q, ds_ref) for q in data.queries
+            ]
+            query_context = AsyncQueryContext(
+                datasource=datasource,
+                queries=query_objects,
+                force=data.force,
+                result_format=result_format,
+            )
+            processor = AsyncQueryContextProcessor(
+                datasource=datasource,
+                settings=settings,
+                security_manager=security_manager,
+                user=current_user,
+                query_context=query_context,
+            )
+            cmd = ChartDataCommand(query_context=query_context, processor=processor)
+            result = await cmd.execute()
 
-            import pandas as pd
+            import zipfile
 
             # Extract data from queries result
             queries = result.get("queries", [])
@@ -1114,9 +1310,7 @@ class ChartController(Controller):
                 return Response(
                     content=xlsx_data,
                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={
-                        "Content-Disposition": 'attachment; filename="data.xlsx"'
-                    },
+                    headers={"Content-Disposition": 'attachment; filename="data.xlsx"'},
                 )
 
             # Multiple queries: bundle individual files into a ZIP
@@ -1135,18 +1329,70 @@ class ChartController(Controller):
             return Response(
                 content=zip_buf.getvalue(),
                 media_type="application/zip",
-                headers={
-                    "Content-Disposition": "attachment; filename=chart_data.zip"
-                },
+                headers={"Content-Disposition": "attachment; filename=chart_data.zip"},
             )
+
+        # --- Default JSON path (result_type: full / results / columns / etc.) ----
+
+        query_objects = [AsyncQueryObject.from_request(q, ds_ref) for q in data.queries]
+        query_context = AsyncQueryContext(
+            datasource=datasource,
+            queries=query_objects,
+            force=data.force,
+            result_format=result_format,
+        )
+        processor = AsyncQueryContextProcessor(
+            datasource=datasource,
+            settings=settings,
+            security_manager=security_manager,
+            user=current_user,
+            query_context=query_context,
+        )
+        cmd = ChartDataCommand(query_context=query_context, processor=processor)
+        result = await cmd.execute()
+
         # Strip raw SQL from response for guest users (C3)
         if security_manager.is_guest_user(current_user):
             for q in result.get("queries", []):
                 if isinstance(q, dict):
                     q.pop("query", None)
 
+        # Convert DataFrames to JSON-serializable dicts before response
+        for q in result.get("queries", []):
+            if isinstance(q, dict) and isinstance(q.get("df"), pd.DataFrame):
+                df = q.pop("df")
+                q["data"] = df.to_dict(orient="records")
+                q["colnames"] = list(df.columns)
+                q["coltypes"] = []
+                q.setdefault("rowcount", len(df))
+
+        # P2-11: NaN / Inf / numpy / datetime cleanup for valid JSON
+        for q in result.get("queries", []):
+            if isinstance(q, dict) and "data" in q:
+                for row in q["data"]:
+                    for key, val in row.items():
+                        if isinstance(val, float) and (
+                            math.isnan(val) or math.isinf(val)
+                        ):
+                            row[key] = None
+                        elif isinstance(val, np.integer):
+                            row[key] = int(val)
+                        elif isinstance(val, np.floating):
+                            row[key] = float(val) if not np.isnan(val) else None
+                        elif isinstance(val, np.bool_):
+                            row[key] = bool(val)
+                        elif hasattr(val, "isoformat"):
+                            row[key] = val.isoformat()
+
+        # Ensure indexnames is present in each query result
+        for q in result.get("queries", []):
+            if isinstance(q, dict):
+                q["indexnames"] = list(range(len(q.get("data", []))))
+
         event_logger.log("chart.data_post")
-        return Response(content=result, media_type="application/json")
+        # Frontend expects {"result": [...]} not {"queries": [...]}
+        response_payload = {"result": result.get("queries", [])}
+        return Response(content=response_payload, media_type="application/json")
 
     @get(
         "/data/{cache_key:str}",
@@ -1163,7 +1409,9 @@ class ChartController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/chart/data/{cache_key} — retrieve cached chart data."""
         cache_manager = getattr(request.app.state, "cache_manager", None)
-        settings = getattr(state, "settings", None)
+        settings: SupersetSettings = cast(
+            "SupersetSettings", getattr(state, "settings", None)
+        )
         cmd = GetCachedChartDataCommand(
             cache_key=cache_key,
             cache_manager=cache_manager,
