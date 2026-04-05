@@ -1,0 +1,264 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+import contextlib
+import re
+import threading
+from re import Pattern
+from typing import Any, Callable, NamedTuple, Optional
+
+from sqlalchemy.engine.reflection import Inspector
+
+with contextlib.suppress(ImportError, RuntimeError):  # pyocient may not be installed
+    import pyocient
+
+from superset.constants import TimeGrain
+from superset.db_engine_specs.base import BaseEngineSpec
+from superset.models.core import Database
+from superset.models.sql_lab import Query
+from superset.errors import SupersetErrorType
+
+# Regular expressions to catch custom errors
+CONNECTION_INVALID_USERNAME_REGEX = re.compile(
+    r"The referenced user does not exist \(User '(?P<username>.*?)' not found\)"
+)
+CONNECTION_INVALID_PASSWORD_REGEX = re.compile(
+    r"The userid/password combination was not valid \(Incorrect password for user\)"
+)
+CONNECTION_INVALID_HOSTNAME_REGEX = re.compile(
+    r"Unable to connect to (?P<host>.*?):(?P<port>.*?)"
+)
+CONNECTION_UNKNOWN_DATABASE_REGEX = re.compile(
+    r"No database named '(?P<database>.*?)' exists"
+)
+CONNECTION_INVALID_PORT_ERROR = re.compile("Port out of range 0-65535")
+INVALID_CONNECTION_STRING_REGEX = re.compile(
+    r"An invalid connection string attribute was specified"
+    r" \(failed to decrypt cipher text\)"
+)
+SYNTAX_ERROR_REGEX = re.compile(
+    r"There is a syntax error in your statement \((?P<qualifier>.*?)"
+    r" input '(?P<input>.*?)' expecting (?P<expected>.*?)\)"
+)
+TABLE_DOES_NOT_EXIST_REGEX = re.compile(
+    r"The referenced table or view '(?P<table>.*?)' does not exist"
+)
+COLUMN_DOES_NOT_EXIST_REGEX = re.compile(
+    r"The reference to column '(?P<column>.*?)' is not valid"
+)
+
+
+# Custom datatype conversion functions
+
+
+def _to_hex(data: bytes) -> str:
+    """
+    Converts the bytes object into a string of hexadecimal digits.
+
+    :param data: the bytes object
+    :returns: string of hexadecimal digits representing the bytes
+    """
+    return data.hex()
+
+
+# Sanitization function for column values
+SanitizeFunc = Callable[[Any], Any]
+
+
+# Represents a pair of a column index and the sanitization function
+# to apply to its values.
+class PlacedSanitizeFunc(NamedTuple):
+    column_index: int
+    sanitize_func: SanitizeFunc
+
+
+# This map contains functions used to sanitize values for column types
+# that cannot be processed natively by Superset.
+try:
+    from pyocient import TypeCodes
+
+    _sanitized_ocient_type_codes: dict[int, SanitizeFunc] = {
+        TypeCodes.BINARY: _to_hex,
+        TypeCodes.IP: str,
+        TypeCodes.IPV4: str,
+    }
+except ImportError:
+    _sanitized_ocient_type_codes = {}
+
+
+def _find_columns_to_sanitize(cursor: Any) -> list[PlacedSanitizeFunc]:
+    """
+    Cleans the column value for consumption by Superset.
+
+    :param cursor: the result set cursor
+    :returns: the list of tuples consisting of the column index and sanitization function
+    """
+    return [
+        PlacedSanitizeFunc(i, _sanitized_ocient_type_codes[cursor.description[i][1]])
+        for i in range(len(cursor.description))
+        if cursor.description[i][1] in _sanitized_ocient_type_codes
+    ]
+
+
+class OcientEngineSpec(BaseEngineSpec):
+    engine = "ocient"
+    engine_name = "Ocient"
+    force_column_alias_quotes = True
+    max_column_name_length = 30
+
+    allows_cte_in_subquery = False
+    # Ocient does not support cte names starting with underscores
+    cte_alias = "cte__"
+    # Store mapping of superset Query id -> Ocient ID
+    query_id_mapping: dict[str, str] = {}
+    query_id_mapping_lock = threading.Lock()
+
+    custom_errors: dict[Pattern[str], tuple[str, SupersetErrorType, dict[str, Any]]] = {
+        CONNECTION_INVALID_USERNAME_REGEX: (
+            'The username "%(username)s" does not exist.',
+            SupersetErrorType.CONNECTION_INVALID_USERNAME_ERROR,
+            {},
+        ),
+        CONNECTION_INVALID_PASSWORD_REGEX: (
+            "The user/password combination is not valid"
+            " (Incorrect password for user).",
+            SupersetErrorType.CONNECTION_INVALID_PASSWORD_ERROR,
+            {},
+        ),
+        CONNECTION_UNKNOWN_DATABASE_REGEX: (
+            'Could not connect to database: "%(database)s"',
+            SupersetErrorType.CONNECTION_UNKNOWN_DATABASE_ERROR,
+            {},
+        ),
+        CONNECTION_INVALID_HOSTNAME_REGEX: (
+            'Could not resolve hostname: "%(host)s".',
+            SupersetErrorType.CONNECTION_INVALID_HOSTNAME_ERROR,
+            {},
+        ),
+        CONNECTION_INVALID_PORT_ERROR: (
+            "Port out of range 0-65535",
+            SupersetErrorType.CONNECTION_INVALID_PORT_ERROR,
+            {},
+        ),
+        INVALID_CONNECTION_STRING_REGEX: (
+            "Invalid Connection String: Expecting String of"
+            " the form 'ocient://user:pass@host:port/database'.",
+            SupersetErrorType.GENERIC_DB_ENGINE_ERROR,
+            {},
+        ),
+        SYNTAX_ERROR_REGEX: (
+            'Syntax Error: %(qualifier)s input "%(input)s" expecting "%(expected)s',
+            SupersetErrorType.SYNTAX_ERROR,
+            {},
+        ),
+        TABLE_DOES_NOT_EXIST_REGEX: (
+            'Table or View "%(table)s" does not exist.',
+            SupersetErrorType.TABLE_DOES_NOT_EXIST_ERROR,
+            {},
+        ),
+        COLUMN_DOES_NOT_EXIST_REGEX: (
+            'Invalid reference to column: "%(column)s"',
+            SupersetErrorType.COLUMN_DOES_NOT_EXIST_ERROR,
+            {},
+        ),
+    }
+    _time_grain_expressions = {
+        None: "{col}",
+        TimeGrain.SECOND: "ROUND({col}, 'SECOND')",
+        TimeGrain.MINUTE: "ROUND({col}, 'MINUTE')",
+        TimeGrain.HOUR: "ROUND({col}, 'HOUR')",
+        TimeGrain.DAY: "ROUND({col}, 'DAY')",
+        TimeGrain.WEEK: "ROUND({col}, 'WEEK')",
+        TimeGrain.MONTH: "ROUND({col}, 'MONTH')",
+        TimeGrain.QUARTER_YEAR: "ROUND({col}, 'QUARTER')",
+        TimeGrain.YEAR: "ROUND({col}, 'YEAR')",
+    }
+
+    @classmethod
+    def get_table_names(
+        cls, database: Database, inspector: Inspector, schema: Optional[str]
+    ) -> set[str]:
+        return inspector.get_table_names(schema)
+
+    @classmethod
+    def fetch_data(
+        cls, cursor: Any, limit: Optional[int] = None
+    ) -> list[tuple[Any, ...]]:
+        try:
+            rows: list[tuple[Any, ...]] = super().fetch_data(cursor, limit)
+        except Exception:
+            with OcientEngineSpec.query_id_mapping_lock:
+                del OcientEngineSpec.query_id_mapping[cursor.superset_query_id]
+            raise
+
+        if len(rows) > 0 and type(rows[0]).__name__ == "Row":
+            columns_to_sanitize: list[PlacedSanitizeFunc] = _find_columns_to_sanitize(
+                cursor
+            )
+
+            if columns_to_sanitize:
+
+                def identity(x: Any) -> Any:
+                    return x
+
+                sanitization_functions: list[SanitizeFunc] = [
+                    identity for _ in range(len(cursor.description))
+                ]
+                for info in columns_to_sanitize:
+                    sanitization_functions[info.column_index] = info.sanitize_func
+
+                rows = [
+                    tuple(
+                        sanitize_func(val)
+                        for sanitize_func, val in zip(
+                            sanitization_functions, row, strict=False
+                        )
+                    )
+                    for row in rows
+                ]
+        return rows
+
+    @classmethod
+    def epoch_to_dttm(cls) -> str:
+        return "DATEADD(S, {col}, '1970-01-01')"
+
+    @classmethod
+    def epoch_ms_to_dttm(cls) -> str:
+        return "DATEADD(MS, {col}, '1970-01-01')"
+
+    @classmethod
+    def get_cancel_query_id(cls, cursor: Any, query: Query) -> Optional[str]:
+        # Return a Non-None value
+        return "DUMMY_VALUE"
+
+    @classmethod
+    def handle_cursor(cls, cursor: Any, query: Query) -> None:
+        with OcientEngineSpec.query_id_mapping_lock:
+            OcientEngineSpec.query_id_mapping[query.id] = cursor.query_id
+
+        # Add the query id to the cursor
+        cursor.superset_query_id = query.id
+        return super().handle_cursor(cursor, query)
+
+    @classmethod
+    def cancel_query(cls, cursor: Any, query: Query, cancel_query_id: str) -> bool:
+        with OcientEngineSpec.query_id_mapping_lock:
+            if query.id in OcientEngineSpec.query_id_mapping:
+                cursor.execute(f"CANCEL {OcientEngineSpec.query_id_mapping[query.id]}")
+                del OcientEngineSpec.query_id_mapping[query.id]
+                return True
+            return False

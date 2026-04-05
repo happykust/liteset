@@ -1,0 +1,234 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+from __future__ import annotations
+
+import logging
+import re
+from datetime import datetime
+from typing import Any, TYPE_CHECKING
+
+from sqlalchemy import types
+from urllib3.exceptions import NewConnectionError
+
+from superset.constants import TimeGrain
+from superset.db_engine_specs.base import BaseEngineSpec
+from superset.db_engine_specs.exceptions import SupersetDBAPIDatabaseError
+from superset.typing import GenericDataType
+from superset.utils.hashing import md5_sha_from_str
+
+if TYPE_CHECKING:
+    from superset.models.core import Database
+
+logger = logging.getLogger(__name__)
+
+
+class DatabendBaseEngineSpec(BaseEngineSpec):
+    """Shared engine spec for Databend."""
+
+    time_secondary_columns = True
+    time_groupby_inline = True
+
+    _time_grain_expressions = {
+        None: "{col}",
+        TimeGrain.SECOND: "DATE_TRUNC('SECOND', {col})",
+        TimeGrain.MINUTE: "to_start_of_minute(TO_DATETIME({col}))",
+        TimeGrain.FIVE_MINUTES: "to_start_of_five_minutes(TO_DATETIME({col}))",
+        TimeGrain.TEN_MINUTES: "to_start_of_ten_minutes(TO_DATETIME({col}))",
+        TimeGrain.FIFTEEN_MINUTES: "to_start_of_fifteen_minutes(TO_DATETIME({col}))",
+        TimeGrain.HOUR: "to_start_of_hour(TO_DATETIME({col}))",
+        TimeGrain.DAY: "to_start_of_day(TO_DATETIME({col}))",
+        TimeGrain.WEEK: "to_monday(TO_DATETIME({col}))",
+        TimeGrain.MONTH: "to_start_of_month(TO_DATETIME({col}))",
+        TimeGrain.QUARTER: "to_start_of_quarter(TO_DATETIME({col}))",
+        TimeGrain.YEAR: "to_start_of_year(TO_DATETIME({col}))",
+    }
+
+    column_type_mappings = (
+        (
+            re.compile(r".*Varchar.*", re.IGNORECASE),
+            types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r".*Array.*", re.IGNORECASE),
+            types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r".*Map.*", re.IGNORECASE),
+            types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r".*Json.*", re.IGNORECASE),
+            types.JSON(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r".*Bool.*", re.IGNORECASE),
+            types.Boolean(),
+            GenericDataType.BOOLEAN,
+        ),
+        (
+            re.compile(r".*String.*", re.IGNORECASE),
+            types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r".*Int\d+.*", re.IGNORECASE),
+            types.INTEGER(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r".*Float\d+.*", re.IGNORECASE),
+            types.FLOAT(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r".*Double\d+.*", re.IGNORECASE),
+            types.FLOAT(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r".*Decimal.*", re.IGNORECASE),
+            types.DECIMAL(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r".*DateTime.*", re.IGNORECASE),
+            types.DateTime(),
+            GenericDataType.TEMPORAL,
+        ),
+        (
+            re.compile(r".*Date.*", re.IGNORECASE),
+            types.Date(),
+            GenericDataType.TEMPORAL,
+        ),
+    )
+
+    @classmethod
+    def epoch_to_dttm(cls) -> str:
+        return "{col}"
+
+    @classmethod
+    def convert_dttm(
+        cls, target_type: str, dttm: datetime, db_extra: dict[str, Any] | None = None
+    ) -> str | None:
+        sqla_type = cls.get_sqla_column_type(target_type)
+
+        if isinstance(sqla_type, types.Date):
+            return f"to_date('{dttm.date().isoformat()}')"
+        if isinstance(sqla_type, types.TIMESTAMP):
+            return f"""TO_TIMESTAMP('{dttm.isoformat(timespec="microseconds")}')"""
+        if isinstance(sqla_type, types.DateTime):
+            return f"""to_dateTime('{dttm.isoformat(sep=" ", timespec="seconds")}')"""
+        return None
+
+
+class DatabendEngineSpec(DatabendBaseEngineSpec):
+    """Engine spec for databend_sqlalchemy connector"""
+
+    engine = "databend"
+    engine_name = "Databend"
+    _function_names: list[str] = []
+
+    _show_functions_column = "name"
+    supports_file_upload = False
+
+    @classmethod
+    def get_dbapi_exception_mapping(cls) -> dict[type[Exception], type[Exception]]:
+        return {NewConnectionError: SupersetDBAPIDatabaseError}
+
+    @classmethod
+    def get_dbapi_mapped_exception(cls, exception: Exception) -> Exception:
+        new_exception = cls.get_dbapi_exception_mapping().get(type(exception))
+        if new_exception == SupersetDBAPIDatabaseError:
+            return SupersetDBAPIDatabaseError("Connection failed")
+        if not new_exception:
+            return exception
+        return new_exception(str(exception))
+
+    @classmethod
+    def get_function_names(cls, database: Database) -> list[str]:
+        if cls._function_names:
+            return cls._function_names
+        try:
+            names = database.get_df("SELECT name FROM system.functions;")[
+                "name"
+            ].tolist()
+            cls._function_names = names
+            return names
+        except Exception as ex:  # pylint: disable=broad-except
+            logger.exception("Error retrieving system.functions: %s", str(ex))
+            return []
+
+
+class DatabendConnectEngineSpec(DatabendEngineSpec):
+    """Engine spec for databend sqlalchemy connector"""
+
+    engine = "databend"
+    engine_name = "Databend"
+
+    default_driver = "databend"
+    _function_names: list[str] = []
+
+    sqlalchemy_uri_placeholder = (
+        "databend://user:password@host[:port][/dbname][?secure=value&=value...]"
+    )
+    encryption_parameters = {"secure": "true"}
+
+    @classmethod
+    def get_dbapi_exception_mapping(cls) -> dict[type[Exception], type[Exception]]:
+        return {}
+
+    @classmethod
+    def get_dbapi_mapped_exception(cls, exception: Exception) -> Exception:
+        new_exception = cls.get_dbapi_exception_mapping().get(type(exception))
+        if new_exception == SupersetDBAPIDatabaseError:
+            return SupersetDBAPIDatabaseError("Connection failed")
+        if not new_exception:
+            return exception
+        return new_exception(str(exception))
+
+    @classmethod
+    def get_function_names(cls, database: Database) -> list[str]:
+        if cls._function_names:
+            return cls._function_names
+        try:
+            names = database.get_df("SELECT name FROM system.functions;")[
+                "name"
+            ].tolist()
+            cls._function_names = names
+            return names
+        except Exception as ex:  # pylint: disable=broad-except
+            logger.exception("Error retrieving system.functions: %s", str(ex))
+            return []
+
+    @classmethod
+    def get_datatype(cls, type_code: str) -> str:
+        return type_code
+
+    @staticmethod
+    def _mutate_label(label: str) -> str:
+        """
+        Suffix with the first six characters from the md5 of the label to avoid
+        collisions with original column names
+
+        :param label: Expected expression label
+        :return: Conditionally mutated label
+        """
+        return f"{label}_{md5_sha_from_str(label)[:6]}"
