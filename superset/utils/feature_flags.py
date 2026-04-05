@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """Feature flag manager backed by SupersetSettings config."""
+
 from __future__ import annotations
 
 from copy import deepcopy

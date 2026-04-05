@@ -21,10 +21,12 @@ Dual-driver strategy:
 - Runtime:    postgresql+asyncpg://
 - Migrations: postgresql+psycopg2://
 """
+
 from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 
 from alembic import context
 from sqlalchemy import create_engine, pool
@@ -50,7 +52,7 @@ def _get_sync_url() -> str:
     return url
 
 
-def _load_models_metadata():
+def _load_models_metadata() -> Any:
     """Load model metadata for autogenerate."""
     import superset.models.annotations  # noqa: F401
     import superset.models.cache  # noqa: F401
@@ -75,7 +77,7 @@ def _load_models_metadata():
 target_metadata = None
 
 
-def _get_target_metadata():
+def _get_target_metadata() -> Any:
     """Return model metadata for autogenerate, None for upgrade/downgrade."""
     global target_metadata
     if (

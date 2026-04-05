@@ -20,6 +20,7 @@ Replaces ``superset/tasks/celery_app.py``. The Celery app is created
 independently of Litestar (no Flask ``create_app`` call). Signal handlers
 manage async engine disposal in forked worker processes.
 """
+
 from __future__ import annotations
 
 import asyncio

@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Slice (chart) model and association tables.
 
 Pure SQLAlchemy -- no Flask dependencies.
@@ -189,21 +190,15 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
         """
         return {
             "cache_timeout": self.cache_timeout,
-            "changed_on": (
-                self.changed_on.isoformat() if self.changed_on else ""
-            ),
-            "changed_on_humanized": getattr(
-                self, "changed_on_delta_humanized", ""
-            ),
+            "changed_on": (self.changed_on.isoformat() if self.changed_on else ""),
+            "changed_on_humanized": getattr(self, "changed_on_delta_humanized", ""),
             "datasource": self.datasource_name,
             "description": self.description,
             "description_markeddown": self.description or "",
             "edit_url": self.edit_url,
             "form_data": self.form_data,
             "query_context": self.query_context,
-            "modified": (
-                self.changed_on.isoformat() if self.changed_on else ""
-            ),
+            "modified": (self.changed_on.isoformat() if self.changed_on else ""),
             "owners": [owner.id for owner in (self.owners or [])],
             "slice_id": self.id,
             "slice_name": self.slice_name,

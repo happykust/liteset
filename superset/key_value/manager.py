@@ -78,7 +78,7 @@ class AsyncKeyValueManager:
             return None
         if codec is None:
             codec = JsonCodec()
-        raw = entry.value
+        raw: bytes = entry.value  # type: ignore[assignment]
         if isinstance(raw, str):
             raw = raw.encode("utf-8")
         return codec.decode(raw)

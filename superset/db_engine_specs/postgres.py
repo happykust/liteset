@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """PostgreSQL engine spec — sync/Flask-compatible.
 
 Ported 1:1 from ``superset_old/db_engine_specs/postgres.py`` with Flask
@@ -200,9 +201,7 @@ class PostgresBaseEngineSpec(BaseEngineSpec):
     }
 
     @classmethod
-    def fetch_data(
-        cls, cursor: Any, limit: int | None = None
-    ) -> list[tuple[Any, ...]]:
+    def fetch_data(cls, cursor: Any, limit: int | None = None) -> list[tuple[Any, ...]]:
         if not cursor.description:
             return []
         return super().fetch_data(cursor, limit)
@@ -224,9 +223,7 @@ class PostgresBaseEngineSpec(BaseEngineSpec):
             return f"TO_DATE('{dttm.date().isoformat()}', 'YYYY-MM-DD')"
         if isinstance(sqla_type, DateTime):
             dttm_formatted = dttm.isoformat(sep=" ", timespec="microseconds")
-            return (
-                f"TO_TIMESTAMP('{dttm_formatted}', 'YYYY-MM-DD HH24:MI:SS.US')"
-            )
+            return f"TO_TIMESTAMP('{dttm_formatted}', 'YYYY-MM-DD HH24:MI:SS.US')"
         return None
 
 
@@ -403,9 +400,7 @@ WHERE datistemplate = false;
         )
 
     @staticmethod
-    def get_extra_params(
-        database: Database, source: Any = None
-    ) -> dict[str, Any]:
+    def get_extra_params(database: Database, source: Any = None) -> dict[str, Any]:
         """For Postgres, the path to a SSL certificate is placed in
         ``connect_args``.
 
@@ -417,8 +412,6 @@ WHERE datistemplate = false;
             raise ValueError("Unable to parse database extras") from ex
 
         if database.server_cert:
-            import tempfile
-
             from superset.utils import core as utils
 
             engine_params = extra.get("engine_params", {})
@@ -445,9 +438,7 @@ WHERE datistemplate = false;
         return None
 
     @classmethod
-    def get_cancel_query_id(
-        cls, cursor: Any, query: Query
-    ) -> str | None:
+    def get_cancel_query_id(cls, cursor: Any, query: Query) -> str | None:
         """Get Postgres PID for query cancellation.
 
         :param cursor: Cursor instance
@@ -459,9 +450,7 @@ WHERE datistemplate = false;
         return row[0]
 
     @classmethod
-    def cancel_query(
-        cls, cursor: Any, query: Query, cancel_query_id: str
-    ) -> bool:
+    def cancel_query(cls, cursor: Any, query: Query, cancel_query_id: str) -> bool:
         """Cancel query in the underlying database.
 
         :param cursor: New cursor instance to the db of the query

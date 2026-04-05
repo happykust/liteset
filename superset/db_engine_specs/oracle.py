@@ -67,10 +67,7 @@ class OracleEngineSpec(BaseEngineSpec):
             )
         if isinstance(sqla_type, types.DateTime):
             datetime_formatted = dttm.isoformat(timespec="seconds")
-            return (
-                f"TO_DATE('{datetime_formatted}', "
-                "'YYYY-MM-DD\"T\"HH24:MI:SS')"
-            )
+            return f"TO_DATE('{datetime_formatted}', 'YYYY-MM-DD\"T\"HH24:MI:SS')"
         return None
 
     @classmethod
@@ -82,9 +79,7 @@ class OracleEngineSpec(BaseEngineSpec):
         return "TO_DATE('1970-01-01','YYYY-MM-DD')+(1/24/60/60/1000)*{col}"
 
     @classmethod
-    def fetch_data(
-        cls, cursor: Any, limit: int | None = None
-    ) -> list[tuple[Any, ...]]:
+    def fetch_data(cls, cursor: Any, limit: int | None = None) -> list[tuple[Any, ...]]:
         if not cursor.description:
             return []
         return super().fetch_data(cursor, limit)

@@ -18,15 +18,16 @@
 
 Pure SQLAlchemy -- no Flask dependencies.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_mod
+from typing import Any
 
 from sqlalchemy import Column, ForeignKey, Integer, Text
 from sqlalchemy.orm import relationship
-from superset.models.helpers import BinaryUUID
 
-from superset.models.helpers import AuditMixinNullable, Base
+from superset.models.helpers import AuditMixinNullable, Base, BinaryUUID
 
 # ---------------------------------------------------------------------------
 # Model
@@ -38,9 +39,7 @@ class EmbeddedDashboard(Base, AuditMixinNullable):
 
     __tablename__ = "embedded_dashboards"
 
-    uuid = Column(
-        BinaryUUID(), default=uuid_mod.uuid4, primary_key=True
-    )
+    uuid: Any = Column(BinaryUUID(), default=uuid_mod.uuid4, primary_key=True)
     allow_domain_list = Column(Text)
     dashboard_id = Column(
         Integer,

@@ -22,7 +22,7 @@ import warnings
 
 import click
 
-from superset.cli.main import superset_cli, normalize_token
+from superset.cli.main import normalize_token, superset_cli as _main_superset_cli
 
 
 @click.group(context_settings={"token_normalize_func": normalize_token})
@@ -37,5 +37,5 @@ def superset_cli(ctx: click.Context) -> None:
     ctx.ensure_object(dict)
 
 
-for cmd_name, cmd in superset_cli.commands.items():
+for cmd_name, cmd in _main_superset_cli.commands.items():
     superset_cli.add_command(cmd, cmd_name)

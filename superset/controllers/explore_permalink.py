@@ -33,12 +33,17 @@ from superset.providers import provide_kv_dao
 from superset.typing import KeyValueDAOProtocol, UserProtocol
 
 
-class ExplorePermalinkCreateSchema(msgspec.Struct):
-    """POST body for explore permalink creation."""
+class ExplorePermalinkCreateSchema(msgspec.Struct, rename="camel"):
+    """POST body for explore permalink creation.
 
-    chart_id: int | None = None
-    form_data: dict[str, Any] = {}
-    url_params: dict[str, str] = {}
+    The original Superset endpoint accepts the *state* directly as the
+    POST body: ``{formData: {...}, urlParams: [[...], ...]}``.
+    The ``chartId``, ``datasourceType``, etc. are derived from
+    ``formData`` inside the command, NOT sent as top-level fields.
+    """
+
+    form_data: dict[str, Any]
+    url_params: list[list[str]] | None = None
 
 
 class ExplorePermalinkController(Controller):
@@ -57,7 +62,24 @@ class ExplorePermalinkController(Controller):
     ) -> dict[str, str]:
         """POST /api/v1/explore/permalink/ — create permalink."""
         key = str(uuid.uuid4())[:8]
-        value = json.dumps(msgspec.to_builtins(data))
+        # Derive datasource fields from formData (matches original command)
+        form_data = data.form_data or {}
+        datasource_str = form_data.get("datasource", "")
+        parts = datasource_str.split("__") if datasource_str else []
+        value = json.dumps(
+            {
+                "chartId": form_data.get("slice_id"),
+                "datasourceId": int(parts[0])
+                if len(parts) >= 1 and parts[0].isdigit()
+                else None,
+                "datasourceType": parts[1] if len(parts) >= 2 else "table",
+                "datasource": datasource_str,
+                "state": {
+                    "formData": form_data,
+                    "urlParams": data.url_params or [],
+                },
+            }
+        )
         await kv_dao.set_value(
             resource="explore_permalink",
             resource_id=0,

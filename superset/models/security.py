@@ -20,6 +20,7 @@ These mirror Flask-AppBuilder's ab_user, ab_role, ab_permission,
 ab_view_menu, ab_permission_view tables so superset can query them
 without importing flask_appbuilder.
 """
+
 from __future__ import annotations
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table

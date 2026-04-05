@@ -44,9 +44,7 @@ class AdvancedDataTypeController(Controller):
         """GET /api/v1/advanced_data_type/types
         -- list registered advanced data types.
         """
-        registry: dict[str, Any] = getattr(
-            state.settings, "advanced_data_types", {}
-        )
+        registry: dict[str, Any] = getattr(state.settings, "advanced_data_types", {})
         return {"result": list(registry.keys())}
 
     @post("/convert", guards=[require_authentication])
@@ -56,9 +54,7 @@ class AdvancedDataTypeController(Controller):
         state: State,
     ) -> dict[str, list[dict[str, Any]]]:
         """POST /api/v1/advanced_data_type/convert -- convert values."""
-        registry: dict[str, Any] = getattr(
-            state.settings, "advanced_data_types", {}
-        )
+        registry: dict[str, Any] = getattr(state.settings, "advanced_data_types", {})
         handler = registry.get(data.type)
         if handler is None:
             raise SupersetValidationException(
@@ -96,14 +92,10 @@ class AdvancedDataTypeController(Controller):
                 "'type' is required in the RISON query parameter"
             )
 
-        registry: dict[str, Any] = getattr(
-            state.settings, "advanced_data_types", {}
-        )
+        registry: dict[str, Any] = getattr(state.settings, "advanced_data_types", {})
         handler = registry.get(adv_type)
         if handler is None:
-            raise SupersetValidationException(
-                f"Unknown advanced data type: {adv_type}"
-            )
+            raise SupersetValidationException(f"Unknown advanced data type: {adv_type}")
 
         if callable(handler):
             result = handler(values)

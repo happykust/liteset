@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import io
-from typing import Any
+from typing import Any, cast, TYPE_CHECKING
 
 from litestar import Controller, delete, get, post, put
 from litestar.datastructures import UploadFile
@@ -53,12 +53,16 @@ from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_saved_query_dao
 from superset.schemas.query import (
+    SavedQueryDetailResult,
     SavedQueryGetResponse,
     SavedQueryPostSchema,
     SavedQueryPutSchema,
 )
 from superset.typing import CRUDDAOProtocol, SecurityManagerProtocol, UserProtocol
 from superset.utils import filter_unset
+
+if TYPE_CHECKING:
+    from superset.db.daos.query import AsyncSavedQueryDAO
 
 
 class SavedQueryController(Controller):
@@ -87,14 +91,13 @@ class SavedQueryController(Controller):
         from superset.models.sql_lab import SavedQuery
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
-            SavedQuery, rison_params,
+            SavedQuery,
+            rison_params,
         )
         if not order_by:
             order_by = [SavedQuery.changed_on.desc()]
 
-        base_filters = await saved_query_access_filters(
-            security_manager, current_user
-        )
+        base_filters = await saved_query_access_filters(security_manager, current_user)
         all_filters = (base_filters or []) + rison_filters
 
         queries = await dao.find_all(
@@ -106,11 +109,12 @@ class SavedQueryController(Controller):
                 selectinload(SavedQuery.changed_by),
                 selectinload(SavedQuery.created_by),
                 selectinload(SavedQuery.database),
+                selectinload(SavedQuery.tags),
             ],
         )
         total = await dao.count(filters=all_filters or None)
         event_logger.log("saved_query.list", user_id=current_user.id)
-        return serialize_list_response(
+        payload = serialize_list_response(
             queries,
             total,
             [
@@ -126,6 +130,7 @@ class SavedQueryController(Controller):
                 "rows",
                 "created_on",
                 "created_on_delta_humanized",
+                "changed_on",
                 "changed_on_delta_humanized",
                 "changed_on_utc",
                 "database.database_name",
@@ -136,8 +141,30 @@ class SavedQueryController(Controller):
                 "created_by.first_name",
                 "created_by.id",
                 "created_by.last_name",
+                "tags.id",
+                "tags.name",
+                "tags.type",
             ],
         )
+        # Post-process: add computed properties the frontend expects.
+        from datetime import datetime as _dt
+
+        import humanize as _humanize
+
+        now = _dt.now()
+        # Build a lookup from query id -> last_run for humanized delta
+        last_run_map: dict[int, Any] = {}
+        for q in queries:
+            last_run_map[q.id] = getattr(q, "last_run", None)
+
+        for row in payload.get("result", []):
+            last_run = last_run_map.get(row.get("id"))
+            row["last_run_delta_humanized"] = (
+                _humanize.naturaltime(now - last_run) if last_run else ""
+            )
+            # sql_tables — full SQL parsing is complex; return empty list
+            row["sql_tables"] = []
+        return payload
 
     @get(
         "/_info",
@@ -166,9 +193,7 @@ class SavedQueryController(Controller):
         """GET /api/v1/saved_query/related/{column_name}"""
         from superset.db.filters import saved_query_access_filters
 
-        base_filters = await saved_query_access_filters(
-            security_manager, current_user
-        )
+        base_filters = await saved_query_access_filters(security_manager, current_user)
         return await get_related_payload(
             dao=dao,
             column_name=column_name,
@@ -192,9 +217,7 @@ class SavedQueryController(Controller):
         """GET /api/v1/saved_query/distinct/{column_name}"""
         from superset.db.filters import saved_query_access_filters
 
-        base_filters = await saved_query_access_filters(
-            security_manager, current_user
-        )
+        base_filters = await saved_query_access_filters(security_manager, current_user)
         return await get_distinct_payload(
             dao=dao,
             column_name=column_name,
@@ -215,15 +238,27 @@ class SavedQueryController(Controller):
         current_user: UserProtocol,
     ) -> SavedQueryGetResponse:
         """GET /api/v1/saved_query/<pk> — get a single saved query."""
-        query = await dao.find_by_id(pk)
-        if not query:
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.sql_lab import SavedQuery
+
+        results = await dao.find_all(
+            filters=[SavedQuery.id == pk],
+            page=0,
+            page_size=1,
+            options=[
+                selectinload(SavedQuery.changed_by),
+                selectinload(SavedQuery.created_by),
+                selectinload(SavedQuery.database),
+            ],
+        )
+        if not results:
             raise ObjectNotFoundError("SavedQuery", pk)
+        query = results[0]
         # Verify object-level access
         from superset.db.filters import saved_query_access_filters
 
-        base_filters = await saved_query_access_filters(
-            security_manager, current_user
-        )
+        base_filters = await saved_query_access_filters(security_manager, current_user)
         if base_filters:
             from sqlalchemy import select as sa_select
 
@@ -237,14 +272,7 @@ class SavedQueryController(Controller):
                     raise ObjectNotFoundError("SavedQuery", pk)
         return SavedQueryGetResponse(
             id=query.id,
-            result={
-                "label": getattr(query, "label", ""),
-                "schema": getattr(query, "schema", None),
-                "sql": getattr(query, "sql", ""),
-                "db_id": getattr(query, "db_id", None),
-                "description": getattr(query, "description", None),
-                "template_params": getattr(query, "template_params", None),
-            },
+            result=SavedQueryDetailResult.from_model(query),
         )
 
     @post(
@@ -260,14 +288,15 @@ class SavedQueryController(Controller):
     ) -> SavedQueryGetResponse:
         """POST /api/v1/saved_query/ — create a saved query."""
         cmd = CreateSavedQueryCommand(
-            dao=dao,
+            dao=cast("AsyncSavedQueryDAO", dao),
             data={
                 "label": data.label,
                 "sql": data.sql,
                 "db_id": data.db_id,
                 "schema": data.schema,
                 "description": data.description,
-                "template_params": data.template_params,
+                "template_parameters": data.template_parameters,
+                "extra_json": data.extra_json,
                 "catalog": data.catalog,
             },
             user_id=current_user.id,
@@ -279,7 +308,7 @@ class SavedQueryController(Controller):
             user_id=current_user.id,
         )
         return SavedQueryGetResponse(
-            id=query.id,
+            id=int(query.id),
             result={"label": query.label, "sql": query.sql},
         )
 
@@ -302,12 +331,13 @@ class SavedQueryController(Controller):
                 "db_id": data.db_id,
                 "schema": data.schema,
                 "description": data.description,
-                "template_params": data.template_params,
+                "template_parameters": data.template_parameters,
+                "extra_json": data.extra_json,
                 "catalog": data.catalog,
             }
         )
         cmd = UpdateSavedQueryCommand(
-            dao=dao,
+            dao=cast("AsyncSavedQueryDAO", dao),
             query_id=pk,
             data=update_data,
             user_id=current_user.id,
@@ -319,7 +349,7 @@ class SavedQueryController(Controller):
             user_id=current_user.id,
         )
         return SavedQueryGetResponse(
-            id=query.id,
+            id=int(query.id),
             result={"label": query.label, "sql": query.sql},
         )
 
@@ -330,7 +360,7 @@ class SavedQueryController(Controller):
     )
     async def delete_saved_query(self, pk: int, dao: CRUDDAOProtocol) -> dict[str, str]:
         """DELETE /api/v1/saved_query/<pk> — delete a single saved query."""
-        cmd = DeleteSavedQueryCommand(dao=dao, query_id=pk)
+        cmd = DeleteSavedQueryCommand(dao=cast("AsyncSavedQueryDAO", dao), query_id=pk)
         await cmd.execute()
         event_logger.log("saved_query.delete", object_ref=f"saved_query:{pk}")
         return {"message": "OK"}
@@ -349,7 +379,7 @@ class SavedQueryController(Controller):
     ) -> dict[str, str]:
         ids = extract_ids_required(rison_params)
         cmd = BulkDeleteSavedQueriesCommand(
-            dao=dao,
+            dao=cast("AsyncSavedQueryDAO", dao),
             ids=ids,
             security_manager=security_manager,
             user_id=current_user.id,
@@ -379,9 +409,7 @@ class SavedQueryController(Controller):
             stream_zip(buf),
             status_code=200,
             media_type="application/zip",
-            headers=build_export_headers(
-                "saved_queries_export.zip", token=token
-            ),
+            headers=build_export_headers("saved_queries_export.zip", token=token),
         )
 
     @post(
@@ -395,6 +423,8 @@ class SavedQueryController(Controller):
         overwrite: bool = False,
         passwords: str | None = None,
         ssh_tunnel_passwords: str | None = None,
+        ssh_tunnel_private_keys: str | None = None,
+        ssh_tunnel_private_key_passwords: str | None = None,
     ) -> dict[str, str]:
         import json as _json
 
@@ -402,20 +432,42 @@ class SavedQueryController(Controller):
         buf = io.BytesIO(contents)
         try:
             passwords_dict: dict[str, str] = _json.loads(passwords) if passwords else {}
-        except (ValueError, _json.JSONDecodeError):
-            raise CommandInvalidError("Invalid JSON in 'passwords' field")
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError("Invalid JSON in 'passwords' field") from exc
         try:
             ssh_dict: dict[str, str] = (
                 _json.loads(ssh_tunnel_passwords) if ssh_tunnel_passwords else {}
             )
-        except (ValueError, _json.JSONDecodeError):
-            raise CommandInvalidError("Invalid JSON in 'ssh_tunnel_passwords' field")
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError(
+                "Invalid JSON in 'ssh_tunnel_passwords' field"
+            ) from exc
+        try:
+            ssh_private_keys_dict: dict[str, str] = (
+                _json.loads(ssh_tunnel_private_keys) if ssh_tunnel_private_keys else {}
+            )
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError(
+                "Invalid JSON in 'ssh_tunnel_private_keys' field"
+            ) from exc
+        try:
+            ssh_private_key_passwords_dict: dict[str, str] = (
+                _json.loads(ssh_tunnel_private_key_passwords)
+                if ssh_tunnel_private_key_passwords
+                else {}
+            )
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError(
+                "Invalid JSON in 'ssh_tunnel_private_key_passwords' field"
+            ) from exc
         cmd = ImportSavedQueriesCommand(
             contents=buf,
             dao=dao,
             overwrite=overwrite,
             passwords=passwords_dict,
             ssh_tunnel_passwords=ssh_dict,
+            ssh_tunnel_private_keys=ssh_private_keys_dict,
+            ssh_tunnel_private_key_passwords=ssh_private_key_passwords_dict,
         )
         await cmd.execute()
         event_logger.log("saved_query.import")

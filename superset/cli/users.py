@@ -25,18 +25,18 @@ style invocations.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 import click
 
 from superset.utils.password import generate_password_hash as _hash_password
-
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
 
 
-def _get_async_session_factory():  # type: ignore[no-untyped-def]
+def _get_async_session_factory() -> tuple[Any, Any]:
     """Create an async session factory from current settings."""
     from superset.config import SupersetSettings
     from superset.db.engine import (
@@ -103,8 +103,7 @@ def create_admin(
             role_row = result.first()
             if role_row is None:
                 click.secho(
-                    "Error! Admin role not found."
-                    " Run 'superset init' first.",
+                    "Error! Admin role not found. Run 'superset init' first.",
                     fg="red",
                 )
                 await engine.dispose()
@@ -142,10 +141,7 @@ def create_admin(
 
             # Associate user with Admin role
             await session.execute(
-                text(
-                    "INSERT INTO ab_user_role (user_id, role_id) "
-                    "VALUES (:uid, :rid)"
-                ),
+                text("INSERT INTO ab_user_role (user_id, role_id) VALUES (:uid, :rid)"),
                 {"uid": user_id, "rid": role_id},
             )
             await session.commit()
@@ -244,10 +240,7 @@ def create_user(
             user_id = result.scalar_one()
 
             await session.execute(
-                text(
-                    "INSERT INTO ab_user_role (user_id, role_id) "
-                    "VALUES (:uid, :rid)"
-                ),
+                text("INSERT INTO ab_user_role (user_id, role_id) VALUES (:uid, :rid)"),
                 {"uid": user_id, "rid": role_id},
             )
             await session.commit()
@@ -321,11 +314,7 @@ def list_users() -> None:
 
         session_factory, engine = _get_async_session_factory()
         async with session_factory() as session:
-            stmt = (
-                select(User)
-                .options(selectinload(User.roles))
-                .order_by(User.id)
-            )
+            stmt = select(User).options(selectinload(User.roles)).order_by(User.id)
             result = await session.execute(stmt)
             users = result.scalars().all()
             if not users:
@@ -333,20 +322,13 @@ def list_users() -> None:
                 await engine.dispose()
                 return
 
-            click.echo(
-                f"{'ID':>4}  {'Username':<20}"
-                f" {'Email':<30} {'Active':<7} Roles"
-            )
+            click.echo(f"{'ID':>4}  {'Username':<20} {'Email':<30} {'Active':<7} Roles")
             click.echo("-" * 80)
             for u in users:
                 active_str = "Yes" if u.active else "No"
-                roles = ", ".join(
-                    r.name for r in u.roles
-                )
+                roles = ", ".join(r.name for r in u.roles)
                 click.echo(
-                    f"{u.id:>4}  {u.username:<20}"
-                    f" {u.email:<30}"
-                    f" {active_str:<7} {roles}"
+                    f"{u.id:>4}  {u.username:<20} {u.email:<30} {active_str:<7} {roles}"
                 )
 
         await engine.dispose()

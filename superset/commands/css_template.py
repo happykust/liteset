@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """CSS Template command classes — business logic for CSS template CRUD."""
+
 from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
     pass
 
 
-class CreateCssTemplateCommand(AsyncBaseCommand["CssTemplate"]):
+class CreateCssTemplateCommand(AsyncBaseCommand[Any]):
     """Create a new CSS template."""
 
     def __init__(self, dao: Any, data: dict[str, Any]) -> None:
@@ -43,7 +44,7 @@ class CreateCssTemplateCommand(AsyncBaseCommand["CssTemplate"]):
         return result
 
 
-class UpdateCssTemplateCommand(AsyncBaseCommand["CssTemplate"]):
+class UpdateCssTemplateCommand(AsyncBaseCommand[Any]):
     """Update an existing CSS template."""
 
     def __init__(self, dao: Any, pk: int, data: dict[str, Any]) -> None:
@@ -95,7 +96,7 @@ class BulkDeleteCssTemplateCommand(AsyncBaseCommand[None]):
         if not self._ids:
             raise CommandInvalidError("No CSS template IDs provided")
         self._templates = await self._dao.find_by_ids(self._ids)
-        found_ids = {t.id for t in self._templates}
+        found_ids = {int(t.id) for t in self._templates}
         missing = set(self._ids) - found_ids
         if missing:
             raise ObjectNotFoundError("CssTemplate", str(missing))

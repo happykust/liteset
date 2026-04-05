@@ -74,7 +74,8 @@ class AnnotationLayerController(Controller):
         from superset.models.annotations import AnnotationLayer
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
-            AnnotationLayer, rison_params,
+            AnnotationLayer,
+            rison_params,
         )
         items = await dao.find_all(
             filters=rison_filters or None,
@@ -123,9 +124,7 @@ class AnnotationLayerController(Controller):
             raise ObjectNotFoundError("AnnotationLayer", pk)
         changed_on = getattr(layer, "changed_on", None)
         created_on = getattr(layer, "created_on", None)
-        event_logger.log(
-            "annotation_layer.get", object_ref=f"annotation_layer:{pk}"
-        )
+        event_logger.log("annotation_layer.get", object_ref=f"annotation_layer:{pk}")
         return {
             "id": layer.id,
             "result": {
@@ -180,16 +179,12 @@ class AnnotationLayerController(Controller):
         dao: Any,
     ) -> dict[str, Any]:
         """PUT /api/v1/annotation_layer/<pk> — update annotation layer."""
-        update_data = filter_unset(
-            {"name": data.name, "descr": data.descr}
-        )
+        update_data = filter_unset({"name": data.name, "descr": data.descr})
         cmd = UpdateAnnotationLayerCommand(dao=dao, pk=pk, data=update_data)
         layer = await cmd.execute()
         changed_on = getattr(layer, "changed_on", None)
         created_on = getattr(layer, "created_on", None)
-        event_logger.log(
-            "annotation_layer.update", object_ref=f"annotation_layer:{pk}"
-        )
+        event_logger.log("annotation_layer.update", object_ref=f"annotation_layer:{pk}")
         return {
             "id": layer.id,
             "result": {
@@ -216,9 +211,7 @@ class AnnotationLayerController(Controller):
         """DELETE /api/v1/annotation_layer/<pk> — delete annotation layer."""
         cmd = DeleteAnnotationLayerCommand(dao=dao, pk=pk)
         await cmd.execute()
-        event_logger.log(
-            "annotation_layer.delete", object_ref=f"annotation_layer:{pk}"
-        )
+        event_logger.log("annotation_layer.delete", object_ref=f"annotation_layer:{pk}")
         return {"message": "OK"}
 
     # ------------------------------------------------------------------
@@ -238,9 +231,7 @@ class AnnotationLayerController(Controller):
         ids = extract_ids_required(rison_params)
         cmd = BulkDeleteAnnotationLayerCommand(dao=dao, ids=ids)
         await cmd.execute()
-        event_logger.log(
-            "annotation_layer.bulk_delete", extra={"count": len(ids)}
-        )
+        event_logger.log("annotation_layer.bulk_delete", extra={"count": len(ids)})
         return {"message": "OK"}
 
     @get(

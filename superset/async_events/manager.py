@@ -25,6 +25,7 @@ Redis data model:
 - Channel stream: ``async-events-{channel_id}`` (capped at 1K entries)
 - Pub/sub topic:  ``events:{user_id}`` (for real-time WebSocket relay)
 """
+
 from __future__ import annotations
 
 import json
@@ -83,7 +84,7 @@ class AsyncEventManager:
 
     def __init__(
         self,
-        redis: Redis,  # type: ignore[type-arg]
+        redis: Redis,
         stream_prefix: str = "async-events-",
         global_stream_key: str = "async-events-full",
         global_stream_limit: int = 1_000_000,
@@ -235,15 +236,18 @@ class AsyncEventManager:
         """
         import time
 
-        cursor: int | bytes = 0
+        cursor: int = 0
         pattern = f"{self.stream_prefix}*"
         now = time.time()
         deleted = 0
 
         while True:
-            cursor, keys = await self.redis.scan(
-                cursor=cursor, match=pattern, count=100,
+            _cursor, keys = await self.redis.scan(
+                cursor=cursor,
+                match=pattern,
+                count=100,
             )
+            cursor = int(_cursor)
             for key in keys:
                 # XREVRANGE with COUNT 1 returns the newest entry
                 entries = await self.redis.xrevrange(key, count=1)

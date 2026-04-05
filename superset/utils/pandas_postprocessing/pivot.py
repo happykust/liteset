@@ -41,9 +41,7 @@ def pivot(  # pylint: disable=too-many-arguments
 ) -> DataFrame:
     """Perform a pivot operation on a DataFrame."""
     if not index:
-        raise InvalidPostProcessingError(
-            "Pivot operation requires at least one index"
-        )
+        raise InvalidPostProcessingError("Pivot operation requires at least one index")
     if not aggregates:
         raise InvalidPostProcessingError(
             "Pivot operation must include at least one aggregate"

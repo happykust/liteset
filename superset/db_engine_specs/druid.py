@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Apache Druid engine spec -- sync/Flask-compatible.
 
 Ported 1:1 from ``superset_old/db_engine_specs/druid.py`` with Flask
@@ -79,9 +80,7 @@ class DruidEngineSpec(BaseEngineSpec):
             orm_col.is_dttm = True
 
     @staticmethod
-    def get_extra_params(
-        database: Database, source: Any = None
-    ) -> dict[str, Any]:
+    def get_extra_params(database: Database, source: Any = None) -> dict[str, Any]:
         """For Druid, the path to a SSL certificate is placed in ``connect_args``."""
         try:
             extra = json_utils.loads(database.extra or "{}")

@@ -81,8 +81,7 @@ class SqliteEngineSpec(BaseEngineSpec):
         ),
         TimeGrain.DAY: "DATETIME({col}, 'start of day')",
         TimeGrain.WEEK: (
-            "DATETIME({col}, 'start of day', "
-            "-strftime('%w', {col}) || ' days')"
+            "DATETIME({col}, 'start of day', -strftime('%w', {col}) || ' days')"
         ),
         TimeGrain.MONTH: "DATETIME({col}, 'start of month')",
         TimeGrain.QUARTER: (
@@ -93,12 +92,9 @@ class SqliteEngineSpec(BaseEngineSpec):
         TimeGrain.WEEK_ENDING_SATURDAY: (
             "DATETIME({col}, 'start of day', 'weekday 6')"
         ),
-        TimeGrain.WEEK_ENDING_SUNDAY: (
-            "DATETIME({col}, 'start of day', 'weekday 0')"
-        ),
+        TimeGrain.WEEK_ENDING_SUNDAY: ("DATETIME({col}, 'start of day', 'weekday 0')"),
         TimeGrain.WEEK_STARTING_SUNDAY: (
-            "DATETIME({col}, 'start of day', "
-            "-strftime('%w', {col}) || ' days')"
+            "DATETIME({col}, 'start of day', -strftime('%w', {col}) || ' days')"
         ),
         TimeGrain.WEEK_STARTING_MONDAY: (
             "DATETIME({col}, 'start of day', '-' || "

@@ -20,6 +20,7 @@ Ported 1:1 from ``superset_old/commands/report/exceptions.py``.
 These are used by the Celery-based report execution pipeline
 (:mod:`superset.commands.report_execute`).
 """
+
 from __future__ import annotations
 
 from superset.exceptions import CommandException, SupersetErrorsException

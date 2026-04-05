@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 import re
 from re import Pattern
 from typing import Any, Optional
@@ -22,8 +23,8 @@ from sqlalchemy import Numeric, TEXT, types
 from sqlalchemy.sql.type_api import TypeEngine
 
 from superset.db_engine_specs.mysql import MySQLEngineSpec
-from superset.typing import GenericDataType
 from superset.errors import SupersetErrorType
+from superset.typing import GenericDataType
 
 # Regular expressions to catch custom errors
 CONNECTION_ACCESS_DENIED_REGEX = re.compile(

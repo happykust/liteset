@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Model base, mixin classes, and helper types for Superset.
 
 Pure SQLAlchemy -- no Flask dependencies.
@@ -786,9 +787,7 @@ class ExploreMixin:
         def is_alias_used_in_orderby(col: ColumnElement) -> bool:
             if not isinstance(col, Label):
                 return False
-            regexp = re.compile(
-                f"\\(.*\\b{re.escape(col.name)}\\b.*\\)", re.IGNORECASE
-            )
+            regexp = re.compile(f"\\(.*\\b{re.escape(col.name)}\\b.*\\)", re.IGNORECASE)
             return any(regexp.search(str(x)) for x in orderby_exprs)
 
         # Iterate through selected columns, if column alias appears in
@@ -849,8 +848,7 @@ class ExploreMixin:
             )
             db_engine_spec = self.db_engine_spec
             errors = [
-                dataclasses.asdict(error)
-                for error in db_engine_spec.extract_errors(ex)
+                dataclasses.asdict(error) for error in db_engine_spec.extract_errors(ex)
             ]
             error_message = error_msg_from_exception(ex)
 
@@ -896,9 +894,7 @@ class ExploreMixin:
             )
 
         if not sql:
-            raise QueryObjectValidationError(
-                "Virtual dataset query cannot be empty"
-            )
+            raise QueryObjectValidationError("Virtual dataset query cannot be empty")
         return sql
 
     def text(self, clause: str) -> TextClause:
@@ -921,9 +917,7 @@ class ExploreMixin:
         from_sql = self.get_rendered_sql(template_processor) + "\n"
         parsed_script = SQLScript(from_sql, engine=self.db_engine_spec.engine)
         if parsed_script.has_mutation():
-            raise QueryObjectValidationError(
-                "Virtual dataset query must be read-only"
-            )
+            raise QueryObjectValidationError("Virtual dataset query must be read-only")
 
         # Apply RLS filters to virtual dataset SQL to prevent RLS bypass.
         # For each table referenced in the virtual dataset, apply its RLS
@@ -942,9 +936,7 @@ class ExploreMixin:
                 from_sql = parsed_script.format()
             except Exception as ex:  # noqa: BLE001
                 # Log the error but don't fail -- RLS application is best-effort
-                logger.warning(
-                    "Failed to apply RLS to virtual dataset SQL: %s", ex
-                )
+                logger.warning("Failed to apply RLS to virtual dataset SQL: %s", ex)
 
         cte = self.db_engine_spec.get_cte_query(from_sql)
         from_clause: Union[TableClause, Alias] = (
@@ -993,9 +985,7 @@ class ExploreMixin:
 
             sqla_metric = literal_column(expression)
         else:
-            raise QueryObjectValidationError(
-                "Adhoc metric expressionType is invalid"
-            )
+            raise QueryObjectValidationError("Adhoc metric expressionType is invalid")
 
         return self.make_sqla_column_compatible(sqla_metric, label)
 
@@ -1039,14 +1029,10 @@ class ExploreMixin:
             if isinstance(value, str):
                 value = value.strip("\t\n")
 
-                if (
-                    target_generic_type == GenericDataType.NUMERIC
-                    and operator
-                    not in {
-                        FilterOperator.ILIKE,
-                        FilterOperator.LIKE,
-                    }
-                ):
+                if target_generic_type == GenericDataType.NUMERIC and operator not in {
+                    FilterOperator.ILIKE,
+                    FilterOperator.LIKE,
+                }:
                     # For backwards compatibility and edge cases
                     # where a column data type might have changed
                     return cast_to_num(value)
@@ -1127,9 +1113,7 @@ class ExploreMixin:
         """
         if apply_fetch_values_predicate and self.fetch_values_predicate:
             qry = qry.where(
-                self.get_fetch_values_predicate(
-                    template_processor=template_processor
-                )
+                self.get_fetch_values_predicate(template_processor=template_processor)
             )
 
         if granularity:
@@ -1204,21 +1188,14 @@ class ExploreMixin:
         # Modify SELECT expressions
         modified_select_exprs = []
         for expr in select_exprs:
-            if (
-                hasattr(expr, "name")
-                and expr.name in groupby_series_columns
-            ):
+            if hasattr(expr, "name") and expr.name in groupby_series_columns:
                 # Create condition for this column using the factory function
                 condition = condition_factory(expr.name, expr)
 
                 # Create CASE expression: condition true -> original, else
                 # "Others"
-                case_expr = sa.case(
-                    (condition, expr), else_=sa.literal("Others")
-                )
-                case_expr = self.make_sqla_column_compatible(
-                    case_expr, expr.name
-                )
+                case_expr = sa.case((condition, expr), else_=sa.literal("Others"))
+                case_expr = self.make_sqla_column_compatible(case_expr, expr.name)
                 modified_select_exprs.append(case_expr)
             else:
                 modified_select_exprs.append(expr)
@@ -1251,9 +1228,7 @@ class ExploreMixin:
         """Convert datetime object to a SQL expression string."""
 
         sql = (
-            self.db_engine_spec.convert_dttm(
-                col.type, dttm, db_extra=self.db_extra
-            )
+            self.db_engine_spec.convert_dttm(col.type, dttm, db_extra=self.db_extra)
             if col.type
             else None
         )
@@ -1265,9 +1240,9 @@ class ExploreMixin:
 
         # Fallback to the default format (if defined).
         if not tf and self.db_extra:
-            tf = self.db_extra.get(
-                "python_date_format_by_column_name", {}
-            ).get(col.column_name)
+            tf = self.db_extra.get("python_date_format_by_column_name", {}).get(
+                col.column_name
+            )
 
         if tf:
             if tf in {"epoch_ms", "epoch_s"}:
@@ -1327,9 +1302,7 @@ class ExploreMixin:
         # unless disabled in the dataset configuration
         db_dialect = self.database.get_dialect()
         column_name_ = (
-            self.database.db_engine_spec.denormalize_name(
-                db_dialect, column_name
-            )
+            self.database.db_engine_spec.denormalize_name(db_dialect, column_name)
             if denormalize_column
             else column_name
         )
@@ -1345,11 +1318,7 @@ class ExploreMixin:
                 # because of the call to DISTINCT; others will uppercase the
                 # column names.  This gives us a deterministic column name in
                 # the dataframe.
-                [
-                    target_col.get_sqla_col(
-                        template_processor=tp
-                    ).label("column_values")
-                ]
+                [target_col.get_sqla_col(template_processor=tp).label("column_values")]
             )
             .select_from(tbl)
             .distinct()
@@ -1358,17 +1327,13 @@ class ExploreMixin:
             qry = qry.limit(limit)
 
         if self.fetch_values_predicate:
-            qry = qry.where(
-                self.get_fetch_values_predicate(template_processor=tp)
-            )
+            qry = qry.where(self.get_fetch_values_predicate(template_processor=tp))
 
         rls_filters = self.get_sqla_row_level_filters(template_processor=tp)
         qry = qry.where(and_(*rls_filters))
 
         with self.database.get_sqla_engine() as engine:
-            sql = str(
-                qry.compile(engine, compile_kwargs={"literal_binds": True})
-            )
+            sql = str(qry.compile(engine, compile_kwargs={"literal_binds": True}))
             sql = self._apply_cte(sql, cte)
             sql = self.database.mutate_sql_based_on_config(sql)
 
@@ -1404,14 +1369,10 @@ class ExploreMixin:
         col = sa.column(column.get("column_name"), type_=type_)
 
         if template_processor:
-            expression = template_processor.process_template(
-                column["column_name"]
-            )
+            expression = template_processor.process_template(column["column_name"])
             col = sa.literal_column(expression, type_=type_)
 
-        time_expr = self.db_engine_spec.get_timestamp_expr(
-            col, None, time_grain
-        )
+        time_expr = self.db_engine_spec.get_timestamp_expr(col, None, time_grain)
         return self.make_sqla_column_compatible(time_expr, label)
 
     def convert_tbl_column_to_sqla_col(
@@ -1422,9 +1383,7 @@ class ExploreMixin:
     ) -> ColumnElement:
         label = label or tbl_column.column_name
         db_engine_spec = self.db_engine_spec
-        column_spec = db_engine_spec.get_column_spec(
-            self.type, db_extra=self.db_extra
-        )
+        column_spec = db_engine_spec.get_column_spec(self.type, db_extra=self.db_extra)
         type_ = column_spec.sqla_type if column_spec else None
         if expression := tbl_column.expression:
             if template_processor:
@@ -1525,9 +1484,7 @@ class ExploreMixin:
         columns_by_name: dict[str, "TableColumn"] = {
             col.column_name: col for col in self.columns
         }
-        quoted_columns_by_name = {
-            quote(k): v for k, v in columns_by_name.items()
-        }
+        quoted_columns_by_name = {quote(k): v for k, v in columns_by_name.items()}
 
         metrics_by_name: dict[str, "SqlMetric"] = {
             m.metric_name: m for m in self.metrics
@@ -1559,17 +1516,13 @@ class ExploreMixin:
                     )
                 )
             else:
-                raise QueryObjectValidationError(
-                    f"Metric '{metric}' does not exist"
-                )
+                raise QueryObjectValidationError(f"Metric '{metric}' does not exist")
 
         if metrics_exprs:
             main_metric_expr = metrics_exprs[0]
         else:
             main_metric_expr, label = literal_column("COUNT(*)"), "ccount"
-            main_metric_expr = self.make_sqla_column_compatible(
-                main_metric_expr, label
-            )
+            main_metric_expr = self.make_sqla_column_compatible(main_metric_expr, label)
 
         # To ensure correct handling of the ORDER BY labeling we need to
         # reference the metric instance if defined in the SELECT clause.
@@ -1661,9 +1614,7 @@ class ExploreMixin:
                             template_processor=template_processor,
                         )
                         outer = literal_column(f"({selected})")
-                        outer = self.make_sqla_column_compatible(
-                            outer, selected
-                        )
+                        outer = self.make_sqla_column_compatible(outer, selected)
                 else:
                     outer = self.adhoc_column_to_sqla(
                         col=selected,
@@ -1748,8 +1699,7 @@ class ExploreMixin:
             # in template.  Check both the actual column name and __timestamp
             # alias
             should_skip_time_filter = (
-                dttm_col.column_name in removed_filters
-                or DTTM_ALIAS in removed_filters
+                dttm_col.column_name in removed_filters or DTTM_ALIAS in removed_filters
             )
 
             if not should_skip_time_filter:
@@ -1797,9 +1747,7 @@ class ExploreMixin:
                 col_obj = dttm_col
             elif is_adhoc_column(flt_col):
                 try:
-                    sqla_col = self.adhoc_column_to_sqla(
-                        flt_col, force_type_check=True
-                    )
+                    sqla_col = self.adhoc_column_to_sqla(flt_col, force_type_check=True)
                     applied_adhoc_filters_columns.append(flt_col)
                 except ColumnNotFoundException:
                     rejected_adhoc_filters_columns.append(flt_col)
@@ -1813,11 +1761,7 @@ class ExploreMixin:
             # the alias and the actual column name
             filter_col_name = get_column_name(flt_col)
             should_skip_filter = filter_col_name in removed_filters
-            if (
-                not should_skip_filter
-                and flt_col == DTTM_ALIAS
-                and col_obj
-            ):
+            if not should_skip_filter and flt_col == DTTM_ALIAS and col_obj:
                 # For __timestamp, also check if the actual datetime column
                 # was removed
                 should_skip_filter = col_obj.column_name in removed_filters
@@ -1841,17 +1785,13 @@ class ExploreMixin:
                         template_processor=template_processor,
                     )
                 col_type = col_obj.type if col_obj else None
-                col_spec = db_engine_spec.get_column_spec(
-                    native_type=col_type
-                )
+                col_spec = db_engine_spec.get_column_spec(native_type=col_type)
                 is_list_target = op in (
                     FilterOperator.IN,
                     FilterOperator.NOT_IN,
                 )
 
-                col_advanced_data_type = (
-                    col_obj.advanced_data_type if col_obj else ""
-                )
+                col_advanced_data_type = col_obj.advanced_data_type if col_obj else ""
 
                 if col_spec and not col_advanced_data_type:
                     target_generic_type = col_spec.generic_type
@@ -1894,14 +1834,12 @@ class ExploreMixin:
                         }
                     )
                     if bus_resp["error_message"]:
-                        raise AdvancedDataTypeResponseError(
-                            bus_resp["error_message"]
-                        )
+                        raise AdvancedDataTypeResponseError(bus_resp["error_message"])
 
                     where_clause_and.append(
-                        ADVANCED_DATA_TYPES[
-                            col_advanced_data_type
-                        ].translate_filter(sqla_col, op, bus_resp["values"])
+                        ADVANCED_DATA_TYPES[col_advanced_data_type].translate_filter(
+                            sqla_col, op, bus_resp["values"]
+                        )
                     )
                 elif is_list_target:
                     assert isinstance(eq, (tuple, list))
@@ -1910,9 +1848,7 @@ class ExploreMixin:
                             "Filter value list cannot be empty"
                         )
                     if len(eq) > len(
-                        eq_without_none := [
-                            x for x in eq if x is not None
-                        ]
+                        eq_without_none := [x for x in eq if x is not None]
                     ):
                         is_null_cond = sqla_col.is_(None)
                         if eq:
@@ -1936,15 +1872,11 @@ class ExploreMixin:
                     )
                 elif op == FilterOperator.IS_TRUE:
                     where_clause_and.append(
-                        db_engine_spec.handle_boolean_filter(
-                            sqla_col, op, True
-                        )
+                        db_engine_spec.handle_boolean_filter(sqla_col, op, True)
                     )
                 elif op == FilterOperator.IS_FALSE:
                     where_clause_and.append(
-                        db_engine_spec.handle_boolean_filter(
-                            sqla_col, op, False
-                        )
+                        db_engine_spec.handle_boolean_filter(sqla_col, op, False)
                     )
                 else:
                     if (
@@ -1956,8 +1888,7 @@ class ExploreMixin:
                         and eq is None
                     ):
                         raise QueryObjectValidationError(
-                            "Must specify a value for filters "
-                            "with comparison operators"
+                            "Must specify a value for filters with comparison operators"
                         )
                     if op in {
                         FilterOperator.EQUALS,
@@ -1968,18 +1899,13 @@ class ExploreMixin:
                         FilterOperator.LESS_THAN_OR_EQUALS,
                     }:
                         where_clause_and.append(
-                            db_engine_spec.handle_comparison_filter(
-                                sqla_col, op, eq
-                            )
+                            db_engine_spec.handle_comparison_filter(sqla_col, op, eq)
                         )
                     elif op in {
                         FilterOperator.ILIKE,
                         FilterOperator.LIKE,
                     }:
-                        if (
-                            target_generic_type
-                            != GenericDataType.STRING
-                        ):
+                        if target_generic_type != GenericDataType.STRING:
                             sqla_col = sa.cast(sqla_col, sa.String)
 
                         if op == FilterOperator.LIKE:
@@ -1987,10 +1913,7 @@ class ExploreMixin:
                         else:
                             where_clause_and.append(sqla_col.ilike(eq))
                     elif op in {FilterOperator.NOT_LIKE}:
-                        if (
-                            target_generic_type
-                            != GenericDataType.STRING
-                        ):
+                        if target_generic_type != GenericDataType.STRING:
                             sqla_col = sa.cast(sqla_col, sa.String)
 
                         where_clause_and.append(sqla_col.not_like(eq))
@@ -2018,9 +1941,7 @@ class ExploreMixin:
                         raise QueryObjectValidationError(
                             f"Invalid filter operation type: {op}"
                         )
-        where_clause_and += self.get_sqla_row_level_filters(
-            template_processor
-        )
+        where_clause_and += self.get_sqla_row_level_filters(template_processor)
         if extras:
             where = extras.get("where")
             if where:
@@ -2045,9 +1966,7 @@ class ExploreMixin:
 
         if apply_fetch_values_predicate and self.fetch_values_predicate:
             qry = qry.where(
-                self.get_fetch_values_predicate(
-                    template_processor=template_processor
-                )
+                self.get_fetch_values_predicate(template_processor=template_processor)
             )
         if granularity:
             qry = qry.where(and_(*(time_filters + where_clause_and)))
@@ -2060,9 +1979,7 @@ class ExploreMixin:
         for col, (_orig_col, ascending) in zip(  # noqa: B007
             orderby_exprs, orderby, strict=False
         ):
-            if not db_engine_spec.allows_alias_in_orderby and isinstance(
-                col, Label
-            ):
+            if not db_engine_spec.allows_alias_in_orderby and isinstance(col, Label):
                 # if engine does not allow using SELECT alias in ORDER BY
                 # revert to the underlying column
                 col = col.element
@@ -2070,8 +1987,7 @@ class ExploreMixin:
             if (
                 db_engine_spec.get_allows_alias_in_select(self.database)
                 and db_engine_spec.allows_hidden_cc_in_orderby
-                and col.name
-                in [select_col.name for select_col in select_exprs]
+                and col.name in [select_col.name for select_col in select_exprs]
             ):
                 col = literal_column(quote(col.name))
             direction = sa.asc if ascending else sa.desc
@@ -2083,10 +1999,7 @@ class ExploreMixin:
             qry = qry.offset(row_offset)
 
         if series_limit and groupby_series_columns:
-            if (
-                db_engine_spec.allows_joins
-                and db_engine_spec.allows_subqueries
-            ):
+            if db_engine_spec.allows_joins and db_engine_spec.allows_subqueries:
                 # some sql dialects require for order by expressions
                 # to also be in the select clause -- others, e.g. vertica,
                 # require a unique inner alias
@@ -2096,9 +2009,7 @@ class ExploreMixin:
                 inner_groupby_exprs = []
                 inner_select_exprs = []
                 for gby_name, gby_obj in groupby_series_columns.items():
-                    inner = self.make_sqla_column_compatible(
-                        gby_obj, gby_name + "__"
-                    )
+                    inner = self.make_sqla_column_compatible(gby_obj, gby_name + "__")
                     inner_groupby_exprs.append(inner)
                     inner_select_exprs.append(inner)
 
@@ -2115,9 +2026,7 @@ class ExploreMixin:
                             template_processor=template_processor,
                         )
                     ]
-                subq = subq.where(
-                    and_(*(where_clause_and + inner_time_filter))
-                )
+                subq = subq.where(and_(*(where_clause_and + inner_time_filter)))
                 subq = subq.group_by(*inner_groupby_exprs)
 
                 ob = inner_main_metric_expr
@@ -2137,9 +2046,7 @@ class ExploreMixin:
                     # in this case the column name, not the alias, needs to
                     # be conditionally mutated, as it refers to the column
                     # alias in the inner query
-                    col_name = db_engine_spec.make_label_compatible(
-                        gby_name + "__"
-                    )
+                    col_name = db_engine_spec.make_label_compatible(gby_name + "__")
                     on_clause.append(gby_obj == sa.column(col_name))
 
                 # Use LEFT JOIN when grouping others, INNER JOIN otherwise
@@ -2153,14 +2060,10 @@ class ExploreMixin:
                     )
 
                     # Apply Others grouping using the refactored method
-                    def _create_join_condition(
-                        col_name: str, expr: Any
-                    ) -> Any:
+                    def _create_join_condition(col_name: str, expr: Any) -> Any:
                         # Get the corresponding column from the subquery
-                        subq_col_name = (
-                            db_engine_spec.make_label_compatible(
-                                col_name + "__"
-                            )
+                        subq_col_name = db_engine_spec.make_label_compatible(
+                            col_name + "__"
                         )
                         # Reference the column from the already-created
                         # aliased subquery
@@ -2179,9 +2082,7 @@ class ExploreMixin:
                     # Reconstruct query with modified expressions
                     qry = sa.select(select_exprs)
                     if groupby_all_columns:
-                        qry = qry.group_by(
-                            *groupby_all_columns.values()
-                        )
+                        qry = qry.group_by(*groupby_all_columns.values())
 
                     # Re-apply WHERE and HAVING clauses lost during query
                     # reconstruction
@@ -2234,8 +2135,7 @@ class ExploreMixin:
                 dimensions = [
                     c
                     for c in result.df.columns
-                    if c not in metrics
-                    and c in groupby_series_columns
+                    if c not in metrics and c in groupby_series_columns
                 ]
                 top_groups = self._get_top_groups(
                     result.df,
@@ -2246,9 +2146,7 @@ class ExploreMixin:
 
                 if group_others_when_limit_reached:
                     # Apply Others grouping using the refactored method
-                    def _create_top_groups_condition(
-                        col_name: str, expr: Any
-                    ) -> Any:
+                    def _create_top_groups_condition(col_name: str, expr: Any) -> Any:
                         return top_groups
 
                     select_exprs, groupby_all_columns = (
@@ -2263,9 +2161,7 @@ class ExploreMixin:
                     # Reconstruct query with modified expressions
                     qry = sa.select(select_exprs)
                     if groupby_all_columns:
-                        qry = qry.group_by(
-                            *groupby_all_columns.values()
-                        )
+                        qry = qry.group_by(*groupby_all_columns.values())
 
                     # Re-apply WHERE and HAVING clauses lost during query
                     # reconstruction
@@ -2286,21 +2182,13 @@ class ExploreMixin:
 
         if is_rowcount:
             if not db_engine_spec.allows_subqueries:
-                raise QueryObjectValidationError(
-                    "Database does not support subqueries"
-                )
+                raise QueryObjectValidationError("Database does not support subqueries")
             label = "rowcount"
-            col = self.make_sqla_column_compatible(
-                literal_column("COUNT(*)"), label
-            )
-            qry = sa.select([col]).select_from(
-                qry.alias("rowcount_qry")
-            )
+            col = self.make_sqla_column_compatible(literal_column("COUNT(*)"), label)
+            qry = sa.select([col]).select_from(qry.alias("rowcount_qry"))
             labels_expected = [label]
 
-        filter_columns = (
-            [flt.get("col") for flt in filter] if filter else []
-        )
+        filter_columns = [flt.get("col") for flt in filter] if filter else []
         rejected_filter_columns = [
             col
             for col in filter_columns
@@ -2315,10 +2203,7 @@ class ExploreMixin:
             for col in filter_columns
             if col
             and not is_adhoc_column(col)
-            and (
-                col in self.column_names
-                or col in applied_template_filters
-            )
+            and (col in self.column_names or col in applied_template_filters)
         ] + applied_adhoc_filters_columns
 
         return SqlaQuery(

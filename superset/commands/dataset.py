@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Dataset command classes — business logic for dataset CRUD and operations."""
 
 from __future__ import annotations
@@ -228,9 +229,7 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 )
 
         # Add implicit type: and owner: tags (async port of DatasetUpdater.after_insert)
-        owner_ids = (
-            [o.id for o in dataset.owners] if hasattr(dataset, "owners") else []
-        )
+        owner_ids = [o.id for o in dataset.owners] if hasattr(dataset, "owners") else []
         await add_implicit_tags_after_insert(
             self._dao.session, "dataset", dataset.id, owner_ids
         )

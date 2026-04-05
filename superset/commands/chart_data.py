@@ -94,7 +94,7 @@ class GetCachedChartDataCommand(AsyncBaseCommand[dict[str, Any] | None]):
         if not self._cache_key:
             raise CommandInvalidError("cache_key is required")
 
-    async def _raise_for_access(self, raw: dict[str, Any]) -> None:
+    async def _raise_for_access(self, raw: dict[str, Any]) -> None:  # noqa: C901
         """Re-validate datasource access using metadata stored alongside cached data.
 
         The cache entry is expected to contain either:
@@ -155,9 +155,7 @@ class GetCachedChartDataCommand(AsyncBaseCommand[dict[str, Any] | None]):
                 finder = self._datasource_dao.find_by_id_and_type(
                     datasource_id, datasource_type or "table"
                 )
-                datasource = (
-                    await finder if inspect.isawaitable(finder) else finder
-                )
+                datasource = await finder if inspect.isawaitable(finder) else finder
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "Failed to resolve datasource %s/%s for cache access check",
@@ -175,7 +173,7 @@ class GetCachedChartDataCommand(AsyncBaseCommand[dict[str, Any] | None]):
         # Build a minimal processor solely for the access check
         processor = AsyncQueryContextProcessor(
             datasource=datasource,
-            settings=self._settings,
+            settings=self._settings,  # type: ignore[arg-type]
             security_manager=self._security_manager,
             user=self._user,
         )

@@ -19,6 +19,7 @@
 Replaces ``superset/tasks/types.py``. Uses :class:`enum.StrEnum` directly
 (Python 3.11+) instead of the ``superset.utils.backports`` shim.
 """
+
 from __future__ import annotations
 
 from enum import StrEnum

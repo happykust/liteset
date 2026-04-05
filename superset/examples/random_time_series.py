@@ -74,6 +74,10 @@ def load_random_time_series_data(
     obj.main_dttm_col = "ds"
     obj.database = database
     obj.filter_select_enabled = True
+
+    with _ctx.example_engine(database) as eng:
+        _ctx.fetch_table_metadata(obj, eng)
+
     tbl = obj
 
     slice_data = {

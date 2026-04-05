@@ -499,9 +499,7 @@ def _build_menu_data(user: Any, settings: Any) -> dict[str, Any]:
                     child
                     for child in item_copy["childs"]
                     if child.get("name", "") not in _MENU_ITEM_FEATURE_FLAGS
-                    or feature_flags.get(
-                        _MENU_ITEM_FEATURE_FLAGS[child["name"]], False
-                    )
+                    or feature_flags.get(_MENU_ITEM_FEATURE_FLAGS[child["name"]], False)
                 ]
             filtered_menu.append(item_copy)
             continue
@@ -516,9 +514,7 @@ def _build_menu_data(user: Any, settings: Any) -> dict[str, Any]:
                     child
                     for child in item_copy["childs"]
                     if child.get("name", "") not in _MENU_ITEM_FEATURE_FLAGS
-                    or feature_flags.get(
-                        _MENU_ITEM_FEATURE_FLAGS[child["name"]], False
-                    )
+                    or feature_flags.get(_MENU_ITEM_FEATURE_FLAGS[child["name"]], False)
                 ]
             filtered_menu.append(item_copy)
 

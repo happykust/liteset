@@ -1,4 +1,5 @@
 """Minimal Jinja template processor for SQL."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -18,7 +19,7 @@ class NoOpTemplateProcessor:
 
 class JinjaTemplateProcessor:
     def __init__(self, database: Any = None, **kwargs: Any) -> None:
-        self._env = Environment()
+        self._env = Environment()  # noqa: S701 — SQL templates should not escape
 
     def process_template(self, sql: str, **kwargs: Any) -> str:
         template = self._env.from_string(sql)

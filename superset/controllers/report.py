@@ -42,7 +42,11 @@ from superset.exceptions import ObjectNotFoundError
 from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_report_dao
-from superset.schemas.report import ReportSchedulePostSchema, ReportSchedulePutSchema
+from superset.schemas.report import (
+    ReportDetailResult,
+    ReportSchedulePostSchema,
+    ReportSchedulePutSchema,
+)
 from superset.typing import UserProtocol
 from superset.utils import filter_unset
 
@@ -60,12 +64,14 @@ _LIST_COLUMNS = [
     "chart_id",
     "dashboard_id",
     "database_id",
+    "extra",
     "last_eval_dttm",
     "last_state",
     "last_value",
     "log_retention",
     "grace_period",
     "working_timeout",
+    "changed_on",
     "changed_on_delta_humanized",
     "changed_on_utc",
     "changed_by.first_name",
@@ -104,7 +110,8 @@ class ReportScheduleController(Controller):
         from superset.models.reports import ReportSchedule
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
-            ReportSchedule, rison_params,
+            ReportSchedule,
+            rison_params,
         )
         if not order_by:
             order_by = [ReportSchedule.changed_on.desc()]
@@ -131,39 +138,29 @@ class ReportScheduleController(Controller):
     )
     async def get_report(self, pk: int, dao: Any) -> dict[str, Any]:
         """GET /api/v1/report/<pk> — get a single report schedule."""
-        report = await dao.find_by_id(pk)
-        if not report:
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.reports import ReportSchedule
+
+        results = await dao.find_all(
+            filters=[ReportSchedule.id == pk],
+            page=0,
+            page_size=1,
+            options=[
+                selectinload(ReportSchedule.chart),
+                selectinload(ReportSchedule.dashboard),
+                selectinload(ReportSchedule.database),
+                selectinload(ReportSchedule.owners),
+                selectinload(ReportSchedule.recipients),
+            ],
+        )
+        if not results:
             raise ObjectNotFoundError("ReportSchedule", pk)
+        report = results[0]
         event_logger.log("report.get", object_ref=f"report:{pk}")
         return {
             "id": report.id,
-            "result": {
-                "name": report.name,
-                "type": report.type,
-                "description": getattr(report, "description", None),
-                "crontab": getattr(report, "crontab", None),
-                "timezone": getattr(report, "timezone", "UTC"),
-                "active": getattr(report, "active", True),
-                "chart_id": getattr(report, "chart_id", None),
-                "dashboard_id": getattr(report, "dashboard_id", None),
-                "database_id": getattr(report, "database_id", None),
-                "sql": getattr(report, "sql", None),
-                "validator_type": getattr(report, "validator_type", None),
-                "validator_config_json": getattr(
-                    report, "validator_config_json", None
-                ),
-                "log_retention": getattr(report, "log_retention", None),
-                "grace_period": getattr(report, "grace_period", None),
-                "force_screenshot": getattr(report, "force_screenshot", False),
-                "custom_width": getattr(report, "custom_width", None),
-                "custom_height": getattr(report, "custom_height", None),
-                "last_eval_dttm": (
-                    report.last_eval_dttm.isoformat()
-                    if getattr(report, "last_eval_dttm", None)
-                    else None
-                ),
-                "last_state": getattr(report, "last_state", None),
-            },
+            "result": ReportDetailResult.from_model(report),
         }
 
     @post(
@@ -185,9 +182,7 @@ class ReportScheduleController(Controller):
                 msgspec.structs.asdict(r) if hasattr(r, "__struct_fields__") else r
                 for r in raw["recipients"]
             ]
-        cmd = CreateReportScheduleCommand(
-            dao=dao, data=raw, user_id=current_user.id
-        )
+        cmd = CreateReportScheduleCommand(dao=dao, data=raw, user_id=current_user.id)
         item = await cmd.execute()
         event_logger.log(
             "report.create",

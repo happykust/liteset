@@ -22,6 +22,7 @@ Pure SQLAlchemy -- no Flask dependencies.
 from __future__ import annotations
 
 import enum
+from typing import Any
 
 from sqlalchemy import (
     Column,
@@ -84,7 +85,7 @@ class Tag(Base, AuditMixinNullable):
 
     id = Column(Integer, primary_key=True)
     name = Column(String(250), unique=True)
-    type = Column(Enum(TagType))
+    type: Any = Column(Enum(TagType))
     description = Column(Text)
 
     # -- relationships --------------------------------------------------------

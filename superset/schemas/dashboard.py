@@ -16,18 +16,28 @@
 # under the License.
 """msgspec Structs for the Dashboard API — replaces Marshmallow schemas."""
 
-# ruff: noqa: N815  — camelCase field names required for JSON API contract parity
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import msgspec
 
-from superset.schemas.base import ApiListResponse, ApiResponse
+from superset.schemas.base import ApiListResponse, ApiResponse, ModelStruct
 
 # ---------------------------------------------------------------------------
 # Request bodies
 # ---------------------------------------------------------------------------
+
+
+def _sanitize_slug(slug: str | None) -> str | None:
+    """Strip whitespace, replace spaces with hyphens, remove non-word chars."""
+    if slug is None:
+        return None
+    slug = slug.strip()
+    slug = slug.replace(" ", "-")
+    slug = re.sub(r"[^\w\-]+", "", slug)
+    return slug or None
 
 
 class DashboardPostSchema(msgspec.Struct):
@@ -49,6 +59,9 @@ class DashboardPostSchema(msgspec.Struct):
     theme_id: int | None = None
     uuid: str | None = None
 
+    def __post_init__(self) -> None:
+        self.slug = _sanitize_slug(self.slug)
+
 
 class DashboardPutSchema(msgspec.Struct):
     """PUT /api/v1/dashboard/<pk>"""
@@ -68,6 +81,10 @@ class DashboardPutSchema(msgspec.Struct):
     tags: list[int] | None | msgspec.UnsetType = msgspec.UNSET
     theme_id: int | None | msgspec.UnsetType = msgspec.UNSET
     uuid: str | None | msgspec.UnsetType = msgspec.UNSET
+
+    def __post_init__(self) -> None:
+        if isinstance(self.slug, str):
+            self.slug = _sanitize_slug(self.slug)
 
 
 class DashboardCopySchema(msgspec.Struct):
@@ -93,27 +110,28 @@ class DashboardColorsUpdateSchema(msgspec.Struct):
     color_namespace: str | None = None
     color_scheme: str | None = None
     map_label_colors: dict[str, str] = {}
-    shared_label_colors: dict[str, str] = {}
+    shared_label_colors: list[str] | dict[str, str] = []
     label_colors: dict[str, str] = {}
     color_scheme_domain: list[str] = []
 
 
-class DashboardScreenshotSchema(msgspec.Struct):
+class DashboardScreenshotSchema(msgspec.Struct, rename="camel"):
     """POST /api/v1/dashboard/<pk>/cache_dashboard_screenshot/"""
 
-    dataMask: dict[str, Any] = {}
-    activeTabs: list[str] = []
+    data_mask: dict[str, Any] = {}
+    active_tabs: list[str] = []
     anchor: str | None = None
-    urlParams: list[list[str]] = []
+    url_params: list[list[str]] = []
+    permalink_key: str | None = None
 
 
-class DashboardPermalinkSchema(msgspec.Struct):
+class DashboardPermalinkSchema(msgspec.Struct, rename="camel"):
     """POST /api/v1/dashboard/<pk>/permalink"""
 
-    dataMask: dict[str, Any] = {}
-    activeTabs: list[str] = []
+    data_mask: dict[str, Any] = {}
+    active_tabs: list[str] = []
     anchor: str | None = None
-    urlParams: list[list[str]] = []
+    url_params: list[list[str]] = []
 
 
 class FilterStateSchema(msgspec.Struct):
@@ -138,7 +156,7 @@ class DashboardJSONMetadata(msgspec.Struct):
     refresh_frequency: int = 0
     color_scheme: str | None = None
     label_colors: dict[str, str] = {}
-    shared_label_colors: dict[str, str] = {}
+    shared_label_colors: list[str] | dict[str, str] = []
     map_label_colors: dict[str, str] = {}
     color_namespace: str | None = None
     color_scheme_domain: list[str] = []
@@ -150,6 +168,9 @@ class DashboardJSONMetadata(msgspec.Struct):
     stagger_time: int = 0
     filter_bar_orientation: str | None = None
     positions: dict[str, Any] | None = None
+    import_time: int | None = None
+    remote_id: int | None = None
+    native_filter_migration: dict[str, Any] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +195,102 @@ class EmbeddedDashboardResponse(msgspec.Struct):
 
 
 # ---------------------------------------------------------------------------
-# Response schemas
+# Response ref structs (local; consolidate to schemas/base.py later)
+# ---------------------------------------------------------------------------
+
+
+class UserRef(ModelStruct):
+    """Lightweight user reference for nested serialisation."""
+
+    id: int
+    first_name: str = ""
+    last_name: str = ""
+
+
+class RoleRef(ModelStruct):
+    """Lightweight role reference."""
+
+    id: int
+    name: str = ""
+
+
+class TagRef(ModelStruct):
+    """Lightweight tag reference."""
+
+    id: int
+    name: str = ""
+    type: str | None = None
+
+
+class ThemeRef(ModelStruct):
+    """Lightweight theme reference."""
+
+    id: int
+    theme_name: str | None = None
+    json_data: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Response result structs
+# ---------------------------------------------------------------------------
+
+
+class DashboardDetailResult(ModelStruct):
+    """Full dashboard detail — used by GET /{id}, POST /, PUT /{id}.
+
+    Uses :class:`ModelStruct` auto-mapping for most fields; only non-trivial
+    derivations need ``_resolve_*`` overrides.
+    """
+
+    id: int
+    dashboard_title: str | None = None
+    slug: str | None = None
+    position_json: str | None = None
+    css: str | None = None
+    json_metadata: str | None = None
+    published: bool = False
+    description: str | None = None
+    uuid: str | None = None
+    url: str | None = None
+    status: str | None = None
+    thumbnail_url: str | None = None
+    certified_by: str | None = None
+    certification_details: str | None = None
+    is_managed_externally: bool = False
+    changed_on: str | None = None
+    created_on: str | None = None
+    changed_on_delta_humanized: str | None = None
+    created_on_delta_humanized: str | None = None
+    changed_by_name: str | None = None
+    changed_by: UserRef | None = None
+    created_by: UserRef | None = None
+    owners: list[UserRef] = []
+    roles: list[RoleRef] = []
+    tags: list[TagRef] = []
+    charts: list[str] = []
+    table_names: str | None = None
+    theme: ThemeRef | None = None
+
+    # -- custom resolvers for non-trivial fields --
+
+    @classmethod
+    def _resolve_charts(cls, obj: Any) -> list[str]:
+        """Charts come from ``dashboard.slices``, mapped to slice_name."""
+        slices = getattr(obj, "slices", None) or []
+        return [getattr(c, "slice_name", str(c)) for c in slices]
+
+    @classmethod
+    def from_model_brief(cls, dashboard: Any) -> DashboardDetailResult:
+        """Build a minimal result for POST (create) responses."""
+        return cls(
+            id=dashboard.id,
+            dashboard_title=dashboard.dashboard_title,
+            slug=dashboard.slug,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Response wrappers
 # ---------------------------------------------------------------------------
 
 
@@ -227,3 +343,4 @@ class ImportV1Dashboard(msgspec.Struct):
     published: bool | None = None
     tags: list[str] | None = None
     theme_uuid: str | None = None
+    theme_id: int | None = None

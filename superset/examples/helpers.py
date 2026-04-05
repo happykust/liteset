@@ -20,6 +20,7 @@ Adapted from the original ``superset/examples/helpers.py`` to work
 without Flask.  Uses :mod:`superset.examples._ctx` for session/engine
 access instead of ``from superset import db``.
 """
+
 from __future__ import annotations
 
 import os
@@ -82,9 +83,7 @@ def update_slice_ids(pos: dict[Any, Any]) -> list[Slice]:
 
 def merge_slice(slc: Slice) -> None:
     """Upsert a Slice by name."""
-    existing = (
-        _ctx.session.query(Slice).filter_by(slice_name=slc.slice_name).first()
-    )
+    existing = _ctx.session.query(Slice).filter_by(slice_name=slc.slice_name).first()
     if existing:
         _ctx.session.delete(existing)
     _ctx.session.add(slc)
@@ -103,7 +102,7 @@ def get_example_url(filepath: str) -> str:
 
 def normalize_example_data_url(url: str) -> str:
     if url.startswith(EXAMPLES_PROTOCOL):
-        relative_path = url[len(EXAMPLES_PROTOCOL):]
+        relative_path = url[len(EXAMPLES_PROTOCOL) :]
         return get_example_url(relative_path)
     return url
 

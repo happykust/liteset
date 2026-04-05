@@ -225,9 +225,7 @@ def sync_tags() -> None:
             # 2. Ensure owner tags exist for every user, then link
             # ----------------------------------------------------------
             click.echo("  Adding owner tags...")
-            user_rows = await session.execute(
-                text("SELECT id FROM ab_user")
-            )
+            user_rows = await session.execute(text("SELECT id FROM ab_user"))
             for (user_id,) in user_rows:
                 await session.execute(
                     text(
@@ -307,7 +305,7 @@ def sync_tags() -> None:
             # 3. Ensure favorited_by tags exist, then link
             # ----------------------------------------------------------
             click.echo("  Adding favorited_by tags...")
-            for (user_id,) in (await session.execute(text("SELECT id FROM ab_user"))):
+            for (user_id,) in await session.execute(text("SELECT id FROM ab_user")):
                 await session.execute(
                     text(
                         "INSERT INTO tag (name, type) "

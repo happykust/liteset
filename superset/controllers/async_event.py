@@ -25,6 +25,7 @@ The WebSocket endpoint (superset/websocket/events.py) provides real-time
 delivery as an alternative, but this polling endpoint is preserved for
 full backward compatibility with the existing frontend.
 """
+
 from __future__ import annotations
 
 import logging

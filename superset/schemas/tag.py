@@ -24,27 +24,34 @@ import msgspec
 from msgspec import Meta
 
 
-class TaggedObjectSchema(msgspec.Struct):
-    object_id: int
-    object_type: str  # "chart" | "dashboard" | "saved_query"
-
-
 class TagPostSchema(msgspec.Struct):
     name: Annotated[str, Meta(min_length=1)]
-    description: str = ""
-    objects_to_tag: list[TaggedObjectSchema] = []
+    description: str | None = None
+    objects_to_tag: list[list[str | int]] = []
 
 
 class TagPutSchema(msgspec.Struct):
     name: str | None | msgspec.UnsetType = msgspec.UNSET
     description: str | None | msgspec.UnsetType = msgspec.UNSET
+    objects_to_tag: list[list[str | int]] | msgspec.UnsetType = msgspec.UNSET
 
 
 class BulkTagCreateSchema(msgspec.Struct):
     tags: list[TagPostSchema]
 
 
-class AddTagsToObjectSchema(msgspec.Struct):
-    """Schema for POST /{object_type}/{object_id}/ -- add tags to object."""
+class AddTagsToObjectProperties(msgspec.Struct, frozen=True):
+    """Inner ``properties`` object for the add-tags-to-object request."""
 
     tags: list[str] = []
+
+
+class AddTagsToObjectSchema(msgspec.Struct):
+    """Schema for POST /{object_type}/{object_id}/ -- add tags to object.
+
+    The original Flask endpoint expects ``{"properties": {"tags": [...]}}``.
+    """
+
+    properties: AddTagsToObjectProperties = msgspec.field(
+        default_factory=AddTagsToObjectProperties,
+    )

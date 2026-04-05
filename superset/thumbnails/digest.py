@@ -59,6 +59,4 @@ class AsyncThumbnailsDigest:
             else:
                 cache_dashboard_thumbnail.delay(url, digest, force=force)
         except ImportError:
-            logger.warning(
-                "Thumbnail tasks not available — Celery not configured"
-            )
+            logger.warning("Thumbnail tasks not available — Celery not configured")

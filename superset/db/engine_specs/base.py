@@ -18,11 +18,32 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime
+from re import Match, Pattern
+from typing import Any, NamedTuple, Union
 
+from sqlalchemy import types
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql import text
+from sqlalchemy.sql.type_api import TypeEngine
+
+from superset.typing import GenericDataType
+
+# (regex, sqla_type_or_factory, generic_data_type)
+ColumnTypeMapping = tuple[
+    Pattern[str],
+    Union[TypeEngine[Any], Callable[[Match[str]], TypeEngine[Any]]],
+    GenericDataType,
+]
+
+
+class ColumnSpec(NamedTuple):
+    sqla_type: TypeEngine[Any] | str
+    generic_type: GenericDataType
+    is_dttm: bool
+    python_date_format: str | None = None
 
 
 @dataclass(slots=True)
@@ -47,6 +68,135 @@ class BaseAsyncEngineSpec(ABC):
     default_driver: str = ""
     _time_grain_expressions: dict[str | None, str] = {}  # noqa: RUF012 — safe: __init_subclass__ copies per-subclass; do not mutate base class dict after import
     _custom_errors: list[tuple[re.Pattern[str], str]] = []  # noqa: RUF012
+
+    # SQL expression template converting epoch seconds to datetime.
+    # Subclasses override this classmethod with engine-specific SQL.
+    @classmethod
+    def epoch_to_dttm(cls) -> str:
+        return "{col}"
+
+    # Default column-type mappings used by get_column_types / get_column_spec.
+    _default_column_type_mappings: tuple[ColumnTypeMapping, ...] = (  # noqa: RUF012
+        (
+            re.compile(r"^string", re.IGNORECASE),
+            types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r"^n((var)?char|text)", re.IGNORECASE),
+            types.UnicodeText(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r"^(var)?char", re.IGNORECASE),
+            types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r"^(tiny|medium|long)?text", re.IGNORECASE),
+            types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r"^smallint", re.IGNORECASE),
+            types.SmallInteger(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^int(eger)?", re.IGNORECASE),
+            types.Integer(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^bigint", re.IGNORECASE),
+            types.BigInteger(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^long", re.IGNORECASE),
+            types.Float(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^decimal", re.IGNORECASE),
+            types.Numeric(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^numeric", re.IGNORECASE),
+            types.Numeric(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^float", re.IGNORECASE),
+            types.Float(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^double", re.IGNORECASE),
+            types.Float(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^real", re.IGNORECASE),
+            types.REAL(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^smallserial", re.IGNORECASE),
+            types.SmallInteger(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^serial", re.IGNORECASE),
+            types.Integer(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^bigserial", re.IGNORECASE),
+            types.BigInteger(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^money", re.IGNORECASE),
+            types.Numeric(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^timestamp", re.IGNORECASE),
+            types.TIMESTAMP(),
+            GenericDataType.TEMPORAL,
+        ),
+        (
+            re.compile(r"^datetime", re.IGNORECASE),
+            types.DateTime(),
+            GenericDataType.TEMPORAL,
+        ),
+        (
+            re.compile(r"^date", re.IGNORECASE),
+            types.Date(),
+            GenericDataType.TEMPORAL,
+        ),
+        (
+            re.compile(r"^time", re.IGNORECASE),
+            types.Time(),
+            GenericDataType.TEMPORAL,
+        ),
+        (
+            re.compile(r"^interval", re.IGNORECASE),
+            types.Interval(),
+            GenericDataType.TEMPORAL,
+        ),
+        (
+            re.compile(r"^bool(ean)?", re.IGNORECASE),
+            types.Boolean(),
+            GenericDataType.BOOLEAN,
+        ),
+    )
+
+    # Engine-specific type mappings checked *before* the defaults.
+    # Subclasses override this to handle vendor-specific types.
+    column_type_mappings: tuple[ColumnTypeMapping, ...] = ()  # noqa: RUF012
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -143,20 +293,36 @@ class BaseAsyncEngineSpec(ABC):
         conn: AsyncConnection,
         schema: str | None = None,
     ) -> set[str]:
-        """Return table names in the given schema."""
-        if schema:
-            result = await conn.execute(
-                text(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = :schema"
-                ),
-                {"schema": schema},
-            )
-        else:
-            result = await conn.execute(
-                text("SELECT table_name FROM information_schema.tables")
-            )
-        return {row[0] for row in result.fetchall()}
+        """Return table names in the given schema.
+
+        Uses SQLAlchemy Inspector (same as the original Superset)
+        via ``run_sync`` to bridge the async connection.
+        """
+        from sqlalchemy import inspect as sa_inspect
+
+        def _get(sync_conn: Any) -> set[str]:
+            inspector = sa_inspect(sync_conn)
+            return set(inspector.get_table_names(schema))
+
+        return await conn.run_sync(_get)
+
+    @classmethod
+    async def get_view_names(
+        cls,
+        conn: AsyncConnection,
+        schema: str | None = None,
+    ) -> set[str]:
+        """Return view names in the given schema.
+
+        Uses SQLAlchemy Inspector via ``run_sync``.
+        """
+        from sqlalchemy import inspect as sa_inspect
+
+        def _get(sync_conn: Any) -> set[str]:
+            inspector = sa_inspect(sync_conn)
+            return set(inspector.get_view_names(schema))
+
+        return await conn.run_sync(_get)
 
     @classmethod
     async def get_columns(
@@ -219,3 +385,96 @@ class BaseAsyncEngineSpec(ABC):
         Subclasses can override to add engine-specific connection args.
         """
         return uri, connect_args or {}
+
+    # ------------------------------------------------------------------
+    # Column-type introspection
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def get_column_types(
+        cls,
+        column_type: str | None,
+    ) -> tuple[TypeEngine[Any], GenericDataType] | None:
+        """Map a native DB column type string to SQLAlchemy + generic types.
+
+        Checks ``column_type_mappings`` (engine-specific) first, then falls
+        back to ``_default_column_type_mappings``.
+
+        :param column_type: Column type string returned by the DB inspector.
+        :return: ``(sqla_type, generic_type)`` or ``None`` if unrecognised.
+        """
+        if not column_type:
+            return None
+
+        for regex, sqla_type, generic_type in (
+            cls.column_type_mappings + cls._default_column_type_mappings
+        ):
+            match = regex.match(column_type)
+            if not match:
+                continue
+            if callable(sqla_type):
+                return sqla_type(match), generic_type
+            return sqla_type, generic_type
+        return None
+
+    @classmethod
+    def get_column_spec(
+        cls,
+        native_type: str | None,
+        db_extra: dict[str, Any] | None = None,
+    ) -> ColumnSpec | None:
+        """Return a :class:`ColumnSpec` for *native_type*, or ``None``.
+
+        :param native_type: Native database column type string.
+        :param db_extra: Optional database extra configuration.
+        :return: :class:`ColumnSpec` with ``sqla_type``, ``generic_type``
+            and ``is_dttm``, or ``None`` when the type is unrecognised.
+        """
+        if col_types := cls.get_column_types(native_type):
+            column_type, generic_type = col_types
+            is_dttm = generic_type == GenericDataType.TEMPORAL
+            return ColumnSpec(
+                sqla_type=column_type,
+                generic_type=generic_type,
+                is_dttm=is_dttm,
+            )
+        return None
+
+    @classmethod
+    def get_sqla_column_type(
+        cls,
+        native_type: str | None,
+        db_extra: dict[str, Any] | None = None,
+    ) -> TypeEngine[Any] | str | None:
+        """Convert a native DB type string to a SQLAlchemy :class:`TypeEngine`.
+
+        Convenience wrapper around :meth:`get_column_spec`.
+
+        :param native_type: Native database column type string.
+        :param db_extra: Optional database extra configuration.
+        :return: SQLAlchemy type instance or ``None``.
+        """
+        column_spec = cls.get_column_spec(
+            native_type=native_type,
+            db_extra=db_extra,
+        )
+        return column_spec.sqla_type if column_spec else None
+
+    @classmethod
+    def convert_dttm(
+        cls,
+        target_type: str,
+        dttm: datetime,
+        db_extra: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Convert a Python ``datetime`` to a SQL expression string.
+
+        Subclasses override to produce engine-specific literals such as
+        ``TIMESTAMP '2021-01-01 00:00:00'``.
+
+        :param target_type: Target SQL type (e.g. ``"TIMESTAMP"``).
+        :param dttm: The datetime value.
+        :param db_extra: Optional database extra configuration.
+        :return: SQL expression string, or ``None`` for unsupported types.
+        """
+        return None

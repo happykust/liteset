@@ -16,13 +16,34 @@
 # under the License.
 from __future__ import annotations
 
+import logging
 import re
+from datetime import datetime
+from enum import IntEnum
 from typing import Any
 
+from sqlalchemy import types
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql import text
 
-from superset.db.engine_specs.base import AsyncResultSet, BaseAsyncEngineSpec
+from superset.db.engine_specs.base import (
+    AsyncResultSet,
+    BaseAsyncEngineSpec,
+    ColumnTypeMapping,
+)
+from superset.typing import GenericDataType
+
+logger = logging.getLogger(__name__)
+
+
+class _GenericDataType(IntEnum):
+    """Subset of GenericDataType used by column type mappings."""
+
+    NUMERIC = 0
+    STRING = 1
+    TEMPORAL = 2
+    BOOLEAN = 3
+
 
 _VALID_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_\-]*$")
 
@@ -33,6 +54,56 @@ class AsyncClickHouseEngineSpec(BaseAsyncEngineSpec):
     engine = "clickhouse"
     engine_name = "ClickHouse"
     default_driver = "asynch"
+
+    time_groupby_inline = True
+
+    column_type_mappings: tuple[ColumnTypeMapping, ...] = (
+        (
+            re.compile(r".*Enum.*", re.IGNORECASE),
+            types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r".*Array.*", re.IGNORECASE),
+            types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r".*UUID.*", re.IGNORECASE),
+            types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r".*Bool.*", re.IGNORECASE),
+            types.Boolean(),
+            GenericDataType.BOOLEAN,
+        ),
+        (
+            re.compile(r".*String.*", re.IGNORECASE),
+            types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r".*Int\d+.*", re.IGNORECASE),
+            types.INTEGER(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r".*Decimal.*", re.IGNORECASE),
+            types.DECIMAL(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r".*DateTime.*", re.IGNORECASE),
+            types.DateTime(),
+            GenericDataType.TEMPORAL,
+        ),
+        (
+            re.compile(r".*Date.*", re.IGNORECASE),
+            types.Date(),
+            GenericDataType.TEMPORAL,
+        ),
+    )
 
     _time_grain_expressions: dict[str | None, str] = {
         None: "{col}",
@@ -103,3 +174,66 @@ class AsyncClickHouseEngineSpec(BaseAsyncEngineSpec):
         args.setdefault("connect_timeout", 10)
         args.setdefault("send_receive_timeout", 300)
         return uri, args
+
+    @classmethod
+    def epoch_to_dttm(cls) -> str:
+        """ClickHouse stores epoch timestamps as-is."""
+        return "{col}"
+
+    @classmethod
+    def convert_dttm(
+        cls,
+        target_type: str,
+        dttm: datetime,
+        db_extra: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Convert a Python datetime to a ClickHouse date/datetime literal."""
+        sqla_type = cls._get_sqla_column_type(target_type)
+        if isinstance(sqla_type, types.Date):
+            return f"toDate('{dttm.date().isoformat()}')"
+        if isinstance(sqla_type, types.DateTime):
+            return f"""toDateTime('{dttm.isoformat(sep=" ", timespec="seconds")}')"""
+        return None
+
+    @classmethod
+    def get_dbapi_exception_mapping(cls) -> dict[type[Exception], type[Exception]]:
+        """Map urllib3 NewConnectionError to a generic ConnectionError."""
+        try:
+            from urllib3.exceptions import NewConnectionError
+        except ImportError:
+            return {}
+        return {NewConnectionError: ConnectionError}
+
+    @classmethod
+    async def get_function_names(cls, conn: AsyncConnection) -> list[str]:
+        """Query system.functions for SQL Lab autocomplete.
+
+        :param conn: An async database connection
+        :return: A list of function names usable in the database
+        """
+        system_functions_sql = "SELECT name FROM system.functions"
+        try:
+            result = await conn.execute(text(system_functions_sql))
+            rows = result.fetchall()
+            return [row[0] for row in rows]
+        except Exception:
+            logger.exception(
+                "Error fetching function names from system.functions",
+            )
+            return []
+
+    @staticmethod
+    def _get_sqla_column_type(native_type: str) -> types.TypeEngine[Any]:
+        """Resolve a ClickHouse type string to a SQLAlchemy type instance."""
+        type_map: list[tuple[re.Pattern[str], types.TypeEngine[Any]]] = [
+            (re.compile(r".*DateTime.*", re.IGNORECASE), types.DateTime()),
+            (re.compile(r".*Date.*", re.IGNORECASE), types.Date()),
+            (re.compile(r".*String.*", re.IGNORECASE), types.String()),
+            (re.compile(r".*Int\d+.*", re.IGNORECASE), types.INTEGER()),
+            (re.compile(r".*Decimal.*", re.IGNORECASE), types.DECIMAL()),
+            (re.compile(r".*Bool.*", re.IGNORECASE), types.Boolean()),
+        ]
+        for pattern, sqla_type in type_map:
+            if pattern.match(native_type):
+                return sqla_type
+        return types.String()

@@ -19,6 +19,7 @@
 Legacy migrations import:
   - ``make_url_safe``
 """
+
 from __future__ import annotations
 
 from sqlalchemy.engine import make_url

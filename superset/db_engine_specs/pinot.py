@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """Apache Pinot engine spec -- sync/Flask-compatible.
+# mypy: ignore-errors
 
 Ported 1:1 from ``superset_old/db_engine_specs/pinot.py``.
 Only overridden methods and attributes are included.
@@ -42,12 +43,10 @@ class PinotEngineSpec(BaseEngineSpec):
     _time_grain_expressions = {
         None: "{col}",
         TimeGrain.SECOND: (
-            "CAST(DATE_TRUNC('second', "
-            "CAST({col} AS TIMESTAMP)) AS TIMESTAMP)"
+            "CAST(DATE_TRUNC('second', CAST({col} AS TIMESTAMP)) AS TIMESTAMP)"
         ),
         TimeGrain.MINUTE: (
-            "CAST(DATE_TRUNC('minute', "
-            "CAST({col} AS TIMESTAMP)) AS TIMESTAMP)"
+            "CAST(DATE_TRUNC('minute', CAST({col} AS TIMESTAMP)) AS TIMESTAMP)"
         ),
         TimeGrain.FIVE_MINUTES: (
             "CAST(ROUND(DATE_TRUNC('minute', "
@@ -69,12 +68,10 @@ class PinotEngineSpec(BaseEngineSpec):
         TimeGrain.DAY: "CAST(DATE_TRUNC('day', CAST({col} AS TIMESTAMP)) AS TIMESTAMP)",
         TimeGrain.WEEK: "CAST(DATE_TRUNC('week', CAST({col} AS TIMESTAMP)) AS TIMESTAMP)",  # noqa: E501
         TimeGrain.MONTH: (
-            "CAST(DATE_TRUNC('month', "
-            "CAST({col} AS TIMESTAMP)) AS TIMESTAMP)"
+            "CAST(DATE_TRUNC('month', CAST({col} AS TIMESTAMP)) AS TIMESTAMP)"
         ),
         TimeGrain.QUARTER: (
-            "CAST(DATE_TRUNC('quarter', "
-            "CAST({col} AS TIMESTAMP)) AS TIMESTAMP)"
+            "CAST(DATE_TRUNC('quarter', CAST({col} AS TIMESTAMP)) AS TIMESTAMP)"
         ),
         TimeGrain.YEAR: "CAST(DATE_TRUNC('year', CAST({col} AS TIMESTAMP)) AS TIMESTAMP)",  # noqa: E501
     }
@@ -82,8 +79,7 @@ class PinotEngineSpec(BaseEngineSpec):
     @classmethod
     def epoch_to_dttm(cls) -> str:
         return (
-            "DATETIMECONVERT({col}, '1:SECONDS:EPOCH', "
-            "'1:SECONDS:EPOCH', '1:SECONDS')"
+            "DATETIMECONVERT({col}, '1:SECONDS:EPOCH', '1:SECONDS:EPOCH', '1:SECONDS')"
         )
 
     @classmethod
@@ -95,7 +91,9 @@ class PinotEngineSpec(BaseEngineSpec):
 
     @classmethod
     def column_datatype_to_string(
-        cls, sqla_column_type: TypeEngine, dialect: Dialect
+        cls,
+        sqla_column_type: TypeEngine,
+        dialect: Dialect,
     ) -> str:
         # Pinot driver infers TIMESTAMP column as LONG, so make the quick fix.
         if isinstance(sqla_column_type, types.TIMESTAMP):

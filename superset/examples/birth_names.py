@@ -106,7 +106,9 @@ def load_birth_names(
         load_data(tbl_name, database, sample=sample)
 
     table = get_table_connector_registry()
-    obj = _ctx.session.query(table).filter_by(table_name=tbl_name, schema=schema).first()
+    obj = (
+        _ctx.session.query(table).filter_by(table_name=tbl_name, schema=schema).first()
+    )
     if not obj:
         logger.debug(f"Creating table [{tbl_name}] reference")
         obj = table(table_name=tbl_name, schema=schema)
@@ -120,9 +122,12 @@ def load_birth_names(
 
 
 def _set_table_metadata(datasource: SqlaTable, database: Database) -> None:
-    datasource.main_dttm_col = "ds"
+    datasource.main_dttm_col = "ds"  # type: ignore[assignment]
     datasource.database = database
-    datasource.filter_select_enabled = True
+    datasource.filter_select_enabled = True  # type: ignore[assignment]
+
+    with _ctx.example_engine(database) as eng:
+        _ctx.fetch_table_metadata(datasource, eng)
 
 
 def _add_table_metrics(datasource: SqlaTable) -> None:
@@ -146,8 +151,8 @@ def _add_table_metrics(datasource: SqlaTable) -> None:
         metrics.append(SqlMetric(metric_name="sum__num", expression=f"SUM({col})"))
 
     for col in columns:
-        if col.column_name == "ds":  # type: ignore
-            col.is_dttm = True  # type: ignore
+        if col.column_name == "ds":
+            col.is_dttm = True
             break
 
     datasource.columns = columns
@@ -560,7 +565,7 @@ def create_slices(tbl: SqlaTable) -> tuple[list[Slice], list[Slice]]:
 
     for slc in misc_slices:
         merge_slice(slc)
-        misc_dash_slices.add(slc.slice_name)
+        misc_dash_slices.add(str(slc.slice_name))
 
     return slices, misc_slices
 
@@ -572,8 +577,8 @@ def create_dashboard(slices: list[Slice]) -> Dashboard:
         dash = Dashboard()
         _ctx.session.add(dash)
 
-    dash.published = True
-    dash.json_metadata = textwrap.dedent(
+    dash.published = True  # type: ignore[assignment]
+    dash.json_metadata = textwrap.dedent(  # type: ignore[assignment]
         """\
     {
         "label_colors": {
@@ -861,7 +866,7 @@ def create_dashboard(slices: list[Slice]) -> Dashboard:
     # dashboard v2 doesn't allow add markup slice
     dash.slices = [slc for slc in slices if slc.viz_type != "markup"]
     update_slice_ids(pos)
-    dash.dashboard_title = "USA Births Names"
-    dash.position_json = json.dumps(pos, indent=4)  # noqa: TID251
-    dash.slug = "births"
+    dash.dashboard_title = "USA Births Names"  # type: ignore[assignment]
+    dash.position_json = json.dumps(pos, indent=4)  # type: ignore[assignment]  # noqa: TID251
+    dash.slug = "births"  # type: ignore[assignment]
     return dash

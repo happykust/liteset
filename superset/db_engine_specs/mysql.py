@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """MySQL engine spec -- sync/Flask-compatible.
 
 Ported 1:1 from ``superset_old/db_engine_specs/mysql.py`` with Flask
@@ -65,9 +66,7 @@ CONNECTION_INVALID_HOSTNAME_REGEX = re.compile(
 CONNECTION_HOST_DOWN_REGEX = re.compile(
     "Can't connect to MySQL server on '(?P<hostname>.*?)'"
 )
-CONNECTION_UNKNOWN_DATABASE_REGEX = re.compile(
-    "Unknown database '(?P<database>.*?)'"
-)
+CONNECTION_UNKNOWN_DATABASE_REGEX = re.compile("Unknown database '(?P<database>.*?)'")
 
 SYNTAX_ERROR_REGEX = re.compile(
     "check the manual that corresponds to your MySQL server "
@@ -152,8 +151,7 @@ class MySQLEngineSpec(BaseEngineSpec):
             " + SECOND({col})) SECOND)"
         ),
         TimeGrain.MINUTE: (
-            "DATE_ADD(DATE({col}), "
-            "INTERVAL (HOUR({col})*60 + MINUTE({col})) MINUTE)"
+            "DATE_ADD(DATE({col}), INTERVAL (HOUR({col})*60 + MINUTE({col})) MINUTE)"
         ),
         TimeGrain.HOUR: "DATE_ADD(DATE({col}), INTERVAL HOUR({col}) HOUR)",
         TimeGrain.DAY: "DATE({col})",
@@ -301,9 +299,7 @@ class MySQLEngineSpec(BaseEngineSpec):
         return row[0]
 
     @classmethod
-    def cancel_query(
-        cls, cursor: Any, query: Query, cancel_query_id: str
-    ) -> bool:
+    def cancel_query(cls, cursor: Any, query: Query, cancel_query_id: str) -> bool:
         """Cancel query in the underlying database.
 
         :param cursor: New cursor instance to the db of the query

@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """SQL clause sanitization."""
+
 from __future__ import annotations
 
 import sqlglot
@@ -28,6 +29,4 @@ def sanitize_clause(clause: str, engine: str = "postgresql") -> str:
         parsed = sqlglot.parse_one(clause, read=engine)
         return parsed.sql(dialect=engine)
     except sqlglot.errors.ParseError as exc:
-        raise SupersetValidationException(
-            f"Invalid SQL clause: {clause}"
-        ) from exc
+        raise SupersetValidationException(f"Invalid SQL clause: {clause}") from exc

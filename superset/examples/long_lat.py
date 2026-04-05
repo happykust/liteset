@@ -97,6 +97,10 @@ def load_long_lat_data(only_metadata: bool = False, force: bool = False) -> None
     obj.main_dttm_col = "datetime"
     obj.database = database
     obj.filter_select_enabled = True
+
+    with _ctx.example_engine(database) as eng:
+        _ctx.fetch_table_metadata(obj, eng)
+
     tbl = obj
 
     slice_data = {
@@ -119,5 +123,5 @@ def load_long_lat_data(only_metadata: bool = False, force: bool = False) -> None
         datasource_id=tbl.id,
         params=get_slice_json(slice_data),
     )
-    misc_dash_slices.add(slc.slice_name)
+    misc_dash_slices.add(str(slc.slice_name))
     merge_slice(slc)

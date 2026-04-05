@@ -23,6 +23,7 @@ Note: The ``User`` model itself is defined by Flask-AppBuilder in the
 relationships throughout the codebase.  We do **not** re-define it here
 to avoid duplicate mapper registrations.
 """
+
 from __future__ import annotations
 
 from sqlalchemy import Column, ForeignKey, Integer, String
@@ -41,12 +42,8 @@ class UserAttribute(Base, AuditMixinNullable):
     __tablename__ = "user_attribute"
 
     id = Column(Integer, primary_key=True)
-    user_id = Column(
-        Integer, ForeignKey("ab_user.id"), nullable=True
-    )
-    welcome_dashboard_id = Column(
-        Integer, ForeignKey("dashboards.id"), nullable=True
-    )
+    user_id = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
+    welcome_dashboard_id = Column(Integer, ForeignKey("dashboards.id"), nullable=True)
     avatar_url = Column(String(100))
 
     # -- relationships --------------------------------------------------------

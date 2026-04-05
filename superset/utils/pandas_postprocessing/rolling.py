@@ -59,9 +59,7 @@ def rolling(  # pylint: disable=too-many-arguments
     if rolling_type not in DENYLIST_ROLLING_FUNCTIONS or not hasattr(
         df_rolling, rolling_type
     ):
-        raise InvalidPostProcessingError(
-            f"Invalid rolling_type: {rolling_type}"
-        )
+        raise InvalidPostProcessingError(f"Invalid rolling_type: {rolling_type}")
     try:
         df_rolling = getattr(df_rolling, rolling_type)(**rolling_type_options)
     except TypeError as ex:

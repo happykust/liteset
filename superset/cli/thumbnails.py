@@ -55,7 +55,7 @@ import click
     help="Force refresh, even if previously cached",
 )
 @click.option("--model-id", "-i", multiple=True, type=int)
-def compute_thumbnails(
+def compute_thumbnails(  # noqa: C901
     asynchronous: bool,
     dashboards_only: bool,
     charts_only: bool,
@@ -65,7 +65,7 @@ def compute_thumbnails(
     """Compute thumbnails for dashboards and/or charts."""
     import anyio
 
-    async def _compute() -> None:
+    async def _compute() -> None:  # noqa: C901
         from sqlalchemy import text
 
         from superset.config import SupersetSettings
@@ -83,7 +83,7 @@ def compute_thumbnails(
                     params = {f"id{i}": mid for i, mid in enumerate(model_id)}
                     result = await session.execute(
                         text(
-                            f"SELECT id, dashboard_title FROM dashboards "
+                            f"SELECT id, dashboard_title FROM dashboards "  # noqa: S608
                             f"WHERE id IN ({placeholders})"
                         ),
                         params,
@@ -101,9 +101,7 @@ def compute_thumbnails(
                                 cache_dashboard_thumbnail,
                             )
 
-                            cache_dashboard_thumbnail.delay(
-                                None, dash_id, force=force
-                            )
+                            cache_dashboard_thumbnail.delay(None, dash_id, force=force)
                         except Exception as exc:
                             click.secho(
                                 f"  Failed to trigger task for dashboard "
@@ -114,8 +112,7 @@ def compute_thumbnails(
                     else:
                         action = "Processing"
                     click.secho(
-                        f'  {action} dashboard "{title}" '
-                        f"({i + 1}/{len(dashboards)})",
+                        f'  {action} dashboard "{title}" ({i + 1}/{len(dashboards)})',
                         fg="green",
                     )
 
@@ -126,7 +123,7 @@ def compute_thumbnails(
                     params = {f"id{i}": mid for i, mid in enumerate(model_id)}
                     result = await session.execute(
                         text(
-                            f"SELECT id, slice_name FROM slices "
+                            f"SELECT id, slice_name FROM slices "  # noqa: S608
                             f"WHERE id IN ({placeholders})"
                         ),
                         params,
@@ -144,13 +141,10 @@ def compute_thumbnails(
                                 cache_chart_thumbnail,
                             )
 
-                            cache_chart_thumbnail.delay(
-                                None, chart_id, force=force
-                            )
+                            cache_chart_thumbnail.delay(None, chart_id, force=force)
                         except Exception as exc:
                             click.secho(
-                                f"  Failed to trigger task for chart "
-                                f"{chart_id}: {exc}",
+                                f"  Failed to trigger task for chart {chart_id}: {exc}",
                                 fg="red",
                             )
                             continue

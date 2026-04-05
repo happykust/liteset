@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Annotated, Any
 
 from litestar import Controller, get, post
 from litestar.datastructures import UploadFile
@@ -67,7 +67,9 @@ class ImportExportController(Controller):
     )
     async def import_assets(
         self,
-        data: dict[str, Any] = Body(media_type=RequestEncodingType.MULTI_PART),
+        data: Annotated[
+            dict[str, Any], Body(media_type=RequestEncodingType.MULTI_PART)
+        ],
         session: Any = None,
         current_user: UserProtocol = None,  # type: ignore[assignment]
     ) -> dict[str, Any]:

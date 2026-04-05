@@ -34,6 +34,7 @@ class CurrentUserResponse(msgspec.Struct):
     email: str
     is_active: bool
     is_anonymous: bool
+    login_count: int | None = None
     roles: list[RoleResponseSchema] = []
 
 

@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 import humanize
@@ -57,7 +57,8 @@ class LogController(Controller):
         from superset.models.core import Log
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
-            Log, rison_params,
+            Log,
+            rison_params,
         )
         items = await dao.find_all(
             filters=rison_filters or None,
@@ -74,6 +75,8 @@ class LogController(Controller):
                 "id",
                 "action",
                 "user_id",
+                "slice_id",
+                "dashboard_id",
                 "dttm",
                 "json",
                 "duration_ms",
@@ -146,6 +149,7 @@ class LogController(Controller):
         page = params.get("page", 0)
         page_size = params.get("page_size", 25)
         actions = params.get("actions", ["mount_explorer", "mount_dashboard"])
+        distinct = params.get("distinct", True)
 
         items = await dao.get_recent_activity(
             user_id=current_user.id,
@@ -154,8 +158,36 @@ class LogController(Controller):
             page_size=page_size,
         )
 
+        # Batch-fetch dashboard titles and slice names so item_title
+        # shows meaningful names instead of raw IDs.
+        dashboard_ids = {item.dashboard_id for item in items if item.dashboard_id}
+        slice_ids = {item.slice_id for item in items if item.slice_id}
+
+        dashboard_titles: dict[int, str] = {}
+        slice_names: dict[int, str] = {}
+
+        if dashboard_ids or slice_ids:
+            from sqlalchemy import select as sa_select
+
+        if dashboard_ids:
+            from superset.models.dashboard import Dashboard
+
+            stmt = sa_select(Dashboard.id, Dashboard.dashboard_title).where(
+                Dashboard.id.in_(dashboard_ids)
+            )
+            rows = (await dao.session.execute(stmt)).all()
+            dashboard_titles = {int(r[0]): r[1] or "" for r in rows}
+
+        if slice_ids:
+            from superset.models.slice import Slice
+
+            stmt = sa_select(Slice.id, Slice.slice_name).where(Slice.id.in_(slice_ids))
+            rows = (await dao.session.execute(stmt)).all()
+            slice_names = {int(r[0]): r[1] or "" for r in rows}
+
         now = datetime.now()
         result = []
+        seen: set[str] = set()
         for item in items:
             dashboard_id = getattr(item, "dashboard_id", None)
             slice_id = getattr(item, "slice_id", None)
@@ -172,6 +204,14 @@ class LogController(Controller):
                 item_type = None
                 item_url = None
 
+            # Deduplicate by (action, item_type, item_id) when distinct=True
+            if distinct:
+                item_id = dashboard_id or slice_id or ""
+                dedup_key = f"{getattr(item, 'action', '')}:{item_type}:{item_id}"
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+
             # Compute human-readable time delta
             time_delta_humanized = ""
             if dttm is not None:
@@ -182,10 +222,14 @@ class LogController(Controller):
                     "action": getattr(item, "action", ""),
                     "item_type": item_type,
                     "item_url": item_url,
-                    "item_title": getattr(item, "slice_id", "")
+                    "item_title": slice_names.get(int(slice_id), "")
                     if slice_id
-                    else str(dashboard_id or ""),
-                    "time": str(dttm or ""),
+                    else dashboard_titles.get(
+                        int(dashboard_id), str(dashboard_id or "")
+                    )
+                    if dashboard_id
+                    else "",
+                    "time": dttm.timestamp() * 1000 if dttm else None,
                     "time_delta_humanized": time_delta_humanized,
                 }
             )

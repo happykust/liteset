@@ -43,9 +43,7 @@ logger = logging.getLogger(__name__)
 
 def _pv_to_response(pv: Any) -> PermissionViewResponse:
     """Convert a PermissionView model instance to response schema."""
-    perm_ref = (
-        PermissionRef(name=pv.permission.name) if pv.permission else None
-    )
+    perm_ref = PermissionRef(name=pv.permission.name) if pv.permission else None
     vm_ref = ViewMenuRef(name=pv.view_menu.name) if pv.view_menu else None
     return PermissionViewResponse(
         id=pv.id,

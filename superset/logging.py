@@ -55,6 +55,7 @@ def configure_logging(settings: SupersetSettings) -> None:
         structlog.processors.StackInfoRenderer(),
     ]
 
+    processors: list[structlog.types.Processor]
     if settings.production:
         processors = [
             *shared_processors,

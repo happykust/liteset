@@ -19,16 +19,17 @@
 Legacy migrations import:
   - ``get_identifier_quoter``
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
 
-from sqlalchemy.engine import make_url as SqlaURL_create
+from sqlalchemy.engine import make_url as make_sqla_url
 
 
 def get_identifier_quoter(drivername: str) -> Callable[[str], str]:
     """Return an identifier quoting function for the given SQLAlchemy driver."""
-    return SqlaURL_create(f"{drivername}://").get_dialect()().identifier_preparer.quote
+    return make_sqla_url(f"{drivername}://").get_dialect()().identifier_preparer.quote
 
 
 __all__ = ["get_identifier_quoter"]

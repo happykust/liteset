@@ -24,7 +24,6 @@ from typing import Any
 import msgspec
 
 from superset.databases.utils import make_url_safe
-
 from superset.schemas.base import ApiListResponse, ApiResponse, ModelStruct
 
 # ---------------------------------------------------------------------------
@@ -75,9 +74,7 @@ class DatabasePostSchema(msgspec.Struct):
             try:
                 json.loads(self.masked_encrypted_extra)
             except json.JSONDecodeError as ex:
-                raise ValueError(
-                    f"encrypted_extra is not valid JSON: {ex}"
-                ) from ex
+                raise ValueError(f"encrypted_extra is not valid JSON: {ex}") from ex
 
 
 class DatabasePutSchema(msgspec.Struct):
@@ -110,9 +107,7 @@ class DatabasePutSchema(msgspec.Struct):
             try:
                 json.loads(self.masked_encrypted_extra)
             except json.JSONDecodeError as ex:
-                raise ValueError(
-                    f"encrypted_extra is not valid JSON: {ex}"
-                ) from ex
+                raise ValueError(f"encrypted_extra is not valid JSON: {ex}") from ex
 
 
 class DatabaseTestConnectionSchema(msgspec.Struct):
@@ -136,9 +131,7 @@ class DatabaseTestConnectionSchema(msgspec.Struct):
             try:
                 json.loads(self.masked_encrypted_extra)
             except json.JSONDecodeError as ex:
-                raise ValueError(
-                    f"encrypted_extra is not valid JSON: {ex}"
-                ) from ex
+                raise ValueError(f"encrypted_extra is not valid JSON: {ex}") from ex
 
 
 class ValidateSQLSchema(msgspec.Struct):

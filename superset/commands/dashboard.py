@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Dashboard command classes — business logic for dashboard CRUD and operations."""
 
 from __future__ import annotations

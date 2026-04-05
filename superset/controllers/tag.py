@@ -73,7 +73,8 @@ class TagController(Controller):
         from superset.models.tags import Tag
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
-            Tag, rison_params,
+            Tag,
+            rison_params,
         )
         items = await dao.find_all(
             filters=rison_filters or None,
@@ -122,9 +123,7 @@ class TagController(Controller):
         raw = msgspec.structs.asdict(data)
         cmd = CreateTagCommand(dao=dao, data=raw)
         item = await cmd.execute()
-        event_logger.log(
-            "tag.create", object_ref=str(item.id), user_id=current_user.id
-        )
+        event_logger.log("tag.create", object_ref=str(item.id), user_id=current_user.id)
         return {"id": item.id, "result": {"name": item.name}}
 
     @put("/{pk:int}", guards=[require_permission("can_write", "Tag")])
@@ -198,10 +197,16 @@ class TagController(Controller):
         request: Request[Any, Any, Any],
         dao: Any,
     ) -> dict[str, Any]:
-        """GET /api/v1/tag/get_objects/ -- get tagged objects by tag names."""
+        """GET /api/v1/tag/get_objects/ -- get tagged objects by tag names or IDs."""
+        tag_ids_raw = request.query_params.get("tagIds", "")
         tag_names_raw = request.query_params.get("tags", "")
         types_raw = request.query_params.get("types", "")
 
+        tag_ids = (
+            [int(t.strip()) for t in tag_ids_raw.split(",") if t.strip()]
+            if tag_ids_raw
+            else []
+        )
         tag_names = (
             [t.strip() for t in tag_names_raw.split(",") if t.strip()]
             if tag_names_raw
@@ -213,9 +218,15 @@ class TagController(Controller):
             else None
         )
 
-        tagged_objects = await dao.get_tagged_objects_by_tag_names(
-            tag_names, obj_types=types_filter
-        )
+        # tagIds takes priority over tag names (matches original)
+        if tag_ids:
+            tagged_objects = await dao.get_tagged_objects_by_tag_ids(
+                tag_ids, obj_types=types_filter
+            )
+        else:
+            tagged_objects = await dao.get_tagged_objects_by_tag_names(
+                tag_names, obj_types=types_filter
+            )
 
         result: list[dict[str, Any]] = []
         for obj in tagged_objects:
@@ -253,7 +264,7 @@ class TagController(Controller):
         event_logger.log(
             "tag.add_favorite", object_ref=str(pk), user_id=current_user.id
         )
-        return {"message": "OK"}
+        return {"result": "OK"}
 
     @delete("/{pk:int}/favorites/", status_code=200)
     async def remove_favorite(
@@ -267,7 +278,7 @@ class TagController(Controller):
         event_logger.log(
             "tag.remove_favorite", object_ref=str(pk), user_id=current_user.id
         )
-        return {"message": "OK"}
+        return {"result": "OK"}
 
     # ------------------------------------------------------------------
     # POST /{object_type}/{object_id}/ -- add tags to an object
@@ -294,17 +305,17 @@ class TagController(Controller):
 
         try:
             obj_type = ObjectType(object_type)
-        except ValueError:
+        except ValueError as exc:
             from superset.exceptions import SupersetValidationException
 
             raise SupersetValidationException(
                 f"Invalid object type: {object_type}"
-            )
+            ) from exc
 
         await dao.create_custom_tagged_objects(
             object_type=obj_type.name,
             object_id=object_id,
-            tag_names=data.tags,
+            tag_names=data.properties.tags,
         )
         await dao.session.flush()
         event_logger.log(
@@ -335,12 +346,12 @@ class TagController(Controller):
 
         try:
             obj_type = ObjectType(object_type)
-        except ValueError:
+        except ValueError as exc:
             from superset.exceptions import SupersetValidationException
 
             raise SupersetValidationException(
                 f"Invalid object type: {object_type}"
-            )
+            ) from exc
 
         await dao.delete_tagged_object(
             object_type=obj_type.name,
@@ -373,9 +384,7 @@ class TagController(Controller):
         requested_ids = extract_ids(rison_params)
         fav_ids = await dao.favorited_ids(requested_ids, current_user.id)
         return {
-            "result": [
-                {"id": rid, "value": rid in fav_ids} for rid in requested_ids
-            ]
+            "result": [{"id": rid, "value": rid in fav_ids} for rid in requested_ids]
         }
 
     # ------------------------------------------------------------------

@@ -21,23 +21,73 @@ import logging
 import pkgutil
 from pathlib import Path
 
+from superset.db.engine_specs.athena import AsyncAthenaEngineSpec
 from superset.db.engine_specs.base import AsyncResultSet, BaseAsyncEngineSpec
 from superset.db.engine_specs.clickhouse import AsyncClickHouseEngineSpec
+from superset.db.engine_specs.cockroachdb import AsyncCockroachDbEngineSpec
+from superset.db.engine_specs.cratedb import AsyncCrateDbEngineSpec
+from superset.db.engine_specs.databend import AsyncDatabendEngineSpec
+from superset.db.engine_specs.denodo import AsyncDenodoEngineSpec
+from superset.db.engine_specs.doris import AsyncDorisEngineSpec
+from superset.db.engine_specs.dynamodb import AsyncDynamoDBEngineSpec
+from superset.db.engine_specs.elasticsearch import (
+    AsyncElasticsearchEngineSpec,
+    AsyncOpenDistroEngineSpec,
+)
+from superset.db.engine_specs.firebird import AsyncFirebirdEngineSpec
+from superset.db.engine_specs.firebolt import AsyncFireboltEngineSpec
+from superset.db.engine_specs.kusto import (
+    AsyncKustoKqlEngineSpec,
+    AsyncKustoSqlEngineSpec,
+)
+from superset.db.engine_specs.mssql import AsyncMSSQLEngineSpec
 from superset.db.engine_specs.mysql import AsyncMySQLEngineSpec
+from superset.db.engine_specs.oceanbase import AsyncOceanBaseEngineSpec
+from superset.db.engine_specs.oracle import AsyncOracleEngineSpec
+from superset.db.engine_specs.pinot import AsyncPinotEngineSpec
 from superset.db.engine_specs.postgres import AsyncPostgresEngineSpec
+from superset.db.engine_specs.redshift import AsyncRedshiftEngineSpec
+from superset.db.engine_specs.risingwave import AsyncRisingWaveEngineSpec
+from superset.db.engine_specs.starrocks import AsyncStarRocksEngineSpec
 from superset.db.engine_specs.sync_fallback import (
     make_async_spec,
     SyncFallbackEngineSpec,
 )
 from superset.db.engine_specs.trino import AsyncTrinoEngineSpec
+from superset.db.engine_specs.ydb import AsyncYDBEngineSpec
 
 logger = logging.getLogger(__name__)
 
 _NATIVE_SPECS: dict[str, type[BaseAsyncEngineSpec]] = {
+    # Core 4
     "postgresql": AsyncPostgresEngineSpec,
     "mysql": AsyncMySQLEngineSpec,
     "clickhouse": AsyncClickHouseEngineSpec,
     "trino": AsyncTrinoEngineSpec,
+    # PG-wire
+    "cockroachdb": AsyncCockroachDbEngineSpec,
+    "redshift": AsyncRedshiftEngineSpec,
+    "risingwave": AsyncRisingWaveEngineSpec,
+    "crate": AsyncCrateDbEngineSpec,
+    "denodo": AsyncDenodoEngineSpec,
+    # MySQL-wire
+    "doris": AsyncDorisEngineSpec,
+    "starrocks": AsyncStarRocksEngineSpec,
+    "oceanbase": AsyncOceanBaseEngineSpec,
+    # Standalone
+    "mssql": AsyncMSSQLEngineSpec,
+    "oracle": AsyncOracleEngineSpec,
+    "firebird": AsyncFirebirdEngineSpec,
+    "awsathena": AsyncAthenaEngineSpec,
+    "databend": AsyncDatabendEngineSpec,
+    "pinot": AsyncPinotEngineSpec,
+    "dynamodb": AsyncDynamoDBEngineSpec,
+    "elasticsearch": AsyncElasticsearchEngineSpec,
+    "odelasticsearch": AsyncOpenDistroEngineSpec,
+    "kustosql": AsyncKustoSqlEngineSpec,
+    "kustokql": AsyncKustoKqlEngineSpec,
+    "yql": AsyncYDBEngineSpec,
+    "firebolt": AsyncFireboltEngineSpec,
 }
 
 # Cache for dynamically created sync fallback specs.
@@ -48,7 +98,7 @@ _fallback_cache: dict[str, type[SyncFallbackEngineSpec]] = {}
 _sync_spec_map: dict[str, type] | None = None
 
 
-def _get_sync_spec_map() -> dict[str, type]:
+def _get_sync_spec_map() -> dict[str, type]:  # noqa: C901
     """Build and cache a map of sync engine specs by engine name.
 
     Attempts to scan ``superset.db_engine_specs`` for BaseEngineSpec subclasses.
@@ -70,7 +120,7 @@ def _get_sync_spec_map() -> dict[str, type]:
                 ):
                     try:
                         mod = importlib.import_module(module_info.name)
-                    except Exception:  # noqa: BLE001
+                    except Exception:  # noqa: BLE001, S112
                         continue
                     for attr_name in dir(mod):
                         attr = getattr(mod, attr_name)
@@ -78,7 +128,7 @@ def _get_sync_spec_map() -> dict[str, type]:
                             isinstance(attr, type)
                             and issubclass(attr, BaseEngineSpec)
                             and attr is not BaseEngineSpec
-                            and getattr(attr, "engine", "")
+                            and getattr(attr, "engine", "")  # type: ignore[arg-type]
                         ):
                             _sync_spec_map[attr.engine] = attr
 
@@ -120,11 +170,32 @@ def get_async_engine_spec(engine: str) -> type[BaseAsyncEngineSpec]:
 
 
 __all__ = [
+    "AsyncAthenaEngineSpec",
     "AsyncClickHouseEngineSpec",
+    "AsyncCockroachDbEngineSpec",
+    "AsyncCrateDbEngineSpec",
+    "AsyncDatabendEngineSpec",
+    "AsyncDenodoEngineSpec",
+    "AsyncDorisEngineSpec",
+    "AsyncDynamoDBEngineSpec",
+    "AsyncElasticsearchEngineSpec",
+    "AsyncFirebirdEngineSpec",
+    "AsyncFireboltEngineSpec",
+    "AsyncKustoKqlEngineSpec",
+    "AsyncKustoSqlEngineSpec",
+    "AsyncMSSQLEngineSpec",
     "AsyncMySQLEngineSpec",
+    "AsyncOceanBaseEngineSpec",
+    "AsyncOpenDistroEngineSpec",
+    "AsyncOracleEngineSpec",
+    "AsyncPinotEngineSpec",
     "AsyncPostgresEngineSpec",
-    "AsyncTrinoEngineSpec",
+    "AsyncRedshiftEngineSpec",
     "AsyncResultSet",
+    "AsyncRisingWaveEngineSpec",
+    "AsyncStarRocksEngineSpec",
+    "AsyncTrinoEngineSpec",
+    "AsyncYDBEngineSpec",
     "BaseAsyncEngineSpec",
     "SyncFallbackEngineSpec",
     "get_async_engine_spec",

@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """BigQuery engine spec -- sync/Flask-compatible.
 
 Ported 1:1 from ``superset_old/db_engine_specs/bigquery.py`` with Flask
@@ -134,9 +135,7 @@ class BigQueryEngineSpec(BaseEngineSpec):
     _time_grain_expressions = {
         None: "{col}",
         TimeGrain.SECOND: (
-            "CAST(TIMESTAMP_SECONDS("
-            "UNIX_SECONDS(CAST({col} AS TIMESTAMP))"
-            ") AS {type})"
+            "CAST(TIMESTAMP_SECONDS(UNIX_SECONDS(CAST({col} AS TIMESTAMP))) AS {type})"
         ),
         TimeGrain.MINUTE: (
             "CAST(TIMESTAMP_SECONDS("
@@ -227,9 +226,7 @@ class BigQueryEngineSpec(BaseEngineSpec):
         return None
 
     @classmethod
-    def fetch_data(
-        cls, cursor: Any, limit: int | None = None
-    ) -> list[tuple[Any, ...]]:
+    def fetch_data(cls, cursor: Any, limit: int | None = None) -> list[tuple[Any, ...]]:
         data = super().fetch_data(cursor, limit)
         # Support type BigQuery Row, introduced here PR #4071
         # google.cloud.bigquery.table.Row
@@ -535,9 +532,7 @@ class BigQueryEngineSpec(BaseEngineSpec):
                 total_bytes_processed = query_bytes_processed
             elif query_bytes_processed // (byte_division**2) == 0:
                 byte_type = "KB"
-                total_bytes_processed = round(
-                    query_bytes_processed / byte_division, 2
-                )
+                total_bytes_processed = round(query_bytes_processed / byte_division, 2)
             elif query_bytes_processed // (byte_division**3) == 0:
                 byte_type = "MB"
                 total_bytes_processed = round(

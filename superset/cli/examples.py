@@ -21,6 +21,7 @@ metadata database.  Uses a synchronous SQLAlchemy session since the
 CLI runs outside the async event loop and pandas ``to_sql`` requires
 a sync engine.
 """
+
 from __future__ import annotations
 
 import logging
@@ -36,14 +37,15 @@ def load_examples_run(
     only_metadata: bool = False,
     force: bool = False,
 ) -> None:
-    from superset.examples import _ctx
-    from superset.examples import data_loading as examples
+    from superset.examples import _ctx, data_loading as examples
 
     if only_metadata:
         logger.info("Loading examples metadata")
     else:
         examples_db = _ctx.get_example_database()
-        logger.info("Loading examples metadata and data into %s", examples_db)
+        logger.info(
+            "Loading examples metadata and data into %s", examples_db.database_name
+        )
 
     examples.load_css_templates()
     _ctx.commit()
@@ -103,6 +105,11 @@ def load_examples_run(
         examples.load_big_data()
         _ctx.commit()
 
+    # Load YAML config-based examples (COVID Vaccines, FCC Survey, etc.)
+    logger.info("Loading examples from YAML configs")
+    examples.load_examples_from_configs(force, load_test_data)
+    _ctx.commit()
+
 
 @click.command("load-examples")
 @click.option(
@@ -138,6 +145,7 @@ def load_examples(
     """Load a set of Slices, Dashboards, and a supporting dataset."""
     from superset.examples import _ctx
 
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     click.echo("Initialising database context...")
     _ctx.init()
     try:

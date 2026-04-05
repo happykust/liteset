@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """SSH tunnel model (pure SQLAlchemy, no Flask dependencies)."""
+
 from __future__ import annotations
 
 from typing import Any

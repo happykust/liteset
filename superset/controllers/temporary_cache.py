@@ -33,6 +33,7 @@ from superset.typing import KeyValueDAOProtocol, UserProtocol
 
 class TemporaryCacheSchema(msgspec.Struct):
     """Request body for temporary cache create/update."""
+
     value: str
     tab_id: int | None = None
 
@@ -44,6 +45,7 @@ class TemporaryCacheController(Controller):
     - path: str
     - resource: str (e.g., "explore_form_data")
     """
+
     resource: ClassVar[str] = ""
 
     @get("/{key:str}", guards=[require_authentication])
@@ -81,11 +83,13 @@ class TemporaryCacheController(Controller):
     ) -> dict[str, str]:
         """POST / — create new cached value."""
         key = str(uuid.uuid4())
-        envelope = json.dumps({
-            "owner": current_user.id,
-            "value": data.value,
-            "tab_id": data.tab_id,
-        })
+        envelope = json.dumps(
+            {
+                "owner": current_user.id,
+                "value": data.value,
+                "tab_id": data.tab_id,
+            }
+        )
         await kv_dao.set_value(
             resource=self.resource,
             resource_id=0,
@@ -116,11 +120,13 @@ class TemporaryCacheController(Controller):
         if existing is None:
             raise ObjectNotFoundError(self.resource, key)
 
-        envelope = json.dumps({
-            "owner": current_user.id,
-            "value": data.value,
-            "tab_id": data.tab_id,
-        })
+        envelope = json.dumps(
+            {
+                "owner": current_user.id,
+                "value": data.value,
+                "tab_id": data.tab_id,
+            }
+        )
         await kv_dao.set_value(
             resource=self.resource,
             resource_id=0,

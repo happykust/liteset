@@ -20,9 +20,8 @@ import polyline
 from sqlalchemy import String, Text
 
 from superset.examples import _ctx
+from superset.examples.helpers import get_table_connector_registry, read_example_data
 from superset.utils import json
-
-from .helpers import get_table_connector_registry, read_example_data
 
 logger = logging.getLogger(__name__)
 
@@ -66,3 +65,6 @@ def load_bart_lines(only_metadata: bool = False, force: bool = False) -> None:
     tbl.description = "BART lines"
     tbl.database = database
     tbl.filter_select_enabled = True
+
+    with _ctx.example_engine(database) as eng:
+        _ctx.fetch_table_metadata(tbl, eng)

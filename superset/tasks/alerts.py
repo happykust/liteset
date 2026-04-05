@@ -21,6 +21,7 @@ Provides an ``alerts`` namespace entry point that delegates to
 beat schedules that reference the old ``superset.tasks.alerts.execute``
 task name.
 """
+
 from __future__ import annotations
 
 import logging

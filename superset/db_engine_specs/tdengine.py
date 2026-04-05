@@ -54,4 +54,4 @@ class TDengineEngineSpec(BaseEngineSpec):
 
         A TDengine database is a SQLAlchemy schema.
         """
-        return parse.unquote(sqlalchemy_uri.database)
+        return parse.unquote(sqlalchemy_uri.database)  # type: ignore[arg-type]

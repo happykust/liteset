@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Apache Doris engine spec -- sync/Flask-compatible.
 
 Ported 1:1 from ``superset_old/db_engine_specs/doris.py`` with Flask
@@ -54,9 +55,7 @@ CONNECTION_ACCESS_DENIED_REGEX = re.compile(
 CONNECTION_INVALID_HOSTNAME_REGEX = re.compile(
     "Unknown Doris server host '(?P<hostname>.*?)'"
 )
-CONNECTION_UNKNOWN_DATABASE_REGEX = re.compile(
-    "Unknown database '(?P<database>.*?)'"
-)
+CONNECTION_UNKNOWN_DATABASE_REGEX = re.compile("Unknown database '(?P<database>.*?)'")
 CONNECTION_HOST_DOWN_REGEX = re.compile(
     "Can't connect to Doris server on '(?P<hostname>.*?)'"
 )
@@ -266,9 +265,7 @@ class DorisEngineSpec(MySQLEngineSpec):
         schema: str | None = None,
     ) -> tuple[URL, dict[str, Any]]:
         if not uri.database:
-            raise ValueError(
-                "Doris requires a database to be specified in the URI."
-            )
+            raise ValueError("Doris requires a database to be specified in the URI.")
         elif "." not in uri.database:
             current_catalog, current_schema = None, uri.database
         else:

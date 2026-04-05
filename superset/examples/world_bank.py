@@ -16,6 +16,7 @@
 # under the License.
 import logging
 import os
+from typing import Any
 
 import pandas as pd
 from sqlalchemy import DateTime, String
@@ -32,7 +33,7 @@ from superset.examples.helpers import (
     read_example_data,
     update_slice_ids,
 )
-from superset.models.connectors import BaseDatasource, SqlMetric
+from superset.models.connectors import SqlMetric
 from superset.models.dashboard import Dashboard
 from superset.models.slice import Slice
 from superset.utils import json
@@ -95,6 +96,9 @@ def load_world_bank_health_n_pop(  # pylint: disable=too-many-locals
     tbl.database = database
     tbl.filter_select_enabled = True
 
+    with _ctx.example_engine(database) as eng:
+        _ctx.fetch_table_metadata(tbl, eng)
+
     metrics = [
         "sum__SP_POP_TOTL",
         "sum__SH_DYN_AIDS",
@@ -112,7 +116,7 @@ def load_world_bank_health_n_pop(  # pylint: disable=too-many-locals
             )
 
     slices = create_slices(tbl)
-    misc_dash_slices.add(slices[-1].slice_name)
+    misc_dash_slices.add(str(slices[-1].slice_name))
     for slc in slices:
         merge_slice(slc)
 
@@ -124,17 +128,17 @@ def load_world_bank_health_n_pop(  # pylint: disable=too-many-locals
     if not dash:
         dash = Dashboard()
         _ctx.session.add(dash)
-    dash.published = True
+    dash.published = True  # type: ignore[assignment]
     pos = dashboard_positions
     slices = update_slice_ids(pos)
 
-    dash.dashboard_title = dash_name
-    dash.position_json = json.dumps(pos, indent=4)
-    dash.slug = slug
+    dash.dashboard_title = dash_name  # type: ignore[assignment]
+    dash.position_json = json.dumps(pos, indent=4)  # type: ignore[assignment]
+    dash.slug = slug  # type: ignore[assignment]
     dash.slices = slices
 
 
-def create_slices(tbl: BaseDatasource) -> list[Slice]:
+def create_slices(tbl: Any) -> list[Slice]:
     metric = "sum__SP_POP_TOTL"
     metrics = ["sum__SP_POP_TOTL"]
     secondary_metric = {

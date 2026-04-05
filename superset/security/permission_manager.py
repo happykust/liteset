@@ -29,6 +29,7 @@ Permission string formats (matching original Superset):
   - Schema:    ``[db_name].[schema]`` or ``[db_name].[catalog].[schema]``
   - Catalog:   ``[db_name].[catalog]``
 """
+
 from __future__ import annotations
 
 import logging
@@ -62,22 +63,20 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def get_database_perm(database_id: int, database_name: str) -> str:
+def get_database_perm(database_id: Any, database_name: Any) -> str:
     """Format: ``[db_name].(id:N)``."""
     return f"[{database_name}].(id:{database_id})"
 
 
-def get_dataset_perm(
-    dataset_id: int, dataset_name: str, database_name: str
-) -> str:
+def get_dataset_perm(dataset_id: Any, dataset_name: Any, database_name: Any) -> str:
     """Format: ``[db_name].[table_name](id:N)``."""
     return f"[{database_name}].[{dataset_name}](id:{dataset_id})"
 
 
 def get_schema_perm(
-    database_name: str,
-    catalog: str | None = None,
-    schema: str | None = None,
+    database_name: Any,
+    catalog: Any = None,
+    schema: Any = None,
 ) -> str | None:
     """Format: ``[db].[schema]`` or ``[db].[catalog].[schema]``.
 
@@ -90,9 +89,7 @@ def get_schema_perm(
     return f"[{database_name}].[{schema}]"
 
 
-def get_catalog_perm(
-    database_name: str, catalog: str | None = None
-) -> str | None:
+def get_catalog_perm(database_name: Any, catalog: Any = None) -> str | None:
     """Format: ``[db_name].[catalog]``.
 
     Returns None if catalog is None.
@@ -120,9 +117,7 @@ class AsyncPermissionManager:
     # ------------------------------------------------------------------
 
     @staticmethod
-    async def _find_permission(
-        session: AsyncSession, name: str
-    ) -> Permission | None:
+    async def _find_permission(session: AsyncSession, name: str) -> Permission | None:
         """Find a Permission by name."""
         result = await session.execute(
             select(Permission).where(Permission.name == name)
@@ -130,13 +125,9 @@ class AsyncPermissionManager:
         return result.scalars().one_or_none()
 
     @staticmethod
-    async def _find_view_menu(
-        session: AsyncSession, name: str
-    ) -> ViewMenu | None:
+    async def _find_view_menu(session: AsyncSession, name: str) -> ViewMenu | None:
         """Find a ViewMenu by name."""
-        result = await session.execute(
-            select(ViewMenu).where(ViewMenu.name == name)
-        )
+        result = await session.execute(select(ViewMenu).where(ViewMenu.name == name))
         return result.scalars().one_or_none()
 
     @staticmethod
@@ -253,9 +244,7 @@ class AsyncPermissionManager:
         await AsyncPermissionManager._delete_pvm(session, pvm)
 
     @staticmethod
-    async def _delete_pvm(
-        session: AsyncSession, pvm: PermissionView
-    ) -> None:
+    async def _delete_pvm(session: AsyncSession, pvm: PermissionView) -> None:
         """Delete a specific PermissionView and its role associations."""
         view_menu_id = pvm.view_menu_id
 
@@ -267,20 +256,14 @@ class AsyncPermissionManager:
         )
 
         # 2. Delete the PVM itself
-        await session.execute(
-            delete(PermissionView).where(PermissionView.id == pvm.id)
-        )
+        await session.execute(delete(PermissionView).where(PermissionView.id == pvm.id))
 
         # 3. Delete orphaned ViewMenu (if no other PVMs reference it)
         remaining = await session.execute(
-            select(PermissionView.id).where(
-                PermissionView.view_menu_id == view_menu_id
-            )
+            select(PermissionView.id).where(PermissionView.view_menu_id == view_menu_id)
         )
         if remaining.scalars().first() is None:
-            await session.execute(
-                delete(ViewMenu).where(ViewMenu.id == view_menu_id)
-            )
+            await session.execute(delete(ViewMenu).where(ViewMenu.id == view_menu_id))
 
         await session.flush()
 
@@ -298,13 +281,10 @@ class AsyncPermissionManager:
             return None
 
         # Check if target name already exists
-        existing = await AsyncPermissionManager._find_view_menu(
-            session, new_name
-        )
+        existing = await AsyncPermissionManager._find_view_menu(session, new_name)
         if existing is not None:
             logger.warning(
-                "Target ViewMenu '%s' already exists; "
-                "cannot rename from '%s'",
+                "Target ViewMenu '%s' already exists; cannot rename from '%s'",
                 new_name,
                 old_name,
             )
@@ -324,9 +304,7 @@ class AsyncPermissionManager:
     # ------------------------------------------------------------------
 
     @staticmethod
-    async def on_database_created(
-        session: AsyncSession, database: Database
-    ) -> None:
+    async def on_database_created(session: AsyncSession, database: Database) -> None:
         """Create database_access PVM when a database is created.
 
         Equivalent of ``database_after_insert`` in original Superset.
@@ -342,9 +320,7 @@ class AsyncPermissionManager:
         )
 
     @staticmethod
-    async def on_database_deleted(
-        session: AsyncSession, database: Database
-    ) -> None:
+    async def on_database_deleted(session: AsyncSession, database: Database) -> None:
         """Delete database_access PVM + schema/catalog PVMs when a database is deleted.
 
         Equivalent of ``database_after_delete`` -> ``_delete_vm_database_access``
@@ -498,9 +474,7 @@ class AsyncPermissionManager:
 
             # Update Slice.perm for charts using this dataset
             await session.execute(
-                update(Slice)
-                .where(Slice.perm == old_vm_name)
-                .values(perm=new_vm_name)
+                update(Slice).where(Slice.perm == old_vm_name).values(perm=new_vm_name)
             )
 
         await session.flush()
@@ -527,9 +501,7 @@ class AsyncPermissionManager:
         # Resolve database
         if database is None:
             db_result = await session.execute(
-                select(DatabaseModel).where(
-                    DatabaseModel.id == dataset.database_id
-                )
+                select(DatabaseModel).where(DatabaseModel.id == dataset.database_id)
             )
             database = db_result.scalars().one_or_none()
             if database is None:
@@ -608,9 +580,7 @@ class AsyncPermissionManager:
             db = getattr(dataset, "database", None)
             if db is None:
                 db_result = await session.execute(
-                    select(DatabaseModel).where(
-                        DatabaseModel.id == dataset.database_id
-                    )
+                    select(DatabaseModel).where(DatabaseModel.id == dataset.database_id)
                 )
                 db = db_result.scalars().one_or_none()
             database = db
@@ -661,9 +631,7 @@ class AsyncPermissionManager:
         db = getattr(dataset, "database", None)
         if db is None:
             db_result = await session.execute(
-                select(DatabaseModel).where(
-                    DatabaseModel.id == dataset.database_id
-                )
+                select(DatabaseModel).where(DatabaseModel.id == dataset.database_id)
             )
             db = db_result.scalars().one_or_none()
         if db is None:
@@ -684,30 +652,22 @@ class AsyncPermissionManager:
         # 1. Rename datasource_access PVM if database or table name changed
         # ------------------------------------------------------------------
         db_changed = (
-            old_database_id is not None
-            and old_database_id != dataset.database_id
+            old_database_id is not None and old_database_id != dataset.database_id
         )
         table_name_changed = (
-            old_table_name is not None
-            and old_table_name != current_table_name
+            old_table_name is not None and old_table_name != current_table_name
         )
 
         if db_changed or table_name_changed:
-            old_perm = get_dataset_perm(
-                dataset.id, eff_old_table_name, eff_old_db_name
-            )
-            new_perm = get_dataset_perm(
-                dataset.id, current_table_name, current_db_name
-            )
+            old_perm = get_dataset_perm(dataset.id, eff_old_table_name, eff_old_db_name)
+            new_perm = get_dataset_perm(dataset.id, current_table_name, current_db_name)
 
             # Check if new perm already exists
             existing_new_vm = await AsyncPermissionManager._find_view_menu(
                 session, new_perm
             )
             if not existing_new_vm:
-                old_vm = await AsyncPermissionManager._find_view_menu(
-                    session, old_perm
-                )
+                old_vm = await AsyncPermissionManager._find_view_menu(session, old_perm)
                 if old_vm:
                     await AsyncPermissionManager._rename_view_menu(
                         session, old_perm, new_perm
@@ -799,7 +759,7 @@ class AsyncPermissionManager:
     # ------------------------------------------------------------------
 
     @staticmethod
-    async def sync_database_permissions(
+    async def sync_database_permissions(  # noqa: C901
         session: AsyncSession, database: Database
     ) -> dict[str, Any]:
         """Ensure all PVMs exist for a database and its datasets.

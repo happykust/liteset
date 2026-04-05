@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 
 from superset.utils import json
-from superset.utils.core import GenericDataType
+from superset.utils.core import GenericDataType  # type: ignore[attr-defined]
 
 logger = logging.getLogger(__name__)
 

@@ -25,9 +25,9 @@ from superset.commands.base import AsyncBaseCommand
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 
 try:
-    from croniter import croniter
+    from croniter import croniter  # type: ignore[import-untyped]
 except ImportError:
-    croniter = None  # type: ignore[assignment,misc]
+    croniter = None
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             try:
                 croniter(crontab)
             except (ValueError, KeyError) as e:
-                raise CommandInvalidError(f"Invalid crontab expression: {e}")
+                raise CommandInvalidError(f"Invalid crontab expression: {e}") from e
 
         # Validate name + type uniqueness
         is_unique = await self._dao.validate_update_uniqueness(
@@ -133,7 +133,7 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             try:
                 croniter(crontab)
             except (ValueError, KeyError) as e:
-                raise CommandInvalidError(f"Invalid crontab expression: {e}")
+                raise CommandInvalidError(f"Invalid crontab expression: {e}") from e
 
     async def run(self) -> "ReportSchedule":
         assert self._report is not None
@@ -192,7 +192,7 @@ class BulkDeleteReportScheduleCommand(AsyncBaseCommand[None]):
         if not self._ids:
             raise CommandInvalidError("No report schedule IDs provided")
         self._reports = await self._dao.find_by_ids(self._ids)
-        found_ids = {r.id for r in self._reports}
+        found_ids = {int(r.id) for r in self._reports}
         missing = set(self._ids) - found_ids
         if missing:
             raise ObjectNotFoundError("ReportSchedule", str(missing))

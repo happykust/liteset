@@ -25,7 +25,17 @@ the concrete DAO classes (which would pull in the Flask import chain).
 from __future__ import annotations
 
 from collections.abc import Sequence
+from enum import IntEnum
 from typing import Any, Protocol, runtime_checkable
+
+
+class GenericDataType(IntEnum):
+    """Generic database column type that fits both frontend and backend."""
+
+    NUMERIC = 0
+    STRING = 1
+    TEMPORAL = 2
+    BOOLEAN = 3
 
 
 @runtime_checkable
@@ -68,6 +78,8 @@ class CRUDDAOProtocol(Protocol):
         filters: list[Any] | None = None,
         page: int = 0,
         page_size: int = 0,
+        order_by: list[Any] | None = None,
+        options: list[Any] | None = None,
     ) -> list[Any]: ...
     async def count(self, filters: list[Any] | None = None) -> int: ...
     async def find_one_or_none(self, **filter_by: Any) -> Any: ...
@@ -216,7 +228,7 @@ class SecurityManagerProtocol(Protocol):
         self, *, user: Any, datasource: Any | None = None, **kwargs: Any
     ) -> None: ...
 
-    async def get_rls_cache_key(self, datasource: Any) -> str: ...
+    async def get_rls_cache_key(self, datasource: Any, *, user: Any) -> list[str]: ...
 
     async def can_access_all_queries(self, *, user: Any) -> bool: ...
 
@@ -229,6 +241,23 @@ class SecurityManagerProtocol(Protocol):
     async def find_role_by_id(self, role_id: int) -> Any | None: ...
 
     def is_guest_user(self, user: Any) -> bool: ...
+
+    async def get_catalogs_accessible_by_user(
+        self,
+        database: Any,
+        catalog_names: list[str],
+        *,
+        user: Any,
+    ) -> list[str]: ...
+
+    async def get_schemas_accessible_by_user(
+        self,
+        database: Any,
+        schema_names: list[str],
+        catalog: str | None = None,
+        *,
+        user: Any,
+    ) -> list[str]: ...
 
     @staticmethod
     def create_guest_access_token(

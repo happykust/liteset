@@ -92,17 +92,17 @@ def build_order_by(
 
 
 @functools.lru_cache(maxsize=32)
-def _get_model_columns(model_cls: type | None) -> dict[str, Any]:
+def _get_model_columns(model_cls: type[Any] | None) -> dict[str, Any]:
     """Return a mapping of column key -> column for a SQLAlchemy model (cached)."""
     if model_cls is None:
         return {}
     from sqlalchemy import inspect as sa_inspect
 
-    mapper = sa_inspect(model_cls)
+    mapper: Any = sa_inspect(model_cls)
     return {col.key: col for col in mapper.columns}
 
 
-def build_rison_query_params(
+def build_rison_query_params(  # noqa: C901
     model_cls: type[Any],
     rison_params: dict[str, Any] | None,
 ) -> tuple[list[Any], list[Any] | None, int, int]:
@@ -122,7 +122,7 @@ def build_rison_query_params(
     page, page_size = extract_pagination(rison_params)
 
     # -- Validate column names via SQLAlchemy mapper inspection --
-    valid_columns = _get_model_columns(model_cls)
+    valid_columns = _get_model_columns(model_cls)  # type: ignore[arg-type]
 
     # -- Build filters --
     filters: list[Any] = []
@@ -221,7 +221,7 @@ def build_export_headers(
         "Content-Disposition": f"attachment; filename={filename}",
     }
     if token:
-        headers["Set-Cookie"] = f"token=done; Path=/; SameSite=Lax"
+        headers["Set-Cookie"] = "token=done; Path=/; SameSite=Lax"
     return headers
 
 
@@ -276,9 +276,7 @@ def _serialize_item(item: Any, columns: list[str]) -> dict[str, Any]:
         if rel_val is None:
             result[rel] = None
         elif isinstance(rel_val, list):
-            result[rel] = [
-                {f: getattr(r, f, None) for f in fields} for r in rel_val
-            ]
+            result[rel] = [{f: getattr(r, f, None) for f in fields} for r in rel_val]
         else:
             result[rel] = {f: getattr(rel_val, f, None) for f in fields}
 
@@ -362,7 +360,7 @@ async def get_info_payload(
     }
 
 
-async def get_related_payload(
+async def get_related_payload(  # noqa: C901
     dao: Any,
     column_name: str,
     rison_params: dict[str, Any] | None = None,

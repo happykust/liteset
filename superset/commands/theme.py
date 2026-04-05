@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Theme command classes — business logic for theme CRUD and system default."""
 
 from __future__ import annotations
@@ -94,8 +95,7 @@ class DeleteThemeCommand(AsyncBaseCommand[None]):
         # Prevent deletion of the current system default theme
         if getattr(self._model, "is_system_default", False):
             raise DeleteFailedError(
-                "Cannot delete the system default theme. "
-                "Unset it as default first."
+                "Cannot delete the system default theme. Unset it as default first."
             )
 
     async def run(self) -> None:

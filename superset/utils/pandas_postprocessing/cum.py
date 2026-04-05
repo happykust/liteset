@@ -40,8 +40,6 @@ def cum(
     if operation not in ALLOWLIST_CUMULATIVE_FUNCTIONS or not hasattr(
         df_cum, operation
     ):
-        raise InvalidPostProcessingError(
-            f"Invalid cumulative operator: {operator}"
-        )
+        raise InvalidPostProcessingError(f"Invalid cumulative operator: {operator}")
     df_cum = _append_columns(df, getattr(df_cum, operation)(), columns)
     return df_cum

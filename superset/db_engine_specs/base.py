@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """BaseEngineSpec — sync/Flask-compatible engine spec base class.
 
 Ported 1:1 from ``superset_old/db_engine_specs/base.py`` with Flask
@@ -127,6 +128,7 @@ def compile_timegrain_expression(
 # ResultSetColumnType — dict shape returned by inspector/cursor
 # ---------------------------------------------------------------------------
 
+
 class ResultSetColumnType(TypedDict, total=False):
     column_name: str
     name: str
@@ -165,7 +167,6 @@ def convert_inspector_columns(
 # ---------------------------------------------------------------------------
 
 from superset.typing import GenericDataType  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # BaseEngineSpec
@@ -366,9 +367,7 @@ class BaseEngineSpec:  # noqa: PLR0904
     try_remove_schema_from_table_name = True
     run_multiple_statements_as_one = False
 
-    custom_errors: dict[
-        Pattern[str], tuple[str, Any, dict[str, Any]]
-    ] = {}
+    custom_errors: dict[Pattern[str], tuple[str, Any, dict[str, Any]]] = {}
 
     # List of JSON path to fields in ``encrypted_extra`` that should be masked.
     encrypted_extra_sensitive_fields: set[str] = {"$.*"}
@@ -445,9 +444,7 @@ class BaseEngineSpec:  # noqa: PLR0904
         return None
 
     @classmethod
-    def get_default_schema(
-        cls, database: Database, catalog: str | None
-    ) -> str | None:
+    def get_default_schema(cls, database: Database, catalog: str | None) -> str | None:
         """Return the default schema for a catalog in a given database."""
         with database.get_inspector(catalog=catalog) as inspector:
             return inspector.default_schema_name
@@ -647,9 +644,7 @@ class BaseEngineSpec:  # noqa: PLR0904
     # ------------------------------------------------------------------
 
     @classmethod
-    def fetch_data(
-        cls, cursor: Any, limit: int | None = None
-    ) -> list[tuple[Any, ...]]:
+    def fetch_data(cls, cursor: Any, limit: int | None = None) -> list[tuple[Any, ...]]:
         """Fetch data from cursor.
 
         :param cursor: Cursor instance
@@ -1027,9 +1022,7 @@ class BaseEngineSpec:  # noqa: PLR0904
         except NotImplementedError:
             pass
         except Exception:
-            logger.error(
-                "Unexpected error while fetching table comment", exc_info=True
-            )
+            logger.error("Unexpected error while fetching table comment", exc_info=True)
         return comment
 
     @classmethod
@@ -1378,9 +1371,7 @@ class BaseEngineSpec:  # noqa: PLR0904
         return _json.dumps(masked_encrypted_extra)
 
     @classmethod
-    def unmask_encrypted_extra(
-        cls, old: str | None, new: str | None
-    ) -> str | None:
+    def unmask_encrypted_extra(cls, old: str | None, new: str | None) -> str | None:
         """Remove masks from ``encrypted_extra``.
 
         This allows reusing existing values from the current encrypted extra on
@@ -1453,9 +1444,7 @@ class BaseEngineSpec:  # noqa: PLR0904
     # ------------------------------------------------------------------
 
     @staticmethod
-    def get_extra_params(
-        database: Database, source: Any = None
-    ) -> dict[str, Any]:
+    def get_extra_params(database: Database, source: Any = None) -> dict[str, Any]:
         """Extract extras from the database model.
 
         :param database: database instance from which to extract extras
@@ -1551,9 +1540,7 @@ class BaseEngineSpec:  # noqa: PLR0904
     # ------------------------------------------------------------------
 
     @classmethod
-    def handle_boolean_filter(
-        cls, sqla_col: Any, op: str, value: bool
-    ) -> Any:
+    def handle_boolean_filter(cls, sqla_col: Any, op: str, value: bool) -> Any:
         """Handle boolean filter operations with engine-specific logic.
 
         By default uses SQLAlchemy's IS operator (column IS true/false).

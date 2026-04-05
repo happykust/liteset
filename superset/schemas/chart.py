@@ -16,7 +16,6 @@
 # under the License.
 """msgspec Structs for the Chart API — replaces Marshmallow schemas."""
 
-# ruff: noqa: N815  — camelCase field names required for JSON API contract parity
 from __future__ import annotations
 
 import json as _json
@@ -25,7 +24,14 @@ from typing import Annotated, Any, Literal
 import msgspec
 from msgspec import Meta
 
-from superset.schemas.base import ApiListResponse, ApiResponse
+from superset.schemas.base import (
+    ApiListResponse,
+    ApiResponse,
+    DashboardRef,
+    ModelStruct,
+    TagRef,
+    UserRef,
+)
 
 # ---------------------------------------------------------------------------
 # Request bodies
@@ -89,6 +95,7 @@ class ChartPutSchema(msgspec.Struct):
     tags: list[int] | None | msgspec.UnsetType = msgspec.UNSET
     owners: list[int] | None | msgspec.UnsetType = msgspec.UNSET
     dashboards: list[int] | None | msgspec.UnsetType = msgspec.UNSET
+    uuid: str | None | msgspec.UnsetType = msgspec.UNSET
 
     def __post_init__(self) -> None:
         for attr in ("params", "query_context"):
@@ -165,14 +172,14 @@ FilterOperator = Literal[
 ]
 
 
-class ChartDataFilter(msgspec.Struct):
+class ChartDataFilter(msgspec.Struct, rename="camel"):
     """Filter within a query object."""
 
     col: str | dict[str, Any]
     op: FilterOperator
     val: Any = None
     grain: str | None = None
-    isExtra: bool = False
+    is_extra: bool = False
 
 
 class ChartDataExtras(msgspec.Struct):
@@ -187,50 +194,50 @@ class ChartDataExtras(msgspec.Struct):
     instant_time_comparison_range: str | None = None
 
 
-class ChartDataAdhocMetric(msgspec.Struct):
+class ChartDataAdhocMetric(msgspec.Struct, rename="camel"):
     """Adhoc metric definition."""
 
-    expressionType: str
+    expression_type: str
     label: str | None = None
     column: dict[str, Any] | None = None
-    sqlExpression: str | None = None
+    sql_expression: str | None = None
     aggregate: str | None = None
-    hasCustomLabel: bool = False
-    optionName: str | None = None
-    datasourceWarning: bool = False
-    timeGrain: str | None = None
+    has_custom_label: bool = False
+    option_name: str | None = None
+    datasource_warning: bool = False
+    time_grain: str | None = None
 
 
-class ChartDataColumn(msgspec.Struct):
+class ChartDataColumn(msgspec.Struct, rename="camel"):
     """Column definition in a query object."""
 
-    columnType: str | None = None
-    expressionType: str | None = None
+    column_type: str | None = None
+    expression_type: str | None = None
     label: str | None = None
-    sqlExpression: str | None = None
-    timeGrain: str | None = None
+    sql_expression: str | None = None
+    time_grain: str | None = None
 
 
-class AnnotationLayer(msgspec.Struct):
+class AnnotationLayer(msgspec.Struct, rename="camel"):
     """Annotation config within a query object."""
 
     name: str
-    annotationType: str | None = None
+    annotation_type: str | None = None
     color: str | None = None
-    descriptionColumns: list[str] = []
-    hideLine: bool = False
-    intervalEndColumn: str | None = None
+    description_columns: list[str] = []
+    hide_line: bool = False
+    interval_end_column: str | None = None
     opacity: str | None = None
     overrides: dict[str, Any] = {}
     show: bool = True
-    showMarkers: bool = False
-    sourceType: str | None = None
+    show_markers: bool = False
+    source_type: str | None = None
     style: str | None = None
-    titleColumn: str | None = None
+    title_column: str | None = None
     value: Any = None
     width: float | None = None
-    timeColumn: str | None = None
-    showLabel: bool | None = None
+    time_column: str | None = None
+    show_label: bool | None = None
 
 
 # --- Post-processing option structs ---
@@ -413,15 +420,27 @@ class ChartDataQueryObject(msgspec.Struct):
     group_others_when_limit_reached: bool = False
 
 
+ChartDataResultType = Literal[
+    "columns",
+    "full",
+    "query",
+    "results",
+    "samples",
+    "timegrains",
+]
+
+ChartDataResultFormat = Literal["csv", "json", "xlsx"]
+
+
 class ChartDataQueryContext(msgspec.Struct):
     """Full body for POST /api/v1/chart/data"""
 
     datasource: ChartDataDatasource
     queries: list[ChartDataQueryObject]
-    result_type: str | None = None
-    result_format: str | None = None
+    result_type: ChartDataResultType | None = None
+    result_format: ChartDataResultFormat | None = None
     force: bool = False
-    form_data: dict[str, Any] = {}
+    form_data: dict[str, Any] | None = None
     custom_cache_timeout: int | None = None
 
 
@@ -433,6 +452,58 @@ class ChartDataQueryContext(msgspec.Struct):
 # Reuse base response schemas — avoid duplication
 ChartGetResponse = ApiResponse
 ChartListResponse = ApiListResponse
+
+
+class ChartDetailResult(ModelStruct):
+    """Full chart detail — used by GET /{id}, POST /, PUT /{id} responses.
+
+    Centralises the ORM-to-dict mapping that was previously duplicated across
+    three controller methods.  Uses :class:`ModelStruct` auto-mapping for most
+    fields; only non-trivial derivations need ``_resolve_*`` overrides.
+    """
+
+    id: int
+    slice_name: str
+    viz_type: str
+    params: str | None = None
+    cache_timeout: int | None = None
+    description: str | None = None
+    datasource_id: int | None = None
+    datasource_type: str = "table"
+    query_context: str | None = None
+    uuid: str | None = None
+    url: str | None = None
+    changed_on: str | None = None
+    created_on: str | None = None
+    changed_on_delta_humanized: str | None = None
+    changed_by_name: str | None = None
+    changed_by: UserRef | None = None
+    created_by: UserRef | None = None
+    owners: list[UserRef] = []
+    dashboards: list[DashboardRef] = []
+    tags: list[TagRef] = []
+    certified_by: str | None = None
+    certification_details: str | None = None
+    thumbnail_url: str | None = None
+    is_managed_externally: bool = False
+    datasource_name_text: str | None = None
+    datasource_url: str | None = None
+    datasource_uuid: str | None = None
+    last_saved_at: str | None = None
+    last_saved_by: UserRef | None = None
+
+    # -- custom resolvers for non-trivial fields --
+
+    @classmethod
+    def _resolve_datasource_type(cls, obj: Any) -> str:
+        return getattr(obj, "datasource_type", None) or "table"
+
+    @classmethod
+    def _resolve_datasource_uuid(cls, obj: Any) -> str | None:
+        table = getattr(obj, "table", None)
+        if table and getattr(table, "uuid", None):
+            return str(table.uuid)
+        return None
 
 
 class ChartDataResponseResult(msgspec.Struct):
@@ -447,15 +518,15 @@ class ChartDataResponseResult(msgspec.Struct):
     status: str = "success"
     stacktrace: str | None = None
     rowcount: int = 0
-    from_dttm: str | None = None
-    to_dttm: str | None = None
+    from_dttm: int | None = None
+    to_dttm: int | None = None
     data: list[dict[str, Any]] = []
     colnames: list[str] = []
     coltypes: list[int] = []
     applied_filters: list[dict[str, Any]] = []
     rejected_filters: list[dict[str, Any]] = []
     applied_template_filters: list[dict[str, Any]] | None = None
-    annotation_data: dict[str, Any] = {}
+    annotation_data: list[dict[str, Any]] = []
 
 
 class ChartDataResponse(msgspec.Struct):

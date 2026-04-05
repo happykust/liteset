@@ -20,6 +20,7 @@ Litestar's AbstractAuthenticationMiddleware only handles HTTP requests.
 WebSocket connections authenticate via JWT token passed as a query parameter
 during the handshake, or via an HTTP-only cookie as a fallback.
 """
+
 from __future__ import annotations
 
 import logging
@@ -63,7 +64,7 @@ def _extract_cookie_token(headers: dict[str, str], cookie_name: str) -> str | No
     cookie_header = headers.get("cookie", "")
     if not cookie_header:
         return None
-    cookie: SimpleCookie[str] = SimpleCookie()
+    cookie: SimpleCookie = SimpleCookie()
     cookie.load(cookie_header)
     morsel = cookie.get(cookie_name)
     return morsel.value if morsel else None

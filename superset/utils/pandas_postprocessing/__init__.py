@@ -19,6 +19,7 @@
 All implementations are self-contained within this package and have no
 dependency on the ``superset`` package.
 """
+
 from superset.utils.pandas_postprocessing.aggregate import aggregate
 from superset.utils.pandas_postprocessing.boxplot import boxplot
 from superset.utils.pandas_postprocessing.compare import compare

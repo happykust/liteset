@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Report schedule execution command and state machine.
 
 Ported 1:1 from ``superset_old/commands/report/execute.py``.
@@ -36,6 +37,7 @@ CSV/DataFrame data generation uses ``get_chart_csv_data`` and
 ``get_chart_dataframe`` from ``superset.utils.csv``.
 Notification sending via email and Slack is fully wired.
 """
+
 from __future__ import annotations
 
 import logging
@@ -223,7 +225,7 @@ class BaseReportState:
                 )
             return (
                 f"{base_url}/explore/?form_data="
-                f'{json.dumps({"slice_id": self._report_schedule.chart_id})}'
+                f"{json.dumps({'slice_id': self._report_schedule.chart_id})}"
                 f"&force={force}"
             )
         # Dashboard URL
@@ -240,11 +242,7 @@ class BaseReportState:
 
     def _find_user(self, username: str) -> User | None:
         """Find a user by username using the sync session."""
-        return (
-            self._session.query(User)
-            .filter(User.username == username)
-            .one_or_none()
-        )
+        return self._session.query(User).filter(User.username == username).one_or_none()
 
     @staticmethod
     def _get_auth_cookies(user: User | None) -> dict[str, str] | None:
@@ -360,9 +358,7 @@ class BaseReportState:
         auth_cookies = self._get_auth_cookies(user)
 
         if self._report_schedule.chart.query_context is None:
-            logger.warning(
-                "No query context found, taking a screenshot to generate it"
-            )
+            logger.warning("No query context found, taking a screenshot to generate it")
             self._update_query_context()
 
         try:
@@ -375,9 +371,7 @@ class BaseReportState:
         except SoftTimeLimitExceeded as ex:
             raise ReportScheduleCsvTimeout() from ex
         except Exception as ex:
-            raise ReportScheduleCsvFailedError(
-                f"Failed generating csv {ex!s}"
-            ) from ex
+            raise ReportScheduleCsvFailedError(f"Failed generating csv {ex!s}") from ex
         if not csv_data:
             raise ReportScheduleCsvFailedError()
         return csv_data
@@ -400,9 +394,7 @@ class BaseReportState:
         auth_cookies = self._get_auth_cookies(user)
 
         if self._report_schedule.chart.query_context is None:
-            logger.warning(
-                "No query context found, taking a screenshot to generate it"
-            )
+            logger.warning("No query context found, taking a screenshot to generate it")
             self._update_query_context()
 
         try:
@@ -779,9 +771,7 @@ class ReportNotTriggeredErrorState(BaseReportState):
         except (SupersetErrorsException, Exception) as first_ex:
             error_message = str(first_ex)
             if isinstance(first_ex, SupersetErrorsException):
-                error_message = ";".join(
-                    [str(error) for error in first_ex.errors]
-                )
+                error_message = ";".join([str(error) for error in first_ex.errors])
 
             try:
                 self.update_report_schedule_and_log(

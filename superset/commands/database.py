@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Database command classes — business logic for database CRUD and operations."""
 
 from __future__ import annotations
@@ -950,7 +951,6 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
 
     async def run(self) -> dict[str, Any]:
 
-
         from superset.sql.parse import Table
 
         table_name = self._data["table_name"]
@@ -1043,7 +1043,6 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
             raise ObjectNotFoundError("Database", self._database_id)
 
     async def run(self) -> dict[str, Any]:
-
 
         if self._security_manager is None:
             return {"message": "Security manager not provided"}

@@ -26,8 +26,24 @@ from superset.i18n import _current_locale, set_locale
 # Supported locale codes; cookie values not in this set are ignored.
 SUPPORTED_LOCALES: frozenset[str] = frozenset(
     {
-        "ar", "cs", "de", "en", "es", "fr", "he", "it", "ja",
-        "ko", "nl", "pl", "pt", "ru", "sk", "sl", "uk", "zh",
+        "ar",
+        "cs",
+        "de",
+        "en",
+        "es",
+        "fr",
+        "he",
+        "it",
+        "ja",
+        "ko",
+        "nl",
+        "pl",
+        "pt",
+        "ru",
+        "sk",
+        "sl",
+        "uk",
+        "zh",
     }
 )
 

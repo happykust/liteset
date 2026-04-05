@@ -127,9 +127,7 @@ class CacheController(Controller):
 
         # -- 2. Find matching CacheKey rows ----------------------------
         cache_key_result = await session.execute(
-            select(CacheKey).where(
-                CacheKey.datasource_uid.in_(datasource_uids)
-            )
+            select(CacheKey).where(CacheKey.datasource_uid.in_(datasource_uids))
         )
         cache_key_objs = cache_key_result.scalars().all()
         cache_keys = [ck.cache_key for ck in cache_key_objs]
@@ -155,9 +153,7 @@ class CacheController(Controller):
         # -- 4. Delete CacheKey rows from DB ---------------------------
         try:
             await session.execute(
-                sa_delete(CacheKey).where(
-                    CacheKey.cache_key.in_(cache_keys)
-                )
+                sa_delete(CacheKey).where(CacheKey.cache_key.in_(cache_keys))
             )
             await session.flush()
 

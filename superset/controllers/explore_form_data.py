@@ -25,10 +25,10 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 import msgspec
-from litestar import Controller, delete, get, post, put, Request
+from litestar import Controller, delete, get, post, put
 from litestar.di import Provide
 from litestar.params import Parameter
 
@@ -38,12 +38,14 @@ from superset.guards.rbac import require_authentication
 from superset.providers import provide_kv_dao
 from superset.typing import KeyValueDAOProtocol, UserProtocol
 
+DatasourceType = Literal["table", "dataset", "query", "saved_query", "view"]
+
 
 class FormDataPostSchema(msgspec.Struct):
     """POST body matching the original Superset explore form_data API."""
 
     datasource_id: int
-    datasource_type: str
+    datasource_type: DatasourceType
     form_data: str
     chart_id: int | None = None
 
@@ -52,7 +54,7 @@ class FormDataPutSchema(msgspec.Struct):
     """PUT body matching the original Superset explore form_data API."""
 
     datasource_id: int
-    datasource_type: str
+    datasource_type: DatasourceType
     form_data: str
     chart_id: int | None = None
 
@@ -99,14 +101,16 @@ class ExploreFormDataController(Controller):
     ) -> dict[str, str]:
         """POST / — create new cached form_data."""
         key = str(uuid.uuid4())
-        envelope = json.dumps({
-            "owner": current_user.id,
-            "datasource_id": data.datasource_id,
-            "datasource_type": data.datasource_type,
-            "chart_id": data.chart_id,
-            "tab_id": tab_id,
-            "value": data.form_data,
-        })
+        envelope = json.dumps(
+            {
+                "owner": current_user.id,
+                "datasource_id": data.datasource_id,
+                "datasource_type": data.datasource_type,
+                "chart_id": data.chart_id,
+                "tab_id": tab_id,
+                "value": data.form_data,
+            }
+        )
         await kv_dao.set_value(
             resource=self.resource,
             resource_id=0,
@@ -137,14 +141,16 @@ class ExploreFormDataController(Controller):
         if existing is None:
             raise ObjectNotFoundError(self.resource, key)
 
-        envelope = json.dumps({
-            "owner": current_user.id,
-            "datasource_id": data.datasource_id,
-            "datasource_type": data.datasource_type,
-            "chart_id": data.chart_id,
-            "tab_id": tab_id,
-            "value": data.form_data,
-        })
+        envelope = json.dumps(
+            {
+                "owner": current_user.id,
+                "datasource_id": data.datasource_id,
+                "datasource_type": data.datasource_type,
+                "chart_id": data.chart_id,
+                "tab_id": tab_id,
+                "value": data.form_data,
+            }
+        )
         await kv_dao.set_value(
             resource=self.resource,
             resource_id=0,

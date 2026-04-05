@@ -137,12 +137,16 @@ class SupersetErrorsException(SupersetException):
 
     def to_sip40(self) -> dict[str, Any]:
         if self.errors:
-            return self.errors[0] if len(self.errors) == 1 else {  # type: ignore[return-value]
-                "message": self.message,
-                "error_type": self.error_type,
-                "level": "error",
-                "extra": {"errors": self.errors},
-            }
+            return (
+                self.errors[0]
+                if len(self.errors) == 1
+                else {
+                    "message": self.message,
+                    "error_type": self.error_type,
+                    "level": "error",
+                    "extra": {"errors": self.errors},
+                }
+            )
         return super().to_sip40()
 
 

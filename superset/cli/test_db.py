@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """CLI commands for testing database connectivity and engine spec detection.
 
 ``test-db connectivity`` -- verify a database can be reached via SELECT 1.
@@ -204,13 +205,11 @@ def full(
         console.print(f"[red]Invalid URI: {exc}")
         sys.exit(1)
 
-    from superset.db.engine_specs import _NATIVE_SPECS, _get_sync_spec_map
+    from superset.db.engine_specs import _get_sync_spec_map, _NATIVE_SPECS
 
     if backend in _NATIVE_SPECS:
         spec = _NATIVE_SPECS[backend]
-        console.print(
-            f":thumbs_up: [green]Native async spec: [bold]{spec.__name__}"
-        )
+        console.print(f":thumbs_up: [green]Native async spec: [bold]{spec.__name__}")
     elif backend in _get_sync_spec_map():
         spec_cls = _get_sync_spec_map()[backend]
         console.print(

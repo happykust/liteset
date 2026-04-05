@@ -66,19 +66,37 @@ class QueryController(Controller):
 
         # Serialize using show_columns matching the original Flask API
         show_columns = [
-            "id", "changed_on", "client_id", "database_id",
-            "end_result_backend_time", "end_time", "error_message",
-            "executed_sql", "limit", "progress", "results_key", "rows",
-            "schema", "select_as_cta", "select_as_cta_used", "select_sql",
-            "sql", "sql_editor_id", "start_running_time", "start_time",
-            "status", "tab_name", "tmp_schema_name", "tmp_table_name",
+            "id",
+            "changed_on",
+            "client_id",
+            "database_id",
+            "end_result_backend_time",
+            "end_time",
+            "error_message",
+            "executed_sql",
+            "limit",
+            "progress",
+            "results_key",
+            "rows",
+            "schema",
+            "select_as_cta",
+            "select_as_cta_used",
+            "select_sql",
+            "sql",
+            "sql_editor_id",
+            "start_running_time",
+            "start_time",
+            "status",
+            "tab_name",
+            "tmp_schema_name",
+            "tmp_table_name",
             "tracking_url",
         ]
         result: dict[str, Any] = {}
         for col in show_columns:
             val = getattr(query, col, None)
             if hasattr(val, "isoformat"):
-                val = val.isoformat()
+                val = val.isoformat()  # type: ignore[union-attr]
             result[col] = val
 
         # Include nested database info
@@ -226,7 +244,7 @@ class QueryController(Controller):
     async def stop_query(
         self, data: StopQuerySchema, dao: QueryDAOProtocol
     ) -> dict[str, str]:
-        cmd = StopQueryCommand(dao=dao, client_id=data.client_id)
+        cmd = StopQueryCommand(dao=dao, client_id=data.client_id)  # type: ignore[arg-type]
         await cmd.execute()
         event_logger.log("query.stop", extra={"client_id": data.client_id})
         return {"result": "OK"}

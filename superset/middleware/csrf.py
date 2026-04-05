@@ -103,9 +103,7 @@ def validate_csrf_token(
             salt, ts_str, token_sess_hash, sig = parts
             # Verify the session hash matches the current session
             expected_sess_hash = _hash_session_id(session_id)
-            if not hmac.compare_digest(
-                token_sess_hash, expected_sess_hash
-            ):
+            if not hmac.compare_digest(token_sess_hash, expected_sess_hash):
                 return False
             payload = f"{salt}.{ts_str}.{token_sess_hash}"
             expected_sig = hmac.new(
@@ -236,9 +234,7 @@ class CSRFMiddleware(MiddlewareProtocol):
         )
 
         # Extract session cookie for session-bound validation
-        session_id = _extract_cookie(
-            headers, self.session_cookie_name
-        )
+        session_id = _extract_cookie(headers, self.session_cookie_name)
 
         if not token or not validate_csrf_token(
             token,

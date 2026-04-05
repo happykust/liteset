@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """Compatibility shim for Alembic migrations."""
+
 import logging
 from collections import defaultdict
 from typing import Any

@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """Standalone enums for migration compatibility (no SA 2.0 model import)."""
+
 import enum
 
 

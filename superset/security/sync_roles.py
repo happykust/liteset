@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 # PVM predicate functions
 # ---------------------------------------------------------------------------
 
+
 def _is_user_defined_permission(pvm: PermissionView) -> bool:
     """Return True if the PVM is user-defined (object-specific).
 
@@ -114,6 +115,7 @@ def _is_sql_lab_only(pvm: PermissionView) -> bool:
 # Role-membership predicates (mirrors SupersetSecurityManager)
 # ---------------------------------------------------------------------------
 
+
 def _is_admin_pvm(pvm: PermissionView) -> bool:
     """Admin gets every PVM except user-defined (object-specific) ones."""
     return not _is_user_defined_permission(pvm)
@@ -125,9 +127,7 @@ def _is_alpha_pvm(pvm: PermissionView) -> bool:
     Plus always gets ACCESSIBLE_PERMS.
     """
     return not (
-        _is_user_defined_permission(pvm)
-        or _is_admin_only(pvm)
-        or _is_sql_lab_only(pvm)
+        _is_user_defined_permission(pvm) or _is_admin_only(pvm) or _is_sql_lab_only(pvm)
     ) or _is_accessible_to_all(pvm)
 
 
@@ -147,8 +147,7 @@ def _is_sql_lab_pvm(pvm: PermissionView) -> bool:
     """sql_lab role gets SQL-Lab-only + SQL-Lab-extra PVMs."""
     return (
         _is_sql_lab_only(pvm)
-        or (pvm.permission.name, pvm.view_menu.name)
-        in SQLLAB_EXTRA_PERMISSION_VIEWS
+        or (pvm.permission.name, pvm.view_menu.name) in SQLLAB_EXTRA_PERMISSION_VIEWS
     )
 
 
@@ -156,13 +155,10 @@ def _is_sql_lab_pvm(pvm: PermissionView) -> bool:
 # Helper: get or create a Permission row
 # ---------------------------------------------------------------------------
 
-async def _get_or_create_permission(
-    session: AsyncSession, name: str
-) -> Permission:
+
+async def _get_or_create_permission(session: AsyncSession, name: str) -> Permission:
     """Get an existing Permission or create one."""
-    result = await session.execute(
-        select(Permission).where(Permission.name == name)
-    )
+    result = await session.execute(select(Permission).where(Permission.name == name))
     perm = result.scalars().one_or_none()
     if perm is None:
         perm = Permission(name=name)
@@ -175,13 +171,10 @@ async def _get_or_create_permission(
 # Helper: get or create a ViewMenu row
 # ---------------------------------------------------------------------------
 
-async def _get_or_create_view_menu(
-    session: AsyncSession, name: str
-) -> ViewMenu:
+
+async def _get_or_create_view_menu(session: AsyncSession, name: str) -> ViewMenu:
     """Get an existing ViewMenu or create one."""
-    result = await session.execute(
-        select(ViewMenu).where(ViewMenu.name == name)
-    )
+    result = await session.execute(select(ViewMenu).where(ViewMenu.name == name))
     vm = result.scalars().one_or_none()
     if vm is None:
         vm = ViewMenu(name=name)
@@ -193,6 +186,7 @@ async def _get_or_create_view_menu(
 # ---------------------------------------------------------------------------
 # Helper: get or create a PermissionView (permission + view_menu pair)
 # ---------------------------------------------------------------------------
+
 
 async def _get_or_create_pvm(
     session: AsyncSession,
@@ -220,9 +214,8 @@ async def _get_or_create_pvm(
 # Helper: get or create a Role
 # ---------------------------------------------------------------------------
 
-async def _get_or_create_role(
-    session: AsyncSession, name: str
-) -> Role:
+
+async def _get_or_create_role(session: AsyncSession, name: str) -> Role:
     """Get an existing Role or create one.
 
     Always returns a Role with the ``permissions`` collection eagerly
@@ -230,9 +223,7 @@ async def _get_or_create_role(
     doesn't trigger a synchronous lazy-load in async context.
     """
     result = await session.execute(
-        select(Role)
-        .where(Role.name == name)
-        .options(selectinload(Role.permissions))
+        select(Role).where(Role.name == name).options(selectinload(Role.permissions))
     )
     role = result.scalars().one_or_none()
     if role is None:
@@ -254,6 +245,7 @@ async def _get_or_create_role(
 # Helper: load all PVMs with eager-loaded relationships
 # ---------------------------------------------------------------------------
 
+
 async def _get_all_pvms(session: AsyncSession) -> list[PermissionView]:
     """Load all PermissionView rows with permission and view_menu."""
     result = await session.execute(
@@ -269,6 +261,7 @@ async def _get_all_pvms(session: AsyncSession) -> list[PermissionView]:
 # ---------------------------------------------------------------------------
 # Helper: set_role — assign filtered PVMs to a role
 # ---------------------------------------------------------------------------
+
 
 async def _set_role(
     session: AsyncSession,
@@ -286,6 +279,7 @@ async def _set_role(
 # ---------------------------------------------------------------------------
 # Helper: copy_role — PUBLIC_ROLE_LIKE support
 # ---------------------------------------------------------------------------
+
 
 async def _copy_role(
     session: AsyncSession,
@@ -424,7 +418,7 @@ _STANDARD_VIEW_PERMISSIONS: list[tuple[str, str]] = [
 ]
 
 
-async def _create_missing_perms(session: AsyncSession) -> None:
+async def _create_missing_perms(session: AsyncSession) -> None:  # noqa: C901
     """Create missing PermissionView rows.
 
     1. Standard view permissions (can_read/can_write on all views)
@@ -443,13 +437,16 @@ async def _create_missing_perms(session: AsyncSession) -> None:
     for perm_name, view_name in _STANDARD_VIEW_PERMISSIONS:
         if (perm_name, view_name) not in existing_pvms:
             await _get_or_create_pvm(
-                session, perm_name, view_name,
+                session,
+                perm_name,
+                view_name,
             )
             existing_pvms.add((perm_name, view_name))
             created += 1
 
     logger.info(
-        "Created %d standard view PVMs", created,
+        "Created %d standard view PVMs",
+        created,
     )
 
     # 2. Datasource permissions
@@ -476,8 +473,7 @@ async def _create_missing_perms(session: AsyncSession) -> None:
                 catalog_perm = getattr(ds, "catalog_perm", None)
                 if (
                     catalog_perm
-                    and ("catalog_access", catalog_perm)
-                    not in existing_pvms
+                    and ("catalog_access", catalog_perm) not in existing_pvms
                 ):
                     await _get_or_create_pvm(session, "catalog_access", catalog_perm)
                     existing_pvms.add(("catalog_access", catalog_perm))
@@ -510,6 +506,7 @@ async def _create_missing_perms(session: AsyncSession) -> None:
 # Helper: clean_perms — remove faulty PermissionView rows
 # ---------------------------------------------------------------------------
 
+
 async def _clean_perms(session: AsyncSession) -> None:
     """Delete PermissionView rows with NULL permission or view_menu."""
     logger.info("Cleaning faulty permissions")
@@ -532,6 +529,7 @@ async def _clean_perms(session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+
 
 async def sync_role_definitions(
     session: AsyncSession,
@@ -568,7 +566,10 @@ async def sync_role_definitions(
     alpha_role = await _set_role(session, "Alpha", _is_alpha_pvm, pvms)
     gamma_role = await _set_role(session, "Gamma", _is_gamma_pvm, pvms)
     sql_lab_role = await _set_role(
-        session, "sql_lab", _is_sql_lab_pvm, pvms,
+        session,
+        "sql_lab",
+        _is_sql_lab_pvm,
+        pvms,
     )
 
     # Step 4: Ensure Public role exists
@@ -577,7 +578,10 @@ async def sync_role_definitions(
     # Step 5: Handle PUBLIC_ROLE_LIKE
     if public_role_like:
         await _copy_role(
-            session, public_role_like, "Public", merge=True,
+            session,
+            public_role_like,
+            "Public",
+            merge=True,
         )
 
     # Step 6: Clean up faulty PVMs

@@ -123,9 +123,7 @@ class AsyncFullAssetManager:
         result = ImportResult()
 
         try:
-            parsed = await asyncio.to_thread(
-                self._parse_import_zip, file_content
-            )
+            parsed = await asyncio.to_thread(self._parse_import_zip, file_content)
         except zipfile.BadZipFile:
             result.errors.append("Invalid ZIP file")
             return result
@@ -145,9 +143,7 @@ class AsyncFullAssetManager:
 
         try:
             if metadata is not None:
-                logger.info(
-                    "Importing assets version %s", metadata.get("version")
-                )
+                logger.info("Importing assets version %s", metadata.get("version"))
 
             # Import each type
             for asset_type, filenames in by_type.items():
@@ -185,9 +181,7 @@ class AsyncFullAssetManager:
             parts = PurePosixPath(entry).parts
             if ".." in parts:
                 zf.close()
-                raise ValueError(
-                    f"ZIP entry contains path traversal: {entry}"
-                )
+                raise ValueError(f"ZIP entry contains path traversal: {entry}")
 
         metadata: dict[str, Any] | None = None
         if "metadata.yaml" in entries:

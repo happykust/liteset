@@ -107,9 +107,7 @@ def prophet(  # pylint: disable=too-many-arguments
     if not time_grain:
         raise InvalidPostProcessingError("Time grain missing")
     if time_grain not in PROPHET_TIME_GRAIN_MAP:
-        raise InvalidPostProcessingError(
-            f"Unsupported time grain: {time_grain}"
-        )
+        raise InvalidPostProcessingError(f"Unsupported time grain: {time_grain}")
     freq = PROPHET_TIME_GRAIN_MAP[time_grain]
     if not isinstance(periods, int) or periods < 0:
         raise InvalidPostProcessingError("Periods must be a whole number")

@@ -49,6 +49,6 @@ def mask_uri_password(uri: str) -> str:
                 + (f":{parsed.port}" if parsed.port else ""),
             )
             return urlunparse(masked)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
     return uri

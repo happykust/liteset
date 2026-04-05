@@ -69,4 +69,8 @@ def load_flights(only_metadata: bool = False, force: bool = False) -> None:
     tbl.description = "Random set of flights in the US"
     tbl.database = database
     tbl.filter_select_enabled = True
+
+    with _ctx.example_engine(database) as eng:
+        _ctx.fetch_table_metadata(tbl, eng)
+
     logger.debug("Done loading table!")

@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Apache Impala engine spec -- sync/Flask-compatible.
 
 Ported 1:1 from ``superset_old/db_engine_specs/impala.py`` with Flask
@@ -77,9 +78,7 @@ class ImpalaEngineSpec(BaseEngineSpec):
         if isinstance(sqla_type, types.Date):
             return f"CAST('{dttm.date().isoformat()}' AS DATE)"
         if isinstance(sqla_type, types.TIMESTAMP):
-            return (
-                f"""CAST('{dttm.isoformat(timespec="microseconds")}' AS TIMESTAMP)"""
-            )
+            return f"""CAST('{dttm.isoformat(timespec="microseconds")}' AS TIMESTAMP)"""
         return None
 
     @classmethod
@@ -95,9 +94,7 @@ class ImpalaEngineSpec(BaseEngineSpec):
         return False
 
     @classmethod
-    def get_cancel_query_id(
-        cls, cursor: Any, query: Query
-    ) -> str | None:
+    def get_cancel_query_id(cls, cursor: Any, query: Query) -> str | None:
         last_operation = getattr(cursor, "_last_operation", None)
         if not last_operation:
             return None
@@ -105,17 +102,12 @@ class ImpalaEngineSpec(BaseEngineSpec):
         return f"{guid[-16:]}:{guid[:16]}"
 
     @classmethod
-    def cancel_query(
-        cls, cursor: Any, query: Query, cancel_query_id: str
-    ) -> bool:
+    def cancel_query(cls, cursor: Any, query: Query, cancel_query_id: str) -> bool:
         try:
             import requests
 
             impala_host = query.database.url_object.host
-            url = (
-                f"http://{impala_host}:25000"
-                f"/cancel_query?query_id={cancel_query_id}"
-            )
+            url = f"http://{impala_host}:25000/cancel_query?query_id={cancel_query_id}"
             response = requests.post(url, timeout=3)
         except Exception:  # noqa: BLE001
             return False

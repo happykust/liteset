@@ -369,9 +369,7 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "ALERT_REPORTS_CRON_WINDOW_SIZE": "alert_reports_cron_window_size",
     "ALERT_REPORTS_WORKING_TIME_OUT_KILL": "alert_reports_working_time_out_kill",
     "ALERT_REPORTS_EXECUTORS": "alert_reports_executors",
-    "ALERT_REPORTS_WORKING_TIME_OUT_LAG": (
-        "alert_reports_working_time_out_lag"
-    ),
+    "ALERT_REPORTS_WORKING_TIME_OUT_LAG": ("alert_reports_working_time_out_lag"),
     "ALERT_REPORTS_WORKING_SOFT_TIME_OUT_LAG": (
         "alert_reports_working_soft_time_out_lag"
     ),
@@ -434,9 +432,7 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "GLOBAL_ASYNC_QUERIES_REGISTER_REQUEST_HANDLERS": (
         "global_async_queries_register_request_handlers"
     ),
-    "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_NAME": (
-        "global_async_queries_jwt_cookie_name"
-    ),
+    "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_NAME": ("global_async_queries_jwt_cookie_name"),
     "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_SECURE": (
         "global_async_queries_jwt_cookie_secure"
     ),
@@ -662,9 +658,7 @@ class SupersetSettings(BaseSettings):
     logo_target_path: str | None = None
     logo_tooltip: str = ""
     logo_right_text: Any = ""  # Can be str or Callable
-    favicons: list[dict[str, str]] = [
-        {"href": "/static/assets/images/favicon.png"}
-    ]
+    favicons: list[dict[str, str]] = [{"href": "/static/assets/images/favicon.png"}]
 
     # ── Version / Build ──
     version_string: str = ""
@@ -715,7 +709,13 @@ class SupersetSettings(BaseSettings):
     d3_format: dict[str, Any] = {}
     d3_time_format: dict[str, Any] = {}
     currencies: list[str] = [
-        "USD", "EUR", "GBP", "INR", "MXN", "JPY", "CNY",
+        "USD",
+        "EUR",
+        "GBP",
+        "INR",
+        "MXN",
+        "JPY",
+        "CNY",
     ]
     deckgl_base_map: Any | None = None
     extra_categorical_color_schemes: list[Any] = []
@@ -769,7 +769,13 @@ class SupersetSettings(BaseSettings):
     csv_extensions: set[str] = {"csv", "tsv", "txt"}
     columnar_extensions: set[str] = {"parquet", "zip"}
     allowed_extensions: set[str] = {
-        "xlsx", "xls", "csv", "tsv", "txt", "parquet", "zip",
+        "xlsx",
+        "xls",
+        "csv",
+        "tsv",
+        "txt",
+        "parquet",
+        "zip",
     }
 
     # ── HTML ──
@@ -888,7 +894,11 @@ class SupersetSettings(BaseSettings):
     # ── Proxy fix ──
     enable_proxy_fix: bool = False
     proxy_fix_config: dict[str, int] = {
-        "x_for": 1, "x_proto": 1, "x_host": 1, "x_port": 1, "x_prefix": 1,
+        "x_for": 1,
+        "x_proto": 1,
+        "x_host": 1,
+        "x_port": 1,
+        "x_prefix": 1,
     }
 
     # ── Rate limiting (extended) ──
@@ -1034,7 +1044,11 @@ class SupersetSettings(BaseSettings):
 
     # ── Roles / Permissions ──
     robot_permission_roles: list[str] = [
-        "Public", "Gamma", "Alpha", "Admin", "sql_lab",
+        "Public",
+        "Gamma",
+        "Alpha",
+        "Admin",
+        "sql_lab",
     ]
 
     # ── Flask app mutator ──
@@ -1071,34 +1085,84 @@ class SupersetSettings(BaseSettings):
     db_sqla_uri_validator: Any | None = None  # Callable[[URL], None] | None
     disallowed_sql_functions: dict[str, set[str]] = {
         "postgresql": {
-            "current_database", "current_schema", "current_user", "session_user",
-            "current_setting", "version", "inet_client_addr", "inet_client_port",
-            "inet_server_addr", "inet_server_port", "pg_read_file", "pg_ls_dir",
-            "pg_read_binary_file", "database_to_xml", "database_to_xmlschema",
-            "query_to_xml", "query_to_xmlschema", "table_to_xml",
-            "table_to_xml_and_xmlschema", "query_to_xml_and_xmlschema",
-            "table_to_xmlschema", "pg_sleep", "pg_terminate_backend",
+            "current_database",
+            "current_schema",
+            "current_user",
+            "session_user",
+            "current_setting",
+            "version",
+            "inet_client_addr",
+            "inet_client_port",
+            "inet_server_addr",
+            "inet_server_port",
+            "pg_read_file",
+            "pg_ls_dir",
+            "pg_read_binary_file",
+            "database_to_xml",
+            "database_to_xmlschema",
+            "query_to_xml",
+            "query_to_xmlschema",
+            "table_to_xml",
+            "table_to_xml_and_xmlschema",
+            "query_to_xml_and_xmlschema",
+            "table_to_xmlschema",
+            "pg_sleep",
+            "pg_terminate_backend",
         },
         "mysql": {
-            "database", "schema", "current_user", "session_user", "system_user",
-            "user", "version", "connection_id", "load_file", "sleep", "benchmark",
+            "database",
+            "schema",
+            "current_user",
+            "session_user",
+            "system_user",
+            "user",
+            "version",
+            "connection_id",
+            "load_file",
+            "sleep",
+            "benchmark",
             "kill",
         },
         "sqlite": {
-            "sqlite_version", "sqlite_source_id", "sqlite_offset",
-            "sqlite_compileoption_used", "sqlite_compileoption_get", "load_extension",
+            "sqlite_version",
+            "sqlite_source_id",
+            "sqlite_offset",
+            "sqlite_compileoption_used",
+            "sqlite_compileoption_get",
+            "load_extension",
         },
         "mssql": {
-            "db_name", "suser_sname", "user_name", "host_name", "host_id",
-            "suser_id", "system_user", "current_user", "original_login",
-            "xp_cmdshell", "xp_regread", "xp_fileexist", "xp_dirtree",
-            "serverproperty", "is_srvrolemember", "has_dbaccess",
-            "fn_virtualfilestats", "fn_servershareddrives",
+            "db_name",
+            "suser_sname",
+            "user_name",
+            "host_name",
+            "host_id",
+            "suser_id",
+            "system_user",
+            "current_user",
+            "original_login",
+            "xp_cmdshell",
+            "xp_regread",
+            "xp_fileexist",
+            "xp_dirtree",
+            "serverproperty",
+            "is_srvrolemember",
+            "has_dbaccess",
+            "fn_virtualfilestats",
+            "fn_servershareddrives",
         },
         "clickhouse": {
-            "currentUser", "currentDatabase", "hostName", "currentRoles",
-            "version", "buildID", "url", "filesystemPath", "getOSInformation",
-            "getMacro", "getSetting",
+            "currentUser",
+            "currentDatabase",
+            "hostName",
+            "currentRoles",
+            "version",
+            "buildID",
+            "url",
+            "filesystemPath",
+            "getOSInformation",
+            "getMacro",
+            "getSetting",
         },
     }
 
@@ -1160,7 +1224,10 @@ class SupersetSettings(BaseSettings):
 
     # ── Preferred databases ──
     preferred_databases: list[str] = [
-        "PostgreSQL", "Presto", "MySQL", "SQLite",
+        "PostgreSQL",
+        "Presto",
+        "MySQL",
+        "SQLite",
     ]
     # seconds (timedelta(seconds=30) in original)
     test_database_connection_timeout: int = 30
@@ -1178,7 +1245,9 @@ class SupersetSettings(BaseSettings):
             "base-uri": ["'self'"],
             "default-src": ["'self'"],
             "img-src": [
-                "'self'", "blob:", "data:",
+                "'self'",
+                "blob:",
+                "data:",
                 "https://apachesuperset.gateway.scarf.sh",
                 "https://static.scarf.sh/",
                 "ows.terrestris.de",
@@ -1205,7 +1274,9 @@ class SupersetSettings(BaseSettings):
             "base-uri": ["'self'"],
             "default-src": ["'self'"],
             "img-src": [
-                "'self'", "blob:", "data:",
+                "'self'",
+                "blob:",
+                "data:",
                 "https://apachesuperset.gateway.scarf.sh",
                 "https://static.scarf.sh/",
                 "https://cdn.brandfolder.io",
@@ -1331,7 +1402,7 @@ class SupersetSettings(BaseSettings):
         # Apply SUPERSET_FEATURE_* env vars (matches original config.py:647-653)
         for k, v in os.environ.items():
             if re.match(r"^SUPERSET_FEATURE_\w+", k):
-                flag_name = k[len("SUPERSET_FEATURE_"):]
+                flag_name = k[len("SUPERSET_FEATURE_") :]
                 merged[flag_name] = v.lower() in ("true", "1", "yes", "y", "on")
         self.feature_flags = merged
         return self

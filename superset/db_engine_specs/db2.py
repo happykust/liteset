@@ -79,7 +79,7 @@ class Db2EngineSpec(BaseEngineSpec):
         try:
             table_comment = inspector.get_table_comment(table.table, table.schema)
             comment = table_comment.get("text")
-            return comment[0]
+            return comment[0]  # type: ignore[index]
         except IndexError:
             return comment
         except Exception as ex:  # pylint: disable=broad-except

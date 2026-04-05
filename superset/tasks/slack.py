@@ -19,6 +19,7 @@
 Self-contained implementation that reads Slack configuration from
 :class:`~superset.config.SupersetSettings` and uses ``slack_sdk`` directly.
 """
+
 from __future__ import annotations
 
 import logging
@@ -38,13 +39,11 @@ def cache_channels() -> None:
     """
     from superset.config import SupersetSettings
 
-    settings = SupersetSettings()
+    settings = SupersetSettings()  # type: ignore[call-arg]
     slack_token = getattr(settings, "slack_api_token", "")
 
     if not slack_token:
-        logger.warning(
-            "Slack API token not configured; skipping channel cache warm-up"
-        )
+        logger.warning("Slack API token not configured; skipping channel cache warm-up")
         return
 
     logger.info("Starting Slack channels cache warm-up task")

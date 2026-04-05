@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import enum
 import uuid as uuid_mod
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -231,7 +232,7 @@ class ReportExecutionLog(Base):
     __tablename__ = "report_execution_log"
 
     id = Column(Integer, primary_key=True)
-    uuid = Column(BinaryUUID(), default=uuid_mod.uuid4)
+    uuid: Any = Column(BinaryUUID(), default=uuid_mod.uuid4)
     scheduled_dttm = Column(DateTime)
     start_dttm = Column(DateTime)
     end_dttm = Column(DateTime)

@@ -100,7 +100,7 @@ class DrillEngineSpec(BaseEngineSpec):
         """
         Return the configured schema.
         """
-        return parse.unquote(sqlalchemy_uri.database).replace("/", ".")
+        return parse.unquote(sqlalchemy_uri.database).replace("/", ".")  # type: ignore[arg-type]
 
     @classmethod
     def impersonate_user(

@@ -20,17 +20,14 @@ Supports the two formats FAB / werkzeug may produce:
 - ``scrypt:N:r:p$salt$hash``  (werkzeug >= 3.0 default)
 - ``pbkdf2:hash_name:iterations$salt$hash``  (werkzeug < 3.0 default)
 """
+
 from __future__ import annotations
 
 import hashlib
 import hmac
 import secrets
 
-_SALT_CHARS = (
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789"
-)
+_SALT_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
 def _gen_salt(length: int = 16) -> str:
@@ -98,9 +95,7 @@ def generate_password_hash(
         parts = method.split(":")
         hash_name = parts[1] if len(parts) > 1 else "sha256"
         iterations = int(parts[2]) if len(parts) > 2 else 600_000
-        h = hashlib.pbkdf2_hmac(
-            hash_name, password_bytes, salt_bytes, iterations
-        ).hex()
+        h = hashlib.pbkdf2_hmac(hash_name, password_bytes, salt_bytes, iterations).hex()
         actual_method = f"pbkdf2:{hash_name}:{iterations}"
     else:
         raise ValueError(f"Unsupported hash method: {method!r}")

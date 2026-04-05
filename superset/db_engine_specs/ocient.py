@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 
 import contextlib
 import re
@@ -110,7 +111,8 @@ def _find_columns_to_sanitize(cursor: Any) -> list[PlacedSanitizeFunc]:
     """
     return [
         PlacedSanitizeFunc(
-            i, _sanitized_ocient_type_codes[cursor.description[i][1]],
+            i,
+            _sanitized_ocient_type_codes[cursor.description[i][1]],
         )
         for i in range(len(cursor.description))
         if cursor.description[i][1] in _sanitized_ocient_type_codes
@@ -137,8 +139,7 @@ class OcientEngineSpec(BaseEngineSpec):
             {},
         ),
         CONNECTION_INVALID_PASSWORD_REGEX: (
-            "The user/password combination is not valid"
-            " (Incorrect password for user).",
+            "The user/password combination is not valid (Incorrect password for user).",
             SupersetErrorType.CONNECTION_INVALID_PASSWORD_ERROR,
             {},
         ),

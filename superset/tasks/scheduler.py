@@ -138,16 +138,14 @@ def execute(self: Task, report_schedule_id: int) -> None:
         status_prefix = str(status)[0]
         if status_prefix == "5":
             logger.exception(
-                "A downstream exception occurred while generating a report: "
-                "%s. %s",
+                "A downstream exception occurred while generating a report: %s. %s",
                 task_id,
                 ex.message,
             )
             self.update_state(state="FAILURE")
         elif status_prefix == "4":
             logger.warning(
-                "A downstream warning occurred while generating a report: "
-                "%s. %s",
+                "A downstream warning occurred while generating a report: %s. %s",
                 task_id,
                 ex.message,
                 exc_info=True,

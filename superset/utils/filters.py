@@ -26,15 +26,15 @@ def get_dataset_access_filters(
     *args: Any,
 ) -> BooleanClauseList:
     # pylint: disable=import-outside-toplevel
-    from superset import security_manager
-    from superset.connectors.sqla.models import Database
+    from superset import security_manager  # type: ignore[attr-defined]
+    from superset.connectors.sqla.models import Database  # type: ignore[attr-defined]
 
     database_ids = security_manager.get_accessible_databases()
     perms = security_manager.user_view_menu_names("datasource_access")
     schema_perms = security_manager.user_view_menu_names("schema_access")
     catalog_perms = security_manager.user_view_menu_names("catalog_access")
 
-    return or_(
+    return or_(  # type: ignore[return-value]
         Database.id.in_(database_ids),
         base_model.perm.in_(perms),
         base_model.catalog_perm.in_(catalog_perms),

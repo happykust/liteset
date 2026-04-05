@@ -180,9 +180,7 @@ class ExploreController(Controller):
                         "database": {
                             "id": db_obj.id if db_obj else 0,
                             "backend": (
-                                getattr(db_obj, "backend", "")
-                                if db_obj
-                                else ""
+                                getattr(db_obj, "backend", "") if db_obj else ""
                             ),
                         },
                         "schema": getattr(dataset, "schema", None),

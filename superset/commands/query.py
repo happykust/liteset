@@ -182,7 +182,10 @@ class CreateSavedQueryCommand(AsyncBaseCommand["SavedQuery"]):
         # Add implicit type: and owner: tags (async port of QueryUpdater.after_insert)
         owner_ids = [self._user_id] if self._user_id is not None else []
         await add_implicit_tags_after_insert(
-            self._dao.session, "query", query.id, owner_ids
+            self._dao.session,
+            "query",
+            int(query.id),
+            owner_ids,
         )
 
         return query

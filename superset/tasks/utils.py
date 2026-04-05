@@ -20,6 +20,7 @@ Replaces ``superset/tasks/utils.py``. The ``get_executor`` logic is
 preserved as-is since it is used by cache warming, thumbnails, and
 alert/report tasks.
 """
+
 from __future__ import annotations
 
 import logging
@@ -39,7 +40,7 @@ logger = get_task_logger(__name__)
 logger.setLevel(logging.INFO)
 
 
-def get_executor(
+def get_executor(  # noqa: C901
     executors: list[Executor],
     model: Dashboard | ReportSchedule | Slice,
     current_user: str | None = None,

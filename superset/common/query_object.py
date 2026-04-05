@@ -71,6 +71,34 @@ class AsyncQueryObject:
     group_others_when_limit_reached: bool = False
     granularity_sqla: str | None = None
 
+    def __post_init__(self) -> None:
+        # P1-9: Deprecated field renaming — backward compatibility
+        if self.granularity_sqla and not self.granularity:
+            self.granularity = self.granularity_sqla
+
+        # Metric normalization: {"label": "count"} → "count"
+        normalized: list[Any] = []
+        for m in self.metrics or []:
+            if isinstance(m, dict) and set(m.keys()) == {"label"}:
+                normalized.append(m["label"])
+            else:
+                normalized.append(m)
+        self.metrics = normalized
+
+        # P1-10: is_timeseries auto-detection
+        if not self.is_timeseries:
+            if "__timestamp" in (self.columns or []):
+                self.is_timeseries = True
+
+        # Formula annotation filtering (client-side only)
+        if self.annotation_layers:
+            self.annotation_layers = [
+                a
+                for a in self.annotation_layers
+                if a.get("annotationType") != "FORMULA"
+                and a.get("annotation_type") != "FORMULA"
+            ]
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict matching Superset's QueryObject.to_dict().
 
@@ -133,7 +161,7 @@ class AsyncQueryObject:
         if self.time_offsets:
             base["time_offsets"] = self.time_offsets
         # Include filtered annotation_layers (specific fields only)
-        _ANNOTATION_CACHE_FIELDS = {
+        _ANNOTATION_CACHE_FIELDS = {  # noqa: N806
             "annotationType",
             "descriptionColumns",
             "intervalEndColumn",
@@ -256,9 +284,23 @@ class AsyncQueryObject:
     def from_request(cls, q: Any, datasource_ref: dict[str, Any]) -> AsyncQueryObject:
         """Create from a dict or ChartDataQueryObject schema struct."""
         if isinstance(q, dict):
+            # P1-9: Deprecated field renaming fallbacks
+            columns = q.get("columns", [])
+            if not columns and q.get("groupby"):
+                columns = q["groupby"]
+            granularity = q.get("granularity")
+            if not granularity and q.get("granularity_sqla"):
+                granularity = q["granularity_sqla"]
+            series_limit = q.get("series_limit", 0)
+            if not series_limit and q.get("timeseries_limit"):
+                series_limit = q["timeseries_limit"]
+            series_limit_metric = q.get("series_limit_metric")
+            if series_limit_metric is None and q.get("timeseries_limit_metric"):
+                series_limit_metric = q["timeseries_limit_metric"]
+
             return cls(
                 datasource=datasource_ref,
-                columns=q.get("columns", []),
+                columns=columns,
                 metrics=q.get("metrics", []),
                 filters=q.get("filters") or q.get("filter", []),
                 extras=q.get("extras", {}),
@@ -267,13 +309,13 @@ class AsyncQueryObject:
                 row_offset=q.get("row_offset", 0),
                 time_range=q.get("time_range"),
                 time_shift=q.get("time_shift"),
-                granularity=q.get("granularity"),
+                granularity=granularity,
                 order_desc=q.get("order_desc", True),
                 post_processing=q.get("post_processing", []),
                 annotation_layers=q.get("annotation_layers", []),
                 series_columns=q.get("series_columns", []),
-                series_limit=q.get("series_limit", 0),
-                series_limit_metric=q.get("series_limit_metric"),
+                series_limit=series_limit,
+                series_limit_metric=series_limit_metric,
                 is_timeseries=q.get("is_timeseries", False),
                 result_type=q.get("result_type"),
                 applied_time_extras=q.get("applied_time_extras", {}),

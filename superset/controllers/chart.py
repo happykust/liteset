@@ -683,7 +683,7 @@ class ChartController(Controller):
         # Redirect to the canonical digest URL if stale
         chart_digest = getattr(chart, "digest", None)
         if chart_digest and chart_digest != digest:
-            return Redirect(  # type: ignore[return-value]
+            return Redirect(
                 path=f"/api/v1/chart/{pk}/thumbnail/{chart_digest}/",
             )
 
@@ -692,9 +692,7 @@ class ChartController(Controller):
         screenshot_obj = ChartScreenshot(chart_url, chart_digest or digest)
         cache_key = await asyncio.to_thread(screenshot_obj.get_cache_key)
         cache_payload = (
-            await asyncio.to_thread(
-                ChartScreenshot.get_from_cache_key, cache_key
-            )
+            await asyncio.to_thread(ChartScreenshot.get_from_cache_key, cache_key)
             or ScreenshotCachePayload()
         )
 

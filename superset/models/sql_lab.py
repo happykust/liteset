@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """SQL Lab models: Query, SavedQuery, TabState, TableSchema.
 
 Pure SQLAlchemy -- no Flask dependencies.

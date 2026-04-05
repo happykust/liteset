@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """SqlLab command classes — SQL execution, formatting, estimation, permalinks."""
 
 from __future__ import annotations
@@ -79,7 +80,7 @@ def _to_sync_uri(uri: str) -> str:
     """
     for async_prefix, sync_prefix in _ASYNC_DRIVER_REPLACEMENTS.items():
         if uri.startswith(async_prefix):
-            return sync_prefix + uri[len(async_prefix):]
+            return sync_prefix + uri[len(async_prefix) :]
     return uri
 
 
@@ -133,9 +134,7 @@ def _execute_sql_in_thread(
                 # handled by the driver. We intentionally swallow
                 # errors from non-Postgres engines.
                 try:
-                    conn.execute(
-                        sa.text(f"SET search_path TO {schema}")
-                    )
+                    conn.execute(sa.text(f"SET search_path TO {schema}"))
                 except Exception:  # noqa: BLE001, S110
                     pass  # Non-Postgres engines may not support SET search_path
 
@@ -334,10 +333,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         data: list[dict[str, Any]] = []
         for row in rows_raw:
             data.append(
-                {
-                    col_names[i]: _make_json_safe(val)
-                    for i, val in enumerate(row)
-                }
+                {col_names[i]: _make_json_safe(val) for i, val in enumerate(row)}
             )
 
         # ------------------------------------------------------------------

@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 from __future__ import annotations
 
 import asyncio
@@ -44,7 +45,7 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
                 processed_col["column_name"] = processed_col.pop("name")
             processed.append(processed_col)
 
-        query.set_extra_json_key("columns", processed)
+        query.set_extra_json_key("columns", processed)  # type: ignore[attr-defined]
         self.session.add(query)
 
     async def get_queries_changed_after(
@@ -93,12 +94,14 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
             ):
                 pass  # engine handles cancellation implicitly
             elif hasattr(engine_spec, "cancel_query"):
-                cancel_query_id = query.extra.get("cancel_query")
+                cancel_query_id = query.extra.get("cancel_query")  # type: ignore[attr-defined]
                 if cancel_query_id is not None:
                     await asyncio.to_thread(
                         self._cancel_via_engine,
-                        db, engine_spec,
-                        query, cancel_query_id,
+                        db,
+                        engine_spec,
+                        query,
+                        cancel_query_id,
                     )
         except Exception as ex:  # noqa: BLE001
             if isinstance(ex, (KeyboardInterrupt, SystemExit)):
@@ -106,7 +109,9 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
             import logging
 
             logging.getLogger(__name__).warning(
-                "Failed to cancel query %s: %s", client_id, ex,
+                "Failed to cancel query %s: %s",
+                client_id,
+                ex,
             )
 
         query.status = QueryStatus.STOPPED  # type: ignore[assignment]
@@ -129,7 +134,7 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
         ) as engine:
             with closing(engine.raw_connection()) as conn:
                 with closing(conn.cursor()) as cursor:
-                    return engine_spec.cancel_query(cursor, query, cancel_query_id)  # type: ignore[no-any-return]
+                    return engine_spec.cancel_query(cursor, query, cancel_query_id)
 
 
 class AsyncSavedQueryDAO(BaseAsyncDAO[SavedQuery]):

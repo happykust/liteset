@@ -29,6 +29,7 @@ import asyncio
 import copy
 import inspect
 import logging
+import re
 from typing import Any, ClassVar, TYPE_CHECKING, TypedDict
 
 import numpy as np
@@ -36,11 +37,7 @@ import pandas as pd
 
 from superset.common.query_object import AsyncQueryObject
 from superset.typing import DatasourceProtocol
-
-try:
-    from superset.utils import pandas_postprocessing
-except ImportError:
-    pandas_postprocessing = None  # type: ignore[assignment]
+from superset.utils import pandas_postprocessing
 
 if TYPE_CHECKING:
     from superset.common.query_context import AsyncQueryContext
@@ -52,6 +49,35 @@ OFFSET_JOIN_COLUMN_SUFFIX = "__offset_join_column_"
 R_SUFFIX = "__right_suffix"
 DTTM_ALIAS = "__timestamp"
 _MAX_RECURSION_DEPTH = 2
+
+# CSV formula injection prevention (matches superset_old/utils/csv.py)
+_NEGATIVE_NUMBER_RE = re.compile(r"^-[0-9.]+$")
+_PROBLEMATIC_CHARS_RE = re.compile(r'^(?:"{2}|\s{1,})(?=[\-@+|=%])|^[\-@+|=%]')
+
+
+def _escape_csv_value(value: str) -> str:
+    """Escape values that could trigger formula injection in spreadsheets."""
+    needs_escaping = _PROBLEMATIC_CHARS_RE.match(value) is not None
+    is_negative_number = _NEGATIVE_NUMBER_RE.match(value) is not None
+    if needs_escaping and not is_negative_number:
+        value = value.replace("|", "\\|")
+        value = "'" + value
+    return value
+
+
+def _df_to_escaped_csv(df: pd.DataFrame, **kwargs: Any) -> str:
+    """Convert DataFrame to CSV with formula injection escaping."""
+
+    def _escape(v: Any) -> str | Any:
+        return _escape_csv_value(v) if isinstance(v, str) else v
+
+    df = df.rename(columns=_escape)
+    for name, column in df.items():
+        if column.dtype == np.dtype(object):
+            for idx, value in enumerate(column.values):
+                if isinstance(value, str):
+                    df.at[idx, name] = _escape_csv_value(value)
+    return df.to_csv(index=False, escapechar="\\", **kwargs)
 
 
 class CachedTimeOffset(TypedDict):
@@ -69,9 +95,7 @@ def _generate_cache_key(cache_dict: dict[str, Any], prefix: str = "") -> str:
     from superset.utils.hashing import md5_sha_from_dict
     from superset.utils.json import json_int_dttm_ser
 
-    hash_val = md5_sha_from_dict(
-        cache_dict, default=json_int_dttm_ser, ignore_nan=True
-    )
+    hash_val = md5_sha_from_dict(cache_dict, default=json_int_dttm_ser, ignore_nan=True)
     return f"{prefix}{hash_val}"
 
 
@@ -113,7 +137,7 @@ class AsyncQueryContextProcessor:
         self._query_context = query_context
         self._recursion_depth = _recursion_depth
 
-    async def _ensure_totals_available(
+    async def _ensure_totals_available(  # noqa: C901
         self, query_objects: list[AsyncQueryObject]
     ) -> None:
         """Find the totals query and inject computed totals into contribution ops.
@@ -140,12 +164,6 @@ class AsyncQueryContextProcessor:
                 break
 
         if totals_query is None:
-            # No dedicated totals query — just flag the options
-            for pp in contribution_ops:
-                options = pp.get("options", {})
-                if "contribution_totals" not in options:
-                    options["contribution_totals"] = True
-                pp["options"] = options
             return
 
         # Remove row_limit on the totals query to get full sums
@@ -165,11 +183,6 @@ class AsyncQueryContextProcessor:
                     pp["options"] = options
         except Exception:  # noqa: BLE001
             logger.warning("Failed to compute totals for contribution", exc_info=True)
-            for pp in contribution_ops:
-                options = pp.get("options", {})
-                if "contribution_totals" not in options:
-                    options["contribution_totals"] = True
-                pp["options"] = options
 
     async def get_payload(
         self,
@@ -178,13 +191,37 @@ class AsyncQueryContextProcessor:
         cache_query_context: bool = False,
         force_cached: bool = False,
     ) -> dict[str, Any]:
-        """Main entry point — processes all query objects, returns payload."""
+        """Main entry point — processes all query objects, returns payload.
+
+        Dispatches based on each query_object's result_type:
+          - "query"   — build SQL but don't execute
+          - "samples" — raw rows without metrics/filters
+          - "results" — execute without post-processing
+          - "full" (default) — execute, normalize, and post-process
+        """
         await self._ensure_totals_available(query_objects)
         query_results = []
         for qo in query_objects:
-            result = await self.get_df_payload(
-                qo, force=force, force_cached=force_cached
-            )
+            result_type = getattr(qo, "result_type", None) or "full"
+
+            if result_type == "query":
+                result = await self._get_query_only(qo)
+            elif result_type == "samples":
+                result = await self._get_samples(qo)
+            elif result_type == "results":
+                result = await self.get_df_payload(
+                    qo,
+                    force=force,
+                    force_cached=force_cached,
+                    skip_post_processing=True,
+                )
+            else:
+                # "full" — default behavior
+                result = await self.get_df_payload(
+                    qo,
+                    force=force,
+                    force_cached=force_cached,
+                )
             query_results.append(result)
 
         return_value: dict[str, Any] = {"queries": query_results}
@@ -195,31 +232,74 @@ class AsyncQueryContextProcessor:
 
         return return_value
 
-    async def get_df_payload(
+    async def _get_query_only(self, query_object: AsyncQueryObject) -> dict[str, Any]:
+        """Build SQL without executing — returns the query string only."""
+        datasource = self._datasource
+        query_dict = query_object.to_dict()
+
+        if hasattr(datasource, "get_query_str"):
+            query_str = datasource.get_query_str(query_dict)
+        elif hasattr(datasource, "get_query_str_extended"):
+            result = datasource.get_query_str_extended(query_dict)
+            query_str = getattr(result, "sql", str(result))
+        else:
+            query_str = str(query_dict)
+
+        return {
+            "query": query_str,
+            "status": "success",
+            "error": None,
+            "df": pd.DataFrame(),
+            "data": [],
+            "rowcount": 0,
+            "is_cached": False,
+            "label_map": {},
+            "applied_filters": [],
+            "rejected_filters": [],
+            "coltypes": [],
+        }
+
+    async def _get_samples(self, query_object: AsyncQueryObject) -> dict[str, Any]:
+        """Execute a simplified query for raw sample rows.
+
+        Strips metrics and filters to return raw LIMIT N rows from the
+        datasource.
+        """
+        sample_qo = copy.deepcopy(query_object)
+        sample_qo.metrics = []
+        sample_qo.filters = []
+        sample_qo.post_processing = []
+        sample_qo.orderby = []
+        if not sample_qo.row_limit:
+            sample_qo.row_limit = getattr(self._settings, "row_limit", 1000)
+
+        return await self.get_df_payload(sample_qo, skip_post_processing=True)
+
+    async def get_df_payload(  # noqa: C901
         self,
         query_object: AsyncQueryObject,
         force: bool = False,
         force_cached: bool = False,
+        skip_post_processing: bool = False,
     ) -> dict[str, Any]:
         """Execute a single query, return DataFrame + metadata."""
         # Validate query object (sanitize filters, check duplicates, etc.)
         query_object.validate()
 
-        # Validate columns exist in datasource
-        if hasattr(self._datasource, "column_names"):
+        # Validate columns exist in datasource (skip if no column metadata)
+        ds_columns = getattr(self._datasource, "column_names", None)
+        if ds_columns:
             from superset.utils.column import (
                 get_column_names_from_columns,
                 get_column_names_from_metrics,
             )
 
             requested_cols = get_column_names_from_columns(query_object.columns)
-            requested_cols += get_column_names_from_metrics(
-                query_object.metrics or []
-            )
+            requested_cols += get_column_names_from_metrics(query_object.metrics or [])
             invalid = [
                 col
                 for col in requested_cols
-                if col not in self._datasource.column_names and col != DTTM_ALIAS
+                if col not in ds_columns and col != DTTM_ALIAS
             ]
             if invalid:
                 from superset.exceptions import QueryObjectValidationError
@@ -255,6 +335,10 @@ class AsyncQueryContextProcessor:
                 "df": pd.DataFrame(),
                 "data": [],
                 "rowcount": 0,
+                "label_map": {},
+                "applied_filters": [],
+                "rejected_filters": [],
+                "coltypes": [],
             }
 
         error_message: str | None = None
@@ -268,9 +352,19 @@ class AsyncQueryContextProcessor:
             # Annotation data is stored alongside df in cache — skip re-fetch
         else:
             try:
-                result = await self._get_query_result(query_object)
+                result = await self._get_query_result(
+                    query_object,
+                    skip_post_processing=skip_post_processing,
+                )
                 df = result.get("df", pd.DataFrame())
                 query_str = result.get("query", "")
+
+                # Process time comparison offsets before post-processing
+                if query_object.time_offsets:
+                    time_offset_result = await self.processing_time_offsets(
+                        df, query_object
+                    )
+                    df = time_offset_result["df"]
 
                 # Fetch annotation data only on cache miss
                 annotation_data = await self.get_annotation_data(query_object)
@@ -287,6 +381,19 @@ class AsyncQueryContextProcessor:
                 df = pd.DataFrame()
                 error_message = str(ex)
                 status = "failed"
+
+        # Compute label_map from DataFrame columns
+        label_map = {col: [col] for col in df.columns}
+
+        # Compute coltypes from DataFrame dtypes
+        coltypes = self._extract_coltypes(df)
+
+        # Extract applied/rejected filters from query_object
+        applied_filters = [
+            {"column": f.get("col", ""), "op": f.get("op", "")}
+            for f in (query_object.filters or [])
+        ]
+        rejected_filters: list[dict[str, str]] = []
 
         return {
             "cache_key": cache_key,
@@ -306,7 +413,10 @@ class AsyncQueryContextProcessor:
             "sql_rowcount": len(df.index),
             "from_dttm": query_object.from_dttm,
             "to_dttm": query_object.to_dttm,
-            "label_map": {},
+            "label_map": label_map,
+            "coltypes": coltypes,
+            "applied_filters": applied_filters,
+            "rejected_filters": rejected_filters,
         }
 
     async def _get_cache_key(
@@ -320,7 +430,9 @@ class AsyncQueryContextProcessor:
             if hasattr(datasource, "get_extra_cache_keys")
             else []
         )
-        rls_key = await self._security_manager.get_rls_cache_key(datasource)
+        rls_key = await self._security_manager.get_rls_cache_key(
+            datasource, user=self._user
+        )
 
         cache_dict = query_object.cache_key()
         cache_dict.update(
@@ -342,16 +454,41 @@ class AsyncQueryContextProcessor:
 
         return _generate_cache_key(cache_dict, "df-")
 
-    async def _get_query_result(self, query_object: AsyncQueryObject) -> dict[str, Any]:
+    async def _get_query_result(  # noqa: C901
+        self,
+        query_object: AsyncQueryObject,
+        skip_post_processing: bool = False,
+    ) -> dict[str, Any]:
         """Execute a query against the datasource, returning result dict."""
         datasource = self._datasource
         query_dict = query_object.to_dict()
 
+        # Gather RLS filters from security manager and pass to query
+        rls_clauses: list[Any] = []
+        if hasattr(self._security_manager, "get_rls_filters"):
+            try:
+                rls_filters = await self._security_manager.get_rls_filters(
+                    self._datasource, user=self._user
+                )
+                rls_clauses = [f.clause for f in rls_filters]
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to retrieve RLS filters", exc_info=True)
+
         # Check if datasource supports async query
         if hasattr(datasource, "async_query"):
-            result = await datasource.async_query(query_dict)
+            if rls_clauses:
+                result = await datasource.async_query(
+                    query_dict, rls_filters=rls_clauses
+                )
+            else:
+                result = await datasource.async_query(query_dict)
         elif hasattr(datasource, "query"):
-            result = await asyncio.to_thread(datasource.query, query_dict)
+            if rls_clauses:
+                result = await asyncio.to_thread(  # type: ignore[call-arg]
+                    datasource.query, query_dict, rls_filters=rls_clauses
+                )
+            else:
+                result = await asyncio.to_thread(datasource.query, query_dict)
         else:
             raise ValueError(
                 f"Datasource {type(datasource).__name__} does not support querying"
@@ -369,14 +506,18 @@ class AsyncQueryContextProcessor:
             query_str = ""
 
         if not df.empty:
-            # Both normalize and post-processing are CPU-bound — offload to thread
-            df = await asyncio.to_thread(
-                self._normalize_and_postprocess, df, query_object
-            )
+            if skip_post_processing:
+                # Normalize only — skip post-processing (for "results" / "samples")
+                df = await asyncio.to_thread(self._normalize_df, df, query_object)
+            else:
+                # Both normalize and post-processing are CPU-bound
+                df = await asyncio.to_thread(
+                    self._normalize_and_postprocess, df, query_object
+                )
 
         return {"df": df, "query": query_str}
 
-    def _normalize_df(
+    def _normalize_df(  # noqa: C901
         self, df: pd.DataFrame, query_object: AsyncQueryObject
     ) -> pd.DataFrame:
         """Replace inf/-inf with NaN and normalize datetime/metric columns.
@@ -413,9 +554,7 @@ class AsyncQueryContextProcessor:
                 if hasattr(self._datasource, "get_column"):
                     col_obj = self._datasource.get_column(label)
                     if col_obj:
-                        timestamp_format = getattr(
-                            col_obj, "python_date_format", None
-                        )
+                        timestamp_format = getattr(col_obj, "python_date_format", None)
                 date_columns.append(
                     DateColumn(
                         col_label=label,
@@ -459,6 +598,25 @@ class AsyncQueryContextProcessor:
         df = self._normalize_df(df, query_object)
         df = self._exec_post_processing(df, query_object)
         return df
+
+    @staticmethod
+    def _extract_coltypes(df: pd.DataFrame) -> list[int]:
+        """Map DataFrame column dtypes to GenericDataType integers."""
+        from superset.typing import GenericDataType
+
+        result: list[int] = []
+        for col in df.columns:
+            dtype = df[col].dtype
+            if pd.api.types.is_bool_dtype(dtype):
+                # Check bool before numeric since bool is a subtype of int
+                result.append(GenericDataType.BOOLEAN)
+            elif pd.api.types.is_datetime64_any_dtype(dtype):
+                result.append(GenericDataType.TEMPORAL)
+            elif pd.api.types.is_numeric_dtype(dtype):
+                result.append(GenericDataType.NUMERIC)
+            else:
+                result.append(GenericDataType.STRING)
+        return result
 
     @staticmethod
     def _exec_post_processing(
@@ -588,13 +746,9 @@ class AsyncQueryContextProcessor:
                 if inspect.isawaitable(setter):
                     await setter
         except (TypeError, pickle.PicklingError):
-            logger.warning(
-                "Cache serialization failed for key %s", key, exc_info=True
-            )
+            logger.warning("Cache serialization failed for key %s", key, exc_info=True)
         except Exception:
-            logger.warning(
-                "Cache set failed for key %s", key, exc_info=True
-            )
+            logger.warning("Cache set failed for key %s", key, exc_info=True)
 
     async def get_annotation_data(
         self, query_object: AsyncQueryObject
@@ -653,7 +807,7 @@ class AsyncQueryContextProcessor:
             annotation_data[layer_name] = {"columns": columns, "records": records}
         return annotation_data
 
-    async def get_viz_annotation_data(
+    async def get_viz_annotation_data(  # noqa: C901
         self,
         annotation_layer: dict[str, Any],
         force: bool,
@@ -795,10 +949,12 @@ class AsyncQueryContextProcessor:
                 from superset.utils.date import get_past_or_future
 
                 query_object_clone.from_dttm = get_past_or_future(
-                    offset, outer_from_dttm
+                    offset,
+                    outer_from_dttm,  # type: ignore[arg-type]
                 )
                 query_object_clone.to_dttm = get_past_or_future(
-                    offset, outer_to_dttm
+                    offset,
+                    outer_to_dttm,  # type: ignore[arg-type]
                 )
 
                 query_object_clone.inner_from_dttm = query_object_clone.from_dttm
@@ -857,9 +1013,7 @@ class AsyncQueryContextProcessor:
                 offset_dfs[offset] = offset_metrics_df
 
             except Exception:  # noqa: BLE001
-                logger.exception(
-                    "Failed to process time offset '%s'", offset
-                )
+                logger.exception("Failed to process time offset '%s'", offset)
                 queries.append("")
                 cache_keys.append(None)
 
@@ -931,7 +1085,7 @@ class AsyncQueryContextProcessor:
     def get_data(df: pd.DataFrame, result_format: str = "json") -> Any:
         """Convert DataFrame to the requested result format."""
         if result_format == "csv":
-            return df.to_csv(index=False)
+            return _df_to_escaped_csv(df)
         if result_format == "xlsx":
             import io
 

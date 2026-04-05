@@ -29,7 +29,7 @@ from typing import Any
 
 import numpy as np
 import pytz  # type: ignore[import-untyped]
-from jsonpath_ng import parse  # type: ignore[import-untyped]
+from jsonpath_ng import parse
 
 from superset.constants import PASSWORD_MASK
 

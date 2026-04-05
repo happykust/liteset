@@ -65,3 +65,6 @@ def load_sf_population_polygons(
     tbl.description = "Population density of San Francisco"
     tbl.database = database
     tbl.filter_select_enabled = True
+
+    with _ctx.example_engine(database) as eng:
+        _ctx.fetch_table_metadata(tbl, eng)

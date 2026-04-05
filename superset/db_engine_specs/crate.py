@@ -16,6 +16,7 @@
 # under the License.
 from __future__ import annotations
 
+# mypy: ignore-errors
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -25,7 +26,9 @@ from superset.constants import TimeGrain
 from superset.db_engine_specs.base import BaseEngineSpec
 
 if TYPE_CHECKING:
-    from superset.connectors.sqla.models import TableColumn
+    from superset.models.connectors import (
+        TableColumn,
+    )
 
 
 class CrateEngineSpec(BaseEngineSpec):

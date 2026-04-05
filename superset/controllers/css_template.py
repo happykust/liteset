@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """CSS Template controller — CRUD + bulk delete for CSS templates."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -72,7 +73,8 @@ class CssTemplateController(Controller):
         from superset.models.core import CssTemplate
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
-            CssTemplate, rison_params,
+            CssTemplate,
+            rison_params,
         )
         templates = await dao.find_all(
             filters=rison_filters or None,
@@ -117,12 +119,33 @@ class CssTemplateController(Controller):
         template = await dao.find_by_id(pk)
         if not template:
             raise ObjectNotFoundError("CssTemplate", pk)
+        from superset.schemas.css_template import UserRef
+
+        changed_by = getattr(template, "changed_by", None)
+        created_by = getattr(template, "created_by", None)
         return CssTemplateResponseSchema(
             id=template.id,
             template_name=template.template_name,
             css=template.css,
-            created_on=str(getattr(template, "created_on", "")),
-            changed_on=str(getattr(template, "changed_on", "")),
+            created_on=str(getattr(template, "created_on", "") or ""),
+            changed_on=str(getattr(template, "changed_on", "") or ""),
+            changed_on_delta_humanized=getattr(
+                template, "changed_on_delta_humanized", None
+            ),
+            changed_by=UserRef(
+                id=changed_by.id,
+                first_name=getattr(changed_by, "first_name", ""),
+                last_name=getattr(changed_by, "last_name", ""),
+            )
+            if changed_by
+            else None,
+            created_by=UserRef(
+                id=created_by.id,
+                first_name=getattr(created_by, "first_name", ""),
+                last_name=getattr(created_by, "last_name", ""),
+            )
+            if created_by
+            else None,
         )
 
     @post(

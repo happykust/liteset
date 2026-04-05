@@ -174,9 +174,7 @@ class GroupController(Controller):
 
         result = [_group_to_response(g) for g in groups]
         event_logger.log("group.list")
-        return msgspec.to_builtins(
-            GroupsSearchResponse(result=result, count=total)
-        )
+        return msgspec.to_builtins(GroupsSearchResponse(result=result, count=total))
 
     # ------------------------------------------------------------------
     # GET /{pk} — single group

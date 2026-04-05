@@ -28,7 +28,7 @@ from superset.models.core import Database
 from superset.models.dashboard import Dashboard, dashboard_slices
 from superset.models.slice import Slice
 from superset.models.sql_lab import TabState
-from superset.utils.json import loads, dumps, reveal_sensitive
+from superset.utils.json import dumps, loads, reveal_sensitive
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
 
             if old_encrypted is not None and new_encrypted is not None:
                 try:
-                    old_config = loads(old_encrypted)
+                    old_config = loads(old_encrypted)  # type: ignore[arg-type]
                     new_config = loads(new_encrypted)
                     new_config = reveal_sensitive(
                         old_config,

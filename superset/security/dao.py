@@ -136,11 +136,7 @@ class AsyncSecurityDAO:
 
     async def get_first_user(self) -> Any | None:
         """Return the first user row (by id). Used for timing balance."""
-        stmt = (
-            select(self.user_model)
-            .order_by(self.user_model.id)
-            .limit(1)
-        )
+        stmt = select(self.user_model).order_by(self.user_model.id).limit(1)
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
@@ -247,7 +243,8 @@ class AsyncSecurityDAO:
         return {(row[0], row[1]) for row in result.all()}
 
     async def get_user_groups(
-        self, user_id: int,
+        self,
+        user_id: int,
     ) -> list[Any]:
         """Get groups for a user via ab_user_group."""
         stmt = text(
@@ -256,12 +253,14 @@ class AsyncSecurityDAO:
             "WHERE ug.user_id = :user_id"
         )
         result = await self.session.execute(
-            stmt, {"user_id": user_id},
+            stmt,
+            {"user_id": user_id},
         )
         return list(result.all())
 
     async def get_group_roles(
-        self, group_id: int,
+        self,
+        group_id: int,
     ) -> list[Any]:
         """Get roles for a group via ab_group_role."""
         stmt = text(
@@ -270,12 +269,14 @@ class AsyncSecurityDAO:
             "WHERE gr.group_id = :group_id"
         )
         result = await self.session.execute(
-            stmt, {"group_id": group_id},
+            stmt,
+            {"group_id": group_id},
         )
         return list(result.all())
 
     async def get_group_permissions(
-        self, user_id: int,
+        self,
+        user_id: int,
     ) -> set[tuple[str, str]]:
         """Get permissions inherited via groups."""
         stmt = text(
@@ -294,14 +295,14 @@ class AsyncSecurityDAO:
             "WHERE ug.user_id = :user_id"
         )
         result = await self.session.execute(
-            stmt, {"user_id": user_id},
+            stmt,
+            {"user_id": user_id},
         )
-        return {
-            (row[0], row[1]) for row in result.all()
-        }
+        return {(row[0], row[1]) for row in result.all()}
 
     async def get_all_permissions_for_user_with_groups(
-        self, user_id: int,
+        self,
+        user_id: int,
     ) -> set[tuple[str, str]]:
         """Get all permissions for a user, including group-inherited."""
         direct = await self.get_all_permissions_for_user(

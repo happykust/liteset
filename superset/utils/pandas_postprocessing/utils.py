@@ -161,9 +161,7 @@ def _get_aggregate_funcs(
         else:
             func = NUMPY_FUNCTIONS.get(operator)
             if not func:
-                raise InvalidPostProcessingError(
-                    f"Invalid numpy function: {operator}"
-                )
+                raise InvalidPostProcessingError(f"Invalid numpy function: {operator}")
             options = agg_obj.get("options", {})
             aggfunc = partial(func, **options)
         agg_funcs[name] = NamedAgg(column=column, aggfunc=aggfunc)

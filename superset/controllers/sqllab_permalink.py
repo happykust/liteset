@@ -47,7 +47,7 @@ class SqlLabPermalinkController(Controller):
     async def create_permalink(
         self, data: SqlLabPermalinkSchema, kv_dao: KeyValueDAOProtocol
     ) -> dict[str, str]:
-        cmd = CreateSqlLabPermalinkCommand(dao=kv_dao, state=data.state)
+        cmd = CreateSqlLabPermalinkCommand(dao=kv_dao, state=data.state)  # type: ignore[arg-type]
         key = await cmd.execute()
         event_logger.log("sqllab_permalink.create")
         return {"key": key, "url": f"/api/v1/sqllab/permalink/{key}"}
@@ -59,7 +59,7 @@ class SqlLabPermalinkController(Controller):
     async def get_permalink(
         self, key: str, kv_dao: KeyValueDAOProtocol
     ) -> dict[str, Any]:
-        cmd = GetSqlLabPermalinkCommand(dao=kv_dao, key=key)
+        cmd = GetSqlLabPermalinkCommand(dao=kv_dao, key=key)  # type: ignore[arg-type]
         state = await cmd.execute()
         event_logger.log("sqllab_permalink.get", object_ref=f"permalink:{key}")
         return state

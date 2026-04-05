@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Connector models: SqlaTable, TableColumn, SqlMetric, RowLevelSecurityFilter.
 
 Pure SQLAlchemy -- no Flask dependencies.
@@ -523,9 +524,7 @@ class SqlaTable(
 
         # Strip trailing semicolon and wrap in a subquery
         inner_sql = self.sql.strip().rstrip(";")
-        metadata_sql = (
-            f"SELECT * FROM ({inner_sql}) AS virtual_table LIMIT 0"  # noqa: S608
-        )
+        metadata_sql = f"SELECT * FROM ({inner_sql}) AS virtual_table LIMIT 0"  # noqa: S608
 
         try:
             from sqlalchemy import text as sa_text

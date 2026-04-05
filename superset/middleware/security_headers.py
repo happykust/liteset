@@ -88,9 +88,7 @@ class SecurityHeadersMiddleware(ASGIMiddleware):
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                existing: list[tuple[bytes, bytes]] = list(
-                    message.get("headers", [])
-                )
+                existing: list[tuple[bytes, bytes]] = list(message.get("headers", []))
                 existing.extend(headers)
                 message = {**message, "headers": existing}
             await send(message)

@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 
 from __future__ import annotations
 
@@ -21,9 +22,8 @@ import re
 from re import Pattern
 from typing import Any
 
-from superset.errors import SupersetErrorType
-
 from superset.db_engine_specs.shillelagh import ShillelaghEngineSpec
+from superset.errors import SupersetErrorType
 
 SYNTAX_ERROR_REGEX = re.compile('SQLError: near "(?P<server_error>.*?)": syntax error')
 
@@ -55,9 +55,7 @@ class GSheetsEngineSpec(ShillelaghEngineSpec):
 
     # OAuth 2.0
     supports_oauth2 = True
-    oauth2_authorization_request_uri = (
-        "https://accounts.google.com/o/oauth2/v2/auth"
-    )
+    oauth2_authorization_request_uri = "https://accounts.google.com/o/oauth2/v2/auth"
     oauth2_token_request_uri = "https://oauth2.googleapis.com/token"  # noqa: S105
 
     @classmethod

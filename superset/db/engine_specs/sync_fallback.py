@@ -204,6 +204,45 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
                 )
         return super().extract_errors(ex)
 
+    @classmethod
+    async def get_view_names(
+        cls,
+        conn: AsyncConnection,
+        schema: str | None = None,
+    ) -> set[str]:
+        sync_spec = cls._sync_spec
+        if _is_overridden(sync_spec, "get_view_names"):
+
+            def _run(sync_conn: Connection) -> set[str]:
+                inspector = inspect(sync_conn)
+                try:
+                    return set(
+                        sync_spec.get_view_names(
+                            inspector=inspector,
+                            schema=schema,
+                        )
+                    )
+                except TypeError:
+                    return set(inspector.get_view_names(schema=schema))
+
+            return await conn.run_sync(_run)
+        return await super().get_view_names(conn, schema=schema)
+
+    @classmethod
+    def convert_dttm(
+        cls, target_type: str, dttm: Any, db_extra: dict[str, Any] | None = None
+    ) -> str | None:
+        sync_spec = cls._sync_spec
+        if hasattr(sync_spec, "convert_dttm"):
+            try:
+                return sync_spec.convert_dttm(target_type, dttm, db_extra=db_extra)
+            except TypeError:
+                try:
+                    return sync_spec.convert_dttm(target_type, dttm)
+                except Exception:  # noqa: S110
+                    pass
+        return None
+
 
 def make_async_spec(
     sync_spec_cls: type,
@@ -212,17 +251,38 @@ def make_async_spec(
     engine = getattr(sync_spec_cls, "engine", "") or ""
     engine_name = getattr(sync_spec_cls, "engine_name", "") or ""
 
+    attrs: dict[str, Any] = {
+        "_sync_spec": sync_spec_cls,
+        "engine": engine,
+        "engine_name": f"{engine_name} (sync fallback)",
+        "default_driver": getattr(sync_spec_cls, "default_driver", "") or "",
+        "_time_grain_expressions": dict(
+            getattr(sync_spec_cls, "_time_grain_expressions", {})
+        ),
+    }
+
+    # Copy class-level attributes from sync spec
+    for attr in (
+        "epoch_to_dttm",
+        "column_type_mappings",
+        "supports_dynamic_schema",
+        "supports_catalog",
+        "get_allow_cost_estimate",
+        "time_groupby_inline",
+        "try_remove_schema_from_table_name",
+        "allow_dml",
+        "allows_subqueries",
+        "allows_alias_in_select",
+        "allows_alias_in_orderby",
+        "force_column_alias_quotes",
+    ):
+        val = getattr(sync_spec_cls, attr, None)
+        if val is not None:
+            attrs[attr] = val
+
     spec_cls = type(
         f"Async{sync_spec_cls.__name__}",
         (SyncFallbackEngineSpec,),
-        {
-            "_sync_spec": sync_spec_cls,
-            "engine": engine,
-            "engine_name": f"{engine_name} (sync fallback)",
-            "default_driver": getattr(sync_spec_cls, "default_driver", "") or "",
-            "_time_grain_expressions": dict(
-                getattr(sync_spec_cls, "_time_grain_expressions", {})
-            ),
-        },
+        attrs,
     )
     return spec_cls

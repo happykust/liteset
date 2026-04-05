@@ -108,17 +108,13 @@ class RedshiftEngineSpec(PostgresBaseEngineSpec):
         return label.lower()
 
     @classmethod
-    def get_cancel_query_id(
-        cls, cursor: Any, query: Query
-    ) -> str | None:
+    def get_cancel_query_id(cls, cursor: Any, query: Query) -> str | None:
         cursor.execute("SELECT pg_backend_pid()")
         row = cursor.fetchone()
         return row[0]
 
     @classmethod
-    def cancel_query(
-        cls, cursor: Any, query: Query, cancel_query_id: str
-    ) -> bool:
+    def cancel_query(cls, cursor: Any, query: Query, cancel_query_id: str) -> bool:
         try:
             logger.info("Killing Redshift PID:%s", str(cancel_query_id))
             cursor.execute(

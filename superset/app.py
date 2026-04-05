@@ -267,11 +267,11 @@ def create_app(  # noqa: C901
     from superset.controllers.role import RoleController
     from superset.controllers.saved_query import SavedQueryController
     from superset.controllers.sqllab import SqlLabController
-    from superset.controllers.tab_state import (
-        TabStateController,
-        TableSchemaController,
-    )
     from superset.controllers.sqllab_permalink import SqlLabPermalinkController
+    from superset.controllers.tab_state import (
+        TableSchemaController,
+        TabStateController,
+    )
     from superset.controllers.tag import TagController
     from superset.controllers.theme import ThemeController
     from superset.controllers.user import UserController, UserRegistrationsController

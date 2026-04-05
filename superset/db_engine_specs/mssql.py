@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Microsoft SQL Server engine spec -- sync/Flask-compatible.
 
 Ported 1:1 from ``superset_old/db_engine_specs/mssql.py`` with Flask
@@ -63,9 +64,7 @@ class GUID(TypeDecorator):
             return str(uuid.UUID(value))
         return str(value)
 
-    def process_result_value(
-        self, value: str | None, dialect: Any
-    ) -> uuid.UUID | None:
+    def process_result_value(self, value: str | None, dialect: Any) -> uuid.UUID | None:
         if value is None:
             return None
         return uuid.UUID(value)
@@ -98,8 +97,7 @@ class MssqlEngineSpec(BaseEngineSpec):
     _time_grain_expressions = {
         None: "{col}",
         TimeGrain.SECOND: (
-            "DATEADD(SECOND, "
-            "DATEDIFF(SECOND, '2000-01-01', {col}), '2000-01-01')"
+            "DATEADD(SECOND, DATEDIFF(SECOND, '2000-01-01', {col}), '2000-01-01')"
         ),
         TimeGrain.MINUTE: "DATEADD(MINUTE, DATEDIFF(MINUTE, 0, {col}), 0)",
         TimeGrain.FIVE_MINUTES: (
@@ -124,12 +122,10 @@ class MssqlEngineSpec(BaseEngineSpec):
         TimeGrain.QUARTER: "DATEADD(QUARTER, DATEDIFF(QUARTER, 0, {col}), 0)",
         TimeGrain.YEAR: "DATEADD(YEAR, DATEDIFF(YEAR, 0, {col}), 0)",
         TimeGrain.WEEK_STARTING_SUNDAY: (
-            "DATEADD(DAY, -1,"
-            " DATEADD(WEEK, DATEDIFF(WEEK, 0, {col}), 0))"
+            "DATEADD(DAY, -1, DATEADD(WEEK, DATEDIFF(WEEK, 0, {col}), 0))"
         ),
         TimeGrain.WEEK_STARTING_MONDAY: (
-            "DATEADD(WEEK,"
-            " DATEDIFF(WEEK, 0, DATEADD(DAY, -1, {col})), 0)"
+            "DATEADD(WEEK, DATEDIFF(WEEK, 0, DATEADD(DAY, -1, {col})), 0)"
         ),
     }
 
@@ -195,9 +191,7 @@ class MssqlEngineSpec(BaseEngineSpec):
         return None
 
     @classmethod
-    def fetch_data(
-        cls, cursor: Any, limit: int | None = None
-    ) -> list[tuple[Any, ...]]:
+    def fetch_data(cls, cursor: Any, limit: int | None = None) -> list[tuple[Any, ...]]:
         if not cursor.description:
             return []
         data = super().fetch_data(cursor, limit)

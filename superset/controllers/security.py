@@ -196,9 +196,7 @@ class SecurityController(Controller):
             if hasattr(sk, "get_secret_value"):
                 sk = sk.get_secret_value()
             secret = str(sk)
-            cookie_name = getattr(
-                settings, "session_cookie_name", "session"
-            )
+            cookie_name = getattr(settings, "session_cookie_name", "session")
 
         # Extract the session cookie to bind the token
         session_id = request.cookies.get(cookie_name, "")

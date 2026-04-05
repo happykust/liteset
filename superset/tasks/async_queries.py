@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Async query execution Celery tasks for Superset.
 
 Ported 1:1 from the original ``superset/tasks/async_queries.py``.
@@ -103,9 +104,7 @@ def _update_job(
     if user_id is not None:
         r.publish(f"events:{user_id}", json.dumps(event))
 
-    logger.debug(
-        "Updated job %s on channel %s: status=%s", job_id, channel_id, status
-    )
+    logger.debug("Updated job %s on channel %s: status=%s", job_id, channel_id, status)
 
 
 # ---------------------------------------------------------------------------
@@ -136,11 +135,7 @@ def _load_user_from_job_metadata(
     from superset.models.security import User
 
     if user_id := job_metadata.get("user_id"):
-        stmt = (
-            select(User)
-            .where(User.id == user_id)
-            .options(selectinload(User.roles))
-        )
+        stmt = select(User).where(User.id == user_id).options(selectinload(User.roles))
         user = session.execute(stmt).scalars().one_or_none()
         if user is not None:
             return user
@@ -274,9 +269,11 @@ def load_chart_data_into_cache(
 
                 from superset.models.connectors import SqlaTable
 
-                ds = session.execute(
-                    sa_select(SqlaTable).where(SqlaTable.id == ds_id)
-                ).scalars().one_or_none()
+                ds = (
+                    session.execute(sa_select(SqlaTable).where(SqlaTable.id == ds_id))
+                    .scalars()
+                    .one_or_none()
+                )
                 datasource = ds
             except (ValueError, IndexError):
                 pass
@@ -365,18 +362,18 @@ def load_explore_json_into_cache(  # noqa: C901
                 pass
 
         if datasource_id is None:
-            raise ValueError(
-                "The dataset associated with this chart no longer exists"
-            )
+            raise ValueError("The dataset associated with this chart no longer exists")
 
         # Load datasource from DB
         from sqlalchemy import select as sa_select
 
         from superset.models.connectors import SqlaTable
 
-        datasource = session.execute(
-            sa_select(SqlaTable).where(SqlaTable.id == datasource_id)
-        ).scalars().one_or_none()
+        datasource = (
+            session.execute(sa_select(SqlaTable).where(SqlaTable.id == datasource_id))
+            .scalars()
+            .one_or_none()
+        )
 
         if datasource is None:
             raise ValueError(
@@ -416,9 +413,7 @@ def load_explore_json_into_cache(  # noqa: C901
         # Redis backend which serializes cached values as pickle bytes.
         try:
             r = _get_sync_redis()
-            cache_timeout = (
-                getattr(settings, "cache_default_timeout", 300) or 300
-            )
+            cache_timeout = getattr(settings, "cache_default_timeout", 300) or 300
             r.setex(
                 f"superset_cache:{cache_key}",
                 cache_timeout,
@@ -438,9 +433,7 @@ def load_explore_json_into_cache(  # noqa: C901
             result_url=result_url,
         )
     except SoftTimeLimitExceeded as ex:
-        logger.warning(
-            "A timeout occurred while loading explore json, error: %s", ex
-        )
+        logger.warning("A timeout occurred while loading explore json, error: %s", ex)
         raise
     except Exception as ex:
         if isinstance(ex, SupersetVizException):

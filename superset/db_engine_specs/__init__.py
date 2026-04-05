@@ -95,7 +95,6 @@ from superset.db_engine_specs.trino import PrestoBaseEngineSpec, TrinoEngineSpec
 from superset.db_engine_specs.vertica import VerticaEngineSpec
 from superset.db_engine_specs.ydb import YDBEngineSpec
 
-
 # ---------------------------------------------------------------------------
 # Registry of known engine specs keyed by engine name + aliases.
 # ---------------------------------------------------------------------------

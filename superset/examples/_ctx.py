@@ -22,6 +22,7 @@ import instead of the original ``from superset import db``.
 The context is initialised once by :func:`init` (called from the CLI
 command) and torn down by :func:`teardown`.
 """
+
 from __future__ import annotations
 
 import enum
@@ -92,7 +93,7 @@ def init() -> None:
 
     from superset.config import SupersetSettings
 
-    settings = SupersetSettings()
+    settings = SupersetSettings()  # type: ignore[call-arg]
     sync_uri = _to_sync_uri(settings.sqlalchemy_database_uri)
     row_limit = settings.row_limit
     base_dir = str(Path(__file__).resolve().parent.parent)
@@ -134,16 +135,21 @@ def get_example_database() -> Any:
 
     db = session.query(Database).filter_by(database_name="examples").first()
     if db is None:
-        # Use the main metadata DB URI for examples (standard production pattern)
-        examples_uri = _to_sync_uri(
-            os.environ.get(
-                "LITESET_SQLALCHEMY_EXAMPLES_URI",
-                str(engine.url),
-            )
+        import uuid as _uuid
+
+        from superset.config import SupersetSettings
+
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        examples_uri = (
+            os.environ.get("LITESET_SQLALCHEMY_EXAMPLES_URI")
+            or settings.sqlalchemy_examples_uri
+            or settings.sqlalchemy_database_uri
         )
+
         db = Database(
             database_name="examples",
             sqlalchemy_uri=examples_uri,
+            uuid=_uuid.UUID(EXAMPLES_DB_UUID),
         )
         session.add(db)
         session.flush()
@@ -190,3 +196,65 @@ def get_backend(database: Any) -> str:
     """Extract backend name (postgresql, mysql, sqlite, etc.) from URI."""
     uri = database.sqlalchemy_uri or ""
     return uri.split("://")[0].split("+")[0] if "://" in uri else ""
+
+
+def fetch_table_metadata(tbl: Any, eng: Engine) -> None:
+    """Populate SqlaTable.columns from physical table introspection.
+
+    Replacement for the original ``tbl.fetch_metadata()`` which relied
+    on Flask-AppBuilder infrastructure. Introspects the actual database
+    table and creates/updates ``TableColumn`` records, matching the
+    original behavior.
+    """
+    from superset.models.connectors import SqlMetric, TableColumn
+
+    table_name = tbl.table_name
+    schema_name = tbl.schema
+
+    try:
+        cols_info = inspect(eng).get_columns(table_name, schema=schema_name)
+    except Exception:
+        logger.warning(
+            "Could not introspect columns for %s.%s", schema_name, table_name
+        )
+        return
+
+    existing = {c.column_name: c for c in (tbl.columns or [])}
+
+    for col_info in cols_info:
+        col_name = col_info["name"]
+        col_type = str(col_info.get("type", ""))
+
+        if col_name in existing:
+            existing[col_name].type = col_type
+            existing[col_name].is_dttm = _is_dttm_type(col_type)
+        else:
+            tc = TableColumn(
+                column_name=col_name,
+                type=col_type,
+                is_dttm=_is_dttm_type(col_type),
+                groupby=True,
+                filterable=True,
+                table_id=tbl.id,
+            )
+            tbl.columns.append(tc)
+
+    # Add 'count' metric if not present (same as original fetch_metadata)
+    metric_names = {m.metric_name for m in (tbl.metrics or [])}
+    if "count" not in metric_names:
+        tbl.metrics.append(
+            SqlMetric(
+                metric_name="count",
+                expression="COUNT(*)",
+                verbose_name="COUNT(*)",
+                table_id=tbl.id,
+            )
+        )
+
+
+def _is_dttm_type(type_str: str) -> bool:
+    """Check if a column type string represents a datetime type."""
+    t = type_str.upper()
+    if "INTERVAL" in t:
+        return False
+    return any(kw in t for kw in ("DATE", "TIME", "TIMESTAMP"))

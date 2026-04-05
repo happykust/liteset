@@ -14,24 +14,24 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-from .bart_lines import load_bart_lines
-from .big_data import load_big_data
-from .birth_names import load_birth_names
-from .country_map import load_country_map_data
-from .css_templates import load_css_templates
-from .deck import load_deck_dash
-from .energy import load_energy
-from .flights import load_flights
-from .long_lat import load_long_lat_data
-from .misc_dashboard import load_misc_dashboard
-from .sf_population_polygons import load_sf_population_polygons
-from .supported_charts_dashboard import load_supported_charts_dashboard
-from .tabbed_dashboard import load_tabbed_dashboard
-from .world_bank import load_world_bank_health_n_pop
-
-from .multiformat_time_series import load_multiformat_time_series
-from .paris import load_paris_iris_geojson
-from .random_time_series import load_random_time_series_data
+from superset.examples.bart_lines import load_bart_lines
+from superset.examples.big_data import load_big_data
+from superset.examples.birth_names import load_birth_names
+from superset.examples.country_map import load_country_map_data
+from superset.examples.css_templates import load_css_templates
+from superset.examples.deck import load_deck_dash
+from superset.examples.energy import load_energy
+from superset.examples.flights import load_flights
+from superset.examples.long_lat import load_long_lat_data
+from superset.examples.misc_dashboard import load_misc_dashboard
+from superset.examples.multiformat_time_series import load_multiformat_time_series
+from superset.examples.paris import load_paris_iris_geojson
+from superset.examples.random_time_series import load_random_time_series_data
+from superset.examples.sf_population_polygons import load_sf_population_polygons
+from superset.examples.supported_charts_dashboard import load_supported_charts_dashboard
+from superset.examples.tabbed_dashboard import load_tabbed_dashboard
+from superset.examples.utils import load_examples_from_configs
+from superset.examples.world_bank import load_world_bank_health_n_pop
 
 __all__ = [
     "load_bart_lines",
@@ -50,5 +50,6 @@ __all__ = [
     "load_sf_population_polygons",
     "load_supported_charts_dashboard",
     "load_tabbed_dashboard",
+    "load_examples_from_configs",
     "load_world_bank_health_n_pop",
 ]

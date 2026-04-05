@@ -25,6 +25,7 @@ returns the underlying SA type as-is (no encryption) which is safe because
 these local models are only used for data migration queries -- the actual table
 schema is managed by Alembic ``op.`` calls, not by these ORM definitions.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -39,7 +40,9 @@ class _EncryptedFieldFactory:
     types without requiring the encryption adapter to be initialised.
     """
 
-    def create(self, sa_type: sa.types.TypeEngine | type, *args: Any, **kwargs: Any) -> sa.types.TypeEngine:  # noqa: E501
+    def create(
+        self, sa_type: sa.types.TypeEngine[object] | type, *args: Any, **kwargs: Any
+    ) -> sa.types.TypeEngine[object]:  # noqa: E501
         if isinstance(sa_type, type):
             return sa_type()
         return sa_type

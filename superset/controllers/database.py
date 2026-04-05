@@ -115,7 +115,9 @@ def _get_col_type(col: dict[str, Any]) -> str:
 
 
 def _inspect_table_metadata(  # noqa: C901
-    sync_conn: Any, table_name: str, schema: str | None,
+    sync_conn: Any,
+    table_name: str,
+    schema: str | None,
 ) -> dict[str, Any]:
     """Run all Inspector calls synchronously and return the raw metadata dict.
 
@@ -190,15 +192,15 @@ def _inspect_table_metadata(  # noqa: C901
     for col in raw_columns:
         dtype = _get_col_type(col)
         col_name = col.get("name", col.get("column_name", ""))
-        columns_payload.append({
-            "name": col_name,
-            "type": dtype.split("(")[0] if "(" in dtype else dtype,
-            "longType": dtype,
-            "keys": [
-                k for k in keys if col_name in k.get("column_names", [])
-            ],
-            "comment": col.get("comment"),
-        })
+        columns_payload.append(
+            {
+                "name": col_name,
+                "type": dtype.split("(")[0] if "(" in dtype else dtype,
+                "longType": dtype,
+                "keys": [k for k in keys if col_name in k.get("column_names", [])],
+                "comment": col.get("comment"),
+            }
+        )
 
     # --- select star -------------------------------------------------------
     # Generate SELECT * using the connection's dialect for proper quoting.
@@ -1505,7 +1507,7 @@ class DatabaseController(Controller):
         elif file_type == "columnar":
             result = await asyncio.to_thread(_parse_columnar)
         else:
-            return Response(
+            return Response(  # type: ignore[return-value]
                 content={"message": f"Unsupported file type: {type}"},
                 status_code=400,
             )

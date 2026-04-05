@@ -16,12 +16,36 @@
 # under the License.
 from __future__ import annotations
 
+import logging
 import re
-from typing import Any
+from datetime import datetime
+from decimal import Decimal
+from typing import Any, Callable
 
+from sqlalchemy import types
+from sqlalchemy.dialects.mysql import (
+    BIT,
+    DECIMAL,
+    DOUBLE,
+    FLOAT,
+    INTEGER,
+    LONGTEXT,
+    MEDIUMINT,
+    MEDIUMTEXT,
+    TINYINT,
+    TINYTEXT,
+)
 from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.sql import text
 
-from superset.db.engine_specs.base import AsyncResultSet, BaseAsyncEngineSpec
+from superset.db.engine_specs.base import (
+    AsyncResultSet,
+    BaseAsyncEngineSpec,
+    ColumnTypeMapping,
+)
+from superset.typing import GenericDataType
+
+logger = logging.getLogger(__name__)
 
 
 class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
@@ -30,6 +54,77 @@ class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
     engine = "mysql"
     engine_name = "MySQL"
     default_driver = "asyncmy"
+    max_column_name_length = 64
+
+    supports_dynamic_schema: bool = True
+
+    column_type_mappings: tuple[ColumnTypeMapping, ...] = (
+        (
+            re.compile(r"^int.*", re.IGNORECASE),
+            INTEGER(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^tinyint", re.IGNORECASE),
+            TINYINT(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^mediumint", re.IGNORECASE),
+            MEDIUMINT(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^decimal", re.IGNORECASE),
+            DECIMAL(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^float", re.IGNORECASE),
+            FLOAT(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^double", re.IGNORECASE),
+            DOUBLE(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^bit", re.IGNORECASE),
+            BIT(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^tinytext", re.IGNORECASE),
+            TINYTEXT(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r"^mediumtext", re.IGNORECASE),
+            MEDIUMTEXT(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r"^longtext", re.IGNORECASE),
+            LONGTEXT(),
+            GenericDataType.STRING,
+        ),
+    )
+
+    column_type_mutators: dict[type[types.TypeEngine[Any]], Callable[[Any], Any]] = {
+        DECIMAL: lambda val: Decimal(val) if isinstance(val, str) else val,
+    }
+
+    disallow_uri_query_params: dict[str, set[str]] = {
+        "mysqldb": {"local_infile"},
+        "mysqlconnector": {"allow_local_infile"},
+        "asyncmy": {"local_infile"},
+    }
+    enforce_uri_query_params: dict[str, dict[str, int]] = {
+        "mysqldb": {"local_infile": 0},
+        "mysqlconnector": {"allow_local_infile": 0},
+        "asyncmy": {"local_infile": 0},
+    }
 
     _time_grain_expressions: dict[str | None, str] = {
         None: "{col}",
@@ -91,6 +186,70 @@ class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
         limit: int | None = None,
     ) -> list[tuple[Any, ...]]:
         return await cls._default_fetch_data(conn, query, limit)
+
+    @classmethod
+    def epoch_to_dttm(cls) -> str:
+        """SQL expression to convert epoch (seconds) to datetime."""
+        return "from_unixtime({col})"
+
+    @classmethod
+    def convert_dttm(
+        cls,
+        target_type: str,
+        dttm: datetime,
+        db_extra: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Convert a Python datetime to a MySQL date/datetime literal.
+
+        Uses STR_TO_DATE for safe parsing on the MySQL side.
+        """
+        sqla_type = target_type.upper().strip()
+
+        if sqla_type == "DATE":
+            return f"STR_TO_DATE('{dttm.date().isoformat()}', '%Y-%m-%d')"
+        if sqla_type in {"DATETIME", "TIMESTAMP"}:
+            datetime_formatted = dttm.isoformat(sep=" ", timespec="microseconds")
+            return f"STR_TO_DATE('{datetime_formatted}', '%Y-%m-%d %H:%i:%s.%f')"
+        return None
+
+    @classmethod
+    async def get_cancel_query_id(
+        cls,
+        conn: AsyncConnection,
+    ) -> str | None:
+        """Get the MySQL CONNECTION_ID() for the current connection.
+
+        This ID can later be passed to :meth:`cancel_query` to kill
+        the connection and any running query on it.
+        """
+        result = await conn.execute(text("SELECT CONNECTION_ID()"))
+        row = result.fetchone()
+        if row:
+            return str(row[0])
+        return None
+
+    @classmethod
+    async def cancel_query(
+        cls,
+        conn: AsyncConnection,
+        cancel_query_id: str,
+    ) -> bool:
+        """Cancel a running query by killing its MySQL connection.
+
+        :param conn: A new async connection (not the one being cancelled).
+        :param cancel_query_id: The CONNECTION_ID() returned by
+            :meth:`get_cancel_query_id`.
+        :return: ``True`` if the KILL succeeded, ``False`` otherwise.
+        """
+        try:
+            await conn.execute(text(f"KILL CONNECTION {cancel_query_id}"))
+        except Exception:
+            logger.exception(
+                "Failed to cancel MySQL query (connection_id=%s)",
+                cancel_query_id,
+            )
+            return False
+        return True
 
     @classmethod
     def adjust_engine_params(

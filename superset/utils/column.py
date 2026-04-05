@@ -338,5 +338,5 @@ def error_msg_from_exception(ex: Exception) -> str:
     :return: error message string
     """
     if hasattr(ex, "message"):
-        return ex.message  # type: ignore[attr-defined]
+        return ex.message
     return str(ex) or ex.__class__.__name__

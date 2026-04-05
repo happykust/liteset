@@ -42,9 +42,7 @@ class LegacyApiController(Controller):
     async def deprecated_form_data(self) -> Response[dict[str, str]]:
         """GET /api/v1/form_data/ -- deprecated form_data endpoint."""
         return Response(
-            content={
-                "message": "Deprecated. Use /api/v1/explore/form_data/ instead."
-            },
+            content={"message": "Deprecated. Use /api/v1/explore/form_data/ instead."},
             status_code=410,
             headers={
                 "Deprecation": "true",
@@ -56,9 +54,7 @@ class LegacyApiController(Controller):
     async def deprecated_time_range(self) -> Response[dict[str, str]]:
         """GET /api/v1/time_range/ -- deprecated time range endpoint."""
         return Response(
-            content={
-                "message": "Deprecated. Use chart data queries instead."
-            },
+            content={"message": "Deprecated. Use chart data queries instead."},
             status_code=410,
             headers={
                 "Deprecation": "true",

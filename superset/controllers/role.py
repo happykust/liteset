@@ -356,9 +356,7 @@ class RoleController(Controller):
         if result is None:
             raise ObjectNotFoundError("Role", pk)
         if result == "not_found":
-            raise ObjectNotFoundError(
-                "User", "some user_ids not found"
-            )
+            raise ObjectNotFoundError("User", "some user_ids not found")
 
         event_logger.log("role.set_users", object_ref=str(pk))
         return {"result": {"user_ids": data.user_ids}}
@@ -384,9 +382,7 @@ class RoleController(Controller):
         if result is None:
             raise ObjectNotFoundError("Role", pk)
         if result == "not_found":
-            raise ObjectNotFoundError(
-                "Group", "some group_ids not found"
-            )
+            raise ObjectNotFoundError("Group", "some group_ids not found")
 
         event_logger.log("role.set_groups", object_ref=str(pk))
         return {"result": {"group_ids": data.group_ids}}

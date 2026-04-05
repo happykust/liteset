@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """Query execution status enum."""
+
 from __future__ import annotations
 
 from enum import StrEnum

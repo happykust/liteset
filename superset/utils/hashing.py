@@ -15,12 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 """Deterministic hashing utilities."""
+
 from __future__ import annotations
 
 import hashlib
 from typing import Any, Callable
 
-import simplejson as json
+import simplejson as json  # type: ignore[import-untyped]
 
 
 def md5_sha_from_str(val: str) -> str:

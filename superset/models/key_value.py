@@ -18,6 +18,7 @@
 
 Pure SQLAlchemy -- no Flask dependencies.
 """
+
 from __future__ import annotations
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, LargeBinary, String
@@ -51,17 +52,11 @@ class KeyValueEntry(AuditMixinNullable, ImportExportMixin, Base):
 
     id = Column(Integer, primary_key=True)
     resource = Column(String(32), nullable=False)
-    value = Column(
-        LargeBinary(length=2**24 - 1), nullable=False
-    )
+    value = Column(LargeBinary(length=2**24 - 1), nullable=False)
 
     # Explicit audit columns (override AuditMixinNullable defaults)
     created_on = Column(DateTime, nullable=True)
-    created_by_fk = Column(
-        Integer, ForeignKey("ab_user.id"), nullable=True
-    )
+    created_by_fk = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
     changed_on = Column(DateTime, nullable=True)
-    changed_by_fk = Column(
-        Integer, ForeignKey("ab_user.id"), nullable=True
-    )
+    changed_by_fk = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
     expires_on = Column(DateTime, nullable=True)

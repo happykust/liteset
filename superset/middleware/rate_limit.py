@@ -123,9 +123,7 @@ class RateLimitMiddleware(ASGIMiddleware):
 
         async def send_with_rl_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                existing: list[tuple[bytes, bytes]] = list(
-                    message.get("headers", [])
-                )
+                existing: list[tuple[bytes, bytes]] = list(message.get("headers", []))
                 existing.extend(rl_headers)
                 message = {**message, "headers": existing}
             await send(message)
@@ -167,7 +165,7 @@ async def _sliding_window_check(
     reset_at = now + window
 
     # Use a transactional pipeline (MULTI/EXEC) for atomicity
-    pipe = redis.pipeline(transaction=True)  # type: ignore[union-attr]
+    pipe = redis.pipeline(transaction=True)  # type: ignore[attr-defined]
     # Remove entries outside the current window
     pipe.zremrangebyscore(key, 0, window_start)
     # Add current request with a unique member to avoid score collisions
@@ -200,16 +198,24 @@ async def _send_429(
         (b"x-ratelimit-remaining", b"0"),
         (b"x-ratelimit-reset", str(int(reset_at)).encode()),
     ]
+    from typing import Any as _Any, cast as _cast
+
     await send(
-        {
-            "type": "http.response.start",
-            "status": 429,
-            "headers": headers,
-        }
+        _cast(
+            _Any,
+            {
+                "type": "http.response.start",
+                "status": 429,
+                "headers": headers,
+            },
+        )
     )
     await send(
-        {
-            "type": "http.response.body",
-            "body": body,
-        }
+        _cast(
+            _Any,
+            {
+                "type": "http.response.body",
+                "body": body,
+            },
+        )
     )

@@ -46,9 +46,7 @@ def upgrade() -> None:
         "'NOT_LIMITED', 'DROPDOWN')"
     )
     # Drop default before type change, re-add after
-    op.execute(
-        "ALTER TABLE query ALTER COLUMN limiting_factor DROP DEFAULT"
-    )
+    op.execute("ALTER TABLE query ALTER COLUMN limiting_factor DROP DEFAULT")
     op.execute(
         "ALTER TABLE query "
         "ALTER COLUMN limiting_factor TYPE limitingfactor "
@@ -61,23 +59,14 @@ def upgrade() -> None:
 
     # --- tag.type: VARCHAR(20) → ENUM tagtype ---
     op.execute(
-        "CREATE TYPE tagtype AS ENUM "
-        "('custom', 'type', 'owner', 'favorited_by')"
+        "CREATE TYPE tagtype AS ENUM ('custom', 'type', 'owner', 'favorited_by')"
     )
-    op.execute(
-        "ALTER TABLE tag "
-        "ALTER COLUMN type TYPE tagtype "
-        "USING type::tagtype"
-    )
+    op.execute("ALTER TABLE tag ALTER COLUMN type TYPE tagtype USING type::tagtype")
 
 
 def downgrade() -> None:
     # --- tag.type: ENUM → VARCHAR(20) ---
-    op.execute(
-        "ALTER TABLE tag "
-        "ALTER COLUMN type TYPE VARCHAR(20) "
-        "USING type::text"
-    )
+    op.execute("ALTER TABLE tag ALTER COLUMN type TYPE VARCHAR(20) USING type::text")
     op.execute("DROP TYPE IF EXISTS tagtype")
 
     # --- query.limiting_factor: ENUM → VARCHAR(20) ---

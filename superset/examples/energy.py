@@ -70,6 +70,9 @@ def load_energy(
     tbl.database = database
     tbl.filter_select_enabled = True
 
+    with _ctx.example_engine(database) as eng:
+        _ctx.fetch_table_metadata(tbl, eng)
+
     if not any(col.metric_name == "sum__value" for col in tbl.metrics):
         col = str(column("value").compile(_ctx.engine))
         tbl.metrics.append(
@@ -95,7 +98,7 @@ def load_energy(
         """
         ),
     )
-    misc_dash_slices.add(slc.slice_name)
+    misc_dash_slices.add(str(slc.slice_name))
     merge_slice(slc)
 
     slc = Slice(
@@ -119,7 +122,7 @@ def load_energy(
         """
         ),
     )
-    misc_dash_slices.add(slc.slice_name)
+    misc_dash_slices.add(str(slc.slice_name))
     merge_slice(slc)
 
     slc = Slice(
@@ -138,5 +141,5 @@ def load_energy(
             sort_y_axis="value_asc",
         ),
     )
-    misc_dash_slices.add(slc.slice_name)
+    misc_dash_slices.add(str(slc.slice_name))
     merge_slice(slc)

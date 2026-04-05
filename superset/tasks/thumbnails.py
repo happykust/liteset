@@ -21,6 +21,7 @@ for synchronous DB access inside Celery workers.  The actual headless-browser
 screenshot logic is stubbed and will be expanded once the Selenium/Playwright
 integration is ported to superset.
 """
+
 from __future__ import annotations
 
 import logging

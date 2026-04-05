@@ -20,14 +20,18 @@ Replaces ``superset/tasks/cron_util.py``. The window-size config value
 is read from the Superset ``SupersetSettings`` instead of Flask
 ``current_app.config``.
 """
+
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 
-from croniter import croniter
-from pytz import timezone as pytz_timezone, UnknownTimeZoneError
+from croniter import croniter  # type: ignore[import-untyped]
+from pytz import (  # type: ignore[import-untyped]
+    timezone as pytz_timezone,
+    UnknownTimeZoneError,
+)
 
 logger = logging.getLogger(__name__)
 

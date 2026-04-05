@@ -85,6 +85,10 @@ def load_country_map_data(only_metadata: bool = False, force: bool = False) -> N
     obj.main_dttm_col = "dttm"
     obj.database = database
     obj.filter_select_enabled = True
+
+    with _ctx.example_engine(database) as eng:
+        _ctx.fetch_table_metadata(obj, eng)
+
     if not any(col.metric_name == "avg__2004" for col in obj.metrics):
         col = str(column("2004").compile(_ctx.engine))
         obj.metrics.append(SqlMetric(metric_name="avg__2004", expression=f"AVG({col})"))
@@ -115,5 +119,5 @@ def load_country_map_data(only_metadata: bool = False, force: bool = False) -> N
         datasource_id=tbl.id,
         params=get_slice_json(slice_data),
     )
-    misc_dash_slices.add(slc.slice_name)
+    misc_dash_slices.add(str(slc.slice_name))
     merge_slice(slc)

@@ -32,7 +32,7 @@ from typing import Optional
 from zipfile import is_zipfile, ZipFile
 
 import click
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
@@ -91,9 +91,7 @@ def export_dashboards(dashboard_file: Optional[str] = None) -> None:
                 }
                 filename = f"{root}/dashboards/{slug or dash_id}.json"
                 with bundle.open(filename, "w") as fp:
-                    fp.write(
-                        json.dumps(dashboard_data, indent=2, default=str).encode()
-                    )
+                    fp.write(json.dumps(dashboard_data, indent=2, default=str).encode())
                 click.echo(f"  Exported dashboard: {title} (id={dash_id})")
 
         click.secho(f"Dashboards exported to {output_file}", fg="green")
@@ -257,9 +255,7 @@ def export_datasources(datasource_file: Optional[str] = None) -> None:
                 }
                 filename = f"{root}/datasets/{table_name}.yaml"
                 with bundle.open(filename, "w") as fp:
-                    fp.write(
-                        yaml.safe_dump(ds_data, default_flow_style=False).encode()
-                    )
+                    fp.write(yaml.safe_dump(ds_data, default_flow_style=False).encode())
                 click.echo(f"  Exported datasource: {table_name} (id={ds_id})")
 
         click.secho(f"Datasources exported to {output_file}", fg="green")
@@ -323,8 +319,7 @@ def import_datasources(path: str, username: Optional[str] = "admin") -> None:
                     existing = result.first()
                     if existing:
                         click.echo(
-                            f"  Datasource {table_name}"
-                            " already exists, skipping."
+                            f"  Datasource {table_name} already exists, skipping."
                         )
                     else:
                         await session.execute(

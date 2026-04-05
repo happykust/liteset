@@ -40,13 +40,13 @@ class BaseAsyncDAO(Generic[T]):
         """Return the primary key column attribute, cached per model class."""
         try:
             return cls._pk_column_cache[cls.model_cls]
-        except KeyError:
+        except KeyError as exc:
             pk_cols = inspect(cls.model_cls).primary_key
             if len(pk_cols) != 1:
                 raise ValueError(
                     f"{cls.model_cls.__name__} has composite PK; "
                     "use a custom query instead of find_by_ids"
-                )
+                ) from exc
             col = getattr(cls.model_cls, pk_cols[0].name)
             cls._pk_column_cache[cls.model_cls] = col
             return col

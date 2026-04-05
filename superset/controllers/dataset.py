@@ -20,7 +20,7 @@ export/import, duplicate, refresh."""
 from __future__ import annotations
 
 import io
-from typing import Any
+from typing import Any, cast, TYPE_CHECKING
 
 import msgspec
 from litestar import Controller, delete, get, post, put
@@ -51,7 +51,6 @@ from superset.controllers.base import (
     build_rison_query_params,
     extract_ids,
     extract_ids_required,
-    extract_pagination,
     get_distinct_payload,
     get_info_payload,
     get_related_payload,
@@ -69,6 +68,7 @@ from superset.providers import (
 )
 from superset.schemas.dataset import (
     DatasetCacheWarmUpRequest,
+    DatasetDetailResult,
     DatasetDuplicateSchema,
     DatasetGetResponse,
     DatasetListResponse,
@@ -84,6 +84,13 @@ from superset.typing import (
     UserProtocol,
 )
 from superset.utils import filter_none, filter_unset
+
+if TYPE_CHECKING:
+    from superset.db.daos.dataset import (
+        AsyncDatasetColumnDAO,
+        AsyncDatasetDAO,
+        AsyncDatasetMetricDAO,
+    )
 
 
 def _build_dataset_result(dataset: Any) -> dict[str, Any]:
@@ -143,7 +150,8 @@ class DatasetController(Controller):
         from superset.models.connectors import SqlaTable
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
-            SqlaTable, rison_params,
+            SqlaTable,
+            rison_params,
         )
         base_filters = await dataset_access_filters(security_manager, current_user)
         all_filters = (base_filters or []) + rison_filters
@@ -183,6 +191,7 @@ class DatasetController(Controller):
                 "changed_by.last_name",
                 "database.id",
                 "database.database_name",
+                "database.uuid",
                 "owners.id",
                 "owners.first_name",
                 "owners.last_name",
@@ -270,33 +279,36 @@ class DatasetController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
         include_rendered_sql: bool = Parameter(
-            query="include_rendered_sql", default=False,
+            query="include_rendered_sql",
+            default=False,
         ),
     ) -> DatasetGetResponse:
-        dataset = await dao.find_by_id(pk)
-        if not dataset:
-            raise ObjectNotFoundError("Dataset", pk)
-        # Verify object-level access
+        from sqlalchemy.orm import selectinload
+
         from superset.db.filters import dataset_access_filters
+        from superset.models.connectors import SqlaTable
 
+        # Use find_all with selectinload to eagerly load all relationships
+        # needed for the full show response (matches chart controller pattern).
         base_filters = await dataset_access_filters(security_manager, current_user)
-        if base_filters:
-            from sqlalchemy import select as sa_select
+        all_filters = [SqlaTable.id == pk] + (base_filters or [])
 
-            model_cls = getattr(dao, "model_cls", None)
-            if model_cls is not None:
-                stmt = sa_select(model_cls.id).where(
-                    model_cls.id == dataset.id, *base_filters
-                )
-                result = await dao.session.scalar(stmt)
-                if result is None:
-                    raise ObjectNotFoundError("Dataset", pk)
-        columns = getattr(dataset, "columns", []) or []
-        metrics = getattr(dataset, "metrics", []) or []
-        owners = getattr(dataset, "owners", []) or []
-        database = getattr(dataset, "database", None)
-        changed_on = getattr(dataset, "changed_on", None)
-        created_on = getattr(dataset, "created_on", None)
+        results = await dao.find_all(
+            filters=all_filters,
+            page=0,
+            page_size=1,
+            options=[
+                selectinload(SqlaTable.database),
+                selectinload(SqlaTable.owners),
+                selectinload(SqlaTable.columns),
+                selectinload(SqlaTable.metrics),
+                selectinload(SqlaTable.changed_by),
+                selectinload(SqlaTable.created_by),
+            ],
+        )
+        if not results:
+            raise ObjectNotFoundError("Dataset", pk)
+        dataset = results[0]
 
         raw_sql = getattr(dataset, "sql", None)
         rendered_sql: str | None = None
@@ -307,85 +319,18 @@ class DatasetController(Controller):
             try:
                 from superset.jinja_context import get_template_processor
 
-                tp = get_template_processor(
-                    database=database, table=dataset
-                )
+                tp = get_template_processor(database=dataset.database, table=dataset)
                 rendered_sql = tp.process_template(raw_sql)
             except Exception:  # noqa: BLE001
                 rendered_sql = raw_sql
 
-        result_dict: dict[str, Any] = {
-            "table_name": dataset.table_name,
-            "schema": getattr(dataset, "schema", None),
-            "sql": raw_sql,
-            "description": getattr(dataset, "description", None),
-            "cache_timeout": dataset.cache_timeout,
-            "uuid": str(dataset.uuid) if getattr(dataset, "uuid", None) else None,
-            "main_dttm_col": getattr(dataset, "main_dttm_col", None),
-            "template_params": getattr(dataset, "template_params", None),
-            "datasource_type": getattr(dataset, "datasource_type", "table"),
-            "kind": getattr(dataset, "kind", None),
-            "created_on": created_on.isoformat() if created_on else None,
-            "changed_on": changed_on.isoformat() if changed_on else None,
-            "database": {
-                "id": database.id,
-                "database_name": getattr(database, "database_name", ""),
-            }
-            if database
-            else None,
-            "owners": [{"id": o.id, "name": str(o)} for o in owners],
-            "columns": [
-                {
-                    "id": getattr(col, "id", None),
-                    "column_name": getattr(col, "column_name", ""),
-                    "verbose_name": getattr(col, "verbose_name", None),
-                    "description": getattr(col, "description", None),
-                    "expression": getattr(col, "expression", None),
-                    "type": getattr(col, "type", None),
-                    "type_generic": getattr(col, "type_generic", None),
-                    "python_date_format": getattr(col, "python_date_format", None),
-                    "is_dttm": getattr(col, "is_dttm", False),
-                    "is_active": getattr(col, "is_active", True),
-                    "groupby": getattr(col, "groupby", True),
-                    "filterable": getattr(col, "filterable", True),
-                    "uuid": (
-                        str(getattr(col, "uuid", None))
-                        if getattr(col, "uuid", None)
-                        else None
-                    ),
-                    "advanced_data_type": getattr(col, "advanced_data_type", None),
-                    "extra": getattr(col, "extra", None),
-                }
-                for col in columns
-            ],
-            "metrics": [
-                {
-                    "id": getattr(m, "id", None),
-                    "metric_name": getattr(m, "metric_name", ""),
-                    "verbose_name": getattr(m, "verbose_name", None),
-                    "description": getattr(m, "description", None),
-                    "expression": getattr(m, "expression", ""),
-                    "metric_type": getattr(m, "metric_type", None),
-                    "d3format": getattr(m, "d3format", None),
-                    "currency": getattr(m, "currency", None),
-                    "warning_text": getattr(m, "warning_text", None),
-                    "extra": getattr(m, "extra", None),
-                    "uuid": (
-                        str(getattr(m, "uuid", None))
-                        if getattr(m, "uuid", None)
-                        else None
-                    ),
-                }
-                for m in metrics
-            ],
-        }
-
-        if include_rendered_sql:
-            result_dict["rendered_sql"] = rendered_sql
-
+        detail = DatasetDetailResult.from_model(
+            dataset,
+            rendered_sql=rendered_sql if include_rendered_sql else None,
+        )
         return DatasetGetResponse(
             id=dataset.id,
-            result=result_dict,
+            result=detail,
         )
 
     @post(
@@ -400,17 +345,22 @@ class DatasetController(Controller):
         current_user: UserProtocol,
     ) -> DatasetGetResponse:
         cmd = CreateDatasetCommand(
-            dao=dao,
+            dao=cast("AsyncDatasetDAO", dao),
             data=filter_none(
                 {
                     "table_name": data.table_name,
                     "database": data.database,
-                    "schema_name": data.schema_name,
+                    "schema": data.schema,
                     "sql": data.sql,
                     "is_managed_externally": data.is_managed_externally,
                     "external_url": data.external_url,
                     "normalize_columns": data.normalize_columns,
                     "always_filter_main_dttm": data.always_filter_main_dttm,
+                    "owners": data.owners,
+                    "tags": data.tags,
+                    "catalog": data.catalog,
+                    "template_params": data.template_params,
+                    "uuid": data.uuid,
                 }
             ),
             user_id=current_user.id,
@@ -422,7 +372,7 @@ class DatasetController(Controller):
             user_id=current_user.id,
         )
         return DatasetGetResponse(
-            id=dataset.id,
+            id=int(dataset.id),
             result=_build_dataset_result(dataset),
         )
 
@@ -444,7 +394,7 @@ class DatasetController(Controller):
                 "table_name": data.table_name,
                 "database_id": data.database_id,
                 "sql": data.sql,
-                "schema_name": data.schema_name,
+                "schema": data.schema,
                 "description": data.description,
                 "main_dttm_col": data.main_dttm_col,
                 "offset": data.offset,
@@ -457,6 +407,12 @@ class DatasetController(Controller):
                 "external_url": data.external_url,
                 "normalize_columns": data.normalize_columns,
                 "always_filter_main_dttm": data.always_filter_main_dttm,
+                "owners": data.owners,
+                "tags": data.tags,
+                "filter_select_enabled": data.filter_select_enabled,
+                "fetch_values_predicate": data.fetch_values_predicate,
+                "catalog": data.catalog,
+                "uuid": data.uuid,
             }
         )
         if data.columns is not msgspec.UNSET and data.columns is not None:
@@ -474,7 +430,7 @@ class DatasetController(Controller):
         # instead of applying user-provided column changes.
         if override_columns:
             cmd_refresh = RefreshDatasetCommand(
-                dao=dao,
+                dao=cast("AsyncDatasetDAO", dao),
                 dataset_id=pk,
                 security_manager=security_manager,
                 user_id=current_user.id,
@@ -482,7 +438,7 @@ class DatasetController(Controller):
             dataset = await cmd_refresh.execute()
         else:
             cmd = UpdateDatasetCommand(
-                dao=dao,
+                dao=cast("AsyncDatasetDAO", dao),
                 dataset_id=pk,
                 data=update_data,
                 user_id=current_user.id,
@@ -496,7 +452,7 @@ class DatasetController(Controller):
             user_id=current_user.id,
         )
         return DatasetGetResponse(
-            id=dataset.id,
+            id=int(dataset.id),
             result=_build_dataset_result(dataset),
         )
 
@@ -513,7 +469,7 @@ class DatasetController(Controller):
         current_user: UserProtocol,
     ) -> dict[str, str]:
         cmd = DeleteDatasetCommand(
-            dao=dao,
+            dao=cast("AsyncDatasetDAO", dao),
             dataset_id=pk,
             security_manager=security_manager,
             user_id=current_user.id,
@@ -540,7 +496,7 @@ class DatasetController(Controller):
     ) -> dict[str, str]:
         ids = extract_ids_required(rison_params)
         cmd = BulkDeleteDatasetsCommand(
-            dao=dao,
+            dao=cast("AsyncDatasetDAO", dao),
             dataset_ids=ids,
             security_manager=security_manager,
             user_id=current_user.id,
@@ -565,7 +521,7 @@ class DatasetController(Controller):
         current_user: UserProtocol,
     ) -> DatasetGetResponse:
         cmd = DuplicateDatasetCommand(
-            dao=dao,
+            dao=cast("AsyncDatasetDAO", dao),
             base_model_id=data.base_model_id,
             table_name=data.table_name,
             user_id=current_user.id,
@@ -577,7 +533,7 @@ class DatasetController(Controller):
             user_id=current_user.id,
         )
         return DatasetGetResponse(
-            id=dataset.id,
+            id=int(dataset.id),
             result={"table_name": dataset.table_name},
         )
 
@@ -586,7 +542,7 @@ class DatasetController(Controller):
         guards=[require_permission("can_write", "Dataset")],
     )
     async def refresh(self, pk: int, dao: DatasetDAOProtocol) -> dict[str, str]:
-        cmd = RefreshDatasetCommand(dao=dao, dataset_id=pk)
+        cmd = RefreshDatasetCommand(dao=cast("AsyncDatasetDAO", dao), dataset_id=pk)
         await cmd.execute()
         event_logger.log("dataset.refresh", object_ref=f"dataset:{pk}")
         return {"message": "OK"}
@@ -603,11 +559,12 @@ class DatasetController(Controller):
         current_user: UserProtocol,
     ) -> DatasetGetResponse:
         cmd = GetOrCreateDatasetCommand(
-            dao=dao,
+            dao=cast("AsyncDatasetDAO", dao),
             data={
                 "table_name": data.table_name,
-                "database": data.database,
-                "schema_name": data.schema_name,
+                "database_id": data.database_id,
+                "schema": data.schema,
+                "catalog": data.catalog,
                 "template_params": data.template_params,
                 "normalize_columns": data.normalize_columns,
                 "always_filter_main_dttm": data.always_filter_main_dttm,
@@ -620,9 +577,10 @@ class DatasetController(Controller):
             object_ref=f"dataset:{dataset.id}",
             user_id=current_user.id,
         )
+        dataset_id = int(dataset.id)
         return DatasetGetResponse(
-            id=dataset.id,
-            result={"table_name": dataset.table_name},
+            id=dataset_id,
+            result={"table_id": dataset_id},
         )
 
     @get(
@@ -639,7 +597,7 @@ class DatasetController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
-        cmd = ExportDatasetsCommand(model_ids=ids, dao=dao)
+        cmd = ExportDatasetsCommand(model_ids=ids, dao=cast("AsyncDatasetDAO", dao))
         buf = await cmd.execute()
         event_logger.log("dataset.export", extra={"count": len(ids)})
         return Stream(
@@ -661,6 +619,8 @@ class DatasetController(Controller):
         overwrite: bool = False,
         passwords: str | None = None,
         ssh_tunnel_passwords: str | None = None,
+        ssh_tunnel_private_keys: str | None = None,
+        ssh_tunnel_private_key_passwords: str | None = None,
         sync_columns: bool = True,
         sync_metrics: bool = True,
     ) -> dict[str, str]:
@@ -670,20 +630,42 @@ class DatasetController(Controller):
         buf = io.BytesIO(contents)
         try:
             passwords_dict: dict[str, str] = _json.loads(passwords) if passwords else {}
-        except (ValueError, _json.JSONDecodeError):
-            raise CommandInvalidError("Invalid JSON in 'passwords' field")
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError("Invalid JSON in 'passwords' field") from exc
         try:
             ssh_dict: dict[str, str] = (
                 _json.loads(ssh_tunnel_passwords) if ssh_tunnel_passwords else {}
             )
-        except (ValueError, _json.JSONDecodeError):
-            raise CommandInvalidError("Invalid JSON in 'ssh_tunnel_passwords' field")
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError(
+                "Invalid JSON in 'ssh_tunnel_passwords' field"
+            ) from exc
+        try:
+            ssh_private_keys_dict: dict[str, str] = (
+                _json.loads(ssh_tunnel_private_keys) if ssh_tunnel_private_keys else {}
+            )
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError(
+                "Invalid JSON in 'ssh_tunnel_private_keys' field"
+            ) from exc
+        try:
+            ssh_private_key_passwords_dict: dict[str, str] = (
+                _json.loads(ssh_tunnel_private_key_passwords)
+                if ssh_tunnel_private_key_passwords
+                else {}
+            )
+        except (ValueError, _json.JSONDecodeError) as exc:
+            raise CommandInvalidError(
+                "Invalid JSON in 'ssh_tunnel_private_key_passwords' field"
+            ) from exc
         cmd = ImportDatasetsCommand(
             contents=buf,
-            dao=dao,
+            dao=cast("AsyncDatasetDAO", dao),
             overwrite=overwrite,
             passwords=passwords_dict,
             ssh_tunnel_passwords=ssh_dict,
+            ssh_tunnel_private_keys=ssh_private_keys_dict,
+            ssh_tunnel_private_key_passwords=ssh_private_key_passwords_dict,
             sync_columns=sync_columns,
             sync_metrics=sync_metrics,
         )
@@ -699,7 +681,7 @@ class DatasetController(Controller):
         self, data: DatasetCacheWarmUpRequest, dao: DatasetDAOProtocol
     ) -> dict[str, Any]:
         cmd = WarmUpDatasetCacheCommand(
-            dao=dao,
+            dao=cast("AsyncDatasetDAO", dao),
             db_name=data.db_name,
             table_name=data.table_name,
             dashboard_id=data.dashboard_id,
@@ -787,7 +769,7 @@ class DatasetController(Controller):
                     dashboard_id=dashboard_id,
                     user=current_user,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 # Fallback: allow access if user can read the dataset directly
                 pass
 
@@ -822,8 +804,8 @@ class DatasetController(Controller):
         column_dao: ColumnDAOProtocol,
     ) -> dict[str, str]:
         cmd = DeleteDatasetColumnCommand(
-            dataset_dao=dao,
-            column_dao=column_dao,
+            dataset_dao=cast("AsyncDatasetDAO", dao),
+            column_dao=cast("AsyncDatasetColumnDAO", column_dao),
             dataset_id=pk,
             column_id=column_id,
         )
@@ -847,8 +829,8 @@ class DatasetController(Controller):
         metric_dao: MetricDAOProtocol,
     ) -> dict[str, str]:
         cmd = DeleteDatasetMetricCommand(
-            dataset_dao=dao,
-            metric_dao=metric_dao,
+            dataset_dao=cast("AsyncDatasetDAO", dao),
+            metric_dao=cast("AsyncDatasetMetricDAO", metric_dao),
             dataset_id=pk,
             metric_id=metric_id,
         )

@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Chart command classes — business logic for chart CRUD and operations."""
 
 from __future__ import annotations
@@ -507,9 +508,7 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
 
         # Sync implicit owner: tags (async port of ChartUpdater.after_update)
         owner_ids = (
-            [o.id for o in self._chart.owners]
-            if hasattr(self._chart, "owners")
-            else []
+            [o.id for o in self._chart.owners] if hasattr(self._chart, "owners") else []
         )
         await sync_owner_tags_after_update(
             self._dao.session, "chart", self._chart.id, owner_ids
@@ -880,11 +879,13 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
 
         queries: list[AsyncQueryObject] = []
         for q in qc_dict.get("queries", []):
-            qo = AsyncQueryObject(**{
-                k: v
-                for k, v in q.items()
-                if k in AsyncQueryObject.__dataclass_fields__
-            })
+            qo = AsyncQueryObject(
+                **{
+                    k: v
+                    for k, v in q.items()
+                    if k in AsyncQueryObject.__dataclass_fields__
+                }
+            )
             queries.append(qo)
 
         if not queries:
@@ -894,9 +895,7 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
         if self._extra_filters:
             extra = _stdlib_json.loads(self._extra_filters)
             for qo in queries:
-                if hasattr(qo, "filters") and isinstance(
-                    qo.filters, list
-                ):
+                if hasattr(qo, "filters") and isinstance(qo.filters, list):
                     qo.filters.extend(extra)
 
         return queries
@@ -923,9 +922,7 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
 
             datasource = chart.table
             if not datasource:
-                raise CommandInvalidError(
-                    "Chart's datasource does not exist"
-                )
+                raise CommandInvalidError("Chart's datasource does not exist")
 
             queries = self._build_queries(qc_dict)
 

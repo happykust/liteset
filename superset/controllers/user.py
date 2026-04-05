@@ -18,8 +18,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
+import os
 from datetime import datetime
 from typing import Any
 
@@ -83,8 +83,7 @@ class UserPutBody(msgspec.Struct):
 def _user_to_response(user: Any) -> UserResponse:
     """Convert a User model instance to a UserResponse schema."""
     roles = [
-        UserRoleRef(id=r.id, name=r.name)
-        for r in (getattr(user, "roles", None) or [])
+        UserRoleRef(id=r.id, name=r.name) for r in (getattr(user, "roles", None) or [])
     ]
     groups = [
         UserGroupRef(id=g.id, name=g.name)
@@ -123,7 +122,7 @@ def _build_user_filters(rison_params: dict[str, Any] | None) -> list[Any]:
     if not rison_params:
         return filters
 
-    allowed = {
+    allowed: dict[str | None, Any] = {
         "username": User.username,
         "first_name": User.first_name,
         "last_name": User.last_name,
@@ -209,9 +208,7 @@ class UserController(Controller):
 
         result = [_user_to_response(u) for u in users]
         event_logger.log("user.list")
-        return msgspec.to_builtins(
-            UsersSearchResponse(result=result, count=total)
-        )
+        return msgspec.to_builtins(UsersSearchResponse(result=result, count=total))
 
     # ------------------------------------------------------------------
     # GET /{pk} — single user
@@ -371,13 +368,22 @@ class UserController(Controller):
         "/{pk:int}/avatar.png",
         opt={"exclude_from_auth": True},
     )
-    async def get_avatar(self, user_dao: Any, pk: int) -> Redirect:
-        """GET /api/v1/security/users/{pk}/avatar.png — redirect to avatar URL."""
+    async def get_avatar(self, user_dao: Any, pk: int) -> Any:
+        """GET /api/v1/security/users/{pk}/avatar.png — redirect to avatar URL.
+
+        Checks (in order): extra_attributes, Slack API, Gravatar.
+        Returns 301 redirect to avatar URL, or 204 if none found.
+        Matches original Apache Superset behavior.
+        """
+        from litestar.response import Response
+
         user = await user_dao.find_by_id(pk)
         if user is None:
             raise ObjectNotFoundError("User", pk)
 
         avatar_url = None
+
+        # 1. Check extra_attributes (one-to-one relationship)
         extra_attrs = getattr(user, "extra_attributes", [])
         if extra_attrs:
             first_attr = (
@@ -385,14 +391,27 @@ class UserController(Controller):
             )
             avatar_url = getattr(first_attr, "avatar_url", None)
 
+        # 2. Try Slack lookup if no avatar and Slack is configured
         if not avatar_url:
-            email = getattr(user, "email", "") or ""
-            email_hash = hashlib.md5(  # noqa: S324
-                email.lower().strip().encode()
-            ).hexdigest()
-            avatar_url = f"https://www.gravatar.com/avatar/{email_hash}?d=mm"
+            try:
+                from superset.utils.slack import get_user_avatar, SlackClientError
 
-        return Redirect(path=avatar_url)
+                slack_token = os.environ.get("SLACK_API_TOKEN")
+                if slack_token and getattr(user, "email", None):
+                    try:
+                        avatar_url = get_user_avatar(user.email)
+                        # Persist so we don't re-fetch next time
+                        if hasattr(user_dao, "set_avatar_url"):
+                            await user_dao.set_avatar_url(user, avatar_url)
+                    except SlackClientError:
+                        pass
+            except ImportError:
+                pass
+
+        # 3. Redirect to avatar or return 204 (no content)
+        if avatar_url:
+            return Redirect(path=avatar_url)
+        return Response(status_code=204, content=None)
 
 
 class UserRegistrationsController(Controller):

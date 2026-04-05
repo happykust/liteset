@@ -19,6 +19,7 @@
 Legacy migrations import:
   - ``update_time_range``
 """
+
 from __future__ import annotations
 
 from typing import Any

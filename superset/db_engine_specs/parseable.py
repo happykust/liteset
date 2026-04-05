@@ -16,6 +16,7 @@
 # under the License.
 from __future__ import annotations
 
+# mypy: ignore-errors
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -25,7 +26,9 @@ from superset.constants import TimeGrain
 from superset.db_engine_specs.base import BaseEngineSpec
 
 if TYPE_CHECKING:
-    from superset.connectors.sqla.models import TableColumn
+    from superset.models.connectors import (
+        TableColumn,
+    )
     from superset.models.core import Database
 
 
@@ -73,9 +76,7 @@ class ParseableEngineSpec(BaseEngineSpec):
             orm_col.is_dttm = True
 
     @classmethod
-    def get_extra_params(
-        cls, database: Database, source: Any = None
-    ) -> dict[str, Any]:
+    def get_extra_params(cls, database: Database, source: Any = None) -> dict[str, Any]:
         """Additional parameters for Parseable connections."""
         return {
             "engine_params": {

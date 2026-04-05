@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """Re-export for convenience."""
+
 from superset.models.core import CssTemplate
 
 __all__ = ["CssTemplate"]

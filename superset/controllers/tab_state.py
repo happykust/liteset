@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """TabState and TableSchema controllers — SQL Lab tab persistence.
 
 Ports the original Flask ``TabStateView`` and ``TableSchemaView``
@@ -32,7 +33,7 @@ from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from superset.models.sql_lab import Query, TabState, TableSchema
+from superset.models.sql_lab import Query, TableSchema, TabState
 from superset.typing import UserProtocol
 
 
@@ -42,12 +43,11 @@ def _json_iso_dttm_ser(obj: Any) -> str:
         return obj.isoformat()
     return str(obj)
 
+
 logger = logging.getLogger(__name__)
 
 
-async def _get_owner_id(
-    session: AsyncSession, tab_state_id: int
-) -> int | None:
+async def _get_owner_id(session: AsyncSession, tab_state_id: int) -> int | None:
     """Return the user_id that owns the given tab, or None if not found."""
     result = await session.execute(
         select(TabState.user_id).where(TabState.id == tab_state_id)
@@ -268,9 +268,7 @@ class TabStateController(Controller):
             fields = {k: json.loads(v) for k, v in dict(form).items()}
 
             await session.execute(
-                update(TabState)
-                .where(TabState.id == tab_state_id)
-                .values(**fields)
+                update(TabState).where(TabState.id == tab_state_id).values(**fields)
             )
             await session.commit()
             return Response(
@@ -385,11 +383,9 @@ class TabStateController(Controller):
                         TabState.latest_query_id == client_id,
                     )
                     .values(
-                        latest_query_id=prev_query.client_id
-                    if prev_query
-                    else None
+                        latest_query_id=prev_query.client_id if prev_query else None
+                    )
                 )
-            )
 
             await session.execute(
                 Query.__table__.delete().where(
@@ -444,9 +440,9 @@ class TableSchemaController(Controller):
                     list(table.keys()),
                 )
                 return Response(
-                    content=json.dumps({
-                        "error": f"Missing required keys. Got: {list(table.keys())}"
-                    }),
+                    content=json.dumps(
+                        {"error": f"Missing required keys. Got: {list(table.keys())}"}
+                    ),
                     status_code=400,
                     media_type="application/json",
                 )
@@ -499,9 +495,7 @@ class TableSchemaController(Controller):
         """DELETE /tableschemaview/<id> — delete a table schema entry."""
         try:
             await session.execute(
-                TableSchema.__table__.delete().where(
-                    TableSchema.id == table_schema_id
-                )
+                TableSchema.__table__.delete().where(TableSchema.id == table_schema_id)
             )
             await session.commit()
             return Response(

@@ -993,20 +993,16 @@ class DashboardController(Controller):
         # Redirect to canonical digest URL if stale
         dashboard_digest = getattr(dashboard, "digest", None)
         if dashboard_digest and dashboard_digest != digest:
-            return Redirect(  # type: ignore[return-value]
+            return Redirect(
                 path=f"/api/v1/dashboard/{pk}/thumbnail/{dashboard_digest}/",
             )
 
         # Build screenshot object and compute cache key
         dashboard_url = f"/superset/dashboard/{pk}/"
-        screenshot_obj = DashboardScreenshot(
-            dashboard_url, dashboard_digest or digest
-        )
+        screenshot_obj = DashboardScreenshot(dashboard_url, dashboard_digest or digest)
         cache_key = await asyncio.to_thread(screenshot_obj.get_cache_key)
         cache_payload = (
-            await asyncio.to_thread(
-                DashboardScreenshot.get_from_cache_key, cache_key
-            )
+            await asyncio.to_thread(DashboardScreenshot.get_from_cache_key, cache_key)
             or ScreenshotCachePayload()
         )
 
@@ -1036,13 +1032,9 @@ class DashboardController(Controller):
             image = cache_payload.get_image()
             # Validate the BytesIO object
             if not image or not hasattr(image, "read"):
-                return Response(
-                    content=b"", status_code=404, media_type="image/png"
-                )
+                return Response(content=b"", status_code=404, media_type="image/png")
             if image.getbuffer().nbytes == 0:
-                return Response(
-                    content=b"", status_code=404, media_type="image/png"
-                )
+                return Response(content=b"", status_code=404, media_type="image/png")
             image.seek(0)
         except ScreenshotImageNotAvailableException:
             return Response(content=b"", status_code=404, media_type="image/png")

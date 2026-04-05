@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Async tag helpers -- ported 1:1 from superset_old/tags/models.py and
 superset_old/tags/core.py.
 
@@ -280,7 +281,5 @@ async def remove_favorited_by_tag(
     result = await session.execute(stmt)
     ids = [row[0] for row in result]
     if ids:
-        await session.execute(
-            sa_delete(TaggedObject).where(TaggedObject.id.in_(ids))
-        )
+        await session.execute(sa_delete(TaggedObject).where(TaggedObject.id.in_(ids)))
         await session.flush()

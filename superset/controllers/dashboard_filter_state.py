@@ -53,7 +53,7 @@ class DashboardFilterStateController(Controller):
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
         cmd = CreateFilterStateCommand(
-            dao=kv_dao,
+            dao=kv_dao,  # type: ignore[arg-type]
             dashboard_id=pk,
             value=data.value,
             user_id=current_user.id,
@@ -82,7 +82,7 @@ class DashboardFilterStateController(Controller):
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
         cmd = UpdateFilterStateCommand(
-            dao=kv_dao,
+            dao=kv_dao,  # type: ignore[arg-type]
             dashboard_id=pk,
             key=key,
             value=data.value,
@@ -110,7 +110,7 @@ class DashboardFilterStateController(Controller):
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
         cmd = GetFilterStateCommand(
-            dao=kv_dao,
+            dao=kv_dao,  # type: ignore[arg-type]
             dashboard_id=pk,
             key=key,
             security_manager=security_manager,
@@ -134,7 +134,7 @@ class DashboardFilterStateController(Controller):
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
         cmd = DeleteFilterStateCommand(
-            dao=kv_dao,
+            dao=kv_dao,  # type: ignore[arg-type]
             dashboard_id=pk,
             key=key,
             user_id=current_user.id,

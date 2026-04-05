@@ -199,16 +199,11 @@ class RLSController(Controller):
             dao=dao,
             column_name=column_name,
             rison_params=rison_params,
-            allowed_fields=frozenset(
-                {"tables", "roles", "created_by", "changed_by"}
-            ),
+            allowed_fields=frozenset({"tables", "roles", "created_by", "changed_by"}),
         )
 
 
 def msgspec_to_dict(obj: Any) -> dict[str, Any]:
     """Convert a msgspec Struct to a plain dict."""
 
-    return {
-        f: getattr(obj, f)
-        for f in obj.__struct_fields__
-    }
+    return {f: getattr(obj, f) for f in obj.__struct_fields__}

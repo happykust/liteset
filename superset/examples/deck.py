@@ -19,16 +19,15 @@ import logging
 
 from superset.examples import _ctx
 from superset.examples._ctx import DatasourceType
-from superset.models.dashboard import Dashboard
-from superset.models.slice import Slice
-from superset.utils import json
-
-from .helpers import (
+from superset.examples.helpers import (
     get_slice_json,
     get_table_connector_registry,
     merge_slice,
     update_slice_ids,
 )
+from superset.models.dashboard import Dashboard
+from superset.models.slice import Slice
+from superset.utils import json
 
 logger = logging.getLogger(__name__)
 
@@ -537,11 +536,11 @@ def load_deck_dash() -> None:  # pylint: disable=too-many-statements
     if not dash:
         dash = Dashboard()
         _ctx.session.add(dash)
-    dash.published = True
+    dash.published = True  # type: ignore[assignment]
     js = POSITION_JSON
     pos = json.loads(js)
     slices = update_slice_ids(pos)
-    dash.position_json = json.dumps(pos, indent=4)
-    dash.dashboard_title = title
-    dash.slug = slug
+    dash.position_json = json.dumps(pos, indent=4)  # type: ignore[assignment]
+    dash.dashboard_title = title  # type: ignore[assignment]
+    dash.slug = slug  # type: ignore[assignment]
     dash.slices = slices

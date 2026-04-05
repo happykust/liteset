@@ -42,7 +42,7 @@ class CreateTagCommand(AsyncBaseCommand[Any]):
         description = self._data.get("description", "")
         tag = await self._dao.get_by_name(name, "custom")
         if description:
-            tag.description = description  # type: ignore[attr-defined]
+            tag.description = description
         # Create tagged object associations if provided
         objects_to_tag = self._data.get("objects_to_tag", [])
         for obj in objects_to_tag:
@@ -97,7 +97,7 @@ class BulkDeleteTagCommand(AsyncBaseCommand[int]):
             raise CommandInvalidError("No IDs provided for bulk delete")
 
     async def run(self) -> int:
-        return await self._dao.bulk_delete(self._ids)
+        return await self._dao.bulk_delete(self._ids)  # type: ignore[arg-type]
 
 
 class BulkCreateTagCommand(AsyncBaseCommand[list[Any]]):

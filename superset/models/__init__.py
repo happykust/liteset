@@ -20,6 +20,7 @@ All models previously in superset/models/ are now here.
 Backward-compatible re-exports exist in superset/models/ during
 the transition period.
 """
+
 # Import ALL model modules so that string-referenced classes
 # (User, Role, SqlaTable, etc.) are registered in the mapper registry
 # before any cross-module relationships are resolved.

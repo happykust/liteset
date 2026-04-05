@@ -606,9 +606,7 @@ class AsyncSecurityManager:
         filters.sort(key=lambda f: f.id)
         return filters
 
-    def get_guest_rls_filters(
-        self, dataset: Any, *, user: Any
-    ) -> list[dict[str, Any]]:
+    def get_guest_rls_filters(self, dataset: Any, *, user: Any) -> list[dict[str, Any]]:
         """Retrieve RLS filters from a guest token for the given dataset.
 
         Matches the original SupersetSecurityManager.get_guest_rls_filters:
@@ -625,8 +623,7 @@ class AsyncSecurityManager:
         return [
             rule
             for rule in rls_rules
-            if not rule.get("dataset")
-            or str(rule.get("dataset")) == str(dataset.id)
+            if not rule.get("dataset") or str(rule.get("dataset")) == str(dataset.id)
         ]
 
     def get_guest_rls_filters_str(self, table: Any, *, user: Any) -> list[str]:

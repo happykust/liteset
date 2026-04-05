@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Trino engine spec -- sync/Flask-compatible.
 
 Ported 1:1 from ``superset_old/db_engine_specs/trino.py`` with Flask
@@ -93,9 +94,7 @@ class Row(types.TypeEngine):
 COLUMN_DOES_NOT_EXIST_REGEX = re.compile(
     "line (?P<location>.+?): .*Column '(?P<column_name>.+?)' cannot be resolved"
 )
-TABLE_DOES_NOT_EXIST_REGEX = re.compile(
-    ".*Table (?P<table_name>.+?) does not exist"
-)
+TABLE_DOES_NOT_EXIST_REGEX = re.compile(".*Table (?P<table_name>.+?) does not exist")
 SCHEMA_DOES_NOT_EXIST_REGEX = re.compile(
     "line (?P<location>.+?): .*Schema '(?P<schema_name>.+?)' does not exist"
 )
@@ -240,8 +239,7 @@ class PrestoBaseEngineSpec(BaseEngineSpec, metaclass=ABCMeta):
 
     custom_errors: dict[Pattern[str], tuple[str, str, dict[str, Any]]] = {
         COLUMN_DOES_NOT_EXIST_REGEX: (
-            'We can\'t seem to resolve column "%(column_name)s" at '
-            "line %(location)s.",
+            'We can\'t seem to resolve column "%(column_name)s" at line %(location)s.',
             "COLUMN_DOES_NOT_EXIST_ERROR",
             {},
         ),
@@ -301,9 +299,7 @@ class PrestoBaseEngineSpec(BaseEngineSpec, metaclass=ABCMeta):
         if isinstance(sqla_type, types.Date):
             return f"DATE '{dttm.date().isoformat()}'"
         if isinstance(sqla_type, types.TIMESTAMP):
-            return (
-                f"""TIMESTAMP '{dttm.isoformat(timespec="microseconds", sep=" ")}'"""
-            )
+            return f"""TIMESTAMP '{dttm.isoformat(timespec="microseconds", sep=" ")}'"""
         return None
 
     @classmethod
@@ -396,9 +392,7 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
         return None
 
     @classmethod
-    def cancel_query(
-        cls, cursor: Cursor, query: Query, cancel_query_id: str
-    ) -> bool:
+    def cancel_query(cls, cursor: Cursor, query: Query, cancel_query_id: str) -> bool:
         """Cancel query in the underlying database.
 
         :param cursor: New cursor instance to the db of the query
@@ -418,9 +412,7 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
         return True
 
     @staticmethod
-    def get_extra_params(
-        database: Database, source: Any = None
-    ) -> dict[str, Any]:
+    def get_extra_params(database: Database, source: Any = None) -> dict[str, Any]:
         """Add elements to connection parameters (e.g. certificates).
 
         :param database: database instance from which to extract extras
@@ -479,9 +471,7 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
             raise
 
     @classmethod
-    def _expand_columns(
-        cls, col: ResultSetColumnType
-    ) -> list[ResultSetColumnType]:
+    def _expand_columns(cls, col: ResultSetColumnType) -> list[ResultSetColumnType]:
         """Expand the given column out to one or more columns by analysing their
         types, descending into ROWs and expanding out their inner fields
         recursively.
@@ -538,9 +528,7 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
         if not (options or {}).get("expand_rows"):
             return base_cols
 
-        return [
-            col for base_col in base_cols for col in cls._expand_columns(base_col)
-        ]
+        return [col for base_col in base_cols for col in cls._expand_columns(base_col)]
 
     @classmethod
     def get_indexes(

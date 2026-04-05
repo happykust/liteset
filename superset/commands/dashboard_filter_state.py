@@ -53,12 +53,12 @@ async def _check_dashboard_access(
         # superset stack), fall back to a basic permission check.
         user = await security_manager.find_user_by_id(user_id)
         if user is None:
-            raise ForbiddenError("User not found")
-        has = await security_manager.has_access(
-            "can_read", "Dashboard", user=user
-        )
+            raise ForbiddenError("User not found") from None
+        has = await security_manager.has_access("can_read", "Dashboard", user=user)
         if not has:
-            raise ForbiddenError("User does not have access to this dashboard")
+            raise ForbiddenError(
+                "User does not have access to this dashboard"
+            ) from None
         return
 
     dashboard = await dao.session.get(Dashboard, dashboard_id)

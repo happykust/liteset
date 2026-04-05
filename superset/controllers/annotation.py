@@ -237,9 +237,7 @@ class AnnotationController(Controller):
         annotation = await cmd.execute()
         changed_on = getattr(annotation, "changed_on", None)
         created_on = getattr(annotation, "created_on", None)
-        event_logger.log(
-            "annotation.update", object_ref=f"annotation:{pk}"
-        )
+        event_logger.log("annotation.update", object_ref=f"annotation:{pk}")
         return {
             "id": annotation.id,
             "result": {

@@ -19,6 +19,7 @@
 These are *not* for the Superset metadata database but for the data
 source databases registered in the ``dbs`` table.
 """
+
 from __future__ import annotations
 
 import logging

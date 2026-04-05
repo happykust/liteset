@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """DataFrame processing utilities."""
+
 from __future__ import annotations
 
 import logging
@@ -68,9 +69,7 @@ def normalize_dttm_col(
                         lambda x: pd.Timestamp(x) if pd.notna(x) else pd.NaT
                     )
                 except ValueError:
-                    logger.warning(
-                        "Unable to convert %s to datetime", _col.col_label
-                    )
+                    logger.warning("Unable to convert %s to datetime", _col.col_label)
         else:
             df[_col.col_label] = pd.to_datetime(
                 df[_col.col_label],

@@ -89,10 +89,14 @@ class CurrentUserController(Controller):
             role_perms: list[tuple[str, str]] = []
             for pvm in getattr(role, "permissions", []):
                 perm_name = getattr(
-                    getattr(pvm, "permission", None), "name", "",
+                    getattr(pvm, "permission", None),
+                    "name",
+                    "",
                 )
                 view_name = getattr(
-                    getattr(pvm, "view_menu", None), "name", "",
+                    getattr(pvm, "view_menu", None),
+                    "name",
+                    "",
                 )
                 if perm_name and view_name:
                     role_perms.append((perm_name, view_name))
@@ -140,7 +144,7 @@ class CurrentUserController(Controller):
                 if has_password:
                     from superset.utils.password import generate_password_hash
 
-                    user.password = generate_password_hash(data.password)
+                    user.password = generate_password_hash(data.password or "")
 
                 await user_dao.session.flush()
 

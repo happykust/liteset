@@ -205,7 +205,7 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
             logger.exception("Failed to resolve public role permissions")
             return set()
 
-    async def _authenticate_cookie(
+    async def _authenticate_cookie(  # noqa: C901
         self, connection: ASGIConnection[Any, Any, Any, Any]
     ) -> Any | None:
         """Authenticate via session cookie (JWT or itsdangerous)."""
@@ -222,10 +222,12 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         user_id: int | None = None
         try:
             payload = pyjwt.decode(
-                cookie, secret_key, algorithms=["HS256"],
+                cookie,
+                secret_key,
+                algorithms=["HS256"],
             )
             user_id = payload.get("user_id")
-        except Exception:
+        except Exception:  # noqa: S110
             pass
 
         # Fallback: itsdangerous (Flask legacy)
@@ -250,7 +252,8 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         # Cache miss — resolve from DB
         try:
             user = await self._resolve_user_from_db(
-                connection, user_id,
+                connection,
+                user_id,
             )
         except Exception:
             logger.exception(

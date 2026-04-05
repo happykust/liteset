@@ -20,6 +20,7 @@ Migration-compatible shim for superset.utils.core.
 Provides ONLY the functions needed by Alembic migrations, without importing
 Flask, marshmallow, or other removed dependencies.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -41,11 +42,11 @@ FormData = dict[str, Any]
 T = TypeVar("T")
 
 
-class AdhocFilterClause(dict):
+class AdhocFilterClause(dict[str, Any]):
     """Minimal stand-in for the TypedDict used by filter helpers."""
 
 
-class QueryObjectFilterClause(dict):
+class QueryObjectFilterClause(dict[str, Any]):
     """Minimal stand-in for the TypedDict used by filter helpers."""
 
 
@@ -62,7 +63,7 @@ def generic_find_constraint_name(
 
     for fk in tbl.foreign_key_constraints:
         if fk.referred_table.name == referenced and set(fk.column_keys) == columns:
-            return fk.name
+            return fk.name  # type: ignore[return-value]
 
     return None
 
@@ -98,7 +99,8 @@ def generic_find_fk_constraint_names(
             fk["referred_table"] == referenced
             and set(fk["referred_columns"]) == columns
         ):
-            names.add(fk["name"])
+            if fk["name"] is not None:
+                names.add(fk["name"])
 
     return names
 
@@ -133,12 +135,12 @@ def get_user_id() -> int | None:
 # ---------------------------------------------------------------------------
 # MediumText / LongText
 # ---------------------------------------------------------------------------
-def MediumText() -> Variant:  # noqa: N802
-    return Text().with_variant(MEDIUMTEXT(), "mysql")
+def MediumText() -> Variant[Any]:  # noqa: N802
+    return Text().with_variant(MEDIUMTEXT(), "mysql")  # type: ignore[return-value]
 
 
-def LongText() -> Variant:  # noqa: N802
-    return Text().with_variant(LONGTEXT(), "mysql")
+def LongText() -> Variant[Any]:  # noqa: N802
+    return Text().with_variant(LONGTEXT(), "mysql")  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -251,10 +253,6 @@ def split_adhoc_filters_into_base_filters(
                     sql_where_filters.append(sql_expression)
                 elif clause == "HAVING":
                     sql_having_filters.append(sql_expression)
-        form_data["where"] = " AND ".join(
-            [f"({sql})" for sql in sql_where_filters]
-        )
-        form_data["having"] = " AND ".join(
-            [f"({sql})" for sql in sql_having_filters]
-        )
+        form_data["where"] = " AND ".join([f"({sql})" for sql in sql_where_filters])
+        form_data["having"] = " AND ".join([f"({sql})" for sql in sql_having_filters])
         form_data["filters"] = simple_where_filters

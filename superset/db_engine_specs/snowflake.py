@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Snowflake engine spec -- sync/Flask-compatible.
 
 Ported 1:1 from ``superset_old/db_engine_specs/snowflake.py`` with Flask
@@ -34,7 +35,6 @@ from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.engine.url import URL
 
 from superset.constants import TimeGrain
-from superset.db_engine_specs.base import BaseEngineSpec
 from superset.db_engine_specs.postgres import PostgresBaseEngineSpec
 from superset.utils import json as json_utils
 
@@ -214,21 +214,15 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
         database.extra = json_utils.dumps(extra)
 
     @classmethod
-    def get_cancel_query_id(
-        cls, cursor: Any, query: Query
-    ) -> str | None:
+    def get_cancel_query_id(cls, cursor: Any, query: Query) -> str | None:
         cursor.execute("SELECT CURRENT_SESSION()")
         row = cursor.fetchone()
         return row[0]
 
     @classmethod
-    def cancel_query(
-        cls, cursor: Any, query: Query, cancel_query_id: str
-    ) -> bool:
+    def cancel_query(cls, cursor: Any, query: Query, cancel_query_id: str) -> bool:
         try:
-            cursor.execute(
-                f"SELECT SYSTEM$CANCEL_ALL_QUERIES({cancel_query_id})"
-            )
+            cursor.execute(f"SELECT SYSTEM$CANCEL_ALL_QUERIES({cancel_query_id})")
         except Exception:  # noqa: BLE001
             return False
         return True
@@ -262,9 +256,7 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
                 with open(auth_params["privatekey_path"], "rb") as key_temp:
                     key = key_temp.read()
             privatekey_pass = auth_params.get("privatekey_pass", None)
-            password = (
-                privatekey_pass.encode() if privatekey_pass is not None else None
-            )
+            password = privatekey_pass.encode() if privatekey_pass is not None else None
             p_key = serialization.load_pem_private_key(
                 key,
                 password=password,

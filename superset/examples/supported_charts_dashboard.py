@@ -448,6 +448,7 @@ def load_supported_charts_dashboard() -> None:
 
     if not dash:
         dash = Dashboard()
+        _ctx.session.add(dash)
 
     js = textwrap.dedent(
         """
@@ -1240,6 +1241,6 @@ def load_supported_charts_dashboard() -> None:
 
     pos = json.loads(js)
     dash.slices = update_slice_ids(pos)
-    dash.dashboard_title = "Supported Charts Dashboard"
-    dash.position_json = json.dumps(pos, indent=2)
-    dash.slug = DASH_SLUG
+    dash.dashboard_title = "Supported Charts Dashboard"  # type: ignore[assignment]
+    dash.position_json = json.dumps(pos, indent=2)  # type: ignore[assignment]
+    dash.slug = DASH_SLUG  # type: ignore[assignment]

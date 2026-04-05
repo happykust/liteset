@@ -140,8 +140,8 @@ class ProxyFixMiddleware(ASGIMiddleware):
             # Client is (host, port).  We only know the IP from the
             # header; preserve the original port if present.
             original_port = 0
-            if scope.get("client"):
-                original_port = scope["client"][1]
+            if scope.get("client") is not None:
+                original_port = scope["client"][1]  # type: ignore[index]
             scope["client"] = (forwarded_for, original_port)
 
         # --- X-Forwarded-Proto -> scope["scheme"] ---
@@ -173,8 +173,8 @@ class ProxyFixMiddleware(ASGIMiddleware):
             scope["headers"] = new_headers
 
             # Also update scope["server"] host portion if present.
-            if scope.get("server"):
-                _, port = scope["server"]
+            if scope.get("server") is not None:
+                _, port = scope["server"]  # type: ignore[misc]
                 scope["server"] = (forwarded_host.split(":")[0], port)
 
         # --- X-Forwarded-Port -> scope["server"] port ---
@@ -185,8 +185,8 @@ class ProxyFixMiddleware(ASGIMiddleware):
         if forwarded_port is not None:
             try:
                 port_int = int(forwarded_port)
-                if scope.get("server"):
-                    host, _ = scope["server"]
+                if scope.get("server") is not None:
+                    host, _ = scope["server"]  # type: ignore[misc]
                     scope["server"] = (host, port_int)
                 else:
                     scope["server"] = ("", port_int)

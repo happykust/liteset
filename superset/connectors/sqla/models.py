@@ -20,6 +20,7 @@ Provides lightweight stand-ins used by legacy Alembic migrations.
 Does NOT import the real SA 2.0 models to avoid registry conflicts
 with old-style ``declarative_base()`` inside migration files.
 """
+
 from __future__ import annotations
 
 import sqlalchemy as sa
@@ -29,7 +30,7 @@ from sqlalchemy.ext.declarative import declarative_base
 _Base = declarative_base()
 
 
-class SqlaTable(_Base):
+class SqlaTable(_Base):  # type: ignore[misc,valid-type]
     """Minimal ORM model pointing at the ``tables`` table.
 
     Only the columns referenced by migrations are defined here.
@@ -49,9 +50,7 @@ class SqlaTable(_Base):
 
 # Constants used by dataset migrations
 ADDITIVE_METRIC_TYPES: set[str] = {"count", "sum", "doublesum"}
-ADDITIVE_METRIC_TYPES_LOWER: set[str] = {
-    t.lower() for t in ADDITIVE_METRIC_TYPES
-}
+ADDITIVE_METRIC_TYPES_LOWER: set[str] = {t.lower() for t in ADDITIVE_METRIC_TYPES}
 
 __all__ = [
     "SqlaTable",

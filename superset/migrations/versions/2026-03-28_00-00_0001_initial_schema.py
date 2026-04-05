@@ -23,6 +23,7 @@ Revision ID: c233f5365c9e
 Revises: (none)
 Create Date: 2026-03-28 00:00:00.000000
 """
+
 from __future__ import annotations
 
 import sqlalchemy as sa
@@ -263,9 +264,7 @@ def upgrade() -> None:
         "key_value",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("resource", sa.String(length=32), nullable=False),
-        sa.Column(
-            "value", sa.LargeBinary(length=16777215), nullable=False
-        ),
+        sa.Column("value", sa.LargeBinary(length=16777215), nullable=False),
         sa.Column(
             "uuid",
             sa.LargeBinary(length=16),
@@ -331,9 +330,7 @@ def upgrade() -> None:
         sa.Column(
             "is_system_default", sa.Boolean(), nullable=False, server_default="0"
         ),
-        sa.Column(
-            "is_system_dark", sa.Boolean(), nullable=False, server_default="0"
-        ),
+        sa.Column("is_system_dark", sa.Boolean(), nullable=False, server_default="0"),
         sa.Column(
             "uuid",
             sa.LargeBinary(length=16),
@@ -363,9 +360,7 @@ def upgrade() -> None:
         "dbs",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("verbose_name", sa.String(length=250), unique=True, nullable=True),
-        sa.Column(
-            "database_name", sa.String(length=250), unique=True, nullable=False
-        ),
+        sa.Column("database_name", sa.String(length=250), unique=True, nullable=False),
         sa.Column("sqlalchemy_uri", sa.String(length=1024), nullable=False),
         sa.Column("password", sa.Text(), nullable=True),
         sa.Column("cache_timeout", sa.Integer(), nullable=True),
@@ -1238,7 +1233,8 @@ def upgrade() -> None:
             "user_id",
             sa.Integer(),
             sa.ForeignKey(
-                "ab_user.id", ondelete="CASCADE",
+                "ab_user.id",
+                ondelete="CASCADE",
             ),
             nullable=False,
         ),
@@ -1252,7 +1248,8 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.UniqueConstraint(
-            "user_id", "report_schedule_id",
+            "user_id",
+            "report_schedule_id",
         ),
     )
 
@@ -1270,10 +1267,14 @@ def upgrade() -> None:
         ),
         # AuditMixinNullable
         sa.Column(
-            "created_on", sa.DateTime(), nullable=True,
+            "created_on",
+            sa.DateTime(),
+            nullable=True,
         ),
         sa.Column(
-            "changed_on", sa.DateTime(), nullable=True,
+            "changed_on",
+            sa.DateTime(),
+            nullable=True,
         ),
         sa.Column(
             "created_by_fk",

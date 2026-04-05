@@ -326,17 +326,17 @@ class DatasetDetailResult(ModelStruct):
     @classmethod
     def _resolve_owners(cls, obj: Any) -> list[UserRef]:
         owners = getattr(obj, "owners", None) or []
-        return [UserRef.from_model(u) for u in owners]
+        return [UserRef.from_model(u) for u in owners]  # type: ignore[misc]
 
     @classmethod
     def _resolve_changed_by(cls, obj: Any) -> UserRef | None:
         user = getattr(obj, "changed_by", None)
-        return UserRef.from_model(user) if user else None
+        return UserRef.from_model(user) if user else None  # type: ignore[return-value]
 
     @classmethod
     def _resolve_created_by(cls, obj: Any) -> UserRef | None:
         user = getattr(obj, "created_by", None)
-        return UserRef.from_model(user) if user else None
+        return UserRef.from_model(user) if user else None  # type: ignore[return-value]
 
     @classmethod
     def _resolve_datasource_name(cls, obj: Any) -> str:

@@ -38,7 +38,7 @@ from superset.constants import TimeGrain
 from superset.db_engine_specs.base import BaseEngineSpec
 
 if TYPE_CHECKING:
-    from superset.models.core import Database
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ class HiveEngineSpec(BaseEngineSpec):
         sqlalchemy_uri: URL,
         connect_args: dict[str, Any],
     ) -> str | None:
-        return parse.unquote(sqlalchemy_uri.database)
+        return parse.unquote(sqlalchemy_uri.database)  # type: ignore[arg-type]
 
     @classmethod
     def epoch_to_dttm(cls) -> str:
@@ -160,13 +160,9 @@ class HiveEngineSpec(BaseEngineSpec):
             total_jobs,
         )
 
-        stage_progress = (
-            sum(stages.values()) / len(stages.values()) if stages else 0
-        )
+        stage_progress = sum(stages.values()) / len(stages.values()) if stages else 0
 
-        progress = (
-            100 * (current_job - 1) / total_jobs + stage_progress / total_jobs
-        )
+        progress = 100 * (current_job - 1) / total_jobs + stage_progress / total_jobs
         return int(progress)
 
     @classmethod

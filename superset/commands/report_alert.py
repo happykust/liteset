@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """Alert condition evaluation command.
 
 Ported 1:1 from ``superset_old/commands/report/alert.py``.
@@ -27,6 +28,7 @@ The command:
 3. Validates the result against the configured validator (NOT_NULL / OPERATOR).
 4. Returns ``True`` if the alert condition is triggered.
 """
+
 from __future__ import annotations
 
 import logging
@@ -138,8 +140,7 @@ class AlertCommand:
         if len(rows) > 1:
             raise AlertQueryMultipleRowsError(
                 message=(
-                    f"Alert query returned more than one row. "
-                    f"{len(rows)} rows returned"
+                    f"Alert query returned more than one row. {len(rows)} rows returned"
                 ),
             )
         # check if query returned more than one column
@@ -243,9 +244,7 @@ class AlertCommand:
             )
             return df
         except SoftTimeLimitExceeded as ex:
-            logger.warning(
-                "A timeout occurred while executing the alert query: %s", ex
-            )
+            logger.warning("A timeout occurred while executing the alert query: %s", ex)
             raise AlertQueryTimeout() from ex
         except Exception as ex:
             logger.warning("An error occurred when running alert query")

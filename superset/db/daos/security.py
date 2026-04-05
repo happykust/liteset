@@ -81,7 +81,7 @@ class AsyncRoleDAO:
         # Eager load relationships to avoid implicit IO
         stmt = stmt.options(
             selectinload(Role.permissions),
-            selectinload(Role.user),
+            selectinload(Role.user),  # type: ignore[attr-defined]
             selectinload(Role.groups),
         )
 
@@ -106,7 +106,7 @@ class AsyncRoleDAO:
             .where(Role.id == role_id)
             .options(
                 selectinload(Role.permissions),
-                selectinload(Role.user),
+                selectinload(Role.user),  # type: ignore[attr-defined]
                 selectinload(Role.groups),
             )
         )
@@ -120,7 +120,9 @@ class AsyncRoleDAO:
         role = Role(**attributes)
         self.session.add(role)
         await self.session.flush()
-        await self.session.refresh(role, attribute_names=["permissions", "user", "groups"])
+        await self.session.refresh(
+            role, attribute_names=["permissions", "user", "groups"]
+        )
         return role
 
     async def update(self, role: Any, attributes: dict[str, Any]) -> Any:
@@ -128,7 +130,9 @@ class AsyncRoleDAO:
         for key, value in attributes.items():
             setattr(role, key, value)
         await self.session.flush()
-        await self.session.refresh(role, attribute_names=["permissions", "user", "groups"])
+        await self.session.refresh(
+            role, attribute_names=["permissions", "user", "groups"]
+        )
         return role
 
     async def delete(self, role: Any) -> None:
@@ -181,7 +185,9 @@ class AsyncRoleDAO:
 
         role.permissions = pvs
         await self.session.flush()
-        await self.session.refresh(role, attribute_names=["permissions", "user", "groups"])
+        await self.session.refresh(
+            role, attribute_names=["permissions", "user", "groups"]
+        )
         return role
 
     async def set_users(self, role_id: int, user_ids: list[int]) -> Any:
@@ -205,7 +211,9 @@ class AsyncRoleDAO:
 
         role.user = users
         await self.session.flush()
-        await self.session.refresh(role, attribute_names=["permissions", "user", "groups"])
+        await self.session.refresh(
+            role, attribute_names=["permissions", "user", "groups"]
+        )
         return role
 
     async def set_groups(self, role_id: int, group_ids: list[int]) -> Any:
@@ -229,7 +237,9 @@ class AsyncRoleDAO:
 
         role.groups = groups
         await self.session.flush()
-        await self.session.refresh(role, attribute_names=["permissions", "user", "groups"])
+        await self.session.refresh(
+            role, attribute_names=["permissions", "user", "groups"]
+        )
         return role
 
 
@@ -316,8 +326,8 @@ class AsyncUserCrudDAO:
 
             from superset.models.security import Role
 
-            stmt = select(Role).where(Role.id.in_(role_ids))
-            result = await self.session.execute(stmt)
+            role_stmt = select(Role).where(Role.id.in_(role_ids))
+            result = await self.session.execute(role_stmt)
             user.roles = list(result.scalars().all())
 
         if group_ids:
@@ -325,8 +335,8 @@ class AsyncUserCrudDAO:
 
             from superset.models.security import Group
 
-            stmt = select(Group).where(Group.id.in_(group_ids))
-            result = await self.session.execute(stmt)
+            group_stmt = select(Group).where(Group.id.in_(group_ids))
+            result = await self.session.execute(group_stmt)
             user.groups = list(result.scalars().all())
 
         self.session.add(user)
@@ -347,8 +357,8 @@ class AsyncUserCrudDAO:
 
             from superset.models.security import Role
 
-            stmt = select(Role).where(Role.id.in_(role_ids))
-            result = await self.session.execute(stmt)
+            role_stmt = select(Role).where(Role.id.in_(role_ids))
+            result = await self.session.execute(role_stmt)
             user.roles = list(result.scalars().all())
 
         if group_ids is not None:
@@ -356,8 +366,8 @@ class AsyncUserCrudDAO:
 
             from superset.models.security import Group
 
-            stmt = select(Group).where(Group.id.in_(group_ids))
-            result = await self.session.execute(stmt)
+            group_stmt = select(Group).where(Group.id.in_(group_ids))
+            result = await self.session.execute(group_stmt)
             user.groups = list(result.scalars().all())
 
         await self.session.flush()
@@ -407,8 +417,8 @@ class AsyncGroupDAO:
             stmt = stmt.order_by(order_col.asc())
 
         stmt = stmt.options(
-            selectinload(Group.roles_),
-            selectinload(Group.users),
+            selectinload(Group.roles_),  # type: ignore[attr-defined]
+            selectinload(Group.users),  # type: ignore[attr-defined]
         )
 
         if page_size > 0:
@@ -428,8 +438,8 @@ class AsyncGroupDAO:
             select(Group)
             .where(Group.id == group_id)
             .options(
-                selectinload(Group.roles_),
-                selectinload(Group.users),
+                selectinload(Group.roles_),  # type: ignore[attr-defined]
+                selectinload(Group.users),  # type: ignore[attr-defined]
             )
         )
         result = await self.session.execute(stmt)
@@ -449,18 +459,18 @@ class AsyncGroupDAO:
 
             from superset.models.security import Role
 
-            stmt = select(Role).where(Role.id.in_(role_ids))
-            result = await self.session.execute(stmt)
-            group.roles_ = list(result.scalars().all())
+            role_stmt = select(Role).where(Role.id.in_(role_ids))
+            result = await self.session.execute(role_stmt)
+            group.roles_ = list(result.scalars().all())  # type: ignore[attr-defined]
 
         if user_ids:
             from sqlalchemy import select
 
             from superset.models.security import User
 
-            stmt = select(User).where(User.id.in_(user_ids))
-            result = await self.session.execute(stmt)
-            group.users = list(result.scalars().all())
+            user_stmt = select(User).where(User.id.in_(user_ids))
+            result = await self.session.execute(user_stmt)
+            group.users = list(result.scalars().all())  # type: ignore[attr-defined]
 
         self.session.add(group)
         await self.session.flush()
@@ -480,8 +490,8 @@ class AsyncGroupDAO:
 
             from superset.models.security import Role
 
-            stmt = select(Role).where(Role.id.in_(role_ids))
-            result = await self.session.execute(stmt)
+            role_stmt = select(Role).where(Role.id.in_(role_ids))
+            result = await self.session.execute(role_stmt)
             group.roles_ = list(result.scalars().all())
 
         if user_ids is not None:
@@ -489,8 +499,8 @@ class AsyncGroupDAO:
 
             from superset.models.security import User
 
-            stmt = select(User).where(User.id.in_(user_ids))
-            result = await self.session.execute(stmt)
+            user_stmt = select(User).where(User.id.in_(user_ids))
+            result = await self.session.execute(user_stmt)
             group.users = list(result.scalars().all())
 
         await self.session.flush()

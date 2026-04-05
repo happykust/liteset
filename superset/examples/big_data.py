@@ -20,6 +20,7 @@ NOTE: This is a stub.  The original relies on ``superset.utils.mock_data``
 which has not been ported yet.  Running with ``--load-big-data`` will
 log a warning and skip.
 """
+
 import logging
 
 logger = logging.getLogger(__name__)

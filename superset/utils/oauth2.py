@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """OAuth2 state encoding/decoding utilities."""
+
 from __future__ import annotations
 
 import base64

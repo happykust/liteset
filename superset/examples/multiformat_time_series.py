@@ -90,6 +90,10 @@ def load_multiformat_time_series(
     obj.main_dttm_col = "ds"
     obj.database = database
     obj.filter_select_enabled = True
+
+    with _ctx.example_engine(database) as eng:
+        _ctx.fetch_table_metadata(obj, eng)
+
     dttm_and_expr_dict: dict[str, tuple[Optional[str], None]] = {
         "ds": (None, None),
         "ds2": (None, None),

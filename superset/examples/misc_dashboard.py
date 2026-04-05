@@ -18,10 +18,9 @@ import logging
 import textwrap
 
 from superset.examples import _ctx
+from superset.examples.helpers import update_slice_ids
 from superset.models.dashboard import Dashboard
 from superset.utils import json
-
-from .helpers import update_slice_ids
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +138,7 @@ def load_misc_dashboard() -> None:
     )
     pos = json.loads(js)
     slices = update_slice_ids(pos)
-    dash.dashboard_title = "Misc Charts"
-    dash.position_json = json.dumps(pos, indent=4)
-    dash.slug = DASH_SLUG
+    dash.dashboard_title = "Misc Charts"  # type: ignore[assignment]
+    dash.position_json = json.dumps(pos, indent=4)  # type: ignore[assignment]
+    dash.slug = DASH_SLUG  # type: ignore[assignment]
     dash.slices = slices

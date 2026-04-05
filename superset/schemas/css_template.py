@@ -15,12 +15,15 @@
 # specific language governing permissions and limitations
 # under the License.
 """msgspec Structs for the CSS Template API."""
+
 from __future__ import annotations
 
 from typing import Annotated
 
 import msgspec
 from msgspec import Meta
+
+from superset.schemas.base import UserRef  # noqa: F401 — re-exported for compat
 
 # ---------------------------------------------------------------------------
 # Request bodies
@@ -52,5 +55,8 @@ class CssTemplateResponseSchema(msgspec.Struct):
     id: int
     template_name: str
     css: str
-    created_on: str
-    changed_on: str
+    created_on: str | None = None
+    changed_on: str | None = None
+    changed_on_delta_humanized: str | None = None
+    changed_by: UserRef | None = None
+    created_by: UserRef | None = None

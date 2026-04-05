@@ -98,7 +98,7 @@ class LazyString:
     def __contains__(self, item: Any) -> bool:
         return item in str(self)
 
-    def __iter__(self) -> Iterator[str]:  # type: ignore[override]
+    def __iter__(self) -> Iterator[str]:
         return iter(str(self))
 
     def __getitem__(self, key: int | slice) -> str:

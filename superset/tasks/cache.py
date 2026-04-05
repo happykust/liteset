@@ -291,9 +291,7 @@ class TopNDashboardsStrategy(Strategy):
         try:
             records = (
                 session.query(Log.dashboard_id, func.count(Log.dashboard_id))
-                .filter(
-                    and_(Log.dashboard_id.isnot(None), Log.dttm >= since_dt)
-                )
+                .filter(and_(Log.dashboard_id.isnot(None), Log.dttm >= since_dt))
                 .group_by(Log.dashboard_id)
                 .order_by(func.count(Log.dashboard_id).desc())
                 .limit(self.top_n)
@@ -301,9 +299,7 @@ class TopNDashboardsStrategy(Strategy):
             )
             dash_ids = [record.dashboard_id for record in records]
             dashboards = (
-                session.query(Dashboard)
-                .filter(Dashboard.id.in_(dash_ids))
-                .all()
+                session.query(Dashboard).filter(Dashboard.id.in_(dash_ids)).all()
             )
 
             return [
@@ -361,9 +357,7 @@ class DashboardTagsStrategy(Strategy):
                 )
                 .all()
             )
-            dash_ids = [
-                tagged_object.object_id for tagged_object in tagged_objects
-            ]
+            dash_ids = [tagged_object.object_id for tagged_object in tagged_objects]
             tagged_dashboards = session.query(Dashboard).filter(
                 Dashboard.id.in_(dash_ids)
             )
@@ -382,12 +376,8 @@ class DashboardTagsStrategy(Strategy):
                 )
                 .all()
             )
-            chart_ids = [
-                tagged_object.object_id for tagged_object in tagged_objects
-            ]
-            tagged_charts = session.query(Slice).filter(
-                Slice.id.in_(chart_ids)
-            )
+            chart_ids = [tagged_object.object_id for tagged_object in tagged_objects]
+            tagged_charts = session.query(Slice).filter(Slice.id.in_(chart_ids))
             for chart in tagged_charts:
                 tasks.append(get_task(chart))
 

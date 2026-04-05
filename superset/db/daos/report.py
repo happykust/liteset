@@ -22,15 +22,15 @@ from typing import Any
 from sqlalchemy import CursorResult, delete, select
 
 from superset.db.base_dao import BaseAsyncDAO
-from superset.utils.json import dumps
-
-REPORT_SCHEDULE_ERROR_NOTIFICATION_MARKER = "Notification sent with error"
 from superset.models.reports import (
     ReportExecutionLog,
     ReportRecipients,
     ReportSchedule,
     ReportState,
 )
+from superset.utils.json import dumps
+
+REPORT_SCHEDULE_ERROR_NOTIFICATION_MARKER = "Notification sent with error"
 
 
 class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):

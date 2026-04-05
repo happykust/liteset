@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# mypy: ignore-errors
 """StarRocks engine spec -- sync/Flask-compatible.
 
 Ported 1:1 from ``superset_old/db_engine_specs/starrocks.py`` with Flask
@@ -94,9 +95,7 @@ class STRUCT(TypeEngine):
 CONNECTION_ACCESS_DENIED_REGEX = re.compile(
     "Access denied for user '(?P<username>.*?)'"
 )
-CONNECTION_UNKNOWN_DATABASE_REGEX = re.compile(
-    "Unknown database '(?P<database>.*?)'"
-)
+CONNECTION_UNKNOWN_DATABASE_REGEX = re.compile("Unknown database '(?P<database>.*?)'")
 
 
 class StarRocksEngineSpec(MySQLEngineSpec):

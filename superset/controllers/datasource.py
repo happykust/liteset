@@ -25,7 +25,7 @@ from litestar import Controller, get
 from litestar.di import Provide
 
 from superset.events import event_logger
-from superset.exceptions import SupersetValidationException, ObjectNotFoundError
+from superset.exceptions import ObjectNotFoundError, SupersetValidationException
 from superset.guards.rbac import require_authentication
 from superset.providers import provide_datasource_dao
 from superset.typing import DatasourceDAOProtocol
@@ -141,9 +141,7 @@ class DatasourceController(Controller):
             )
 
         try:
-            datasource = await ds_dao.get_datasource(
-                datasource_type, datasource_id
-            )
+            datasource = await ds_dao.get_datasource(datasource_type, datasource_id)
         except ValueError as exc:
             raise SupersetValidationException(str(exc)) from exc
 
@@ -179,9 +177,7 @@ class DatasourceController(Controller):
         # Fallback: check if column exists and return empty
         columns = getattr(datasource, "columns", None)
         if columns is not None:
-            col_names = [
-                getattr(c, "column_name", None) for c in columns
-            ]
+            col_names = [getattr(c, "column_name", None) for c in columns]
             if column_name not in col_names:
                 raise SupersetValidationException(
                     f"Column name '{column_name}' does not exist"

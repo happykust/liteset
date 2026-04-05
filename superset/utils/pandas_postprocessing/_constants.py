@@ -19,6 +19,7 @@
 Ported from ``superset.utils.core`` and ``superset.constants`` so that the
 superset pandas_postprocessing package has zero superset imports.
 """
+
 from __future__ import annotations
 
 from enum import Enum, StrEnum

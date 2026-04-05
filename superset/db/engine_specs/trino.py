@@ -18,12 +18,126 @@
 
 from __future__ import annotations
 
+import logging
 import re
-from typing import Any
+from collections import defaultdict, deque
+from datetime import datetime
+from enum import IntEnum
+from typing import Any, cast
 
+from sqlalchemy import types
 from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.sql import text
 
-from superset.db.engine_specs.base import AsyncResultSet, BaseAsyncEngineSpec
+from superset.db.engine_specs.base import (
+    AsyncResultSet,
+    BaseAsyncEngineSpec,
+    ColumnTypeMapping,
+)
+from superset.typing import GenericDataType
+
+logger = logging.getLogger(__name__)
+
+
+class _GenericDataType(IntEnum):
+    """Subset of GenericDataType used by column type mappings."""
+
+    NUMERIC = 0
+    STRING = 1
+    TEMPORAL = 2
+    BOOLEAN = 3
+
+
+# ---------------------------------------------------------------------------
+# Presto/Trino complex-type helpers (ported from legacy PrestoBaseEngineSpec)
+# ---------------------------------------------------------------------------
+
+
+def _split_complex(s: str, delimiter: str = ",") -> list[str]:
+    """Split a string respecting nested parentheses."""
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for ch in s:
+        if ch == "(":
+            depth += 1
+            current.append(ch)
+        elif ch == ")":
+            depth -= 1
+            current.append(ch)
+        elif ch == delimiter and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        parts.append("".join(current).strip())
+    return parts
+
+
+def get_children(
+    column: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Get children of a complex Presto/Trino type (ROW or ARRAY).
+
+    For ARRAYs we return a single element with the base type.
+    For ROWs we return one element per inner field.
+    """
+    pattern = re.compile(r"(?P<type>\w+)\((?P<children>.*)\)")
+    col_type = column.get("type") or column.get("column_name", "")
+    if not col_type:
+        raise ValueError("Column type is empty")
+    match = pattern.match(str(col_type))
+    if not match:
+        raise ValueError(f"Unable to parse column type {col_type}")
+
+    group = match.groupdict()
+    type_name = group["type"].upper()
+    children_type = group["children"]
+
+    if type_name == "ARRAY":
+        return [
+            {
+                "column_name": column["column_name"],
+                "name": column["column_name"],
+                "type": children_type,
+                "is_dttm": False,
+            }
+        ]
+
+    if type_name == "ROW":
+        nameless_columns = 0
+        columns: list[dict[str, Any]] = []
+        for child in _split_complex(children_type, ","):
+            parts = _split_complex(child.strip(), " ")
+            if len(parts) == 2:
+                name, inner_type = parts
+                name = name.strip('"')
+            else:
+                name = f"_col{nameless_columns}"
+                inner_type = parts[0]
+                nameless_columns += 1
+            columns.append(
+                {
+                    "column_name": f"{column['column_name']}.{name.lower()}",
+                    "name": f"{column['column_name']}.{name.lower()}",
+                    "type": inner_type,
+                    "is_dttm": False,
+                }
+            )
+        return columns
+
+    raise ValueError(f"Unknown complex type {type_name}")
+
+
+def _destringify(value: str) -> Any:
+    """Simple destringify for array/row values encoded as strings."""
+    import json as _json
+
+    try:
+        return _json.loads(value)
+    except (_json.JSONDecodeError, TypeError):
+        return value
 
 
 class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
@@ -33,16 +147,167 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
     engine_name = "Trino"
     default_driver = "aiotrino"
 
+    # --- Feature flags ---------------------------------------------------
+    supports_dynamic_schema: bool = True
+    supports_catalog: bool = True
+
+    # --- Column type mappings (ported from PrestoBaseEngineSpec) ----------
+    column_type_mappings: tuple[ColumnTypeMapping, ...] = (
+        (
+            re.compile(r"^boolean.*", re.IGNORECASE),
+            types.BOOLEAN(),
+            GenericDataType.BOOLEAN,
+        ),
+        (
+            re.compile(r"^tinyint.*", re.IGNORECASE),
+            types.SmallInteger(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^smallint.*", re.IGNORECASE),
+            types.SmallInteger(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^integer.*", re.IGNORECASE),
+            types.INTEGER(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^bigint.*", re.IGNORECASE),
+            types.BigInteger(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^real.*", re.IGNORECASE),
+            types.FLOAT(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^double.*", re.IGNORECASE),
+            types.FLOAT(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^decimal.*", re.IGNORECASE),
+            types.DECIMAL(),
+            GenericDataType.NUMERIC,
+        ),
+        (
+            re.compile(r"^varchar(\((\d+)\))*$", re.IGNORECASE),
+            types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r"^char(\((\d+)\))*$", re.IGNORECASE),
+            types.String(),
+            GenericDataType.STRING,
+        ),
+        (
+            re.compile(r"^varbinary.*", re.IGNORECASE),
+            types.VARBINARY(),
+            GenericDataType.STRING,
+        ),
+        (re.compile(r"^json.*", re.IGNORECASE), types.JSON(), GenericDataType.STRING),
+        (
+            re.compile(r"^date.*", re.IGNORECASE),
+            types.Date(),
+            GenericDataType.TEMPORAL,
+        ),
+        (
+            re.compile(r"^timestamp.*", re.IGNORECASE),
+            types.TIMESTAMP(),
+            GenericDataType.TEMPORAL,
+        ),
+        (
+            re.compile(r"^interval.*", re.IGNORECASE),
+            types.String(),
+            GenericDataType.TEMPORAL,
+        ),
+        (
+            re.compile(r"^time.*", re.IGNORECASE),
+            types.Time(),
+            GenericDataType.TEMPORAL,
+        ),
+        (
+            re.compile(r"^array.*", re.IGNORECASE),
+            types.String(),
+            GenericDataType.STRING,
+        ),
+        (re.compile(r"^map.*", re.IGNORECASE), types.String(), GenericDataType.STRING),
+        (re.compile(r"^row.*", re.IGNORECASE), types.String(), GenericDataType.STRING),
+    )
+
+    # --- Time grain expressions (fixed: CAST({col} AS TIMESTAMP)) --------
     _time_grain_expressions: dict[str | None, str] = {
         None: "{col}",
-        "PT1S": "DATE_TRUNC('second', {col})",
-        "PT1M": "DATE_TRUNC('minute', {col})",
-        "PT1H": "DATE_TRUNC('hour', {col})",
-        "P1D": "DATE_TRUNC('day', {col})",
-        "P1W": "DATE_TRUNC('week', {col})",
-        "P1M": "DATE_TRUNC('month', {col})",
-        "P3M": "DATE_TRUNC('quarter', {col})",
-        "P1Y": "DATE_TRUNC('year', {col})",
+        # 1-second
+        "PT1S": "DATE_TRUNC('second', CAST({col} AS TIMESTAMP))",
+        # 5-second
+        "PT5S": (
+            "DATE_TRUNC('second', CAST({col} AS TIMESTAMP))"
+            " - interval '1' second * (second(CAST({col} AS TIMESTAMP)) % 5)"
+        ),
+        # 30-second
+        "PT30S": (
+            "DATE_TRUNC('second', CAST({col} AS TIMESTAMP))"
+            " - interval '1' second * (second(CAST({col} AS TIMESTAMP)) % 30)"
+        ),
+        # 1-minute
+        "PT1M": "DATE_TRUNC('minute', CAST({col} AS TIMESTAMP))",
+        # 5-minute
+        "PT5M": (
+            "DATE_TRUNC('minute', CAST({col} AS TIMESTAMP))"
+            " - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 5)"
+        ),
+        # 10-minute
+        "PT10M": (
+            "DATE_TRUNC('minute', CAST({col} AS TIMESTAMP))"
+            " - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 10)"
+        ),
+        # 15-minute
+        "PT15M": (
+            "DATE_TRUNC('minute', CAST({col} AS TIMESTAMP))"
+            " - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 15)"
+        ),
+        # 30-minute (half hour)
+        "PT30M": (
+            "DATE_TRUNC('minute', CAST({col} AS TIMESTAMP))"
+            " - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 30)"
+        ),
+        # 1-hour
+        "PT1H": "DATE_TRUNC('hour', CAST({col} AS TIMESTAMP))",
+        # 6-hour
+        "PT6H": (
+            "DATE_TRUNC('hour', CAST({col} AS TIMESTAMP))"
+            " - interval '1' hour * (hour(CAST({col} AS TIMESTAMP)) % 6)"
+        ),
+        # 1-day
+        "P1D": "DATE_TRUNC('day', CAST({col} AS TIMESTAMP))",
+        # 1-week (ISO)
+        "P1W": "DATE_TRUNC('week', CAST({col} AS TIMESTAMP))",
+        # 1-month
+        "P1M": "DATE_TRUNC('month', CAST({col} AS TIMESTAMP))",
+        # 1-quarter
+        "P3M": "DATE_TRUNC('quarter', CAST({col} AS TIMESTAMP))",
+        # 1-year
+        "P1Y": "DATE_TRUNC('year', CAST({col} AS TIMESTAMP))",
+        # Week starting Sunday
+        "1969-12-28T00:00:00Z/P1W": (
+            "DATE_TRUNC('week', CAST({col} AS TIMESTAMP) + interval '1' day)"
+            " - interval '1' day"
+        ),
+        # Week starting Monday
+        "1969-12-29T00:00:00Z/P1W": "DATE_TRUNC('week', CAST({col} AS TIMESTAMP))",
+        # Week ending Saturday
+        "P1W/1970-01-03T00:00:00Z": (
+            "DATE_TRUNC('week', CAST({col} AS TIMESTAMP) + interval '1' day)"
+            " + interval '5' day"
+        ),
+        # Week ending Sunday
+        "P1W/1970-01-04T00:00:00Z": (
+            "DATE_TRUNC('week', CAST({col} AS TIMESTAMP)) + interval '6' day"
+        ),
     }
 
     _custom_errors: list[tuple[re.Pattern[str], str]] = [
@@ -70,6 +335,282 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
             "Access denied",
         ),
     ]
+
+    # --- epoch_to_dttm (ported from PrestoBaseEngineSpec) -----------------
+
+    @classmethod
+    def epoch_to_dttm(cls) -> str:
+        return "from_unixtime({col})"
+
+    # --- convert_dttm (ported from PrestoBaseEngineSpec) ------------------
+
+    @classmethod
+    def convert_dttm(
+        cls,
+        target_type: str,
+        dttm: datetime,
+        db_extra: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Convert a Python ``datetime`` to a Trino SQL literal."""
+        tt = target_type.upper().strip()
+        if tt == "DATE":
+            return f"DATE '{dttm.date().isoformat()}'"
+        if tt in {"TIMESTAMP", "TIMESTAMP WITHOUT TIME ZONE"}:
+            return f"""TIMESTAMP '{dttm.isoformat(timespec="microseconds", sep=" ")}'"""
+        return None
+
+    # --- get_allow_cost_estimate -----------------------------------------
+
+    @classmethod
+    def get_allow_cost_estimate(cls, extra: dict[str, Any] | None = None) -> bool:
+        return True
+
+    # --- estimate_statement_cost / query_cost_formatter -------------------
+
+    @classmethod
+    async def estimate_statement_cost(
+        cls,
+        conn: AsyncConnection,
+        statement: str,
+    ) -> dict[str, Any]:
+        """Run ``EXPLAIN (TYPE IO, FORMAT JSON)`` and return the parsed result."""
+        import json as _json
+
+        sql = f"EXPLAIN (TYPE IO, FORMAT JSON) {statement}"
+        result = await conn.execute(text(sql))
+        row = result.fetchone()
+        return _json.loads(row[0]) if row else {}
+
+    @classmethod
+    def query_cost_formatter(
+        cls,
+        raw_cost: list[dict[str, Any]],
+    ) -> list[dict[str, str]]:
+        """Format the cost estimate into human-readable form."""
+
+        def humanize(value: Any, suffix: str) -> str:
+            try:
+                value = int(value)
+            except (ValueError, TypeError):
+                return str(value)
+            prefixes = ["K", "M", "G", "T", "P", "E", "Z", "Y"]
+            prefix = ""
+            to_next_prefix = 1000
+            while value > to_next_prefix and prefixes:
+                prefix = prefixes.pop(0)
+                value //= to_next_prefix
+            return f"{value} {prefix}{suffix}"
+
+        cost: list[dict[str, str]] = []
+        columns = [
+            ("outputRowCount", "Output count", " rows"),
+            ("outputSizeInBytes", "Output size", "B"),
+            ("cpuCost", "CPU cost", ""),
+            ("maxMemory", "Max memory", "B"),
+            ("networkCost", "Network cost", ""),
+        ]
+        for row in raw_cost:
+            estimate: dict[str, float] = row.get("estimate", {})
+            statement_cost: dict[str, str] = {}
+            for key, label, suffix in columns:
+                if key in estimate:
+                    statement_cost[label] = humanize(estimate[key], suffix).strip()
+            cost.append(statement_cost)
+        return cost
+
+    # --- cancel_query (async, ported from original Trino) -----------------
+
+    @classmethod
+    async def cancel_query(
+        cls,
+        conn: AsyncConnection,
+        cancel_query_id: str,
+    ) -> bool:
+        """Cancel a running Trino query via ``system.runtime.kill_query``."""
+        try:
+            await conn.execute(
+                text(
+                    "CALL system.runtime.kill_query("
+                    "query_id => :query_id, "
+                    "message => 'Query cancelled by Superset')"
+                ),
+                {"query_id": cancel_query_id},
+            )
+            return True
+        except Exception:
+            logger.exception("Failed to cancel Trino query %s", cancel_query_id)
+            return False
+
+    # --- get_function_names (async, ported from PrestoBaseEngineSpec) ------
+
+    @classmethod
+    async def get_function_names(
+        cls,
+        conn: AsyncConnection,
+    ) -> list[str]:
+        """Return list of available Trino functions via ``SHOW FUNCTIONS``."""
+        result = await conn.execute(text("SHOW FUNCTIONS"))
+        return [row[0] for row in result.fetchall()]
+
+    # --- get_extra_table_metadata (async, ported from original Trino) -----
+
+    @classmethod
+    async def get_extra_table_metadata(
+        cls,
+        conn: AsyncConnection,
+        table_name: str,
+        schema: str | None = None,
+    ) -> dict[str, Any]:
+        """Return partition metadata for a Trino table."""
+        metadata: dict[str, Any] = {}
+
+        # Try to get partition info from the $partitions system table
+        system_table = f'"{table_name}$partitions"'
+        full_table = f"{schema}.{system_table}" if schema else system_table
+        try:
+            result = await conn.execute(text(f"SELECT * FROM {full_table} LIMIT 1"))  # noqa: S608
+            columns = list(result.keys())
+            rows = result.fetchall()
+            if columns:
+                latest_parts = dict(zip(columns, rows[0], strict=False)) if rows else {}
+                metadata["partitions"] = {
+                    "cols": sorted(columns),
+                    "latest": latest_parts,
+                    "partitionQuery": f"SELECT * FROM {full_table}",  # noqa: S608
+                }
+        except Exception:
+            logger.debug(
+                "No partition info for %s.%s", schema, table_name, exc_info=True
+            )
+
+        # Try to get view definition
+        try:
+            result = await conn.execute(
+                text(
+                    "SELECT view_definition FROM information_schema.views "  # noqa: S608
+                    "WHERE table_name = :table_name"
+                    + (" AND table_schema = :schema" if schema else "")
+                ),
+                {"table_name": table_name, **({"schema": schema} if schema else {})},
+            )
+            row = result.fetchone()
+            if row:
+                metadata["view"] = row[0]
+        except Exception:  # noqa: S110
+            pass
+
+        return metadata
+
+    # --- get_columns override (async, ported from original Trino) ---------
+
+    @classmethod
+    async def get_columns(
+        cls,
+        conn: AsyncConnection,
+        table_name: str,
+        schema: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return column metadata, falling back to ``SHOW COLUMNS`` on error.
+
+        The Trino dialect can raise errors when querying ``information_schema.columns``
+        for empty tables. We fall back to ``SHOW COLUMNS FROM`` in that case.
+        """
+        try:
+            return await super().get_columns(conn, table_name, schema)
+        except Exception:
+            logger.debug(
+                "information_schema.columns failed for %s.%s,"
+                " falling back to SHOW COLUMNS",
+                schema,
+                table_name,
+                exc_info=True,
+            )
+            qualified = f"{schema}.{table_name}" if schema else table_name
+            result = await conn.execute(text(f"SHOW COLUMNS FROM {qualified}"))
+            return [
+                {
+                    "column_name": row[0],
+                    "data_type": row[1] if len(row) > 1 else "VARCHAR",
+                    "is_nullable": True,
+                }
+                for row in result.fetchall()
+            ]
+
+    # --- expand_data (ported from PrestoBaseEngineSpec) --------------------
+
+    @classmethod
+    def expand_data(  # noqa: C901
+        cls,
+        columns: list[dict[str, Any]],
+        data: list[dict[Any, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[Any, Any]], list[dict[str, Any]]]:
+        """Unnest ARRAY types and expand ROW types into dotted columns.
+
+        Returns ``(all_columns, expanded_data, expanded_columns)``.
+        """
+        to_process: deque[tuple[dict[str, Any], int]] = deque(
+            (column, 0) for column in columns
+        )
+        all_columns: list[dict[str, Any]] = []
+        expanded_columns: list[dict[str, Any]] = []
+        current_array_level: int | None = None
+        unnested_rows: dict[int, int] = defaultdict(int)
+
+        while to_process:
+            column, level = to_process.popleft()
+            if column["column_name"] not in [c["column_name"] for c in all_columns]:
+                all_columns.append(column)
+
+            if level != current_array_level:
+                unnested_rows = defaultdict(int)
+                current_array_level = level
+
+            name = column["column_name"]
+            col_type = cast(str, column.get("type") or "")
+
+            if col_type.upper().startswith("ARRAY("):
+                to_process.append((get_children(column)[0], level + 1))
+
+                i = 0
+                while i < len(data):
+                    row = data[i]
+                    values = row.get(name)
+                    if isinstance(values, str):
+                        row[name] = values = _destringify(values)
+                    if isinstance(values, (list, tuple)) and values:
+                        extra_rows = len(values) - 1
+                        current_unnested = unnested_rows[i]
+                        missing = extra_rows - current_unnested
+                        for _ in range(missing):
+                            data.insert(i + current_unnested + 1, {})
+                            unnested_rows[i] += 1
+                        for j, value in enumerate(values):
+                            data[i + j][name] = value
+                        i += unnested_rows[i]
+                    i += 1
+
+            if col_type.upper().startswith("ROW("):
+                expanded = get_children(column)
+                to_process.extendleft((child, level) for child in expanded[::-1])
+                expanded_columns.extend(expanded)
+
+                for row in data:
+                    values = row.get(name) or []
+                    if isinstance(values, str):
+                        values = _destringify(values)
+                        row[name] = values
+                    if isinstance(values, (list, tuple)):
+                        for value, col in zip(values, expanded, strict=False):
+                            row[col["column_name"]] = value
+
+        data = [
+            {k["column_name"]: row.get(k["column_name"], "") for k in all_columns}
+            for row in data
+        ]
+
+        return all_columns, data, expanded_columns
+
+    # --- Core execute / fetch_data ----------------------------------------
 
     @classmethod
     async def execute(

@@ -99,17 +99,17 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
         # Filter metadata.yaml before validation to match run() behavior
         validatable = {k: v for k, v in self._configs.items() if k != "metadata.yaml"}
 
-        # Check for existing models when overwrite is disabled
-        if not self._overwrite:
-            for file_name, content in validatable.items():
-                uuid_val = content.get("uuid") if isinstance(content, dict) else None
-                if uuid_val:
-                    exists = await self._check_existing(uuid_val)
-                    if exists:
-                        raise CommandInvalidError(
-                            f"Object with UUID {uuid_val} already exists "
-                            f"(in {file_name}). Use overwrite=True to replace."
-                        )
+        # Note: UUID-existence checking is NOT done here.  The orchestrated
+        # import commands (ImportChartsCommand, ImportDashboardsCommand) handle
+        # dedup themselves because dependencies (databases, datasets) should be
+        # reused when they already exist, while only the primary resource type
+        # respects the user's overwrite flag.  Subclasses that need a blanket
+        # pre-check can implement it in their _validate() override.
+
+        # Apply password substitutions before subclass validation
+        for _file_name, content in validatable.items():
+            if isinstance(content, dict):
+                self._apply_password(content)
 
         await self._validate(validatable)
 
@@ -117,9 +117,7 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
         # Ensure validate() was called first — it parses the ZIP and runs
         # security/overwrite checks.  Silently re-parsing would bypass those.
         if self._configs is None:
-            raise CommandInvalidError(
-                "validate() must be called before run()"
-            )
+            raise CommandInvalidError("validate() must be called before run()")
         configs = self._configs
         for file_name, content in configs.items():
             if file_name == "metadata.yaml":

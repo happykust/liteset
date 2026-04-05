@@ -25,8 +25,12 @@ with the **sync** database URI derived from
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
+
+if TYPE_CHECKING:
+    from alembic.config import Config
 
 
 def _get_alembic_config(sql: bool = False) -> "Config":  # noqa: F821
@@ -47,20 +51,14 @@ def _get_alembic_config(sql: bool = False) -> "Config":  # noqa: F821
     settings = SupersetSettings()  # type: ignore[call-arg]
     db_url = settings.sqlalchemy_database_uri
 
-    alembic_ini = (
-        Path(__file__).resolve().parent.parent
-        / "migrations"
-        / "alembic.ini"
-    )
+    alembic_ini = Path(__file__).resolve().parent.parent / "migrations" / "alembic.ini"
     cfg = Config(str(alembic_ini))
 
     # Convert async URI to sync for Alembic (psycopg2)
-    sync_url = db_url.replace(
-        "postgresql+asyncpg", "postgresql+psycopg2"
-    ).replace(
-        "sqlite+aiosqlite", "sqlite"
-    ).replace(
-        "mysql+asyncmy", "mysql+pymysql"
+    sync_url = (
+        db_url.replace("postgresql+asyncpg", "postgresql+psycopg2")
+        .replace("sqlite+aiosqlite", "sqlite")
+        .replace("mysql+asyncmy", "mysql+pymysql")
     )
     cfg.set_main_option("sqlalchemy.url", sync_url)
     cfg.set_main_option(
@@ -81,6 +79,7 @@ def db_group() -> None:
 # upgrade
 # ------------------------------------------------------------------
 
+
 @db_group.command()
 @click.option("--revision", default="head", help="Revision target")
 @click.option("--sql", is_flag=True, help="Generate SQL script instead of applying")
@@ -96,6 +95,7 @@ def upgrade(revision: str, sql: bool, tag: str | None) -> None:
 # ------------------------------------------------------------------
 # downgrade
 # ------------------------------------------------------------------
+
 
 @db_group.command()
 @click.argument("revision")
@@ -116,6 +116,7 @@ def downgrade(revision: str, sql: bool, tag: str | None) -> None:
 # current
 # ------------------------------------------------------------------
 
+
 @db_group.command()
 @click.option("--verbose", "-v", is_flag=True, help="Show full revision info")
 def current(verbose: bool) -> None:
@@ -129,6 +130,7 @@ def current(verbose: bool) -> None:
 # ------------------------------------------------------------------
 # heads
 # ------------------------------------------------------------------
+
 
 @db_group.command()
 @click.option("--verbose", "-v", is_flag=True, help="Show full revision info")
@@ -148,6 +150,7 @@ def heads(verbose: bool, resolve_dependencies: bool) -> None:
 # ------------------------------------------------------------------
 # history
 # ------------------------------------------------------------------
+
 
 @db_group.command()
 @click.option("--rev-range", "-r", default=None, help="Revision range (e.g. rev1:rev2)")
@@ -179,6 +182,7 @@ def history(
 # stamp
 # ------------------------------------------------------------------
 
+
 @db_group.command()
 @click.argument("revision")
 @click.option("--sql", is_flag=True, help="Generate SQL script instead of applying")
@@ -200,6 +204,7 @@ def stamp(revision: str, sql: bool, tag: str | None, purge: bool) -> None:
 # ------------------------------------------------------------------
 # migrate  (autogenerate revision)
 # ------------------------------------------------------------------
+
 
 @db_group.command()
 @click.option("-m", "--message", default=None, help="Revision message")
@@ -234,6 +239,7 @@ def migrate(
 # revision  (manual revision)
 # ------------------------------------------------------------------
 
+
 @db_group.command()
 @click.option("-m", "--message", default=None, help="Revision message")
 @click.option("--head", default="head", help="Head revision to base new revision on")
@@ -267,6 +273,7 @@ def revision(
 # branches
 # ------------------------------------------------------------------
 
+
 @db_group.command()
 @click.option("--verbose", "-v", is_flag=True, help="Show full revision info")
 def branches(verbose: bool) -> None:
@@ -281,6 +288,7 @@ def branches(verbose: bool) -> None:
 # show
 # ------------------------------------------------------------------
 
+
 @db_group.command()
 @click.argument("revision")
 def show(revision: str) -> None:
@@ -294,6 +302,7 @@ def show(revision: str) -> None:
 # ------------------------------------------------------------------
 # merge
 # ------------------------------------------------------------------
+
 
 @db_group.command()
 @click.argument("revisions", nargs=-1, required=True)
@@ -327,6 +336,7 @@ def merge(
 # ------------------------------------------------------------------
 # check
 # ------------------------------------------------------------------
+
 
 @db_group.command()
 def check() -> None:

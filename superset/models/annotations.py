@@ -18,6 +18,7 @@
 
 Pure SQLAlchemy -- no Flask dependencies.
 """
+
 from __future__ import annotations
 
 from sqlalchemy import (
@@ -56,18 +57,12 @@ class Annotation(Base, AuditMixinNullable):
     """A single annotation within a layer."""
 
     __tablename__ = "annotation"
-    __table_args__ = (
-        Index(
-            "ti_dag_state", "layer_id", "start_dttm", "end_dttm"
-        ),
-    )
+    __table_args__ = (Index("ti_dag_state", "layer_id", "start_dttm", "end_dttm"),)
 
     id = Column(Integer, primary_key=True)
     start_dttm = Column(DateTime)
     end_dttm = Column(DateTime)
-    layer_id = Column(
-        Integer, ForeignKey("annotation_layer.id"), nullable=True
-    )
+    layer_id = Column(Integer, ForeignKey("annotation_layer.id"), nullable=True)
     short_descr = Column(String(500))
     long_descr = Column(Text)
     json_metadata = Column(MediumText())
