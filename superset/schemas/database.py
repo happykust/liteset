@@ -18,9 +18,12 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import msgspec
+
+from superset.databases.utils import make_url_safe
 
 from superset.schemas.base import ApiListResponse, ApiResponse, ModelStruct
 
@@ -65,6 +68,17 @@ class DatabasePostSchema(msgspec.Struct):
     allow_file_upload: bool = False
     force_ctas_schema: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.sqlalchemy_uri:
+            make_url_safe(self.sqlalchemy_uri)
+        if self.masked_encrypted_extra:
+            try:
+                json.loads(self.masked_encrypted_extra)
+            except json.JSONDecodeError as ex:
+                raise ValueError(
+                    f"encrypted_extra is not valid JSON: {ex}"
+                ) from ex
+
 
 class DatabasePutSchema(msgspec.Struct):
     database_name: str | None | msgspec.UnsetType = msgspec.UNSET
@@ -89,6 +103,17 @@ class DatabasePutSchema(msgspec.Struct):
     allow_file_upload: bool | None | msgspec.UnsetType = msgspec.UNSET
     force_ctas_schema: str | None | msgspec.UnsetType = msgspec.UNSET
 
+    def __post_init__(self) -> None:
+        if isinstance(self.sqlalchemy_uri, str) and self.sqlalchemy_uri:
+            make_url_safe(self.sqlalchemy_uri)
+        if isinstance(self.masked_encrypted_extra, str) and self.masked_encrypted_extra:
+            try:
+                json.loads(self.masked_encrypted_extra)
+            except json.JSONDecodeError as ex:
+                raise ValueError(
+                    f"encrypted_extra is not valid JSON: {ex}"
+                ) from ex
+
 
 class DatabaseTestConnectionSchema(msgspec.Struct):
     database_name: str | None = None
@@ -103,6 +128,17 @@ class DatabaseTestConnectionSchema(msgspec.Struct):
     ssh_tunnel: DatabaseSSHTunnel | None = None
     parameters: dict[str, Any] = {}
     catalog: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.sqlalchemy_uri:
+            make_url_safe(self.sqlalchemy_uri)
+        if self.masked_encrypted_extra:
+            try:
+                json.loads(self.masked_encrypted_extra)
+            except json.JSONDecodeError as ex:
+                raise ValueError(
+                    f"encrypted_extra is not valid JSON: {ex}"
+                ) from ex
 
 
 class ValidateSQLSchema(msgspec.Struct):

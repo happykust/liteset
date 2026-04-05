@@ -23,10 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, selectinload
 
 from superset.models.connectors import SqlaTable
+from superset.models.sql_lab import Query, SavedQuery
 
 # Mapping of datasource type strings to model classes
 _DATASOURCE_TYPE_MAP: dict[str, type[DeclarativeBase]] = {
     "table": SqlaTable,
+    "query": Query,
+    "saved_query": SavedQuery,
 }
 
 
@@ -48,7 +51,8 @@ class AsyncDatasourceDAO:
     ) -> Any | None:
         """Get a datasource by type and ID.
 
-        Supports 'table' type (SqlaTable). Returns None if not found.
+        Supports 'table' (SqlaTable), 'query' (Query), and
+        'saved_query' (SavedQuery) types. Returns None if not found.
         """
         model_cls = _DATASOURCE_TYPE_MAP.get(datasource_type)
         if model_cls is None:
@@ -60,6 +64,7 @@ class AsyncDatasourceDAO:
                 .options(
                     selectinload(SqlaTable.database),
                     selectinload(SqlaTable.columns),
+                    selectinload(SqlaTable.metrics),
                 )
             )
             result = await self.session.execute(stmt)

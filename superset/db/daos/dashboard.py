@@ -16,7 +16,6 @@
 # under the License.
 from __future__ import annotations
 
-import json as _json
 import logging
 from datetime import datetime
 from typing import Any
@@ -402,11 +401,11 @@ class AsyncEmbeddedDashboardDAO(BaseAsyncDAO[EmbeddedDashboard]):
         """Create or update embedded dashboard config."""
         existing = await self.find_by_dashboard_id(dashboard_id)
         if existing:
-            existing.allow_domain_list = _json.dumps(allowed_domains)  # type: ignore[assignment]
+            existing.allow_domain_list = ",".join(allowed_domains)  # type: ignore[assignment]
             return existing
         embedded = EmbeddedDashboard(
             dashboard_id=dashboard_id,
-            allow_domain_list=_json.dumps(allowed_domains),
+            allow_domain_list=",".join(allowed_domains),
         )
         self.session.add(embedded)
         return embedded
