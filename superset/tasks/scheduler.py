@@ -90,7 +90,8 @@ def scheduler(self: Task) -> None:
 def execute(self: Task, report_schedule_id: int) -> None:
     """Execute a single alert/report schedule.
 
-    Loads the report via :class:`~superset.commands.report_execute.ExecuteReportScheduleCommand`,
+    Loads the report via
+    :class:`~superset.commands.report_execute.ExecuteReportScheduleCommand`,
     which runs the full state-machine pipeline:
 
     1. Load the ``ReportSchedule`` model.

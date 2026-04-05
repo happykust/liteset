@@ -120,8 +120,12 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "SUPERSET_WEBSERVER_TIMEOUT": "superset_webserver_timeout",
     "SUPERSET_WEBSERVER_DOMAINS": "superset_webserver_domains",
     "SUPERSET_DASHBOARD_POSITION_DATA_LIMIT": "superset_dashboard_position_data_limit",
-    "SUPERSET_DASHBOARD_PERIODICAL_REFRESH_LIMIT": "superset_dashboard_periodical_refresh_limit",
-    "SUPERSET_DASHBOARD_PERIODICAL_REFRESH_WARNING_MESSAGE": "superset_dashboard_periodical_refresh_warning_message",
+    "SUPERSET_DASHBOARD_PERIODICAL_REFRESH_LIMIT": (
+        "superset_dashboard_periodical_refresh_limit"
+    ),
+    "SUPERSET_DASHBOARD_PERIODICAL_REFRESH_WARNING_MESSAGE": (
+        "superset_dashboard_periodical_refresh_warning_message"
+    ),
     "DASHBOARD_AUTO_REFRESH_MODE": "dashboard_auto_refresh_mode",
     "DASHBOARD_AUTO_REFRESH_INTERVALS": "dashboard_auto_refresh_intervals",
     "SQLLAB_SAVE_WARNING_MESSAGE": "sqllab_save_warning_message",
@@ -141,7 +145,9 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "NATIVE_FILTER_DEFAULT_ROW_LIMIT": "native_filter_default_row_limit",
     "SUPERSET_CLIENT_RETRY_ATTEMPTS": "superset_client_retry_attempts",
     "SUPERSET_CLIENT_RETRY_DELAY": "superset_client_retry_delay",
-    "SUPERSET_CLIENT_RETRY_BACKOFF_MULTIPLIER": "superset_client_retry_backoff_multiplier",
+    "SUPERSET_CLIENT_RETRY_BACKOFF_MULTIPLIER": (
+        "superset_client_retry_backoff_multiplier"
+    ),
     "SUPERSET_CLIENT_RETRY_MAX_DELAY": "superset_client_retry_max_delay",
     "SUPERSET_CLIENT_RETRY_JITTER_MAX": "superset_client_retry_jitter_max",
     "SUPERSET_CLIENT_RETRY_STATUS_CODES": "superset_client_retry_status_codes",
@@ -197,7 +203,9 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "SQLALCHEMY_TRACK_MODIFICATIONS": "sqlalchemy_track_modifications",
     "SQLALCHEMY_ENGINE_OPTIONS": "sqlalchemy_engine_options",
     "SQLALCHEMY_CUSTOM_PASSWORD_STORE": "sqlalchemy_custom_password_store",
-    "SQLALCHEMY_ENCRYPTED_FIELD_TYPE_ADAPTER": "sqlalchemy_encrypted_field_type_adapter",
+    "SQLALCHEMY_ENCRYPTED_FIELD_TYPE_ADAPTER": (
+        "sqlalchemy_encrypted_field_type_adapter"
+    ),
     # ── SQLGlot ──
     "SQLGLOT_DIALECTS_EXTENSIONS": "sqlglot_dialects_extensions",
     # ── Query ──
@@ -242,8 +250,12 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "SCREENSHOT_SELENIUM_HEADSTART": "screenshot_selenium_headstart",
     "SCREENSHOT_SELENIUM_ANIMATION_WAIT": "screenshot_selenium_animation_wait",
     "SCREENSHOT_REPLACE_UNEXPECTED_ERRORS": "screenshot_replace_unexpected_errors",
-    "SCREENSHOT_WAIT_FOR_ERROR_MODAL_VISIBLE": "screenshot_wait_for_error_modal_visible",
-    "SCREENSHOT_WAIT_FOR_ERROR_MODAL_INVISIBLE": "screenshot_wait_for_error_modal_invisible",
+    "SCREENSHOT_WAIT_FOR_ERROR_MODAL_VISIBLE": (
+        "screenshot_wait_for_error_modal_visible"
+    ),
+    "SCREENSHOT_WAIT_FOR_ERROR_MODAL_INVISIBLE": (
+        "screenshot_wait_for_error_modal_invisible"
+    ),
     "SCREENSHOT_PLAYWRIGHT_WAIT_EVENT": "screenshot_playwright_wait_event",
     "SCREENSHOT_PLAYWRIGHT_DEFAULT_TIMEOUT": "screenshot_playwright_default_timeout",
     "SCREENSHOT_TILED_ENABLED": "screenshot_tiled_enabled",
@@ -357,11 +369,21 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "ALERT_REPORTS_CRON_WINDOW_SIZE": "alert_reports_cron_window_size",
     "ALERT_REPORTS_WORKING_TIME_OUT_KILL": "alert_reports_working_time_out_kill",
     "ALERT_REPORTS_EXECUTORS": "alert_reports_executors",
-    "ALERT_REPORTS_WORKING_TIME_OUT_LAG": "alert_reports_working_time_out_lag",
-    "ALERT_REPORTS_WORKING_SOFT_TIME_OUT_LAG": "alert_reports_working_soft_time_out_lag",
-    "ALERT_REPORTS_QUERY_EXECUTION_MAX_TRIES": "alert_reports_query_execution_max_tries",
-    "ALERT_REPORTS_MIN_CUSTOM_SCREENSHOT_WIDTH": "alert_reports_min_custom_screenshot_width",
-    "ALERT_REPORTS_MAX_CUSTOM_SCREENSHOT_WIDTH": "alert_reports_max_custom_screenshot_width",
+    "ALERT_REPORTS_WORKING_TIME_OUT_LAG": (
+        "alert_reports_working_time_out_lag"
+    ),
+    "ALERT_REPORTS_WORKING_SOFT_TIME_OUT_LAG": (
+        "alert_reports_working_soft_time_out_lag"
+    ),
+    "ALERT_REPORTS_QUERY_EXECUTION_MAX_TRIES": (
+        "alert_reports_query_execution_max_tries"
+    ),
+    "ALERT_REPORTS_MIN_CUSTOM_SCREENSHOT_WIDTH": (
+        "alert_reports_min_custom_screenshot_width"
+    ),
+    "ALERT_REPORTS_MAX_CUSTOM_SCREENSHOT_WIDTH": (
+        "alert_reports_max_custom_screenshot_width"
+    ),
     "ALERT_MINIMUM_INTERVAL": "alert_minimum_interval",
     "REPORT_MINIMUM_INTERVAL": "report_minimum_interval",
     # ── Slack (extended) ──
@@ -400,13 +422,27 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "SQLA_TABLE_MUTATOR": "sqla_table_mutator",
     # ── Global async queries (extended) ──
     "GLOBAL_ASYNC_QUERY_MANAGER_CLASS": "global_async_query_manager_class",
-    "GLOBAL_ASYNC_QUERIES_REDIS_STREAM_PREFIX": "global_async_queries_redis_stream_prefix",
-    "GLOBAL_ASYNC_QUERIES_REDIS_STREAM_LIMIT": "global_async_queries_redis_stream_limit",
-    "GLOBAL_ASYNC_QUERIES_REDIS_STREAM_LIMIT_FIREHOSE": "global_async_queries_redis_stream_limit_firehose",
-    "GLOBAL_ASYNC_QUERIES_REGISTER_REQUEST_HANDLERS": "global_async_queries_register_request_handlers",
-    "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_NAME": "global_async_queries_jwt_cookie_name",
-    "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_SECURE": "global_async_queries_jwt_cookie_secure",
-    "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_SAMESITE": "global_async_queries_jwt_cookie_samesite",
+    "GLOBAL_ASYNC_QUERIES_REDIS_STREAM_PREFIX": (
+        "global_async_queries_redis_stream_prefix"
+    ),
+    "GLOBAL_ASYNC_QUERIES_REDIS_STREAM_LIMIT": (
+        "global_async_queries_redis_stream_limit"
+    ),
+    "GLOBAL_ASYNC_QUERIES_REDIS_STREAM_LIMIT_FIREHOSE": (
+        "global_async_queries_redis_stream_limit_firehose"
+    ),
+    "GLOBAL_ASYNC_QUERIES_REGISTER_REQUEST_HANDLERS": (
+        "global_async_queries_register_request_handlers"
+    ),
+    "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_NAME": (
+        "global_async_queries_jwt_cookie_name"
+    ),
+    "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_SECURE": (
+        "global_async_queries_jwt_cookie_secure"
+    ),
+    "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_SAMESITE": (
+        "global_async_queries_jwt_cookie_samesite"
+    ),
     "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_DOMAIN": "global_async_queries_jwt_cookie_domain",
     "GLOBAL_ASYNC_QUERIES_JWT_SECRET": "global_async_queries_jwt_secret",
     "GLOBAL_ASYNC_QUERIES_CACHE_BACKEND": "global_async_queries_cache_backend",
@@ -575,7 +611,8 @@ class SupersetSettings(BaseSettings):
     viz_type_denylist: list[str] = []
 
     # Session cookie max age (seconds), applied to FlaskSessionDecoder
-    session_max_age: int = 2678400  # 31 days in seconds (matches original timedelta(days=31))
+    # 31 days in seconds (matches original timedelta(days=31))
+    session_max_age: int = 2678400
 
     # Redis (used for auth cache and general caching)
     redis_url: str = ""
@@ -778,7 +815,7 @@ class SupersetSettings(BaseSettings):
     smtp_host: str = "localhost"
     smtp_port: int = 25
     smtp_user: str = "superset"
-    smtp_password: str = "superset"
+    smtp_password: str = "superset"  # noqa: S105
     smtp_mail_from: str = "superset@superset.com"
     smtp_starttls: bool = True
     smtp_ssl: bool = False
@@ -806,8 +843,10 @@ class SupersetSettings(BaseSettings):
     # ══════════════════════════════════════════════════════════════════════
 
     # ── Stats / Event logging ──
-    stats_logger: Any = None  # StatsLogger instance (DummyStatsLogger default in original)
-    event_logger: Any = None  # EventLogger instance (DBEventLogger default in original)
+    # StatsLogger instance (DummyStatsLogger default in original)
+    stats_logger: Any = None
+    # EventLogger instance (DBEventLogger default in original)
+    event_logger: Any = None
     superset_log_view: bool = True
     superset_security_view_menu: bool = True
 
@@ -821,8 +860,10 @@ class SupersetSettings(BaseSettings):
     # ── SQLAlchemy engine ──
     sqlalchemy_track_modifications: bool = False
     sqlalchemy_engine_options: dict[str, Any] = {}
-    sqlalchemy_custom_password_store: Any | None = None  # Callable[[URL], str] | None
-    sqlalchemy_encrypted_field_type_adapter: Any | None = None  # EncryptedFieldTypeAdapter
+    # Callable[[URL], str] | None
+    sqlalchemy_custom_password_store: Any | None = None
+    # EncryptedFieldTypeAdapter
+    sqlalchemy_encrypted_field_type_adapter: Any | None = None
 
     # ── SQLGlot ──
     sqlglot_dialects_extensions: Any = {}  # dict or Callable returning dict
@@ -988,7 +1029,8 @@ class SupersetSettings(BaseSettings):
 
     # ── Jinja / Templates ──
     jinja_context_addons: dict[str, Any] = {}  # Callable values
-    custom_template_processors: dict[str, Any] = {}  # type[BaseTemplateProcessor] values
+    # type[BaseTemplateProcessor] values
+    custom_template_processors: dict[str, Any] = {}
 
     # ── Roles / Permissions ──
     robot_permission_roles: list[str] = [
@@ -1104,7 +1146,12 @@ class SupersetSettings(BaseSettings):
     webdriver_auth_func: Any | None = None  # Callable or None
     webdriver_configuration: dict[str, Any] = {
         "options": {"capabilities": {}, "preferences": {}, "binary_location": ""},
-        "service": {"log_output": "/dev/null", "service_args": [], "port": 0, "env": {}},
+        "service": {
+            "log_output": "/dev/null",
+            "service_args": [],
+            "port": 0,
+            "env": {},
+        },
     }
     webdriver_option_args: list[str] = ["--headless"]
     webdriver_baseurl: str = "http://0.0.0.0:8080/"  # noqa: S104
@@ -1115,7 +1162,8 @@ class SupersetSettings(BaseSettings):
     preferred_databases: list[str] = [
         "PostgreSQL", "Presto", "MySQL", "SQLite",
     ]
-    test_database_connection_timeout: int = 30  # seconds (timedelta(seconds=30) in original)
+    # seconds (timedelta(seconds=30) in original)
+    test_database_connection_timeout: int = 30
 
     # ── OAuth2 database ──
     database_oauth2_clients: dict[str, dict[str, Any]] = {}

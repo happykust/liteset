@@ -24,13 +24,13 @@ from typing import Any, Callable, NamedTuple, Optional
 from sqlalchemy.engine.reflection import Inspector
 
 with contextlib.suppress(ImportError, RuntimeError):  # pyocient may not be installed
-    import pyocient
+    pass
 
 from superset.constants import TimeGrain
 from superset.db_engine_specs.base import BaseEngineSpec
+from superset.errors import SupersetErrorType
 from superset.models.core import Database
 from superset.models.sql_lab import Query
-from superset.errors import SupersetErrorType
 
 # Regular expressions to catch custom errors
 CONNECTION_INVALID_USERNAME_REGEX = re.compile(
@@ -105,10 +105,13 @@ def _find_columns_to_sanitize(cursor: Any) -> list[PlacedSanitizeFunc]:
     Cleans the column value for consumption by Superset.
 
     :param cursor: the result set cursor
-    :returns: the list of tuples consisting of the column index and sanitization function
+    :returns: the list of tuples consisting of the column index
+        and sanitization function
     """
     return [
-        PlacedSanitizeFunc(i, _sanitized_ocient_type_codes[cursor.description[i][1]])
+        PlacedSanitizeFunc(
+            i, _sanitized_ocient_type_codes[cursor.description[i][1]],
+        )
         for i in range(len(cursor.description))
         if cursor.description[i][1] in _sanitized_ocient_type_codes
     ]

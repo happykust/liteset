@@ -27,7 +27,10 @@ from superset.schemas.base import ModelStruct, UserRef
 
 
 class ReportRecipientConfigJSON(msgspec.Struct):
-    """Nested config for a report recipient — matches ReportRecipientConfigJSONSchema."""
+    """Nested config for a report recipient.
+
+    Matches ReportRecipientConfigJSONSchema.
+    """
 
     target: str | None = None
     ccTarget: str | None = None  # noqa: N815

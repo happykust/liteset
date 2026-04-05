@@ -455,7 +455,8 @@ class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
                     roles.append(role)
             dashboard.roles = roles
 
-        # Add implicit type: and owner: tags (async port of DashboardUpdater.after_insert)
+        # Add implicit type: and owner: tags
+        # (async port of DashboardUpdater.after_insert)
         owner_ids = (
             [o.id for o in dashboard.owners] if hasattr(dashboard, "owners") else []
         )
@@ -654,7 +655,8 @@ class DeleteDashboardCommand(AsyncBaseCommand[None]):
     async def run(self) -> None:
         assert self._dashboard is not None
         dashboard_id = self._dashboard.id
-        # Remove implicit tags before deleting (async port of DashboardUpdater.after_delete)
+        # Remove implicit tags before deleting
+        # (async port of DashboardUpdater.after_delete)
         await delete_tagged_objects(self._dao.session, "dashboard", dashboard_id)
         await self._dao.delete([self._dashboard])
         await self._dao.session.flush()

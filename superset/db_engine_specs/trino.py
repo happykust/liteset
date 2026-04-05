@@ -456,13 +456,17 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
             connect_args["http_scheme"] = "https"
 
             if auth_method == "basic":
-                from trino.auth import BasicAuthentication as trino_auth  # noqa: N811
+                from trino.auth import BasicAuthentication as trino_auth  # noqa: N813
             elif auth_method == "kerberos":
-                from trino.auth import KerberosAuthentication as trino_auth  # noqa: N811
+                from trino.auth import (
+                    KerberosAuthentication as trino_auth,  # noqa: N813
+                )
             elif auth_method == "certificate":
-                from trino.auth import CertificateAuthentication as trino_auth  # noqa: N811
+                from trino.auth import (
+                    CertificateAuthentication as trino_auth,  # noqa: N813
+                )
             elif auth_method == "jwt":
-                from trino.auth import JWTAuthentication as trino_auth  # noqa: N811
+                from trino.auth import JWTAuthentication as trino_auth  # noqa: N813
             else:
                 raise ValueError(
                     f"Unsupported authentication method: '{auth_method}'. "

@@ -387,7 +387,8 @@ class DeleteDatasetCommand(AsyncBaseCommand[None]):
     async def run(self) -> None:
         assert self._dataset is not None
         dataset_id = self._dataset.id
-        # Remove implicit tags before deleting (async port of DatasetUpdater.after_delete)
+        # Remove implicit tags before deleting
+        # (async port of DatasetUpdater.after_delete)
         await delete_tagged_objects(self._dao.session, "dataset", dataset_id)
         await self._dao.session.delete(self._dataset)
         await self._dao.session.flush()
@@ -1279,7 +1280,7 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                 del_stmt = delete(SqlMetric).where(SqlMetric.id.in_(ids_to_delete))
                 await self._dao.session.execute(del_stmt)  # type: ignore[union-attr]
 
-    async def _load_data(
+    async def _load_data(  # noqa: C901
         self,
         data_uri: str,
         dataset: SqlaTable,

@@ -136,8 +136,8 @@ def _execute_sql_in_thread(
                     conn.execute(
                         sa.text(f"SET search_path TO {schema}")
                     )
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception:  # noqa: BLE001, S110
+                    pass  # Non-Postgres engines may not support SET search_path
 
             result = conn.execute(sa.text(sql))
 
@@ -304,7 +304,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         # ------------------------------------------------------------------
         # 6. Build column metadata from cursor.description
         # ------------------------------------------------------------------
-        _DTTM_TYPE_NAMES = frozenset(
+        _dttm_type_names = frozenset(
             {"datetime", "date", "timestamp", "timestamptz", "time"}
         )
 
@@ -323,7 +323,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
                     "name": col_name,
                     "column_name": col_name,
                     "type": col_type_str.upper(),
-                    "is_dttm": col_type_str.lower() in _DTTM_TYPE_NAMES,
+                    "is_dttm": col_type_str.lower() in _dttm_type_names,
                 }
             )
             col_names.append(col_name)

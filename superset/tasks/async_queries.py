@@ -327,7 +327,7 @@ def load_chart_data_into_cache(
 
 
 @celery_app.task(name="superset.tasks.async_queries.load_explore_json_into_cache")
-def load_explore_json_into_cache(
+def load_explore_json_into_cache(  # noqa: C901
     job_metadata: dict[str, Any],
     form_data: dict[str, Any],
     response_type: str | None = None,

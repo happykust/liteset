@@ -1464,7 +1464,6 @@ class ExploreMixin:
     ) -> SqlaQuery:
         """Querying any sqla table from this common interface."""
         from superset.typing import GenericDataType
-        from superset.utils.column import cast_to_boolean, cast_to_num
         from superset.utils.date import get_since_until_from_time_range
         from superset.utils.feature_flags import feature_flag_manager
 
@@ -1870,7 +1869,9 @@ class ExploreMixin:
                 # Get ADVANCED_DATA_TYPES from config when needed
                 ADVANCED_DATA_TYPES: dict[str, Any] = {}  # noqa: N806
                 try:
-                    from superset.config import ADVANCED_DATA_TYPES as _adt
+                    from superset.config import (
+                        ADVANCED_DATA_TYPES as _adt,  # noqa: N811
+                    )
 
                     ADVANCED_DATA_TYPES = _adt  # noqa: N806
                 except ImportError:

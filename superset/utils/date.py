@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import lru_cache
 from time import struct_time
+from typing import Any
 
 import pandas as pd
 import parsedatetime

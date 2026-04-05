@@ -230,7 +230,8 @@ class BaseReportState:
         dashboard = self._report_schedule.dashboard
         if dashboard:
             dashboard_id_or_slug = dashboard.id
-            return f"{base_url}/superset/dashboard/{dashboard_id_or_slug}/?force={force}"
+            url = f"/superset/dashboard/{dashboard_id_or_slug}/"
+            return f"{base_url}{url}?force={force}"
         return base_url
 
     # ------------------------------------------------------------------

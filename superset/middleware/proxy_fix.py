@@ -112,7 +112,7 @@ class ProxyFixMiddleware(ASGIMiddleware):
         self.x_port = x_port
         self.x_prefix = x_prefix
 
-    async def handle(
+    async def handle(  # noqa: C901
         self,
         scope: Scope,
         receive: Receive,

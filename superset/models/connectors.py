@@ -22,7 +22,6 @@ Includes async_query() for chart data execution via the async engine specs.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -508,7 +507,6 @@ class SqlaTable(
         - Virtual datasets (with custom SQL) -> get_virtual_table_metadata
         - Physical tables -> get_physical_table_metadata
         """
-        from superset.utils.database import get_engine_spec_for_database
 
         if self.sql:
             return self._get_virtual_table_metadata()
@@ -525,7 +523,9 @@ class SqlaTable(
 
         # Strip trailing semicolon and wrap in a subquery
         inner_sql = self.sql.strip().rstrip(";")
-        metadata_sql = f"SELECT * FROM ({inner_sql}) AS virtual_table LIMIT 0"
+        metadata_sql = (
+            f"SELECT * FROM ({inner_sql}) AS virtual_table LIMIT 0"  # noqa: S608
+        )
 
         try:
             from sqlalchemy import text as sa_text
@@ -557,7 +557,6 @@ class SqlaTable(
         Uses the database engine spec's get_columns method to fetch
         metadata from the actual database table.
         """
-        from superset.utils.database import get_engine_spec_for_database
 
         table = Table(
             str(self.table_name),

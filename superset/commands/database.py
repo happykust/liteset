@@ -24,6 +24,7 @@ import logging
 import re
 from typing import Any, TYPE_CHECKING
 
+import pandas as pd
 import yaml  # type: ignore[import-untyped]
 
 from superset.commands.base import AsyncBaseCommand
@@ -467,7 +468,7 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
         if database_id is not None and self._dao is not None:
             self._model = await self._dao.find_by_id(database_id)
 
-    async def run(self) -> dict[str, Any]:
+    async def run(self) -> dict[str, Any]:  # noqa: C901
         from superset.db_engine_specs import get_engine_spec
 
         engine = self._data["engine"]
@@ -948,9 +949,7 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
             raise CommandInvalidError("File upload is not enabled for this database")
 
     async def run(self) -> dict[str, Any]:
-        import io
 
-        import pandas as pd
 
         from superset.sql.parse import Table
 
@@ -1044,9 +1043,7 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
             raise ObjectNotFoundError("Database", self._database_id)
 
     async def run(self) -> dict[str, Any]:
-        from sqlalchemy import select
 
-        from superset.models.connectors import SqlaTable
 
         if self._security_manager is None:
             return {"message": "Security manager not provided"}

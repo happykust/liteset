@@ -205,7 +205,10 @@ class AlertCommand:
 
         # Apply SQL LIMIT to prevent heavy loads from user mistakes.
         # Simple approach: wrap in a subquery with LIMIT.
-        limited_sql = f"SELECT * FROM ({sql.rstrip().rstrip(';')}) AS __alert_sq LIMIT {ALERT_SQL_LIMIT}"
+        limited_sql = (
+            f"SELECT * FROM ({sql.rstrip().rstrip(';')})"  # noqa: S608
+            f" AS __alert_sq LIMIT {ALERT_SQL_LIMIT}"
+        )
 
         # If the config has a SQL query mutator and MUTATE_ALERT_QUERY is True,
         # apply it. In our settings-based config this is a callable or None.

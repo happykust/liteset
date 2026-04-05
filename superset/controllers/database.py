@@ -114,7 +114,9 @@ def _get_col_type(col: dict[str, Any]) -> str:
     return dtype
 
 
-def _inspect_table_metadata(sync_conn: Any, table_name: str, schema: str | None) -> dict[str, Any]:
+def _inspect_table_metadata(  # noqa: C901
+    sync_conn: Any, table_name: str, schema: str | None,
+) -> dict[str, Any]:
     """Run all Inspector calls synchronously and return the raw metadata dict.
 
     This function is designed to be called via ``async_conn.run_sync()``.
@@ -180,8 +182,8 @@ def _inspect_table_metadata(sync_conn: Any, table_name: str, schema: str | None)
         comment_result = inspector.get_table_comment(table_name, schema=schema)
         if isinstance(comment_result, dict):
             table_comment = comment_result.get("text")
-    except (NotImplementedError, Exception):  # noqa: BLE001
-        pass
+    except (NotImplementedError, Exception):  # noqa: BLE001, S110
+        pass  # Some engines don't support get_table_comment
 
     # --- columns payload ---------------------------------------------------
     columns_payload: list[dict[str, Any]] = []
@@ -254,8 +256,8 @@ def _inspect_table_extra_metadata(
         comment = inspector.get_table_comment(table_name, schema=schema)
         if isinstance(comment, dict) and comment.get("text"):
             result["metadata"]["comment"] = comment["text"]
-    except (NotImplementedError, Exception):  # noqa: BLE001
-        pass
+    except (NotImplementedError, Exception):  # noqa: BLE001, S110
+        pass  # Some engines don't support get_table_comment
 
     return result
 
@@ -749,7 +751,7 @@ class DatabaseController(Controller):
         rison = rison_params or {}
         effective_force = rison.get("force", force)
         effective_schema = rison.get("schema_name", schema_name) or None
-        effective_catalog = rison.get("catalog_name", catalog)
+        _effective_catalog = rison.get("catalog_name", catalog)
         _ = effective_force  # async path always fetches live
         database = await dao.find_by_id(pk)
         if not database:
@@ -1400,7 +1402,7 @@ class DatabaseController(Controller):
         guards=[require_permission("can_write", "Database")],
         media_type="application/json",
     )
-    async def upload_metadata(
+    async def upload_metadata(  # noqa: C901
         self,
         data: UploadFile = Body(media_type=RequestEncodingType.MULTI_PART),  # noqa: B008
         type: str = Parameter(query="type", default="csv"),  # noqa: A002, B008
@@ -1462,8 +1464,9 @@ class DatabaseController(Controller):
             return FileMetadataResponse(items=items)
 
         def _parse_columnar() -> FileMetadataResponse:
-            import pyarrow.parquet as pq
             from zipfile import BadZipFile, is_zipfile, ZipFile
+
+            import pyarrow.parquet as pq
 
             buf = io.BytesIO(file_bytes)
             column_names: set[str] = set()

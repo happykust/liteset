@@ -25,6 +25,7 @@ Custom close codes:
 - 4403: Forbidden (origin not allowed)
 - 4429: Too many connections (per-user limit exceeded)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -85,10 +86,15 @@ class AsyncQueryWebSocket(Controller):
         6. On disconnect, Redis subscription and socket are cleaned up
     """
 
-    path = "/ws"
+    path = "/"
+    # Skip Litestar's session-based auth middleware for WebSocket.
+    # The handler performs its own JWT auth via authenticate_websocket()
+    # BEFORE accepting the connection — unauthenticated clients receive
+    # a close frame (4401) without any data being sent.
+    opt = {"exclude_from_auth": True}
 
-    @websocket("/events")
-    async def on_event(self, socket: WebSocket, state: State) -> None:
+    @websocket("/ws")
+    async def on_event(self, socket: WebSocket[Any, Any, Any], state: State) -> None:
         """Handle WebSocket connection for async query events."""
         settings = state.settings
 
@@ -118,7 +124,7 @@ class AsyncQueryWebSocket(Controller):
         # concurrent handshakes for the same user cannot both pass the limit
         # check before either is registered (TOCTOU race).
         max_ws: int = getattr(settings, "max_ws_per_user", MAX_WS_PER_USER)
-        active_ws: dict[WebSocket, int] = state.active_websockets
+        active_ws: dict[WebSocket[Any, Any, Any], int] = state.active_websockets
 
         async with _get_ws_lock():
             user_ws_count = sum(
@@ -168,21 +174,21 @@ class AsyncQueryWebSocket(Controller):
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(self._relay_events(socket, state, channel))
                 tg.create_task(self._heartbeat(socket))
-        except* (WebSocketDisconnect, ConnectionError):
+        except (WebSocketDisconnect, ConnectionError):
             pass  # Client disconnected — clean exit
-        except* Exception:
+        except Exception:
             logger.exception("WebSocket error for user %d", auth_result.user_id)
         finally:
             active_ws.pop(socket, None)
             try:
                 await socket.close()
-            except Exception:
+            except Exception:  # noqa: S110
                 pass  # Socket may already be closed
             logger.info("WebSocket closed: user=%d", auth_result.user_id)
 
     @staticmethod
-    async def _relay_events(
-        socket: WebSocket,
+    async def _relay_events(  # noqa: C901
+        socket: WebSocket[Any, Any, Any],
         state: State,
         channel: str,
     ) -> None:
@@ -234,7 +240,7 @@ class AsyncQueryWebSocket(Controller):
                     try:
                         await pubsub.unsubscribe(channel)
                         await pubsub.close()
-                    except Exception:  # noqa: BLE001
+                    except Exception:  # noqa: BLE001, S110
                         pass  # Best-effort cleanup
 
         async def _consumer() -> None:
@@ -247,7 +253,7 @@ class AsyncQueryWebSocket(Controller):
             tg.create_task(_consumer())
 
     @staticmethod
-    async def _heartbeat(socket: WebSocket) -> None:
+    async def _heartbeat(socket: WebSocket[Any, Any, Any]) -> None:
         """Send periodic ping frames to detect dead connections."""
         import time
 

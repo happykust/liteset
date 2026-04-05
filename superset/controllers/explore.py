@@ -213,8 +213,8 @@ class ExploreController(Controller):
                             dataset, "filter_select_enabled", True
                         ),
                     }
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception:  # noqa: BLE001, S110
+                pass  # Dataset metadata is optional, continue without it
 
         return {
             "result": {

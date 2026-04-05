@@ -356,14 +356,14 @@ class ThemeController(Controller):
 
         # Return as dict for JSON response; binary ZIP download would
         # be handled by a dedicated streaming endpoint if needed.
-        result = {name: content for name, content in files}
+        result = dict(files)
         return {"result": result}
 
     @post(
         "/import/",
         guards=[require_permission("can_write", "Theme")],
     )
-    async def import_themes(
+    async def import_themes(  # noqa: C901
         self,
         dao: Any,
         current_user: UserProtocol,
@@ -376,9 +376,10 @@ class ThemeController(Controller):
         YAML theme definitions.  Each YAML file under ``themes/`` in the
         archive is parsed and imported via ``ImportThemesCommand``.
         """
-        import yaml
         from io import BytesIO
         from zipfile import ZipFile
+
+        import yaml
 
         file_bytes = await data.read()
         if not file_bytes:
