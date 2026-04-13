@@ -359,12 +359,24 @@ class AsyncQueryContextProcessor:
                 df = result.get("df", pd.DataFrame())
                 query_str = result.get("query", "")
 
-                # Process time comparison offsets before post-processing
+                # Process time comparison offsets before post-processing so
+                # that shifted metric columns (e.g. ``Births__28 days ago``)
+                # exist when post-processing operations like ``pivot`` look
+                # them up. Mirrors the original order in
+                # ``superset_old/common/query_context_processor.py:292-302``.
                 if query_object.time_offsets:
                     time_offset_result = await self.processing_time_offsets(
                         df, query_object
                     )
                     df = time_offset_result["df"]
+
+                # Post-processing runs after time_offsets so it can operate
+                # on the joined, shifted DataFrame. Skipped for ``results`` /
+                # ``samples`` result types where the caller opted out.
+                if not skip_post_processing and not df.empty:
+                    df = await asyncio.to_thread(
+                        self._exec_post_processing, df, query_object
+                    )
 
                 # Fetch annotation data only on cache miss
                 annotation_data = await self.get_annotation_data(query_object)
@@ -506,14 +518,14 @@ class AsyncQueryContextProcessor:
             query_str = ""
 
         if not df.empty:
-            if skip_post_processing:
-                # Normalize only — skip post-processing (for "results" / "samples")
-                df = await asyncio.to_thread(self._normalize_df, df, query_object)
-            else:
-                # Both normalize and post-processing are CPU-bound
-                df = await asyncio.to_thread(
-                    self._normalize_and_postprocess, df, query_object
-                )
+            # Always only *normalize* here. Post-processing is applied by
+            # ``get_df_payload`` AFTER ``processing_time_offsets`` has had a
+            # chance to join the time-shifted columns onto the DataFrame.
+            # Mirrors the original
+            # ``superset_old/common/query_context_processor.py:get_query_result``
+            # which does ``normalize_df → processing_time_offsets → exec_post_processing``
+            # in that order.
+            df = await asyncio.to_thread(self._normalize_df, df, query_object)
 
         return {"df": df, "query": query_str}
 
@@ -905,16 +917,33 @@ class AsyncQueryContextProcessor:
         if not query_object.time_offsets:
             return CachedTimeOffset(df=df, queries=queries, cache_keys=cache_keys)
 
-        # Resolve outer time bounds from the query object
+        # Resolve outer time bounds from the query object.
+        #
+        # Mirrors the original
+        # ``superset_old/common/utils/time_range_utils.py::get_since_until_from_query_object``:
+        # ``query_object.time_range`` takes precedence, otherwise fall back to
+        # scanning ``query_object.filters`` for a ``TEMPORAL_RANGE`` entry.
+        # The Explore UI emits time filters as adhoc TEMPORAL_RANGE entries
+        # rather than top-level ``time_range``.
         outer_from_dttm = query_object.from_dttm
         outer_to_dttm = query_object.to_dttm
 
-        # If from/to not set directly, try resolving from time_range
         if not outer_from_dttm or not outer_to_dttm:
             from superset.utils.date import get_since_until
 
+            resolved_time_range: str | None = query_object.time_range
+            if not resolved_time_range:
+                for flt in query_object.filters or []:
+                    if (
+                        isinstance(flt, dict)
+                        and flt.get("op") == "TEMPORAL_RANGE"
+                        and isinstance(flt.get("val"), str)
+                    ):
+                        resolved_time_range = flt["val"]
+                        break
+
             since, until = get_since_until(
-                time_range=query_object.time_range,
+                time_range=resolved_time_range,
                 time_shift=query_object.time_shift,
             )
             outer_from_dttm = outer_from_dttm or since
@@ -1093,4 +1122,30 @@ class AsyncQueryContextProcessor:
             df.to_excel(buf, index=False, engine="openpyxl")
             buf.seek(0)
             return buf.getvalue()
-        return df.to_dict(orient="records")
+
+        # Serialize datetime columns as epoch milliseconds to match the
+        # original Superset chart data API, which uses ``json_int_dttm_ser``
+        # (see ``superset_old/charts/data/api.py``). Chart components on
+        # the frontend expect numeric timestamps so they can format them
+        # with ``smart_date`` / ``time_grain_sqla`` (e.g. "2008 Q1").
+        if df.empty:
+            return []
+
+        df_out = df
+        dttm_cols = [
+            col
+            for col in df.columns
+            if pd.api.types.is_datetime64_any_dtype(df[col].dtype)
+        ]
+        if dttm_cols:
+            df_out = df.copy()
+            for col in dttm_cols:
+                series = df_out[col]
+                # nanoseconds since epoch → milliseconds (float)
+                ms = series.astype("int64", copy=False).astype("float64") / 1_000_000
+                # Preserve NaT as None
+                mask = series.isna()
+                if mask.any():
+                    ms = ms.where(~mask, other=None)
+                df_out[col] = ms
+        return df_out.to_dict(orient="records")

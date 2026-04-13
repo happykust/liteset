@@ -75,7 +75,7 @@ FEATURE_FLAGS = {
     "DRILL_BY": True,
 }
 
-WEBDRIVER_BASEURL = "http://0.0.0.0:8081/"
+WEBDRIVER_BASEURL = "http://0.0.0.0:8088/"
 
 
 def GET_FEATURE_FLAGS_FUNC(ff):  # noqa: N802

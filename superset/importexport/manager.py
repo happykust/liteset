@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any
 
-import yaml  # type: ignore[import-untyped]
+import yaml
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)

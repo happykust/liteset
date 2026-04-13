@@ -17,11 +17,16 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
+from uuid import UUID
 
 from sqlalchemy import delete, or_, select
 
 from superset.db.base_dao import BaseAsyncDAO
 from superset.models.key_value import KeyValueEntry
+
+# Matches original superset.key_value.types.Key
+Key = int | UUID
 
 
 class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
@@ -48,16 +53,76 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         self,
         resource: str,
         value: bytes,
+        key: Key | None = None,
         expires_on: datetime | None = None,
     ) -> KeyValueEntry:
-        """Create a new key-value entry."""
-        return await self.create(
-            {
-                "resource": resource,
-                "value": value,
-                "expires_on": expires_on,
-            }
+        """Create a new key-value entry.
+
+        Matches the signature of original KeyValueDAO.create_entry at
+        superset_old/daos/key_value.py:84-111 — key is optional and may
+        be ``int`` (becomes entry.id) or ``UUID`` (becomes entry.uuid).
+        When key is None, the DB generates an auto-increment ``id``.
+        """
+        entry = KeyValueEntry(
+            resource=resource,
+            value=value,
+            created_on=datetime.now(),
+            expires_on=expires_on,
         )
+        if key is not None:
+            if isinstance(key, UUID):
+                entry.uuid = key
+            else:
+                entry.id = key
+        self.session.add(entry)
+        return entry
+
+    async def get_entry_by_key(
+        self,
+        resource: str,
+        key: Key,
+    ) -> KeyValueEntry | None:
+        """Retrieve a non-expired entry by resource + key (int or UUID).
+
+        Matches original KeyValueDAO.get_entry at
+        superset_old/daos/key_value.py:42-47 via get_filter() at
+        superset_old/key_value/utils.py:44-53.
+        """
+        if isinstance(key, UUID):
+            filter_col = KeyValueEntry.uuid == key
+        else:
+            filter_col = KeyValueEntry.id == key
+        stmt = select(KeyValueEntry).where(
+            KeyValueEntry.resource == resource,
+            filter_col,
+            or_(
+                KeyValueEntry.expires_on.is_(None),
+                KeyValueEntry.expires_on > datetime.now(),
+            ),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().one_or_none()
+
+    async def get_value_by_key(
+        self,
+        resource: str,
+        key: Key,
+    ) -> Any:
+        """Retrieve and JSON-decode a value by resource + key.
+
+        Matches original KeyValueDAO.get_value at
+        superset_old/daos/key_value.py:50-60 using a JSON codec
+        (our permalinks always store JSON-encoded payloads).
+        """
+        entry = await self.get_entry_by_key(resource, key)
+        if entry is None:
+            return None
+        import json as _json
+
+        try:
+            return _json.loads(entry.value.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return None
 
     async def upsert_entry(
         self,

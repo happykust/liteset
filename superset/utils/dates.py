@@ -16,7 +16,7 @@
 # under the License.
 from datetime import datetime
 
-import pytz  # type: ignore[import-untyped]
+import pytz
 
 EPOCH = datetime(1970, 1, 1)
 

@@ -25,14 +25,18 @@ from sqlalchemy import types
 from sqlalchemy.engine import URL
 
 from superset.constants import TimeGrain
-from superset.db_engine_specs.base import BaseEngineSpec, ColumnTypeMapping
+from superset.db_engine_specs.base import (
+    BaseEngineSpec,
+    BasicParametersMixin,
+    ColumnTypeMapping,
+)
 from superset.models.core import Database
 from superset.models.sql_lab import Query
 from superset.sql.parse import LimitMethod
 from superset.typing import GenericDataType
 
 
-class SingleStoreSpec(BaseEngineSpec):
+class SingleStoreSpec(BasicParametersMixin, BaseEngineSpec):
     engine_name = "SingleStore"
 
     engine = "singlestoredb"

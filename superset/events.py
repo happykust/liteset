@@ -80,7 +80,7 @@ class EventLogger:
             payload["duration_ms"] = round(duration_ms, 2)
         if extra:
             payload.update(extra)
-        logger.info("event_log %s", payload)
+        logger.debug("event_log %s", payload)
 
     # -- context-manager interface (used by screenshots.py etc.) -----------
 

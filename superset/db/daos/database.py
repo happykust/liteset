@@ -121,6 +121,36 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
             encrypted_extra=encrypted_extra,
         )
 
+    async def get_table_extra_lookup(
+        self,
+        database_id: int,
+        table_names: set[str],
+        schema: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Return a mapping of table_name to parsed extra JSON for the given tables.
+
+        Used to enrich table/view listings with certification info.
+        """
+        if not table_names:
+            return {}
+        import json
+
+        stmt = select(SqlaTable.table_name, SqlaTable.extra).where(
+            SqlaTable.database_id == database_id,
+            SqlaTable.table_name.in_(table_names),
+        )
+        if schema:
+            stmt = stmt.where(SqlaTable.schema == schema)
+        rows = (await self.session.execute(stmt)).all()
+        result: dict[str, dict[str, Any]] = {}
+        for tbl_name, extra_raw in rows:
+            if extra_raw:
+                try:
+                    result[tbl_name] = json.loads(extra_raw)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return result
+
     async def get_related_objects(
         self,
         database_id: int,

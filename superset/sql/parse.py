@@ -29,7 +29,7 @@ import logging
 import urllib.parse
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING, TypeVar
 
 import sqlglot
 from sqlglot import exp
@@ -40,7 +40,12 @@ from sqlglot.optimizer.scope import Scope, ScopeType, traverse_scope
 
 from superset.exceptions import QueryClauseValidationException, SupersetParseError
 
+if TYPE_CHECKING:
+    from superset.models.core import Database
+
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T", str, None)
 
 # ---------------------------------------------------------------------------
 # Dialect mapping (engine name -> sqlglot dialect)
@@ -824,3 +829,106 @@ def sanitize_clause(clause: str, engine: str) -> str:
         )
     except SupersetParseError as ex:
         raise QueryClauseValidationException(f"Invalid SQL clause: {clause}") from ex
+
+
+# ---------------------------------------------------------------------------
+# Jinja SQL processing — ported 1:1 from superset_old/sql/parse.py
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class JinjaSQLResult:
+    """
+    Result of processing Jinja SQL.
+
+    Contains the processed SQL script and extracted table references.
+    """
+
+    script: SQLScript
+    tables: set[Table]
+
+
+def remove_quotes(val: T) -> T:
+    """
+    Helper that removes surrounding quotes from strings.
+    """
+    if val is None:
+        return None  # type: ignore[return-value]
+
+    if val[0] in {'"', "'", "`"} and val[0] == val[-1]:
+        val = val[1:-1]  # type: ignore[assignment]
+
+    return val
+
+
+def process_jinja_sql(
+    sql: str,
+    database: "Database",
+    template_params: dict[str, Any] | None = None,
+) -> JinjaSQLResult:
+    """
+    Process Jinja-templated SQL and extract table references.
+
+    Due to Jinja templating, a multiphase approach is necessary as the Jinjafied SQL
+    statement may represent invalid SQL which is non-parsable by SQLGlot.
+
+    Firstly, we extract any tables referenced within the confines of specific Jinja
+    macros. Secondly, we replace these non-SQL Jinja calls with a pseudo-benign SQL
+    expression to help ensure that the resulting SQL statements are parsable by
+    SQLGlot.
+
+    :param sql: The Jinjafied SQL statement
+    :param database: The database associated with the SQL statement
+    :param template_params: Optional template parameters for Jinja templating
+    :returns: JinjaSQLResult containing the processed script and table references
+    :raises SupersetSecurityException: If SQLGlot is unable to parse the SQL statement
+    :raises jinja2.exceptions.TemplateError: If the Jinjafied SQL could not be rendered
+    """
+    from jinja2 import nodes, Template as Jinja2Template
+
+    from superset.jinja_context import get_template_processor
+
+    processor = get_template_processor(database)
+    ast = processor.env.parse(sql)
+
+    tables: set[Table] = set()
+
+    for node in ast.find_all(nodes.Call):
+        if isinstance(node.node, nodes.Getattr) and node.node.attr in (
+            "latest_partition",
+            "latest_sub_partition",
+        ):
+            # Try to extract the table referenced in the macro.
+            try:
+                tables.add(
+                    Table(
+                        *[
+                            remove_quotes(part.strip())
+                            for part in node.args[0].as_const().split(".")[::-1]
+                            if len(node.args) == 1
+                        ]
+                    )
+                )
+            except nodes.Impossible:
+                pass
+
+            # Replace the potentially problematic Jinja macro with some benign SQL.
+            node.__class__ = nodes.TemplateData
+            node.fields = nodes.TemplateData.fields
+            node.data = "NULL"  # type: ignore[attr-defined]
+
+    # re-render template back into a string
+    code = processor.env.compile(ast)
+    template = Jinja2Template.from_code(
+        processor.env, code, globals=processor.env.globals
+    )
+    rendered_sql = template.render(processor.get_context(), **(template_params or {}))
+
+    parsed_script = SQLScript(
+        processor.process_template(rendered_sql),
+        engine=database.db_engine_spec.engine,
+    )
+    for parsed_statement in parsed_script.statements:
+        tables |= parsed_statement.tables
+
+    return JinjaSQLResult(script=parsed_script, tables=tables)

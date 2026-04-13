@@ -93,6 +93,39 @@ if TYPE_CHECKING:
     )
 
 
+# ---------------------------------------------------------------------------
+# Custom RISON filters for datasets
+# ---------------------------------------------------------------------------
+def _dataset_custom_filters() -> dict[str, Any]:
+    def _dataset_is_null_or_empty(model_cls: Any, value: Any) -> Any:
+        from sqlalchemy import or_
+
+        clause = or_(model_cls.sql.is_(None), model_cls.sql == "")
+        if not value:
+            from sqlalchemy import not_
+
+            return not_(clause)
+        return clause
+
+    def _dataset_is_certified(model_cls: Any, value: Any) -> Any:
+        from sqlalchemy import or_
+
+        check_value = '%"certification":%'
+        if value is True:
+            return model_cls.extra.ilike(check_value)
+        if value is False:
+            return or_(
+                model_cls.extra.notlike(check_value),
+                model_cls.extra.is_(None),
+            )
+        return None
+
+    return {
+        "dataset_is_null_or_empty": _dataset_is_null_or_empty,
+        "dataset_is_certified": _dataset_is_certified,
+    }
+
+
 def _build_dataset_result(dataset: Any) -> dict[str, Any]:
     """Build expanded dataset result dict for create/update responses.
 
@@ -152,6 +185,7 @@ class DatasetController(Controller):
         rison_filters, order_by, page, page_size = build_rison_query_params(
             SqlaTable,
             rison_params,
+            custom_filters=_dataset_custom_filters(),
         )
         base_filters = await dataset_access_filters(security_manager, current_user)
         all_filters = (base_filters or []) + rison_filters
@@ -196,6 +230,7 @@ class DatasetController(Controller):
                 "owners.first_name",
                 "owners.last_name",
             ],
+            list_title="List Dataset",
         )
         for item in payload["result"]:
             item["datasource_type"] = "table"
@@ -215,7 +250,15 @@ class DatasetController(Controller):
         return await get_info_payload(
             dao=dao,
             model_name="Dataset",
-            permissions=["can_read", "can_write"],
+            permissions=[
+                "can_warm_up_cache",
+                "can_get_drill_info",
+                "can_read",
+                "can_duplicate",
+                "can_export",
+                "can_get_or_create_dataset",
+                "can_write",
+            ],
         )
 
     @get(
@@ -269,12 +312,12 @@ class DatasetController(Controller):
         )
 
     @get(
-        "/{pk:int}",
+        "/{id_or_uuid:str}",
         guards=[require_permission("can_read", "Dataset")],
     )
     async def get_dataset(
         self,
-        pk: int,
+        id_or_uuid: str,
         dao: DatasetDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
@@ -288,10 +331,17 @@ class DatasetController(Controller):
         from superset.db.filters import dataset_access_filters
         from superset.models.connectors import SqlaTable
 
+        # Parse id_or_uuid: integer ID or UUID string
+        try:
+            pk = int(id_or_uuid)
+            id_filter = SqlaTable.id == pk
+        except ValueError:
+            id_filter = SqlaTable.uuid == id_or_uuid
+
         # Use find_all with selectinload to eagerly load all relationships
         # needed for the full show response (matches chart controller pattern).
         base_filters = await dataset_access_filters(security_manager, current_user)
-        all_filters = [SqlaTable.id == pk] + (base_filters or [])
+        all_filters = [id_filter] + (base_filters or [])
 
         results = await dao.find_all(
             filters=all_filters,
@@ -307,7 +357,7 @@ class DatasetController(Controller):
             ],
         )
         if not results:
-            raise ObjectNotFoundError("Dataset", pk)
+            raise ObjectNotFoundError("Dataset", id_or_uuid)
         dataset = results[0]
 
         raw_sql = getattr(dataset, "sql", None)
@@ -377,18 +427,34 @@ class DatasetController(Controller):
         )
 
     @put(
-        "/{pk:int}",
+        "/{id_or_uuid:str}",
         guards=[require_permission("can_write", "Dataset")],
     )
     async def update(
         self,
-        pk: int,
+        id_or_uuid: str,
         data: DatasetPutSchema,
         dao: DatasetDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
         override_columns: bool = Parameter(query="override_columns", default=False),
     ) -> DatasetGetResponse:
+        # Parse id_or_uuid: integer ID or UUID string
+        try:
+            pk = int(id_or_uuid)
+        except ValueError:
+            # UUID lookup — resolve to integer pk
+            from superset.models.connectors import SqlaTable
+
+            results = await dao.find_all(
+                filters=[SqlaTable.uuid == id_or_uuid],
+                page=0,
+                page_size=1,
+            )
+            if not results:
+                raise ObjectNotFoundError("Dataset", id_or_uuid) from None
+            pk = results[0].id
+
         update_data: dict[str, Any] = filter_unset(
             {
                 "table_name": data.table_name,
@@ -492,7 +558,7 @@ class DatasetController(Controller):
         dao: DatasetDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
     ) -> dict[str, str]:
         ids = extract_ids_required(rison_params)
         cmd = BulkDeleteDatasetsCommand(
@@ -591,7 +657,7 @@ class DatasetController(Controller):
     async def export(
         self,
         dao: DatasetDAOProtocol,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
         token: str | None = Parameter(query="token", default=None),
     ) -> Stream:
         ids = extract_ids(rison_params)
@@ -692,14 +758,29 @@ class DatasetController(Controller):
         return {"result": result}
 
     @get(
-        "/{pk:int}/related_objects",
+        "/{id_or_uuid:str}/related_objects",
         guards=[require_permission("can_read", "Dataset")],
     )
-    async def related_objects(self, pk: int, dao: DatasetDAOProtocol) -> dict[str, Any]:
+    async def related_objects(
+        self, id_or_uuid: str, dao: DatasetDAOProtocol
+    ) -> dict[str, Any]:
         """GET related objects (charts/dashboards using dataset)."""
-        dataset = await dao.find_by_id(pk)
+        # Parse id_or_uuid: integer ID or UUID string
+        try:
+            pk = int(id_or_uuid)
+            dataset = await dao.find_by_id(pk)
+        except ValueError:
+            from superset.models.connectors import SqlaTable
+
+            results = await dao.find_all(
+                filters=[SqlaTable.uuid == id_or_uuid],
+                page=0,
+                page_size=1,
+            )
+            dataset = results[0] if results else None
+            pk = int(dataset.id) if dataset else 0
         if not dataset:
-            raise ObjectNotFoundError("Dataset", pk)
+            raise ObjectNotFoundError("Dataset", id_or_uuid)
         related = await dao.get_related_objects(pk)
         charts = related.get("charts", [])
         dashboards = related.get("dashboards", [])

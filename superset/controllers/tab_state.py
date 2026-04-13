@@ -28,12 +28,11 @@ import logging
 from typing import Any
 
 from litestar import Controller, delete, get, post, put, Request
+from litestar.di import Provide
 from litestar.response import Response
-from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
-from superset.models.sql_lab import Query, TableSchema, TabState
+from superset.db.daos.tab_state import AsyncTableSchemaDAO, AsyncTabStateDAO
 from superset.typing import UserProtocol
 
 
@@ -44,15 +43,15 @@ def _json_iso_dttm_ser(obj: Any) -> str:
     return str(obj)
 
 
+def _provide_tab_state_dao(session: AsyncSession) -> AsyncTabStateDAO:
+    return AsyncTabStateDAO(session)
+
+
+def _provide_table_schema_dao(session: AsyncSession) -> AsyncTableSchemaDAO:
+    return AsyncTableSchemaDAO(session)
+
+
 logger = logging.getLogger(__name__)
-
-
-async def _get_owner_id(session: AsyncSession, tab_state_id: int) -> int | None:
-    """Return the user_id that owns the given tab, or None if not found."""
-    result = await session.execute(
-        select(TabState.user_id).where(TabState.id == tab_state_id)
-    )
-    return result.scalar_one_or_none()
 
 
 class TabStateController(Controller):
@@ -60,12 +59,16 @@ class TabStateController(Controller):
 
     path = "/tabstateview"
     tags = ["SQL Lab"]
+    dependencies = {
+        "dao": Provide(_provide_tab_state_dao, sync_to_thread=False),
+        "table_schema_dao": Provide(_provide_table_schema_dao, sync_to_thread=False),
+    }
 
     @post("/")
     async def create(
         self,
         request: Request[Any, Any, Any],
-        session: AsyncSession,
+        dao: AsyncTabStateDAO,
         current_user: UserProtocol,
     ) -> Response[str]:
         """POST /tabstateview/ — create a new tab state."""
@@ -74,37 +77,31 @@ class TabStateController(Controller):
             query_editor = json.loads(form["queryEditor"])
 
             remote_id = query_editor.get("remoteId")
-            tab_state = TabState(
-                user_id=current_user.id,
-                label=query_editor.get("name")
-                or query_editor.get("title", "Untitled Query"),
-                active=True,
-                database_id=int(query_editor["dbId"]),
-                catalog=query_editor.get("catalog"),
-                schema=query_editor.get("schema"),
-                sql=query_editor.get("sql", "SELECT ..."),
-                query_limit=query_editor.get("queryLimit"),
-                hide_left_bar=query_editor.get("hideLeftBar"),
-                saved_query_id=int(remote_id) if remote_id is not None else None,
-                template_params=query_editor.get("templateParams"),
-            )
 
             # Set all user's existing tabs to inactive
-            await session.execute(
-                update(TabState)
-                .where(TabState.user_id == current_user.id)
-                .values(active=False)
-            )
+            await dao.deactivate_all_for_user(current_user.id)
 
-            session.add(tab_state)
-            await session.flush()
-            await session.commit()
+            tab_state = await dao.create_tab(
+                {
+                    "user_id": current_user.id,
+                    "label": query_editor.get("name")
+                    or query_editor.get("title", "Untitled Query"),
+                    "active": True,
+                    "database_id": int(query_editor["dbId"]),
+                    "catalog": query_editor.get("catalog"),
+                    "schema": query_editor.get("schema"),
+                    "sql": query_editor.get("sql", "SELECT ..."),
+                    "query_limit": query_editor.get("queryLimit"),
+                    "hide_left_bar": query_editor.get("hideLeftBar"),
+                    "saved_query_id": int(remote_id) if remote_id is not None else None,
+                    "template_params": query_editor.get("templateParams"),
+                }
+            )
             return Response(
                 content=json.dumps({"id": tab_state.id}),
                 media_type="application/json",
             )
         except Exception as ex:
-            await session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -115,11 +112,12 @@ class TabStateController(Controller):
     async def delete_tab(
         self,
         tab_state_id: int,
-        session: AsyncSession,
+        dao: AsyncTabStateDAO,
+        table_schema_dao: AsyncTableSchemaDAO,
         current_user: UserProtocol,
     ) -> Response[str]:
         """DELETE /tabstateview/<id> — delete a tab state and its table schemas."""
-        owner_id = await _get_owner_id(session, tab_state_id)
+        owner_id = await dao.get_owner_id(tab_state_id)
         if owner_id is None:
             return Response(
                 content=json.dumps({"error": "Not found"}),
@@ -135,21 +133,13 @@ class TabStateController(Controller):
 
         try:
             # Delete tab state and its associated table schemas
-            await session.execute(
-                TabState.__table__.delete().where(TabState.id == tab_state_id)
-            )
-            await session.execute(
-                TableSchema.__table__.delete().where(
-                    TableSchema.tab_state_id == tab_state_id
-                )
-            )
-            await session.commit()
+            await dao.delete_by_id(tab_state_id)
+            await table_schema_dao.delete_by_tab_state_id(tab_state_id)
             return Response(
                 content=json.dumps("OK"),
                 media_type="application/json",
             )
         except Exception as ex:
-            await session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -160,11 +150,11 @@ class TabStateController(Controller):
     async def get_tab(
         self,
         tab_state_id: int,
-        session: AsyncSession,
+        dao: AsyncTabStateDAO,
         current_user: UserProtocol,
     ) -> Response[str]:
         """GET /tabstateview/<id> — return a single tab state."""
-        owner_id = await _get_owner_id(session, tab_state_id)
+        owner_id = await dao.get_owner_id(tab_state_id)
         if owner_id is None:
             return Response(
                 content=json.dumps({"error": "Not found"}),
@@ -178,16 +168,7 @@ class TabStateController(Controller):
                 media_type="application/json",
             )
 
-        result = await session.execute(
-            select(TabState)
-            .where(TabState.id == tab_state_id)
-            .options(
-                selectinload(TabState.table_schemas),
-                selectinload(TabState.latest_query),
-                selectinload(TabState.saved_query),
-            )
-        )
-        tab_state = result.scalars().first()
+        tab_state = await dao.find_with_relations(tab_state_id)
         if tab_state is None:
             return Response(
                 content=json.dumps({"error": "Not found"}),
@@ -203,11 +184,11 @@ class TabStateController(Controller):
     async def activate(
         self,
         tab_state_id: int,
-        session: AsyncSession,
+        dao: AsyncTabStateDAO,
         current_user: UserProtocol,
     ) -> Response[str]:
         """POST /tabstateview/<id>/activate — activate a tab."""
-        owner_id = await _get_owner_id(session, tab_state_id)
+        owner_id = await dao.get_owner_id(tab_state_id)
         if owner_id is None:
             return Response(
                 content=json.dumps({"error": "Not found"}),
@@ -222,18 +203,12 @@ class TabStateController(Controller):
             )
 
         try:
-            await session.execute(
-                update(TabState)
-                .where(TabState.user_id == current_user.id)
-                .values(active=TabState.id == tab_state_id)
-            )
-            await session.commit()
+            await dao.activate_tab(current_user.id, tab_state_id)
             return Response(
                 content=json.dumps(tab_state_id),
                 media_type="application/json",
             )
         except Exception as ex:
-            await session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -245,11 +220,11 @@ class TabStateController(Controller):
         self,
         tab_state_id: int,
         request: Request[Any, Any, Any],
-        session: AsyncSession,
+        dao: AsyncTabStateDAO,
         current_user: UserProtocol,
     ) -> Response[str]:
         """PUT /tabstateview/<id> — update tab state fields."""
-        owner_id = await _get_owner_id(session, tab_state_id)
+        owner_id = await dao.get_owner_id(tab_state_id)
         if owner_id is None:
             return Response(
                 content=json.dumps({"error": "Not found"}),
@@ -267,16 +242,12 @@ class TabStateController(Controller):
             form = await request.form()
             fields = {k: json.loads(v) for k, v in dict(form).items()}
 
-            await session.execute(
-                update(TabState).where(TabState.id == tab_state_id).values(**fields)
-            )
-            await session.commit()
+            await dao.update_fields(tab_state_id, fields)
             return Response(
                 content=json.dumps(tab_state_id),
                 media_type="application/json",
             )
         except Exception as ex:
-            await session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -288,11 +259,11 @@ class TabStateController(Controller):
         self,
         tab_state_id: int,
         request: Request[Any, Any, Any],
-        session: AsyncSession,
+        dao: AsyncTabStateDAO,
         current_user: UserProtocol,
     ) -> Response[str]:
         """POST /tabstateview/<id>/migrate_query — reassign a query to this tab."""
-        owner_id = await _get_owner_id(session, tab_state_id)
+        owner_id = await dao.get_owner_id(tab_state_id)
         if owner_id is None:
             return Response(
                 content=json.dumps({"error": "Not found"}),
@@ -310,18 +281,12 @@ class TabStateController(Controller):
             form = await request.form()
             client_id = json.loads(form["queryId"])
 
-            await session.execute(
-                update(Query)
-                .where(Query.client_id == client_id)
-                .values(sql_editor_id=tab_state_id)
-            )
-            await session.commit()
+            await dao.migrate_query(client_id, tab_state_id)
             return Response(
                 content=json.dumps(tab_state_id),
                 media_type="application/json",
             )
         except Exception as ex:
-            await session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -333,11 +298,11 @@ class TabStateController(Controller):
         self,
         tab_state_id: int,
         client_id: str,
-        session: AsyncSession,
+        dao: AsyncTabStateDAO,
         current_user: UserProtocol,
     ) -> Response[str]:
         """DELETE /tabstateview/<id>/query/<client_id> — remove a query from a tab."""
-        owner_id = await _get_owner_id(session, tab_state_id)
+        owner_id = await dao.get_owner_id(tab_state_id)
         if owner_id is None:
             return Response(
                 content=json.dumps({"error": "Not found"}),
@@ -353,56 +318,27 @@ class TabStateController(Controller):
 
         try:
             # If this query was the tab's latest_query, replace with the previous one
-            tab_state_result = await session.execute(
-                select(TabState).where(
-                    TabState.id == tab_state_id,
-                    TabState.latest_query_id == client_id,
-                )
+            tab_state_match = await dao.find_tab_with_latest_query(
+                tab_state_id, client_id
             )
-            tab_state_match = tab_state_result.scalars().first()
 
             if tab_state_match is not None:
-                prev_query_result = await session.execute(
-                    select(Query)
-                    .where(
-                        and_(
-                            Query.client_id != client_id,
-                            Query.user_id == current_user.id,
-                            Query.sql_editor_id == str(tab_state_id),
-                        )
-                    )
-                    .order_by(Query.id.desc())
-                    .limit(1)
-                )
-                prev_query = prev_query_result.scalars().first()
-
-                await session.execute(
-                    update(TabState)
-                    .where(
-                        TabState.id == tab_state_id,
-                        TabState.latest_query_id == client_id,
-                    )
-                    .values(
-                        latest_query_id=prev_query.client_id if prev_query else None
-                    )
+                prev_query = await dao.find_previous_query(
+                    client_id, current_user.id, tab_state_id
                 )
 
-            await session.execute(
-                Query.__table__.delete().where(
-                    and_(
-                        Query.client_id == client_id,
-                        Query.user_id == current_user.id,
-                        Query.sql_editor_id == str(tab_state_id),
-                    )
+                await dao.replace_latest_query(
+                    tab_state_id,
+                    client_id,
+                    prev_query.client_id if prev_query else None,
                 )
-            )
-            await session.commit()
+
+            await dao.delete_query(client_id, current_user.id, tab_state_id)
             return Response(
                 content=json.dumps("OK"),
                 media_type="application/json",
             )
         except Exception as ex:
-            await session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -415,12 +351,15 @@ class TableSchemaController(Controller):
 
     path = "/tableschemaview"
     tags = ["SQL Lab"]
+    dependencies = {
+        "dao": Provide(_provide_table_schema_dao, sync_to_thread=False),
+    }
 
     @post("/")
     async def create(
         self,
         request: Request[Any, Any, Any],
-        session: AsyncSession,
+        dao: AsyncTableSchemaDAO,
     ) -> Response[str]:
         """POST /tableschemaview/ — create or replace a table schema entry."""
         try:
@@ -450,36 +389,30 @@ class TableSchemaController(Controller):
             db_id = int(db_id_raw)
 
             # Delete existing schema with same params
-            await session.execute(
-                TableSchema.__table__.delete().where(
-                    and_(
-                        TableSchema.tab_state_id == ts_id,
-                        TableSchema.database_id == db_id,
-                        TableSchema.catalog == table.get("catalog"),
-                        TableSchema.schema == table["schema"],
-                        TableSchema.table == table["name"],
-                    )
-                )
-            )
-
-            table_schema = TableSchema(
+            await dao.delete_matching(
                 tab_state_id=ts_id,
                 database_id=db_id,
                 catalog=table.get("catalog"),
                 schema=table["schema"],
                 table=table["name"],
-                description=json.dumps(table),
-                expanded=True,
             )
-            session.add(table_schema)
-            await session.flush()
-            await session.commit()
+
+            table_schema = await dao.create_schema(
+                {
+                    "tab_state_id": ts_id,
+                    "database_id": db_id,
+                    "catalog": table.get("catalog"),
+                    "schema": table["schema"],
+                    "table": table["name"],
+                    "description": json.dumps(table),
+                    "expanded": True,
+                }
+            )
             return Response(
                 content=json.dumps({"id": table_schema.id}),
                 media_type="application/json",
             )
         except Exception as ex:
-            await session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -490,20 +423,16 @@ class TableSchemaController(Controller):
     async def delete_schema(
         self,
         table_schema_id: int,
-        session: AsyncSession,
+        dao: AsyncTableSchemaDAO,
     ) -> Response[str]:
         """DELETE /tableschemaview/<id> — delete a table schema entry."""
         try:
-            await session.execute(
-                TableSchema.__table__.delete().where(TableSchema.id == table_schema_id)
-            )
-            await session.commit()
+            await dao.delete_by_id(table_schema_id)
             return Response(
                 content=json.dumps("OK"),
                 media_type="application/json",
             )
         except Exception as ex:
-            await session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -515,25 +444,19 @@ class TableSchemaController(Controller):
         self,
         table_schema_id: int,
         request: Request[Any, Any, Any],
-        session: AsyncSession,
+        dao: AsyncTableSchemaDAO,
     ) -> Response[str]:
         """POST /tableschemaview/<id>/expanded — toggle expanded state."""
         try:
             form = await request.form()
             payload = json.loads(form["expanded"])
 
-            await session.execute(
-                update(TableSchema)
-                .where(TableSchema.id == table_schema_id)
-                .values(expanded=payload)
-            )
-            await session.commit()
+            await dao.set_expanded(table_schema_id, payload)
             return Response(
                 content=json.dumps({"id": table_schema_id, "expanded": payload}),
                 media_type="application/json",
             )
         except Exception as ex:
-            await session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,

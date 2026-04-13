@@ -32,8 +32,8 @@ def is_admin(user: Any, admin_role_name: str = "Admin") -> bool:
     return any(getattr(r, "name", None) == admin_role_name for r in roles)
 
 
-def has_permissions(user: Any, required: set[str]) -> bool:
-    user_perms: set[str] = getattr(user, "permissions", set())
+def has_permissions(user: Any, required: set[tuple[str, str]]) -> bool:
+    user_perms: set[tuple[str, str]] = getattr(user, "permissions", set())
     return required.issubset(user_perms)
 
 
@@ -50,7 +50,7 @@ def require_authentication(
     if getattr(user, "is_authenticated", False):
         return
     # Allow anonymous users with Public role permissions
-    permissions: set[str] = getattr(user, "permissions", set())
+    permissions: set[tuple[str, str]] = getattr(user, "permissions", set())
     if permissions:
         return
     raise NotAuthorizedException(detail="Not authenticated")
@@ -72,7 +72,7 @@ def require_authenticated_user(
 
 
 def require_permission(action: str, resource: str) -> GuardFn:
-    permission_name = f"{action}_{resource}"
+    permission_tuple = (action, resource)
 
     def guard_fn(
         connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandler
@@ -81,15 +81,15 @@ def require_permission(action: str, resource: str) -> GuardFn:
         # Check if user is authenticated
         if not getattr(user, "is_authenticated", False):
             # Allow anonymous users with matching Public role permission
-            user_perms: set[str] = getattr(user, "permissions", set())
-            if permission_name in user_perms:
+            user_perms: set[tuple[str, str]] = getattr(user, "permissions", set())
+            if permission_tuple in user_perms:
                 return
             raise NotAuthorizedException(detail="Not authenticated")
         if is_admin(user):
             return
-        if not has_permissions(user, {permission_name}):
+        if not has_permissions(user, {permission_tuple}):
             raise PermissionDeniedException(
-                detail=f"Missing permission: {permission_name}"
+                detail=f"Missing permission: {action} on {resource}"
             )
 
     return guard_fn

@@ -75,43 +75,83 @@ async def authenticate_websocket(
     jwt_secret: str,
     jwt_algorithm: str = "HS256",
     cookie_name: str = "async-token",
+    session_cookie_name: str = "session",
 ) -> WebSocketAuthResult | None:
-    """Authenticate a WebSocket connection via JWT.
+    """Authenticate a WebSocket connection.
 
     Attempts authentication in order:
     1. JWT token from query parameter ``?token=<jwt>``
-    2. JWT token from HTTP-only cookie (browser sends cookies during WS handshake)
+    2. JWT token from HTTP-only cookie (``async-token``)
+    3. Session cookie (Flask itsdangerous / Liteset JWT) — fallback for
+       browser WebSocket connections that carry the standard session cookie.
 
     Args:
         socket: Litestar WebSocket instance (or mock with query_params/headers).
-        jwt_secret: Secret key for HS256 JWT verification.
+        jwt_secret: Secret key for JWT/session verification.
         jwt_algorithm: JWT algorithm (default: HS256).
-        cookie_name: Name of the HTTP-only cookie containing the JWT.
+        cookie_name: Name of the async-token cookie.
+        session_cookie_name: Name of the session cookie (Flask compat).
 
     Returns:
         WebSocketAuthResult if authentication succeeds, None otherwise.
     """
-    # Try query parameter first
+    headers = (
+        dict(socket.headers) if hasattr(socket.headers, "items") else socket.headers
+    )
+
+    # 1. Try query parameter first
     token = socket.query_params.get("token")
 
-    # Fallback to cookie
+    # 2. Fallback to async-token cookie
     if not token:
-        token = _extract_cookie_token(
-            dict(socket.headers)
-            if hasattr(socket.headers, "items")
-            else socket.headers,
-            cookie_name,
-        )
+        token = _extract_cookie_token(headers, cookie_name)
 
-    if not token:
-        logger.debug("WebSocket auth failed: no token provided")
-        return None
+    if token:
+        try:
+            payload = pyjwt.decode(token, jwt_secret, algorithms=[jwt_algorithm])
+            user_id = int(payload["sub"])
+            channel = payload.get("channel", "")
+            return WebSocketAuthResult(user_id=user_id, channel=channel)
+        except (pyjwt.InvalidTokenError, KeyError, ValueError) as exc:
+            logger.debug("WebSocket JWT auth failed: %s", exc)
 
+    # 3. Fallback to session cookie (browser WS connections carry it)
+    session_cookie = _extract_cookie_token(headers, session_cookie_name)
+    if session_cookie:
+        session_user_id = _resolve_user_id_from_session(session_cookie, jwt_secret)
+        if session_user_id is not None:
+            return WebSocketAuthResult(
+                user_id=session_user_id,
+                channel=f"events:{session_user_id}",
+            )
+
+    logger.debug("WebSocket auth failed: no valid credentials")
+    return None
+
+
+def _resolve_user_id_from_session(cookie: str, secret_key: str) -> int | None:
+    """Extract user_id from a session cookie (JWT or itsdangerous).
+
+    Mirrors the logic in SupersetAuthMiddleware._authenticate_cookie.
+    """
+    # Try JWT session first (Liteset auth controller sets this)
     try:
-        payload = pyjwt.decode(token, jwt_secret, algorithms=[jwt_algorithm])
-        user_id = int(payload["sub"])
-        channel = payload.get("channel", "")
-        return WebSocketAuthResult(user_id=user_id, channel=channel)
-    except (pyjwt.InvalidTokenError, KeyError, ValueError) as exc:
-        logger.debug("WebSocket auth failed: %s", exc)
-        return None
+        payload = pyjwt.decode(cookie, secret_key, algorithms=["HS256"])
+        uid = payload.get("user_id")
+        if uid is not None:
+            return int(uid)
+    except Exception:  # noqa: S110
+        pass
+
+    # Fallback: itsdangerous (Flask legacy)
+    try:
+        from superset.security.session_decoder import FlaskSessionDecoder
+
+        decoder = FlaskSessionDecoder(secret_key=secret_key)
+        uid = decoder.get_user_id(cookie)
+        if uid is not None:
+            return int(uid)
+    except Exception:  # noqa: S110
+        pass
+
+    return None

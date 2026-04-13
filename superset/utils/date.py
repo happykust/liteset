@@ -30,8 +30,8 @@ from typing import Any
 
 import pandas as pd
 import parsedatetime
-from dateutil.parser import parse  # type: ignore[import-untyped]
-from dateutil.relativedelta import relativedelta  # type: ignore[import-untyped]
+from dateutil.parser import parse
+from dateutil.relativedelta import relativedelta
 from holidays import country_holidays
 from pandas.core.dtypes.common import is_numeric_dtype
 from pyparsing import (

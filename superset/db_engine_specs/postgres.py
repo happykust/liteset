@@ -37,7 +37,11 @@ from sqlalchemy.engine.url import URL
 from sqlalchemy.types import Date, DateTime, String
 
 from superset.constants import TimeGrain
-from superset.db_engine_specs.base import BaseEngineSpec, ColumnTypeMapping
+from superset.db_engine_specs.base import (
+    BaseEngineSpec,
+    BasicParametersMixin,
+    ColumnTypeMapping,
+)
 from superset.typing import GenericDataType
 
 if TYPE_CHECKING:
@@ -62,10 +66,21 @@ CONNECTION_INVALID_HOSTNAME_REGEX = re.compile(
     'could not translate host name "(?P<hostname>.*?)" to address: '
     "nodename nor servname provided, or not known"
 )
+# asyncpg-specific: the async driver surfaces raw OSError/gaierror
+# strings instead of the psycopg2 "could not translate host name ..."
+# wrapper.  These patterns let extract_errors produce the same
+# SIP-40 errors as in the original sync path.
+CONNECTION_INVALID_HOSTNAME_ASYNCPG_REGEX = re.compile(
+    r"\[Errno -(?:2|3|5)\] (?:Name or service not known|Name does not resolve|"
+    r"Temporary failure in name resolution)"
+)
 CONNECTION_PORT_CLOSED_REGEX = re.compile(
     r"could not connect to server: Connection refused\s+Is the server "
     r'running on host "(?P<hostname>.*?)" (\(.*?\) )?and accepting\s+TCP/IP '
     r"connections on port (?P<port>.*?)\?"
+)
+CONNECTION_PORT_CLOSED_ASYNCPG_REGEX = re.compile(
+    r"\[Errno 111\] Connect(?:ion)? (?:call failed|refused)"
 )
 CONNECTION_HOST_DOWN_REGEX = re.compile(
     r"could not connect to server: (?P<reason>.*?)\s+Is the server running on "
@@ -170,7 +185,17 @@ class PostgresBaseEngineSpec(BaseEngineSpec):
             "CONNECTION_INVALID_HOSTNAME_ERROR",
             {"invalid": ["host"]},
         ),
+        CONNECTION_INVALID_HOSTNAME_ASYNCPG_REGEX: (
+            'The hostname "%(hostname)s" cannot be resolved.',
+            "CONNECTION_INVALID_HOSTNAME_ERROR",
+            {"invalid": ["host"]},
+        ),
         CONNECTION_PORT_CLOSED_REGEX: (
+            'Port %(port)s on hostname "%(hostname)s" refused the connection.',
+            "CONNECTION_PORT_CLOSED_ERROR",
+            {"invalid": ["host", "port"]},
+        ),
+        CONNECTION_PORT_CLOSED_ASYNCPG_REGEX: (
             'Port %(port)s on hostname "%(hostname)s" refused the connection.',
             "CONNECTION_PORT_CLOSED_ERROR",
             {"invalid": ["host", "port"]},
@@ -232,7 +257,7 @@ class PostgresBaseEngineSpec(BaseEngineSpec):
 # ---------------------------------------------------------------------------
 
 
-class PostgresEngineSpec(PostgresBaseEngineSpec):
+class PostgresEngineSpec(BasicParametersMixin, PostgresBaseEngineSpec):
     engine = "postgresql"
     engine_aliases = {"postgres"}
 

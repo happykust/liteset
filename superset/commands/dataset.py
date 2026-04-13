@@ -229,6 +229,7 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 )
 
         # Add implicit type: and owner: tags (async port of DatasetUpdater.after_insert)
+        await self._dao.session.refresh(dataset, ["owners"])
         owner_ids = [o.id for o in dataset.owners] if hasattr(dataset, "owners") else []
         await add_implicit_tags_after_insert(
             self._dao.session, "dataset", dataset.id, owner_ids
@@ -348,6 +349,7 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         await self._dao.session.flush()
 
         # Sync implicit owner: tags (async port of DatasetUpdater.after_update)
+        await self._dao.session.refresh(self._dataset, ["owners"])
         owner_ids = (
             [o.id for o in self._dataset.owners]
             if hasattr(self._dataset, "owners")
@@ -482,6 +484,9 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         self._dao.session.add(new_dataset)
         await self._dao.session.flush()
 
+        # Eagerly load source relationships before copying
+        await self._dao.session.refresh(self._source, ["columns", "metrics"])
+
         # Copy columns
         if hasattr(self._source, "columns"):
             for col in self._source.columns:
@@ -495,7 +500,8 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                     expression=getattr(col, "expression", None),
                     python_date_format=getattr(col, "python_date_format", None),
                 )
-                new_dataset.columns.append(new_col)
+                new_col.table_id = new_dataset.id
+                self._dao.session.add(new_col)
 
         # Copy metrics
         if hasattr(self._source, "metrics"):
@@ -507,7 +513,8 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                     description=getattr(metric, "description", None),
                     verbose_name=getattr(metric, "verbose_name", None),
                 )
-                new_dataset.metrics.append(new_metric)
+                new_metric.table_id = new_dataset.id
+                self._dao.session.add(new_metric)
 
         # Copy additional fields
         new_dataset.template_params = getattr(  # type: ignore[assignment]
@@ -1121,6 +1128,7 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         ):
             user = self._security_manager.get_current_user()
             if user and hasattr(dataset, "owners"):
+                await self._dao.session.refresh(dataset, ["owners"])  # type: ignore[union-attr]
                 if user not in dataset.owners:
                     dataset.owners.append(user)
 

@@ -20,16 +20,25 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
-from typing import Any, TYPE_CHECKING
+from typing import Any, cast, TYPE_CHECKING
 
 from sqlalchemy import types
+from sqlalchemy.engine.url import URL
 from urllib3.exceptions import NewConnectionError
 
 from superset.constants import TimeGrain
-from superset.db_engine_specs.base import BaseEngineSpec
+from superset.databases.utils import make_url_safe
+from superset.db_engine_specs.base import (
+    BaseEngineSpec,
+    BasicParametersMixin,
+    BasicParametersType,
+    BasicPropertiesType,
+)
 from superset.db_engine_specs.exceptions import SupersetDBAPIDatabaseError
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.typing import GenericDataType
 from superset.utils.hashing import md5_sha_from_str
+from superset.utils.network import is_hostname_valid, is_port_open
 
 if TYPE_CHECKING:
     from superset.models.core import Database
@@ -178,7 +187,7 @@ class DatabendEngineSpec(DatabendBaseEngineSpec):
             return []
 
 
-class DatabendConnectEngineSpec(DatabendEngineSpec):
+class DatabendConnectEngineSpec(BasicParametersMixin, DatabendEngineSpec):
     """Engine spec for databend sqlalchemy connector"""
 
     engine = "databend"
@@ -222,6 +231,111 @@ class DatabendConnectEngineSpec(DatabendEngineSpec):
     @classmethod
     def get_datatype(cls, type_code: str) -> str:
         return type_code
+
+    @classmethod
+    def build_sqlalchemy_uri(
+        cls, parameters: BasicParametersType, *_args: dict[str, str] | None
+    ) -> str:
+        url_params = parameters.copy()
+        if url_params.get("encryption"):
+            query = parameters.get("query", {}).copy()
+            query.update(cls.encryption_parameters)
+            url_params["query"] = query
+        if not url_params.get("database"):
+            url_params["database"] = "__default__"
+        url_params.pop("encryption", None)
+        # SQLAlchemy 2.x masks password in ``str(URL)`` — use
+        # render_as_string to preserve the original 1.4 behaviour.
+        return URL(f"{cls.engine}", **url_params).render_as_string(
+            hide_password=False
+        )
+
+    @classmethod
+    def get_parameters_from_uri(
+        cls, uri: str, *_args: dict[str, Any] | None
+    ) -> BasicParametersType:
+        url = make_url_safe(uri)
+        query = url.query
+        if "secure" in query:
+            encryption = url.query.get("secure") == "true"
+            query.pop("secure")
+        else:
+            encryption = False
+        return BasicParametersType(
+            username=url.username,
+            password=url.password,
+            host=url.host,
+            port=url.port,
+            database="" if url.database == "__default__" else cast(str, url.database),
+            query=query,
+            encryption=encryption,
+        )
+
+    @classmethod
+    def default_port(cls, interface: str, secure: bool) -> int:
+        if interface.startswith("http"):
+            return 443 if secure else 8000
+        raise ValueError("Unrecognized Databend interface")
+
+    @classmethod
+    def validate_parameters(
+        cls, properties: BasicPropertiesType
+    ) -> list[SupersetError]:
+        # The newest versions of superset send a "properties" object with a
+        # parameters key, instead of just the parameters, so we hack to be compatible
+        parameters = properties.get("parameters", properties)
+        host = parameters.get("host", None)
+        host = str(host) if host is not None else None
+        if not host:
+            return [
+                SupersetError(
+                    "Hostname is required",
+                    SupersetErrorType.CONNECTION_MISSING_PARAMETERS_ERROR,
+                    ErrorLevel.WARNING,
+                    {"missing": ["host"]},
+                )
+            ]
+        if not is_hostname_valid(host):
+            return [
+                SupersetError(
+                    "The hostname provided can't be resolved.",
+                    SupersetErrorType.CONNECTION_INVALID_HOSTNAME_ERROR,
+                    ErrorLevel.ERROR,
+                    {"invalid": ["host"]},
+                )
+            ]
+        port = parameters.get("port")
+        if port is not None:
+            if isinstance(port, (int, str)):
+                try:
+                    port = int(port)
+                    if port <= 0 or port >= 65535:
+                        port = -1
+                except (ValueError, TypeError):
+                    port = -1
+        encryption = parameters.get("encryption", False)
+        if port is None or port == -1:
+            encryption = bool(encryption)
+            port = cls.default_port("http", encryption)
+            if port <= 0 or port >= 65535:
+                return [
+                    SupersetError(
+                        "Port must be a valid integer between 0 and 65535 (inclusive).",
+                        SupersetErrorType.CONNECTION_INVALID_PORT_ERROR,
+                        ErrorLevel.ERROR,
+                        {"invalid": ["port"]},
+                    )
+                ]
+            if not is_port_open(host, port):
+                return [
+                    SupersetError(
+                        "The port is closed.",
+                        SupersetErrorType.CONNECTION_PORT_CLOSED_ERROR,
+                        ErrorLevel.ERROR,
+                        {"invalid": ["port"]},
+                    )
+                ]
+        return []
 
     @staticmethod
     def _mutate_label(label: str) -> str:

@@ -43,7 +43,6 @@ dependencies = [
     "uvicorn[standard]>=0.34.0",
     "uvloop>=0.21.0; sys_platform != 'win32'",
     "anyio>=4.8.0",
-
     # --------------------------
     # Data layer (SQLAlchemy 2.0 async + drivers)
     # --------------------------
@@ -54,27 +53,23 @@ dependencies = [
     "greenlet>=3.0.3, <=3.1.1",  # required by SQLAlchemy run_sync()
     "alembic>=1.13.0",
     "Mako>=1.2.2",
-
     # --------------------------
     # Serialization & validation
     # --------------------------
     "msgspec>=0.19.0",
     "pydantic-settings>=2.7.0",
-
     # --------------------------
     # Async infrastructure
     # --------------------------
     "redis>=4.6.0, <6.0",
     "celery>=5.3.6, <6.0.0",
     "structlog>=25.5.0",
-
     # --------------------------
     # CLI
     # --------------------------
     "click>=8.0.3",
     "click-option-group",
     "colorama",
-
     # --------------------------
     # Security & auth
     # --------------------------
@@ -83,7 +78,6 @@ dependencies = [
     "itsdangerous>=2.1.0",  # session cookie decoding (Flask compat)
     "paramiko>=3.4.0",
     "sshtunnel>=0.4.0, <0.5",
-
     # --------------------------
     # Data processing & analytics
     # --------------------------
@@ -92,7 +86,6 @@ dependencies = [
     "bottleneck",  # pandas performance dependency
     "pyarrow>=16.1.0, <19",
     "sqlglot>=27.15.2, <28",
-
     # --------------------------
     # Utilities
     # --------------------------
@@ -124,11 +117,11 @@ dependencies = [
     "typing-extensions>=4, <5",
     "xlsxwriter>=3.0.7, <3.1",
     "geopy",
-
     # --------------------------
     # Async database driver extras
     # --------------------------
     "aiotrino>=0.3.0",
+    "psycopg2-binary>=2.9.11",
 ]
 
 [project.optional-dependencies]
@@ -367,6 +360,7 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 "setup.py" = ["TID251"]
 "superset/**" = ["TID251"]
 "superset/config.py" = ["TID251"]
+"superset/cli/main.py" = ["E402"]  # imports after click group definition
 
 [tool.ruff.lint.isort]
 case-sensitive = false
@@ -385,6 +379,7 @@ section-order = [
 ]
 
 [tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 banned-api = {}
 
 [tool.ruff.format]

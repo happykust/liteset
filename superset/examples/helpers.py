@@ -82,10 +82,17 @@ def update_slice_ids(pos: dict[Any, Any]) -> list[Slice]:
 
 
 def merge_slice(slc: Slice) -> None:
-    """Upsert a Slice by name."""
+    """Upsert a Slice by name.
+
+    Flush after delete to ensure the old row is removed before
+    inserting the replacement.  Without this explicit flush the
+    new slice's ``datasource_id`` may be lost when SQLAlchemy
+    reorders pending operations.
+    """
     existing = _ctx.session.query(Slice).filter_by(slice_name=slc.slice_name).first()
     if existing:
         _ctx.session.delete(existing)
+        _ctx.session.flush()
     _ctx.session.add(slc)
 
 

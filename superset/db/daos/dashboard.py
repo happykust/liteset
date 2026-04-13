@@ -65,6 +65,30 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         # Try slug
         return await self.find_one_or_none(slug=str(id_or_slug))
 
+    async def find_with_filters_and_options(
+        self,
+        filters: list[Any],
+        options: list[Any] | None = None,
+    ) -> Dashboard | None:
+        """Find a single dashboard matching all filters, with eager-loaded options."""
+        stmt = select(Dashboard).where(*filters)
+        if options:
+            stmt = stmt.options(*options)
+        result = await self.session.execute(stmt)
+        return result.scalars().unique().one_or_none()
+
+    async def find_by_id_with_options(
+        self,
+        dashboard_id: int,
+        options: list[Any] | None = None,
+    ) -> Dashboard | None:
+        """Find a dashboard by ID with eager-loaded options."""
+        stmt = select(Dashboard).where(Dashboard.id == dashboard_id)
+        if options:
+            stmt = stmt.options(*options)
+        result = await self.session.execute(stmt)
+        return result.scalars().unique().one_or_none()
+
     async def validate_slug_uniqueness(self, slug: str) -> bool:
         """Check that no dashboard exists with the given slug."""
         if not slug:
@@ -107,6 +131,39 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         if dashboard.json_metadata:
             try:
                 md = loads(dashboard.json_metadata)  # type: ignore[arg-type]
+            except (ValueError, TypeError):
+                pass
+
+        # The original FAB/Marshmallow schema (JsonMetadataSchema) parses the
+        # json_metadata string and extracts nested keys (positions, color_scheme,
+        # etc.) as top-level fields in `data`.  Our controller passes
+        # json_metadata as a raw string, so we must parse it here to extract
+        # positions and other nested fields that set_dash_metadata relies on.
+        if "json_metadata" in data and isinstance(data["json_metadata"], str):
+            try:
+                parsed_meta = loads(data["json_metadata"])
+                if isinstance(parsed_meta, dict):
+                    # Merge parsed keys into data for downstream lookups,
+                    # but don't overwrite explicitly provided top-level keys.
+                    for key in (
+                        "positions",
+                        "color_scheme",
+                        "color_namespace",
+                        "label_colors",
+                        "shared_label_colors",
+                        "map_label_colors",
+                        "color_scheme_domain",
+                        "expanded_slices",
+                        "refresh_frequency",
+                        "timed_refresh_immune_slices",
+                        "default_filters",
+                        "filter_scopes",
+                        "cross_filters_enabled",
+                        "filter_bar_orientation",
+                        "native_filter_configuration",
+                    ):
+                        if key in parsed_meta and key not in data:
+                            data[key] = parsed_meta[key]
             except (ValueError, TypeError):
                 pass
 

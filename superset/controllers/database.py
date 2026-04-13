@@ -27,12 +27,14 @@ import re
 from typing import Any, cast, TYPE_CHECKING
 
 import msgspec
-from litestar import Controller, delete, get, post, put
-from litestar.datastructures import UploadFile
+from litestar import Controller, Request, delete, get, post, put
+from litestar.datastructures import State, UploadFile
 from litestar.di import Provide
 from litestar.enums import RequestEncodingType
 from litestar.params import Body, Parameter
 from litestar.response import Response, Stream
+
+from superset.config import SupersetSettings
 
 from superset.commands.database import (
     CreateDatabaseCommand,
@@ -63,6 +65,7 @@ from superset.events import event_logger
 from superset.exceptions import (
     CommandInvalidError,
     ObjectNotFoundError,
+    SupersetException,
     SupersetSecurityException,
 )
 from superset.guards.rbac import require_permission
@@ -82,12 +85,12 @@ from superset.schemas.database import (
     SchemaAccessForUploadResponse,
     SchemasResponse,
     SelectStarResponse,
-    TableExtraMetadata,
     TableMetadataColumn,
     TableMetadataIndex,
     TableMetadataResponse,
     ValidateSQLSchema,
 )
+from superset.sql.parse import Table
 from superset.typing import DatabaseDAOProtocol, SecurityManagerProtocol, UserProtocol
 from superset.utils import filter_none, filter_unset, mask_uri_password
 from superset.utils.database import get_async_connection
@@ -204,6 +207,11 @@ def _inspect_table_metadata(  # noqa: C901
 
     # --- select star -------------------------------------------------------
     # Generate SELECT * using the connection's dialect for proper quoting.
+    # Matches original ``database.select_star(table, indent=True, cols=columns,
+    # latest_partition=True)`` as closely as possible without access to the
+    # Database model's ``select_star`` method.  The original uses
+    # ``BaseEngineSpec.select_star`` which requires ``database.get_columns``
+    # and ``database.compile_sqla_query`` — methods not yet ported.
     dialect = sync_conn.dialect
     quoted_table = dialect.identifier_preparer.quote_identifier(table_name)
     if schema:
@@ -213,8 +221,10 @@ def _inspect_table_metadata(  # noqa: C901
         full_name = quoted_table
 
     qry = select(text("*")).select_from(text(full_name)).limit(100)
-    select_star_sql = str(
-        qry.compile(dialect=dialect, compile_kwargs={"literal_binds": True})
+    raw_sql = str(qry.compile(dialect=dialect, compile_kwargs={"literal_binds": True}))
+    # Apply simple indentation to match ``indent=True`` from original
+    select_star_sql = raw_sql.replace(" FROM ", "\nFROM ").replace(
+        " \n LIMIT ", "\nLIMIT "
     )
 
     return {
@@ -227,41 +237,12 @@ def _inspect_table_metadata(  # noqa: C901
         "comment": table_comment,
     }
 
-
-def _inspect_table_extra_metadata(
-    sync_conn: Any,
-    table_name: str,
-    schema: str | None,
-) -> dict[str, Any]:
-    """Run extra metadata inspection synchronously.
-
-    Designed to be called via ``async_conn.run_sync()``.
-    Mirrors ``db_engine_spec.get_extra_table_metadata`` base implementation
-    which returns empty dicts by default (engine-specific overrides may
-    provide partitions, clustering info, etc.).
-    """
-    from sqlalchemy import inspect as sa_inspect
-
-    result: dict[str, Any] = {
-        "metadata": {},
-        "partitions": {},
-        "clustering": {},
-    }
-
-    inspector = sa_inspect(sync_conn)
-
-    # Attempt to gather partition/clustering info from table comment or
-    # options if the dialect supports it.  The base engine spec in the
-    # original Superset simply returns ``{}`` — we replicate that and let
-    # callers layer on engine-specific enrichment later.
-    try:
-        comment = inspector.get_table_comment(table_name, schema=schema)
-        if isinstance(comment, dict) and comment.get("text"):
-            result["metadata"]["comment"] = comment["text"]
-    except (NotImplementedError, Exception):  # noqa: BLE001, S110
-        pass  # Some engines don't support get_table_comment
-
-    return result
+    # NOTE: _inspect_table_extra_metadata was removed.  Both the deprecated
+    # and non-deprecated extra-metadata endpoints now delegate to
+    # ``database.db_engine_spec.get_extra_table_metadata()`` which matches
+    # the original Superset implementation.  The base engine spec returns
+    # ``{}`` and engine-specific overrides (e.g. BigQuery) provide
+    # partition/clustering info.
 
 
 def _build_database_result(db: Any) -> DatabaseDetailResult:
@@ -342,6 +323,7 @@ class DatabaseController(Controller):
                 "created_by.first_name",
                 "created_by.last_name",
             ],
+            list_title="List Database",
         )
         # Post-process: add computed columns that normally come from
         # engine_spec but are needed by the frontend to avoid undefined.
@@ -374,7 +356,7 @@ class DatabaseController(Controller):
         return await get_info_payload(
             dao=dao,
             model_name="Database",
-            permissions=["can_read", "can_write"],
+            permissions=["can_upload", "can_read", "can_write", "can_export"],
         )
 
     # ------------------------------------------------------------------
@@ -766,25 +748,11 @@ class DatabaseController(Controller):
             # Batch-fetch extra (certification info) from SqlaTable for
             # all discovered tables/views so the frontend gets it.
             all_names = set(table_names) | set(view_names)
-            extra_lookup: dict[str, dict[str, Any]] = {}
-            if all_names:
-                from sqlalchemy import select as sa_select
-
-                from superset.models.connectors import SqlaTable
-
-                stmt = sa_select(SqlaTable.table_name, SqlaTable.extra).where(
-                    SqlaTable.database_id == pk,
-                    SqlaTable.table_name.in_(all_names),
-                )
-                if schema:
-                    stmt = stmt.where(SqlaTable.schema == schema)
-                rows = (await dao.session.execute(stmt)).all()
-                for tbl_name, extra_raw in rows:
-                    if extra_raw:
-                        try:
-                            extra_lookup[tbl_name] = json.loads(extra_raw)
-                        except (json.JSONDecodeError, TypeError):
-                            pass
+            extra_lookup = await dao.get_table_extra_lookup(
+                database_id=pk,
+                table_names=all_names,
+                schema=schema,
+            )
 
             options: list[dict[str, Any]] = sorted(
                 [
@@ -831,23 +799,35 @@ class DatabaseController(Controller):
         schema: str = Parameter(query="schema", default=""),
         catalog: str | None = Parameter(query="catalog", default=None),
     ) -> TableMetadataResponse:
+        """GET /api/v1/database/{pk}/table_metadata/
+
+        Mirrors the original ``DatabaseRestApi.table_metadata`` which uses
+        ``security_manager.raise_for_access(database=database, table=table)``
+        for TABLE-level permission checks.
+        """
+        event_logger.log(
+            "database.table_metadata.init",
+            object_ref=f"database:{pk}",
+        )
         # Accept both ``schema`` (original Superset) and ``schema_name`` (alias)
         effective_schema = schema_name or schema or None
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
-        try:
-            await security_manager.raise_for_access(
-                database=database,
-                catalog=catalog,
-                schema=effective_schema,
-                user=current_user,
-            )
-        except (SupersetSecurityException, ObjectNotFoundError) as exc:
-            raise ObjectNotFoundError("Table", name) from exc
 
         if not name:
             raise CommandInvalidError("Missing required parameter: name")
+
+        table = Table(name, effective_schema, catalog)
+        try:
+            await security_manager.raise_for_access(
+                database=database,
+                table=table,
+                user=current_user,
+            )
+        except SupersetSecurityException as exc:
+            # Match original: raise 404 to hide table existence
+            raise ObjectNotFoundError("Table", name) from exc
 
         try:
             async with get_async_connection(database) as (conn, _engine_spec):
@@ -933,48 +913,297 @@ class DatabaseController(Controller):
         schema_name: str = Parameter(query="schema_name", default=""),
         schema: str = Parameter(query="schema", default=""),
         catalog: str | None = Parameter(query="catalog", default=None),
-    ) -> TableExtraMetadata:
+    ) -> dict[str, Any]:
+        """GET /api/v1/database/{pk}/table_metadata/extra/
+
+        Mirrors the original ``DatabaseRestApi.table_extra_metadata``
+        which delegates to ``database.db_engine_spec.get_extra_table_metadata()``.
+        """
+        event_logger.log(
+            "database.table_extra_metadata.init",
+            object_ref=f"database:{pk}",
+        )
         # Accept both ``schema`` (original Superset) and ``schema_name`` (alias)
         effective_schema = schema_name or schema or None
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
-        try:
-            await security_manager.raise_for_access(
-                database=database,
-                catalog=catalog,
-                schema=effective_schema,
-                user=current_user,
-            )
-        except (SupersetSecurityException, ObjectNotFoundError) as exc:
-            raise ObjectNotFoundError("Table", name) from exc
 
         if not name:
             raise CommandInvalidError("Missing required parameter: name")
 
+        table = Table(name, effective_schema, catalog)
+        try:
+            await security_manager.raise_for_access(
+                database=database,
+                table=table,
+                user=current_user,
+            )
+        except SupersetSecurityException as exc:
+            # Match original: raise 404 to hide table existence
+            raise ObjectNotFoundError("Table", name) from exc
+
+        # Delegate to engine spec — matches original:
+        #   database.db_engine_spec.get_extra_table_metadata(database, table)
+        db_engine_spec = getattr(database, "db_engine_spec", None)
+        if db_engine_spec and hasattr(db_engine_spec, "get_extra_table_metadata"):
+            payload = await asyncio.to_thread(
+                db_engine_spec.get_extra_table_metadata,
+                database,
+                table,
+            )
+        else:
+            payload = {}
+
+        return payload
+
+    # ------------------------------------------------------------------
+    # GET /{pk}/table/{table_name}/{schema_name}/ — table metadata (deprecated path)
+    # ------------------------------------------------------------------
+    @get(
+        "/{pk:int}/table/{table_name:path}/{schema_name:str}/",
+        guards=[require_permission("can_read", "Database")],
+    )
+    async def table_metadata_deprecated(
+        self,
+        pk: int,
+        table_name: str,
+        schema_name: str,
+        dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> TableMetadataResponse | Response[Any]:
+        """Get database table metadata (deprecated path).
+
+        Deprecated in favour of ``GET /{pk}/table_metadata/`` which uses
+        query parameters and supports catalogs (SIP-95).  This path-based
+        variant is kept for backward compatibility with older API clients.
+
+        Mirrors the original ``DatabaseRestApi.table_metadata_deprecated``
+        which uses the ``@check_table_access`` decorator for TABLE-level
+        permission checks and delegates to ``get_table_metadata()`` from
+        ``superset/databases/utils.py``.
+        """
+        from urllib.parse import unquote_plus
+
+        from sqlalchemy.exc import SQLAlchemyError
+
+        event_logger.log(
+            "database.table_metadata_deprecated.init",
+            object_ref=f"database:{pk}",
+        )
+
+        # Parse JS-style URI path items (mirrors parse_js_uri_path_item)
+        parsed_schema: str | None = schema_name
+        if schema_name in ("null", "undefined"):
+            parsed_schema = None
+        else:
+            parsed_schema = unquote_plus(schema_name)
+
+        parsed_table = unquote_plus(table_name)
+        if not parsed_table:
+            return Response(
+                content={"message": "Table name undefined"},
+                status_code=422,
+            )
+
+        database = await dao.find_by_id(pk)
+        if not database:
+            event_logger.log(
+                "database.table_metadata_deprecated.error",
+                object_ref=f"database:{pk}",
+            )
+            raise ObjectNotFoundError("Database", pk)
+
+        # Table-level access check — matches original @check_table_access
+        table = Table(parsed_table, parsed_schema)
+        try:
+            await security_manager.raise_for_access(
+                database=database,
+                table=table,
+                user=current_user,
+            )
+        except SupersetSecurityException as exc:
+            event_logger.log(
+                "database.table_metadata_deprecated.error",
+                object_ref=f"database:{pk}",
+            )
+            _log.warning(
+                "Permission denied for user %s on table: %s schema: %s",
+                current_user,
+                parsed_table,
+                parsed_schema,
+            )
+            raise ObjectNotFoundError("Table", parsed_table) from exc
+
         try:
             async with get_async_connection(database) as (conn, _engine_spec):
                 raw = await conn.run_sync(
-                    _inspect_table_extra_metadata,
-                    name,
-                    effective_schema,
+                    _inspect_table_metadata,
+                    parsed_table,
+                    parsed_schema,
                 )
-        except Exception as exc:
-            _log.warning(
-                "Failed to fetch extra table metadata for %s.%s on database %s: %s",
-                effective_schema,
-                name,
-                pk,
-                exc,
+        except SQLAlchemyError as exc:
+            event_logger.log(
+                "database.table_metadata_deprecated.error",
+                object_ref=f"database:{pk}",
             )
-            # Return empty metadata on failure (matches original behaviour)
-            return TableExtraMetadata()
+            return Response(
+                content={"message": str(exc)},
+                status_code=422,
+            )
+        except SupersetException as exc:
+            event_logger.log(
+                "database.table_metadata_deprecated.error",
+                object_ref=f"database:{pk}",
+            )
+            return Response(
+                content={"message": exc.message},
+                status_code=exc.status_code,
+            )
 
-        return TableExtraMetadata(
-            metadata=raw.get("metadata", {}),
-            partitions=raw.get("partitions", {}),
-            clustering=raw.get("clustering", {}),
+        columns = [
+            TableMetadataColumn(
+                name=c["name"],
+                type=c.get("type", ""),
+                long_type=c.get("longType"),
+                keys=c.get("keys", []),
+                comment=c.get("comment"),
+            )
+            for c in raw.get("columns", [])
+        ]
+        foreign_keys = [
+            TableMetadataIndex(
+                column_names=fk.get("column_names", []),
+                name=fk.get("name"),
+                type=fk.get("type", "fk"),
+                options={
+                    k: v
+                    for k, v in fk.items()
+                    if k not in ("column_names", "name", "type")
+                },
+            )
+            for fk in raw.get("foreignKeys", [])
+        ]
+        indexes = [
+            TableMetadataIndex(
+                column_names=idx.get("column_names", []),
+                name=idx.get("name"),
+                type=idx.get("type", "index"),
+                options={
+                    k: v
+                    for k, v in idx.items()
+                    if k not in ("column_names", "name", "type")
+                },
+            )
+            for idx in raw.get("indexes", [])
+        ]
+
+        event_logger.log(
+            "database.table_metadata_deprecated.success",
+            object_ref=f"database:{pk}",
         )
+        return TableMetadataResponse(
+            name=raw.get("name", parsed_table),
+            columns=columns,
+            foreign_keys=foreign_keys,
+            indexes=indexes,
+            primary_key=raw.get("primaryKey", {}),
+            select_star=raw.get("selectStar"),
+            comment=raw.get("comment"),
+        )
+
+    # ------------------------------------------------------------------
+    # GET /{pk}/table_extra/{table_name}/{schema_name}/ — extra metadata (deprecated)
+    # ------------------------------------------------------------------
+    @get(
+        "/{pk:int}/table_extra/{table_name:path}/{schema_name:str}/",
+        guards=[require_permission("can_read", "Database")],
+    )
+    async def table_extra_metadata_deprecated(
+        self,
+        pk: int,
+        table_name: str,
+        schema_name: str,
+        dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
+        """Get table extra metadata (deprecated path).
+
+        Deprecated in 4.0 in favour of ``GET /{pk}/table_metadata/extra/``
+        which uses query parameters and supports catalogs (SIP-95).  This
+        path-based variant is kept for backward compatibility.
+
+        Mirrors the original ``DatabaseRestApi.table_extra_metadata_deprecated``
+        which uses ``@check_table_access`` for TABLE-level permission checks
+        and delegates to ``database.db_engine_spec.get_extra_table_metadata()``.
+        """
+        from urllib.parse import unquote_plus
+
+        event_logger.log(
+            "database.table_extra_metadata_deprecated.init",
+            object_ref=f"database:{pk}",
+        )
+
+        parsed_schema: str | None = schema_name
+        if schema_name in ("null", "undefined"):
+            parsed_schema = None
+        else:
+            parsed_schema = unquote_plus(schema_name)
+
+        parsed_table = unquote_plus(table_name)
+        if not parsed_table:
+            raise CommandInvalidError("Table name undefined")
+
+        database = await dao.find_by_id(pk)
+        if not database:
+            event_logger.log(
+                "database.table_extra_metadata_deprecated.error",
+                object_ref=f"database:{pk}",
+            )
+            raise ObjectNotFoundError("Database", pk)
+
+        # Table-level access check — matches original @check_table_access
+        table = Table(parsed_table, parsed_schema)
+        try:
+            await security_manager.raise_for_access(
+                database=database,
+                table=table,
+                user=current_user,
+            )
+        except SupersetSecurityException as exc:
+            event_logger.log(
+                "database.table_extra_metadata_deprecated.error",
+                object_ref=f"database:{pk}",
+            )
+            _log.warning(
+                "Permission denied for user %s on table: %s schema: %s",
+                current_user,
+                parsed_table,
+                parsed_schema,
+            )
+            raise ObjectNotFoundError("Table", parsed_table) from exc
+
+        # Delegate to engine spec — matches original:
+        #   database.db_engine_spec.get_extra_table_metadata(database, table)
+        # The base implementation returns {}, engine-specific overrides
+        # (e.g. BigQuery) return partition/clustering info.
+        db_engine_spec = getattr(database, "db_engine_spec", None)
+        if db_engine_spec and hasattr(db_engine_spec, "get_extra_table_metadata"):
+            payload = await asyncio.to_thread(
+                db_engine_spec.get_extra_table_metadata,
+                database,
+                table,
+            )
+        else:
+            payload = {}
+
+        event_logger.log(
+            "database.table_extra_metadata_deprecated.success",
+            object_ref=f"database:{pk}",
+        )
+        return payload
 
     # ------------------------------------------------------------------
     # GET /{pk}/select_star/{table_name}/ — SELECT * SQL
@@ -988,6 +1217,8 @@ class DatabaseController(Controller):
         pk: int,
         table_name: str,
         dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
         schema_name: str = Parameter(query="schema_name", default=""),
     ) -> SelectStarResponse:
         if not _IDENTIFIER_RE.match(table_name):
@@ -995,6 +1226,21 @@ class DatabaseController(Controller):
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
+
+        # Table-level access check — mirrors the original @check_table_access
+        # decorator from superset_old/databases/decorators.py which calls
+        # security_manager.can_access_table(database, Table(...))
+        effective_schema = schema_name or None
+        table = Table(table_name, effective_schema)
+        try:
+            await security_manager.raise_for_access(
+                database=database,
+                table=table,
+                user=current_user,
+            )
+        except SupersetSecurityException as exc:
+            raise ObjectNotFoundError("Table", table_name) from exc
+
         # SELECT * generation delegated to engine in production
         return SelectStarResponse(result=f'SELECT *\nFROM "{table_name}"')
 
@@ -1011,6 +1257,8 @@ class DatabaseController(Controller):
         table_name: str,
         schema_name: str,
         dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> SelectStarResponse:
         if not _IDENTIFIER_RE.match(table_name):
             raise CommandInvalidError(f"Invalid table name: {table_name}")
@@ -1019,6 +1267,19 @@ class DatabaseController(Controller):
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
+
+        # Table-level access check — mirrors the original @check_table_access
+        # decorator from superset_old/databases/decorators.py
+        table = Table(table_name, schema_name or None)
+        try:
+            await security_manager.raise_for_access(
+                database=database,
+                table=table,
+                user=current_user,
+            )
+        except SupersetSecurityException as exc:
+            raise ObjectNotFoundError("Table", table_name) from exc
+
         qualified = (
             f'"{schema_name}"."{table_name}"' if schema_name else f'"{table_name}"'
         )
@@ -1117,6 +1378,7 @@ class DatabaseController(Controller):
     @post(
         "/{pk:int}/validate_sql/",
         guards=[require_permission("can_read", "Database")],
+        status_code=200,
     )
     async def validate_sql(
         self,
@@ -1145,7 +1407,7 @@ class DatabaseController(Controller):
     async def export(
         self,
         dao: DatabaseDAOProtocol,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
         token: str | None = Parameter(query="token", default=None),
     ) -> Stream:
         ids = extract_ids(rison_params)
@@ -1224,91 +1486,106 @@ class DatabaseController(Controller):
         guards=[require_permission("can_read", "Database")],
     )
     async def available(self) -> dict[str, Any]:
+        """GET /api/v1/database/available/ — list engine specs.
+
+        Mirrors ``superset_old/databases/api.py::available``. The
+        ``preferred`` flag is True only for engines whose ``engine_name``
+        appears in the ``PREFERRED_DATABASES`` config list, and the
+        response is sorted so preferred engines come first — in the order
+        they appear in the config — followed by the rest sorted
+        alphabetically by display name.
+        """
         from superset.db.engine_specs import _get_sync_spec_map, _NATIVE_SPECS
+
+        settings_obj = SupersetSettings()  # type: ignore[call-arg]
+        preferred_names: list[str] = list(
+            getattr(settings_obj, "preferred_databases", [])
+        )
+        preferred_set: set[str] = set(preferred_names)
+        preferred_index: dict[str, int] = {
+            name: idx for idx, name in enumerate(preferred_names)
+        }
 
         databases: list[dict[str, Any]] = []
 
-        # 1. Native async engine specs
-        for engine_key, spec_cls in sorted(_NATIVE_SPECS.items()):
-            databases.append(
-                {
-                    "name": getattr(spec_cls, "engine_name", engine_key),
-                    "engine": engine_key,
-                    "preferred": True,
-                    "available_drivers": [
-                        getattr(spec_cls, "default_driver", "") or engine_key
-                    ],
-                    "default_driver": getattr(spec_cls, "default_driver", ""),
-                    "sqlalchemy_uri_placeholder": (
-                        f"{engine_key}+{getattr(spec_cls, 'default_driver', '')}://"
-                    ),
-                    "parameters": {
-                        "properties": {
-                            "host": {"type": "string"},
-                            "port": {"type": "integer"},
-                            "username": {"type": "string"},
-                            "password": {"type": "string"},
-                            "database": {"type": "string"},
-                        },
-                        "required": ["host", "database"],
-                    },
-                    "engine_information": {
-                        "supports_file_upload": False,
-                        "disable_ssh_tunneling": False,
-                        "supports_dynamic_catalog": getattr(
-                            spec_cls, "supports_dynamic_catalog", False
-                        ),
-                        "supports_oauth2": getattr(spec_cls, "supports_oauth2", False),
-                    },
-                }
+        def _build_payload(
+            engine_key: str,
+            spec_cls: Any,
+            *,
+            sync_fallback: bool,
+        ) -> dict[str, Any]:
+            engine_name = getattr(spec_cls, "engine_name", engine_key)
+            default_driver = getattr(spec_cls, "default_driver", "") or ""
+            placeholder = (
+                f"{engine_key}+{default_driver}://"
+                if default_driver
+                else f"{engine_key}://"
             )
+            return {
+                "name": engine_name,
+                "engine": engine_key,
+                "preferred": engine_name in preferred_set,
+                "available_drivers": [default_driver or engine_key],
+                "default_driver": default_driver,
+                "sqlalchemy_uri_placeholder": placeholder,
+                "parameters": {
+                    "properties": {
+                        "host": {"type": "string"},
+                        "port": {"type": "integer"},
+                        "username": {"type": "string"},
+                        "password": {"type": "string"},
+                        "database": {"type": "string"},
+                    },
+                    "required": ["host", "database"],
+                },
+                "engine_information": {
+                    "supports_file_upload": getattr(
+                        spec_cls, "supports_file_upload", False
+                    )
+                    if sync_fallback
+                    else False,
+                    "disable_ssh_tunneling": getattr(
+                        spec_cls, "disable_ssh_tunneling", False
+                    )
+                    if sync_fallback
+                    else False,
+                    "supports_dynamic_catalog": getattr(
+                        spec_cls, "supports_dynamic_catalog", False
+                    ),
+                    "supports_oauth2": getattr(spec_cls, "supports_oauth2", False),
+                },
+            }
+
+        # 1. Native async engine specs
+        for engine_key, spec_cls in _NATIVE_SPECS.items():
+            if not getattr(spec_cls, "engine_name", None):
+                # Skip abstract base specs with no engine_name; mirrors the
+                # original "if not drivers: continue" filter.
+                continue
+            databases.append(_build_payload(engine_key, spec_cls, sync_fallback=False))
 
         # 2. Sync fallback engine specs (from superset.db_engine_specs)
         native_engines = set(_NATIVE_SPECS.keys())
         sync_specs = _get_sync_spec_map()
-        for engine_key, spec_cls in sorted(sync_specs.items()):
+        for engine_key, spec_cls in sync_specs.items():
             if engine_key in native_engines:
                 continue
-            engine_name = getattr(spec_cls, "engine_name", engine_key)
-            default_driver = getattr(spec_cls, "default_driver", "")
-            databases.append(
-                {
-                    "name": engine_name,
-                    "engine": engine_key,
-                    "preferred": False,
-                    "available_drivers": [default_driver or engine_key],
-                    "default_driver": default_driver,
-                    "sqlalchemy_uri_placeholder": (
-                        f"{engine_key}+{default_driver}://"
-                        if default_driver
-                        else f"{engine_key}://"
-                    ),
-                    "parameters": {
-                        "properties": {
-                            "host": {"type": "string"},
-                            "port": {"type": "integer"},
-                            "username": {"type": "string"},
-                            "password": {"type": "string"},
-                            "database": {"type": "string"},
-                        },
-                        "required": ["host", "database"],
-                    },
-                    "engine_information": {
-                        "supports_file_upload": getattr(
-                            spec_cls, "supports_file_upload", False
-                        ),
-                        "disable_ssh_tunneling": getattr(
-                            spec_cls, "disable_ssh_tunneling", False
-                        ),
-                        "supports_dynamic_catalog": getattr(
-                            spec_cls, "supports_dynamic_catalog", False
-                        ),
-                        "supports_oauth2": getattr(spec_cls, "supports_oauth2", False),
-                    },
-                }
-            )
+            if not getattr(spec_cls, "engine_name", None):
+                continue
+            databases.append(_build_payload(engine_key, spec_cls, sync_fallback=True))
 
-        return {"databases": databases}
+        # Sort: preferred first (in config order), then the rest alphabetically.
+        # ``name`` can be ``None`` for custom specs that don't define
+        # ``engine_name``; coerce to empty string for stable ordering.
+        preferred = sorted(
+            (db for db in databases if db["preferred"]),
+            key=lambda d: preferred_index.get(d["name"] or "", len(preferred_names)),
+        )
+        others = sorted(
+            (db for db in databases if not db["preferred"]),
+            key=lambda d: d["name"] or "",
+        )
+        return {"databases": preferred + others}
 
     # ------------------------------------------------------------------
     # POST /validate_parameters/ — param validation
@@ -1316,6 +1593,7 @@ class DatabaseController(Controller):
     @post(
         "/validate_parameters/",
         guards=[require_permission("can_write", "Database")],
+        status_code=200,
     )
     async def validate_parameters(
         self,

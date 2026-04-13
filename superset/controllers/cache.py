@@ -26,14 +26,14 @@ import logging
 
 import msgspec
 from litestar import Controller, post
+from litestar.di import Provide
 from litestar.response import Response
-from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from superset.db.daos.cache import AsyncCacheKeyDAO
 from superset.events import event_logger
 from superset.guards.rbac import require_permission
-from superset.models.cache import CacheKey
 
 logger = logging.getLogger(__name__)
 
@@ -69,9 +69,16 @@ class CacheInvalidateSchema(msgspec.Struct, rename="camel"):
 # ---------------------------------------------------------------------------
 
 
+def _provide_cache_key_dao(session: AsyncSession) -> AsyncCacheKeyDAO:
+    return AsyncCacheKeyDAO(session)
+
+
 class CacheController(Controller):
     path = "/api/v1/cachekey"
     tags = ["Cache"]
+    dependencies = {
+        "dao": Provide(_provide_cache_key_dao, sync_to_thread=False),
+    }
 
     @post(
         "/invalidate",
@@ -81,7 +88,7 @@ class CacheController(Controller):
     async def invalidate(
         self,
         data: CacheInvalidateSchema,
-        session: AsyncSession,
+        dao: AsyncCacheKeyDAO,
     ) -> Response[dict[str, str]]:
         """POST /api/v1/cachekey/invalidate -- invalidate cache keys.
 
@@ -92,32 +99,18 @@ class CacheController(Controller):
 
         This is a 1:1 port of the original Flask endpoint.
         """
-        from superset.models.connectors import SqlaTable
-        from superset.models.core import Database
-
         # -- 1. Resolve datasource UIDs --------------------------------
         datasource_uids: set[str] = set(data.datasource_uids)
 
         for ds in data.datasources:
-            # Replicate SqlaTable.get_datasource_by_name via async query
-            stmt = (
-                select(SqlaTable)
-                .join(Database, SqlaTable.database_id == Database.id)
-                .where(
-                    SqlaTable.table_name == ds.datasource_name,
-                    Database.database_name == ds.database_name,
-                    SqlaTable.catalog == ds.catalog,
-                )
+            uid = await dao.resolve_datasource_uid(
+                database_name=ds.database_name,
+                datasource_name=ds.datasource_name,
+                catalog=ds.catalog,
+                schema=ds.schema,
             )
-            result = await session.execute(stmt)
-            candidates = result.scalars().all()
-
-            # Schema matching: handle '' and None equivalence
-            schema = ds.schema or None
-            for tbl in candidates:
-                if schema == (tbl.schema or None):
-                    datasource_uids.add(tbl.uid)
-                    break
+            if uid is not None:
+                datasource_uids.add(uid)
 
         if not datasource_uids:
             return Response(
@@ -126,11 +119,7 @@ class CacheController(Controller):
             )
 
         # -- 2. Find matching CacheKey rows ----------------------------
-        cache_key_result = await session.execute(
-            select(CacheKey).where(CacheKey.datasource_uid.in_(datasource_uids))
-        )
-        cache_key_objs = cache_key_result.scalars().all()
-        cache_keys = [ck.cache_key for ck in cache_key_objs]
+        cache_keys = await dao.find_keys_by_datasource_uids(datasource_uids)
 
         if not cache_keys:
             return Response(
@@ -139,10 +128,6 @@ class CacheController(Controller):
             )
 
         # -- 3. Delete from cache backend (best effort) ----------------
-        # The original uses Flask-Caching's cache_manager.cache.delete_many.
-        # In the Litestar app the cache backend is not directly available;
-        # cache entries will expire naturally via TTL.  If a cache backend
-        # is wired in later, the deletion call can be inserted here.
         logger.info(
             "Cache invalidation: %d keys for %d datasources (backend eviction "
             "deferred to TTL)",
@@ -152,19 +137,14 @@ class CacheController(Controller):
 
         # -- 4. Delete CacheKey rows from DB ---------------------------
         try:
-            await session.execute(
-                sa_delete(CacheKey).where(CacheKey.cache_key.in_(cache_keys))
-            )
-            await session.flush()
-
+            deleted = await dao.delete_by_cache_keys(cache_keys)
             logger.info(
                 "Invalidated %d cache records for %d datasources",
-                len(cache_keys),
+                deleted,
                 len(datasource_uids),
             )
         except SQLAlchemyError:
             logger.exception("Failed to delete cache key records")
-            await session.rollback()
             return Response(
                 content={"message": "Failed to delete cache key records"},
                 status_code=500,

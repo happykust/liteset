@@ -502,7 +502,7 @@ class ExploreMixin:
 
     @property
     def is_rls_supported(self) -> bool:
-        raise NotImplementedError()
+        return False
 
     @property
     def cache_timeout(self) -> int:

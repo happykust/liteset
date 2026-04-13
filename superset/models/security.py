@@ -91,6 +91,12 @@ class User(Base):
     roles = relationship("Role", secondary=ab_user_role, backref="user")
     groups = relationship("Group", secondary=ab_user_group, backref="users")
 
+    def __str__(self) -> str:
+        return f"{self.first_name} {self.last_name}"
+
+    def __repr__(self) -> str:
+        return f"{self.first_name} {self.last_name}"
+
 
 class Role(Base):
     """Maps to Flask-AppBuilder's ``ab_role`` table."""
@@ -148,3 +154,29 @@ class PermissionView(Base):
 
     permission = relationship("Permission")
     view_menu = relationship("ViewMenu")
+
+
+class RegisterUser(Base):
+    """Maps to Flask-AppBuilder's ``ab_register_user`` table.
+
+    Stores pending user registration requests that are awaiting
+    email activation. Once activated, the user is created in
+    ``ab_user`` and the registration row is deleted.
+    """
+
+    __tablename__ = "ab_register_user"
+
+    id = Column(Integer, primary_key=True)
+    first_name = Column(String(64), nullable=False)
+    last_name = Column(String(64), nullable=False)
+    username = Column(String(128), unique=True, nullable=False)
+    password = Column(String(256), nullable=True)
+    email = Column(String(320), unique=True, nullable=False)
+    registration_date = Column(DateTime, nullable=True)
+    registration_hash = Column(String(256), nullable=True)
+
+    def __str__(self) -> str:
+        return f"{self.username}"
+
+    def __repr__(self) -> str:
+        return f"<RegisterUser {self.username}>"

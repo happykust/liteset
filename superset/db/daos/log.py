@@ -16,14 +16,49 @@
 # under the License.
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy import select
 
 from superset.db.base_dao import BaseAsyncDAO
 from superset.models.core import Log
+from superset.models.dashboard import Dashboard
+from superset.models.slice import Slice
 
 
 class AsyncLogDAO(BaseAsyncDAO[Log]):
     model_cls = Log
+
+    async def get_dashboard_titles(self, ids: set[int]) -> dict[int, str]:
+        """Return a mapping of dashboard ID to dashboard_title for the given IDs."""
+        if not ids:
+            return {}
+        stmt = select(Dashboard.id, Dashboard.dashboard_title).where(
+            Dashboard.id.in_(ids)
+        )
+        rows = (await self.session.execute(stmt)).all()
+        return {int(r[0]): r[1] or "" for r in rows}
+
+    async def get_slice_names(self, ids: set[int]) -> dict[int, str]:
+        """Return a mapping of slice ID to slice_name for the given IDs."""
+        if not ids:
+            return {}
+        stmt = select(Slice.id, Slice.slice_name).where(Slice.id.in_(ids))
+        rows = (await self.session.execute(stmt)).all()
+        return {int(r[0]): r[1] or "" for r in rows}
+
+    async def create_log(
+        self,
+        attributes: dict[str, Any],
+    ) -> Log:
+        """Create a Log record from a dict of column values.
+
+        Delegates to :meth:`BaseAsyncDAO.create` which calls
+        ``session.add()`` internally.  The caller (or the
+        ``provide_async_session`` dependency) is responsible for
+        committing.
+        """
+        return await self.create(attributes)
 
     async def get_recent_activity(
         self,

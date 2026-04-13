@@ -25,7 +25,7 @@ from abc import abstractmethod
 from pathlib import PurePosixPath
 from typing import Any
 
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 from superset.commands.base import AsyncBaseCommand
 from superset.exceptions import CommandInvalidError

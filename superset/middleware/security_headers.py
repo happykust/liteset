@@ -32,11 +32,13 @@ from __future__ import annotations
 from litestar.middleware.base import ASGIMiddleware
 from litestar.types import ASGIApp, Message, Receive, Scope, Send
 
+_CDN = "https://cdn.jsdelivr.net"
+
 _DEFAULT_CSP = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-    "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data: blob:; "
+    f"script-src 'self' 'unsafe-inline' 'unsafe-eval' {_CDN}; "
+    f"style-src 'self' 'unsafe-inline' {_CDN}; "
+    f"img-src 'self' data: blob: {_CDN}; "
     "font-src 'self' data:; "
     "connect-src 'self' ws: wss:; "
     "worker-src 'self' blob:"

@@ -577,3 +577,325 @@ class AsyncPermissionViewDAO:
         )
         result = await self.session.execute(stmt)
         return result.scalars().one_or_none()
+
+    async def create(self, attributes: dict[str, Any]) -> Any:
+        """Create a new permission-view mapping.
+
+        Expects ``permission_id`` and ``view_menu_id`` in *attributes*.
+        Mirrors FAB's ``ModelRestApi.post`` for PermissionViewMenu.
+        """
+        from superset.models.security import PermissionView
+
+        pv = PermissionView(**attributes)
+        self.session.add(pv)
+        await self.session.flush()
+        # Reload with relationships so the caller can access .permission / .view_menu
+        reloaded = await self.find_by_id(int(pv.id))
+        return reloaded
+
+    async def update(self, pv: Any, attributes: dict[str, Any]) -> Any:
+        """Update a permission-view mapping in-place.
+
+        Mirrors FAB's ``ModelRestApi.put`` for PermissionViewMenu.
+        """
+        for key, value in attributes.items():
+            setattr(pv, key, value)
+        await self.session.flush()
+        reloaded = await self.find_by_id(int(pv.id))
+        return reloaded
+
+    async def delete(self, pv: Any) -> None:
+        """Delete a single permission-view mapping.
+
+        Mirrors FAB's ``ModelRestApi.delete`` for PermissionViewMenu.
+        """
+        await self.session.delete(pv)
+        await self.session.flush()
+
+
+class AsyncPermissionDAO:
+    """Async DAO for FAB Permission model (ab_permission table).
+
+    Read-only in the original FAB PermissionApi (include_route_methods
+    only allows info, get, get_list).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def search(
+        self,
+        filters: list[Any] | None = None,
+        order_column: str = "id",
+        order_direction: str = "asc",
+        page: int = 0,
+        page_size: int = 25,
+    ) -> tuple[list[Any], int]:
+        """Search permissions with pagination."""
+        from sqlalchemy import func, select
+
+        from superset.models.security import Permission
+
+        stmt = select(Permission)
+        count_stmt = select(func.count()).select_from(Permission)
+
+        if filters:
+            for f in filters:
+                stmt = stmt.where(f)
+                count_stmt = count_stmt.where(f)
+
+        total = await self.session.scalar(count_stmt) or 0
+
+        order_col = getattr(Permission, order_column, Permission.id)
+        if order_direction == "desc":
+            stmt = stmt.order_by(order_col.desc())
+        else:
+            stmt = stmt.order_by(order_col.asc())
+
+        if page_size > 0:
+            stmt = stmt.offset(page * page_size).limit(page_size)
+
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all()), total
+
+    async def find_by_id(self, permission_id: int) -> Any | None:
+        """Get a single permission by ID."""
+        from sqlalchemy import select
+
+        from superset.models.security import Permission
+
+        stmt = select(Permission).where(Permission.id == permission_id)
+        result = await self.session.execute(stmt)
+        return result.scalars().one_or_none()
+
+
+class AsyncViewMenuDAO:
+    """Async DAO for FAB ViewMenu model (ab_view_menu table).
+
+    Full CRUD — mirrors the original FAB ViewMenuApi which exposes
+    all ModelRestApi methods (get_list, get, info, post, put, delete).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def search(
+        self,
+        filters: list[Any] | None = None,
+        order_column: str = "id",
+        order_direction: str = "asc",
+        page: int = 0,
+        page_size: int = 25,
+    ) -> tuple[list[Any], int]:
+        """Search view menus (resources) with pagination."""
+        from sqlalchemy import func, select
+
+        from superset.models.security import ViewMenu
+
+        stmt = select(ViewMenu)
+        count_stmt = select(func.count()).select_from(ViewMenu)
+
+        if filters:
+            for f in filters:
+                stmt = stmt.where(f)
+                count_stmt = count_stmt.where(f)
+
+        total = await self.session.scalar(count_stmt) or 0
+
+        order_col = getattr(ViewMenu, order_column, ViewMenu.id)
+        if order_direction == "desc":
+            stmt = stmt.order_by(order_col.desc())
+        else:
+            stmt = stmt.order_by(order_col.asc())
+
+        if page_size > 0:
+            stmt = stmt.offset(page * page_size).limit(page_size)
+
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all()), total
+
+    async def find_by_id(self, vm_id: int) -> Any | None:
+        """Get a single view menu by ID."""
+        from sqlalchemy import select
+
+        from superset.models.security import ViewMenu
+
+        stmt = select(ViewMenu).where(ViewMenu.id == vm_id)
+        result = await self.session.execute(stmt)
+        return result.scalars().one_or_none()
+
+    async def create(self, attributes: dict[str, Any]) -> Any:
+        """Create a new view menu (resource).
+
+        Mirrors FAB's ``ModelRestApi.post`` for ViewMenu.
+        """
+        from superset.models.security import ViewMenu
+
+        vm = ViewMenu(**attributes)
+        self.session.add(vm)
+        await self.session.flush()
+        return vm
+
+    async def update(self, vm: Any, attributes: dict[str, Any]) -> Any:
+        """Update a view menu in-place.
+
+        Mirrors FAB's ``ModelRestApi.put`` for ViewMenu.
+        """
+        for key, value in attributes.items():
+            setattr(vm, key, value)
+        await self.session.flush()
+        return vm
+
+    async def delete(self, vm: Any) -> None:
+        """Delete a single view menu.
+
+        Mirrors FAB's ``ModelRestApi.delete`` for ViewMenu.
+        """
+        await self.session.delete(vm)
+        await self.session.flush()
+
+
+class AsyncRegisterUserDAO:
+    """Async DAO for FAB RegisterUser model (ab_register_user table).
+
+    Mirrors the original ``UserRegistrationsRestAPI`` which uses
+    ``SQLAInterface(RegisterUser)`` through FAB's ``ModelRestApi``.
+    Provides full CRUD + search + distinct for pending registrations.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def search(
+        self,
+        filters: list[Any] | None = None,
+        order_column: str = "id",
+        order_direction: str = "asc",
+        page: int = 0,
+        page_size: int = 25,
+    ) -> tuple[list[Any], int]:
+        """Search pending registrations with filtering and pagination."""
+        from sqlalchemy import func, select
+
+        from superset.models.security import RegisterUser
+
+        stmt = select(RegisterUser)
+        count_stmt = select(func.count()).select_from(RegisterUser)
+
+        if filters:
+            for f in filters:
+                stmt = stmt.where(f)
+                count_stmt = count_stmt.where(f)
+
+        total = await self.session.scalar(count_stmt) or 0
+
+        order_col = getattr(RegisterUser, order_column, RegisterUser.id)
+        if order_direction == "desc":
+            stmt = stmt.order_by(order_col.desc())
+        else:
+            stmt = stmt.order_by(order_col.asc())
+
+        if page_size > 0:
+            stmt = stmt.offset(page * page_size).limit(page_size)
+
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all()), total
+
+    async def find_by_id(self, reg_id: int) -> Any | None:
+        """Get a single registration by ID."""
+        from sqlalchemy import select
+
+        from superset.models.security import RegisterUser
+
+        stmt = select(RegisterUser).where(RegisterUser.id == reg_id)
+        result = await self.session.execute(stmt)
+        return result.scalars().one_or_none()
+
+    async def find_by_username(self, username: str) -> Any | None:
+        """Find a registration by username (unique constraint check)."""
+        from sqlalchemy import select
+
+        from superset.models.security import RegisterUser
+
+        stmt = select(RegisterUser).where(RegisterUser.username == username)
+        result = await self.session.execute(stmt)
+        return result.scalars().one_or_none()
+
+    async def find_by_email(self, email: str) -> Any | None:
+        """Find a registration by email."""
+        from sqlalchemy import select
+
+        from superset.models.security import RegisterUser
+
+        stmt = select(RegisterUser).where(RegisterUser.email == email)
+        result = await self.session.execute(stmt)
+        return result.scalars().one_or_none()
+
+    async def create(self, attributes: dict[str, Any]) -> Any:
+        """Create a new registration request.
+
+        Mirrors FAB's ``ModelRestApi.post_headless``: simply persists the
+        data as-is via ``session.add() + session.flush()``. Password hashing
+        and ``registration_hash`` generation only happen in the register
+        FORM flow (``SecurityManager.add_register_user``), NOT in the
+        REST API path.
+        """
+        from superset.models.security import RegisterUser
+
+        reg = RegisterUser(**attributes)
+        self.session.add(reg)
+        await self.session.flush()
+        return reg
+
+    async def update(self, reg: Any, attributes: dict[str, Any]) -> Any:
+        """Update a registration record in-place.
+
+        Mirrors FAB's ``ModelRestApi.put`` for RegisterUser.
+        """
+        for key, value in attributes.items():
+            setattr(reg, key, value)
+        await self.session.flush()
+        return reg
+
+    async def delete(self, reg: Any) -> None:
+        """Delete a single registration record.
+
+        Mirrors FAB's ``SecurityManager.del_register_user``.
+        """
+        await self.session.delete(reg)
+        await self.session.flush()
+
+    async def get_distinct_values(
+        self,
+        column_name: str,
+        page: int = 0,
+        page_size: int = 25,
+        filter_value: str = "",
+    ) -> tuple[list[Any], int]:
+        """Get distinct values for a column (for filter dropdowns).
+
+        Mirrors FAB's ``ModelRestApi.distinct`` endpoint.
+        """
+        from sqlalchemy import func, select
+
+        from superset.models.security import RegisterUser
+
+        col = getattr(RegisterUser, column_name, None)
+        if col is None:
+            return [], 0
+
+        base_stmt = select(func.distinct(col))
+
+        if filter_value:
+            from superset.utils import escape_like
+
+            base_stmt = base_stmt.where(col.ilike(f"%{escape_like(filter_value)}%"))
+
+        total = await self.session.scalar(
+            select(func.count()).select_from(base_stmt.subquery())
+        )
+        stmt = base_stmt.offset(page * page_size).limit(page_size)
+        result = await self.session.execute(stmt)
+        values = result.scalars().all()
+
+        return list(values), total or 0

@@ -130,7 +130,9 @@ class ReportScheduleController(Controller):
         )
         total = await dao.count(filters=rison_filters or None)
         event_logger.log("report.list")
-        return serialize_list_response(items, total, _LIST_COLUMNS)
+        return serialize_list_response(
+            items, total, _LIST_COLUMNS, list_title="List Report Schedule",
+        )
 
     @get(
         "/{pk:int}",
@@ -241,7 +243,7 @@ class ReportScheduleController(Controller):
     async def bulk_delete(
         self,
         dao: Any,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
     ) -> dict[str, str]:
         """DELETE /api/v1/report/ — bulk delete report schedules."""
         ids = extract_ids_required(rison_params)

@@ -65,7 +65,7 @@ def mock_user():
     user = MagicMock()
     user.id = 1
     user.is_authenticated = True
-    user.permissions = {"can_read:Chart"}
+    user.permissions = {("can_read", "Chart")}
     return user
 
 

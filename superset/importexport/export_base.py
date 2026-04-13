@@ -25,7 +25,7 @@ from abc import abstractmethod
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 from superset.commands.base import AsyncBaseCommand
 

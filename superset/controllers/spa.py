@@ -24,12 +24,17 @@ API endpoints that must fall through to the Flask ASGI fallback mount.
 from __future__ import annotations
 
 import json
+import logging as _log
 import os
 from typing import Any
 
 from litestar import Controller, get, post, Request
 from litestar.datastructures import State
-from litestar.response import Template
+from litestar.response import Redirect, Template
+
+from superset.commands.dashboard import CreateDashboardCommand
+from superset.db.daos.dashboard import AsyncDashboardDAO
+from superset.db.daos.log import AsyncLogDAO
 
 SPA_ROUTE_PREFIXES: frozenset[str] = frozenset(
     {
@@ -71,7 +76,7 @@ _SPA_PATHS: list[str] = (
     + [f"/{prefix}" for prefix in SPA_ROUTE_PREFIXES]
 )
 
-# All 49 original FRONTEND_CONF_KEYS from Apache Superset's views/base.py,
+# All 47 original FRONTEND_CONF_KEYS from Apache Superset's views/base.py,
 # mapped to (settings_attr_name, default_value) for reading via getattr().
 # Keys that have no direct settings field use (None, <hardcoded_default>)
 # and are read from settings only if the attribute exists.
@@ -124,6 +129,12 @@ _FRONTEND_CONF_KEYS: tuple[str, ...] = (
     "SYNC_DB_PERMISSIONS_IN_ASYNC_MODE",
     "TABLE_VIZ_MAX_ROW_SERVER",
 )
+# NOTE: GUEST_TOKEN_HEADER_NAME is NOT in FRONTEND_CONF_KEYS.
+# The original only passes it in the embedded dashboard bootstrap
+# config at bootstrapData.config.GUEST_TOKEN_HEADER_NAME (see
+# superset_old/embedded/view.py).  The frontend reads it from
+# bootstrapData.config?.GUEST_TOKEN_HEADER_NAME only in the
+# embedded entry point (superset-frontend/src/embedded/index.tsx).
 
 # Mapping: FRONTEND_CONF_KEY -> (settings_attribute, default_value).
 # Superset config uses UPPER_CASE; Liteset settings uses lower_snake_case.
@@ -259,134 +270,10 @@ _CONF_KEY_DEFAULTS: dict[str, tuple[str, Any]] = {
     "TABLE_VIZ_MAX_ROW_SERVER": ("table_viz_max_row_server", 500000),
 }
 
-# Static menu items.  The React frontend splits items whose top-level
-# ``name`` is "Security", "Data", or "Manage" into the settings dropdown
-# automatically (see Menu.tsx MenuWrapper).  We only need to emit them
-# in ``menu_data.menu``; the ``settings`` key is kept as an empty list
-# because the frontend populates it client-side.
-_MENU_ITEMS: list[dict[str, Any]] = [
-    {
-        "name": "",
-        "label": "Dashboards",
-        "icon": "fa-dashboard",
-        "url": "/dashboard/list/",
-        "childs": [],
-    },
-    {
-        "name": "",
-        "label": "Charts",
-        "icon": "fa-bar-chart",
-        "url": "/chart/list/",
-        "childs": [],
-    },
-    {
-        "name": "",
-        "label": "Datasets",
-        "icon": "fa-table",
-        "url": "/tablemodelview/list/",
-        "childs": [],
-    },
-    {
-        "name": "SQL Lab",
-        "label": "SQL",
-        "icon": "fa-flask",
-        "childs": [
-            {
-                "name": "SQL Editor",
-                "label": "SQL Lab",
-                "icon": "fa-flask",
-                "url": "/sqllab/",
-            },
-            {
-                "name": "Saved Queries",
-                "label": "Saved Queries",
-                "icon": "fa-save",
-                "url": "/savedqueryview/list/",
-            },
-            {
-                "name": "Query Search",
-                "label": "Query History",
-                "icon": "fa-search",
-                "url": "/sqllab/history/",
-            },
-        ],
-    },
-    {
-        "name": "Data",
-        "label": "Data",
-        "icon": "fa-database",
-        "childs": [
-            {
-                "name": "Databases",
-                "label": "Database Connections",
-                "icon": "fa-database",
-                "url": "/databaseview/list/",
-            },
-        ],
-    },
-    {
-        "name": "Security",
-        "label": "Security",
-        "icon": "",
-        "childs": [
-            {
-                "name": "List Roles",
-                "label": "List Roles",
-                "icon": "",
-                "url": "/roles/",
-            },
-            {
-                "name": "List Users",
-                "label": "List Users",
-                "icon": "",
-                "url": "/users/",
-            },
-            {
-                "name": "Row Level Security",
-                "label": "Row Level Security",
-                "icon": "fa-lock",
-                "url": "/rowlevelsecurity/list/",
-            },
-            {
-                "name": "Action Log",
-                "label": "Action Log",
-                "icon": "fa-list-ol",
-                "url": "/actionlog/list",
-            },
-        ],
-    },
-    {
-        "name": "Manage",
-        "label": "Manage",
-        "icon": "",
-        "childs": [
-            {
-                "name": "Alerts & Report",
-                "label": "Alerts & Reports",
-                "icon": "fa-exclamation-triangle",
-                "url": "/alert/list/",
-            },
-            {
-                "name": "Annotation Layers",
-                "label": "Annotation Layers",
-                "icon": "fa-comment",
-                "url": "/annotationlayer/list/",
-            },
-            {
-                "name": "CSS Templates",
-                "label": "CSS Templates",
-                "icon": "fa-css3",
-                "url": "/csstemplatemodelview/list/",
-            },
-            {
-                "name": "Tags",
-                "label": "Tags",
-                "icon": "",
-                "url": "/superset/tags/",
-            },
-        ],
-    },
-]
+# Menu items are now defined in ``superset.controllers.menu`` as
+# ``MenuItem`` objects with proper condition lambdas and recursive
+# permission filtering.  The ``_filter_menu_for_user`` function from
+# that module is reused here for the SPA bootstrap payload.
 
 
 def _get_csrf_token(
@@ -444,14 +331,6 @@ def _get_environment_tag(settings: Any) -> dict[str, str]:
     return tag or {"text": "", "color": ""}
 
 
-# Mapping of menu child item names to required feature flags.
-# Mirrors the ``menu_cond`` lambdas from the original Superset initialization.
-_MENU_ITEM_FEATURE_FLAGS: dict[str, str] = {
-    "CSS Templates": "CSS_TEMPLATES",
-    "Tags": "TAGGING_SYSTEM",
-}
-
-
 def _build_menu_data(user: Any, settings: Any) -> dict[str, Any]:
     """Build the complete menu_data dict for the bootstrap payload.
 
@@ -459,64 +338,18 @@ def _build_menu_data(user: Any, settings: Any) -> dict[str, Any]:
     filtered by the user's permissions.  The ``settings`` key is left
     empty because the React frontend extracts Security/Data/Manage
     items from ``menu`` into ``settings`` client-side.
+
+    Menu filtering is delegated to ``superset.controllers.menu`` which
+    implements FAB's recursive ``Menu.get_data()`` logic with proper
+    per-child permission checks and ``should_render()`` condition lambdas.
     """
+    from superset.controllers.menu import _filter_menu_for_user
     from superset.middleware.auth import UnauthenticatedUser
 
     is_anon = isinstance(user, UnauthenticatedUser)
 
-    # Determine if user is admin (has "Admin" role)
-    is_admin = False
-    user_roles = getattr(user, "roles", [])
-    admin_role_name = getattr(settings, "auth_role_admin", "Admin")
-    for role in user_roles:
-        if getattr(role, "name", "") == admin_role_name:
-            is_admin = True
-            break
-
-    # Feature flags for conditional menu items
-    feature_flags: dict[str, bool] = getattr(settings, "feature_flags", {})
-
-    # Filter menu items by permissions and feature flags.
-    # Admins see everything; other users need ``menu_access`` on the item.
-    user_perms: set[str] = getattr(user, "permissions", set())
-    filtered_menu: list[dict[str, Any]] = []
-    for item in _MENU_ITEMS:
-        item_name = item.get("name", "")
-        # Top-level items with no name (Dashboards, Charts, Datasets)
-        # are always visible.
-        if not item_name:
-            filtered_menu.append(item)
-            continue
-        # Admins see all menu categories.
-        if is_admin:
-            # Deep-copy item to avoid mutating the module-level constant
-            # when filtering child items by feature flags.
-            import copy
-
-            item_copy = copy.deepcopy(item)
-            if "childs" in item_copy:
-                item_copy["childs"] = [
-                    child
-                    for child in item_copy["childs"]
-                    if child.get("name", "") not in _MENU_ITEM_FEATURE_FLAGS
-                    or feature_flags.get(_MENU_ITEM_FEATURE_FLAGS[child["name"]], False)
-                ]
-            filtered_menu.append(item_copy)
-            continue
-        # Non-admin users need menu_access permission for the category.
-        perm_key = f"menu_access_{item_name}"
-        if perm_key in user_perms:
-            import copy
-
-            item_copy = copy.deepcopy(item)
-            if "childs" in item_copy:
-                item_copy["childs"] = [
-                    child
-                    for child in item_copy["childs"]
-                    if child.get("name", "") not in _MENU_ITEM_FEATURE_FLAGS
-                    or feature_flags.get(_MENU_ITEM_FEATURE_FLAGS[child["name"]], False)
-                ]
-            filtered_menu.append(item_copy)
+    # Reuse the canonical menu filtering from menu.py
+    filtered_menu = _filter_menu_for_user(user, settings)
 
     # Brand configuration
     logo_target = getattr(settings, "logo_target_path", None)
@@ -586,7 +419,7 @@ def _build_menu_data(user: Any, settings: Any) -> dict[str, Any]:
             "languages": languages,
             "show_language_picker": len(languages) > 1,
             "user_is_anonymous": is_anon,
-            "user_info_url": None if hide_user_info else "/users/userinfo/",
+            "user_info_url": None if hide_user_info else "/user_info/",
             "user_login_url": "/login/",
             "user_logout_url": "/logout/",
             "locale": "en",
@@ -602,31 +435,56 @@ def _build_user_data(user: Any) -> dict[str, Any]:
     Mirrors ``bootstrap_user_data()`` from the original views/utils.py,
     including the ``roles`` dict and ``permissions`` for datasource/database
     access.  Works with both CachedUser and UnauthenticatedUser.
+
+    Permissions are stored as ``set[tuple[str, str]]`` — (action, resource)
+    tuples matching the original FAB ``get_user_roles_permissions`` format.
+    The frontend expects ``roles: {roleName: [[action, resource], ...]}``.
     """
     from superset.middleware.auth import UnauthenticatedUser
+    from superset.security.guest import GuestUser
 
     is_anon = isinstance(user, UnauthenticatedUser)
+    is_guest = isinstance(user, GuestUser)
 
     if is_anon:
-        # Anonymous user — provide minimal payload so React doesn't crash.
-        roles: dict[str, list[list[str]]] = {}
+        # Anonymous user — original returns {} then adds roles/permissions.
+        # Keeping payload empty ensures the frontend's isUser() check
+        # does not treat anonymous as a real user.
+        payload: dict[str, Any] = {}
         user_roles = getattr(user, "roles", [])
-        user_perms: set[str] = getattr(user, "permissions", set())
+        user_perms: set[tuple[str, str]] = getattr(user, "permissions", set())
+        sorted_perms = sorted(user_perms)
+        roles: dict[str, list[list[str]]] = {}
         for role in user_roles:
             role_name = getattr(role, "name", "Public")
-            roles[role_name] = [p.rsplit("_", 1) for p in user_perms if "_" in p]
+            roles[role_name] = [list(p) for p in sorted_perms]
         permissions = _extract_data_permissions(user_perms)
-        return {
-            "username": "",
-            "firstName": "",
-            "lastName": "",
-            "isActive": False,
-            "isAnonymous": True,
-            "roles": roles,
-            "permissions": permissions,
-        }
+        payload["roles"] = roles
+        payload["permissions"] = permissions
+        return payload
 
-    # Authenticated user — full payload.
+    if is_guest:
+        # Guest user — limited payload (no userId, email, loginCount,
+        # createdOn). Matches original bootstrap_user_data guest branch.
+        guest_payload: dict[str, Any] = {
+            "username": getattr(user, "username", "guest"),
+            "firstName": getattr(user, "first_name", ""),
+            "lastName": getattr(user, "last_name", ""),
+            "isActive": bool(getattr(user, "is_active", True)),
+            "isAnonymous": False,
+        }
+        user_perms = getattr(user, "permissions", set())
+        sorted_perms = sorted(user_perms)
+        user_roles = getattr(user, "roles", [])
+        roles = {}
+        for role in user_roles:
+            role_name = getattr(role, "name", "")
+            roles[role_name] = [list(p) for p in sorted_perms]
+        guest_payload["roles"] = roles
+        guest_payload["permissions"] = _extract_data_permissions(user_perms)
+        return guest_payload
+
+    # Authenticated regular user — full payload.
     created_on = getattr(user, "created_on", None)
     created_on_str = ""
     if created_on is not None:
@@ -636,18 +494,27 @@ def _build_user_data(user: Any) -> dict[str, Any]:
             created_on_str = str(created_on)
 
     # Build roles dict: {role_name: [[action, resource], ...]}
+    #
+    # Known simplification vs. FAB's get_user_roles_permissions:
+    # The original FAB returns per-role permissions (each role maps only
+    # to its own permission set).  Here we attach the union of ALL
+    # permissions to every role.  This is functionally equivalent because
+    # the frontend's ``findPermission`` (src/utils/findPermission.ts)
+    # uses ``Object.values(roles).some(...)`` which flattens all roles
+    # anyway -- the per-role distinction is never consumed.  RBAC guard
+    # checks on the backend use the flat ``user.permissions`` set
+    # directly, so per-role granularity is not required there either.
+    #
+    # If per-role fidelity is ever needed, add a ``role_permissions``
+    # field to CachedUser (dict[str, set[tuple[str, str]]]) and populate
+    # it in ``_resolve_user_from_db`` via per-role DB queries.
     user_perms = getattr(user, "permissions", set())
+    sorted_perms = sorted(user_perms)
     user_roles = getattr(user, "roles", [])
     roles = {}
     for role in user_roles:
         role_name = getattr(role, "name", "")
-        # CachedUser stores permissions as flat "action_resource" strings
-        # on the user level, not per-role.  We attach all permissions to
-        # every role for compatibility with the frontend contract
-        # (UserRoles = Record<string, [string, string][]>).
-        roles[role_name] = [
-            _split_permission(p) for p in sorted(user_perms) if "_" in p
-        ]
+        roles[role_name] = [list(p) for p in sorted_perms]
 
     permissions = _extract_data_permissions(user_perms)
 
@@ -666,20 +533,8 @@ def _build_user_data(user: Any) -> dict[str, Any]:
     }
 
 
-def _split_permission(perm_str: str) -> list[str]:
-    """Split 'action_resource' into [action, resource].
-
-    Uses the first underscore as separator.  If the string has no
-    underscore returns [perm_str, ''].
-    """
-    parts = perm_str.split("_", 1)
-    if len(parts) == 2:
-        return parts
-    return [perm_str, ""]
-
-
 def _extract_data_permissions(
-    perms: set[str],
+    perms: set[tuple[str, str]],
 ) -> dict[str, list[str]]:
     """Extract database_access and datasource_access permission values.
 
@@ -687,19 +542,16 @@ def _extract_data_permissions(
     tuples where action is ``database_access`` or ``datasource_access``
     and returns the resource part as a list.
 
-    CachedUser stores permissions as flat ``"action_resource"`` strings
-    (e.g. ``"database_access_[examples].(id:1)"``).  We use prefix
-    matching to extract the resource portion.
+    Permissions are stored as ``(action, resource)`` tuples — e.g.
+    ``("database_access", "[examples].(id:1)")``.
     """
     db_access: list[str] = []
     ds_access: list[str] = []
-    for perm in sorted(perms):
-        if not isinstance(perm, str):
-            continue
-        if perm.startswith("database_access_"):
-            db_access.append(perm[len("database_access_") :])
-        elif perm.startswith("datasource_access_"):
-            ds_access.append(perm[len("datasource_access_") :])
+    for action, resource in sorted(perms):
+        if action == "database_access":
+            db_access.append(resource)
+        elif action == "datasource_access":
+            ds_access.append(resource)
     return {
         "database_access": db_access,
         "datasource_access": ds_access,
@@ -707,9 +559,12 @@ def _extract_data_permissions(
 
 
 def _build_theme_data(settings: Any) -> dict[str, Any]:
-    """Build the theme section of bootstrap_data.
+    """Build the theme section of bootstrap_data (config-based).
 
-    Mirrors ``get_theme_bootstrap_data()`` from the original views/base.py.
+    Mirrors ``get_theme_bootstrap_data()`` from the original views/base.py
+    for the non-DB path.  When ``ENABLE_UI_THEME_ADMINISTRATION`` is True
+    the caller should use ``_build_theme_data_async`` instead to load
+    themes from DB via ``AsyncThemeDAO``.
     """
     default_theme = getattr(settings, "theme_default", {"algorithm": "default"})
     dark_theme = getattr(settings, "theme_dark", {"algorithm": "dark"})
@@ -723,6 +578,70 @@ def _build_theme_data(settings: Any) -> dict[str, Any]:
         default_theme = default_theme()
     if callable(dark_theme):
         dark_theme = dark_theme()
+
+    return {
+        "default": default_theme if isinstance(default_theme, dict) else {},
+        "dark": dark_theme if isinstance(dark_theme, dict) else {},
+        "enableUiThemeAdministration": enable_ui_admin,
+    }
+
+
+def _parse_theme_json(model: Any, fallback: Any) -> Any:
+    """Parse JSON from a Theme model, returning *fallback* on failure."""
+    if model is None:
+        return fallback
+    try:
+        loaded = json.loads(model.json_data)
+        if isinstance(loaded, dict):
+            return loaded
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return fallback
+
+
+async def _build_theme_data_async(
+    settings: Any,
+    session_factory: Any,
+) -> dict[str, Any]:
+    """Build the theme section with DB lookup when UI admin is enabled.
+
+    Mirrors ``get_theme_bootstrap_data()`` from the original views/base.py:
+    when ``ENABLE_UI_THEME_ADMINISTRATION`` is True, loads themes from DB
+    via ``AsyncThemeDAO`` (falling back to config if no DB row is found).
+    """
+    enable_ui_admin = getattr(
+        settings,
+        "enable_ui_theme_administration",
+        False,
+    )
+
+    if not enable_ui_admin:
+        return _build_theme_data(settings)
+
+    default_theme = getattr(settings, "theme_default", {"algorithm": "default"})
+    dark_theme = getattr(settings, "theme_dark", {"algorithm": "dark"})
+
+    if callable(default_theme):
+        default_theme = default_theme()
+    if callable(dark_theme):
+        dark_theme = dark_theme()
+
+    try:
+        from superset.db.daos.theme import AsyncThemeDAO
+
+        async with session_factory() as session:
+            theme_dao = AsyncThemeDAO(session)
+            default_theme = _parse_theme_json(
+                await theme_dao.find_system_default(), default_theme
+            )
+            dark_theme = _parse_theme_json(
+                await theme_dao.find_system_dark(), dark_theme
+            )
+    except Exception:
+        _log.getLogger(__name__).debug(
+            "Failed to load themes from DB, using config values",
+            exc_info=True,
+        )
 
     return {
         "default": default_theme if isinstance(default_theme, dict) else {},
@@ -886,6 +805,38 @@ class SPAController(Controller):
     path = "/"
 
     @get(
+        ["/dashboard/new/", "/dashboard/new"],
+        guards=[],
+    )
+    async def new_dashboard(
+        self,
+        request: Request[Any, Any, Any],
+        session: Any,
+        security_manager: Any,
+    ) -> Any:
+        """GET /dashboard/new/ — create blank dashboard and redirect to edit mode.
+
+        Mirrors the original Flask ``Dashboard.new`` view:
+        creates a row with title ``[ untitled dashboard ]``,
+        assigns current user as owner, then 302-redirects to
+        ``/superset/dashboard/{id}/?edit=true``.
+        """
+        user = getattr(request, "user", None)
+        if not getattr(user, "is_authenticated", False):
+            return Redirect(path="/login/")
+
+        user_id = getattr(user, "id", None)
+        dao = AsyncDashboardDAO(session)
+        cmd = CreateDashboardCommand(
+            dao=dao,
+            data={"dashboard_title": "[ untitled dashboard ]"},
+            user_id=user_id,
+            security_manager=security_manager,
+        )
+        dashboard = await cmd.execute()
+        return Redirect(path=f"/superset/dashboard/{dashboard.id}/?edit=true")
+
+    @get(
         _SPA_PATHS,
         media_type="text/html",
     )
@@ -895,7 +846,6 @@ class SPAController(Controller):
         state: State,
         path: str = "",
     ) -> Any:
-        from litestar.response import Redirect
 
         settings = state.settings
 
@@ -916,6 +866,21 @@ class SPAController(Controller):
             )
 
         bootstrap = _build_bootstrap_data(user, settings)
+
+        # When ENABLE_UI_THEME_ADMINISTRATION is True, override the
+        # theme section with DB-loaded themes (mirrors original).
+        enable_ui_admin = getattr(settings, "enable_ui_theme_administration", False)
+        session_factory = getattr(state, "session_factory", None)
+        if enable_ui_admin and session_factory is not None:
+            try:
+                theme_data = await _build_theme_data_async(settings, session_factory)
+                bootstrap["common"]["theme"] = theme_data
+            except Exception:
+                _log.getLogger(__name__).debug(
+                    "Async theme DB lookup failed, using config",
+                    exc_info=True,
+                )
+
         return Template(
             template_name="spa.html",
             context={
@@ -951,7 +916,7 @@ class SPAController(Controller):
         ["/superset/log/", "/superset/log"],
         exclude_from_auth=True,
         opt={"exclude_from_csrf": True},
-        status_code=201,
+        status_code=200,
     )
     async def frontend_log(
         self,
@@ -964,10 +929,6 @@ class SPAController(Controller):
         ``?explode=events`` sends a JSON array of event
         dicts in the ``events`` form field.
         """
-        import logging as _log
-
-        from superset.models.core import Log
-
         logger = _log.getLogger("superset.frontend_log")
         try:
             form = await request.form()
@@ -988,17 +949,19 @@ class SPAController(Controller):
             user_id = getattr(user, "id", None)
 
             async with session_factory() as session:
+                log_dao = AsyncLogDAO(session)
                 for evt in events:
                     action = evt.get("action", evt.get("event_name", ""))
-                    log_obj = Log(
-                        action=action,
-                        json=json.dumps(evt),
-                        user_id=user_id,
-                        dashboard_id=evt.get("dashboard_id"),
-                        slice_id=evt.get("slice_id"),
-                        duration_ms=evt.get("duration_ms", 0),
+                    await log_dao.create_log(
+                        {
+                            "action": action,
+                            "json": json.dumps(evt),
+                            "user_id": user_id,
+                            "dashboard_id": evt.get("dashboard_id"),
+                            "slice_id": evt.get("slice_id"),
+                            "duration_ms": evt.get("duration_ms", 0),
+                        }
                     )
-                    session.add(log_obj)
                 await session.commit()
 
             logger.debug(

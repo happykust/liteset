@@ -21,7 +21,7 @@ from __future__ import annotations
 import io
 from typing import Any, TYPE_CHECKING
 
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 from superset.commands.base import AsyncBaseCommand
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError

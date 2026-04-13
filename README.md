@@ -17,207 +17,165 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Superset
+# Liteset
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/license/apache-2-0)
-[![Latest Release on Github](https://img.shields.io/github/v/release/apache/superset?sort=semver)](https://github.com/apache/superset/releases/latest)
-[![Build Status](https://github.com/apache/superset/actions/workflows/superset-python-unittest.yml/badge.svg)](https://github.com/apache/superset/actions)
-[![PyPI version](https://badge.fury.io/py/apache_superset.svg)](https://badge.fury.io/py/apache_superset)
-[![Coverage Status](https://codecov.io/github/apache/superset/coverage.svg?branch=master)](https://codecov.io/github/apache/superset)
-[![PyPI](https://img.shields.io/pypi/pyversions/apache_superset.svg?maxAge=2592000)](https://pypi.python.org/pypi/apache_superset)
-[![Get on Slack](https://img.shields.io/badge/slack-join-orange.svg)](http://bit.ly/join-superset-slack)
-[![Documentation](https://img.shields.io/badge/docs-apache.org-blue.svg)](https://superset.apache.org)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
+[![Litestar](https://img.shields.io/badge/Litestar-2.15+-7c3aed.svg)](https://litestar.dev/)
+[![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-red.svg)](https://www.sqlalchemy.org/)
+[![Based on Apache Superset](https://img.shields.io/badge/based%20on-Apache%20Superset%206.0.0-blue.svg)](https://github.com/apache/superset)
 
 <picture width="500">
-  <source
-    width="600"
-    media="(prefers-color-scheme: dark)"
-    src="https://superset.apache.org/img/superset-logo-horiz-dark.svg"
-    alt="Superset logo (dark)"
-  />
   <img
     width="600"
-    src="https://superset.apache.org/img/superset-logo-horiz-apache.svg"
+    src="https://liteset.happykust.dev/img/liteset-logo-horiz.svg"
     alt="Superset logo (light)"
   />
 </picture>
 
-A modern, enterprise-ready business intelligence web application.
+**Liteset — асинхронный порт Apache Superset, переписанный с Flask/WSGI на Litestar/ASGI.**
 
-[**Why Superset?**](#why-superset) |
-[**Supported Databases**](#supported-databases) |
-[**Installation and Configuration**](#installation-and-configuration) |
-[**Release Notes**](https://github.com/apache/superset/blob/master/RELEASING/README.md#release-notes-for-recent-releases) |
-[**Get Involved**](#get-involved) |
-[**Contributor Guide**](#contributor-guide) |
-[**Resources**](#resources) |
-[**Organizations Using Superset**](https://github.com/apache/superset/blob/master/RESOURCES/INTHEWILD.md)
+Проект сохраняет полную обратную совместимость с существующими инсталляциями Apache Superset: схема БД метаданных, HTTP API, WebSocket-контракт и фронтенд остаются неизменными. Достаточно остановить Superset, установить Liteset поверх той же базы данных — и продолжить работу с теми же дашбордами, датасетами, пользователями и ролями.
 
-## Why Superset?
+---
 
-Superset is a modern data exploration and data visualization platform. Superset can replace or augment proprietary business intelligence tools for many teams. Superset integrates well with a variety of data sources.
+## Оглавление
 
-Superset provides:
+- [Мотивация](#мотивация)
+- [Целевая архитектура](#целевая-архитектура)
+- [Технологический стек](#технологический-стек)
+- [Гарантии совместимости](#гарантии-совместимости)
+- [Структура проекта](#структура-проекта)
+- [Установка и запуск](#установка-и-запуск)
+- [Лицензия](#лицензия)
 
-- A **no-code interface** for building charts quickly
-- A powerful, web-based **SQL Editor** for advanced querying
-- A **lightweight semantic layer** for quickly defining custom dimensions and metrics
-- Out of the box support for **nearly any SQL** database or data engine
-- A wide array of **beautiful visualizations** to showcase your data, ranging from simple bar charts to geospatial visualizations
-- Lightweight, configurable **caching layer** to help ease database load
-- Highly extensible **security roles and authentication** options
-- An **API** for programmatic customization
-- A **cloud-native architecture** designed from the ground up for scale
+---
 
-## Screenshots & Gifs
+## Мотивация
 
-**Video Overview**
+Исторически Apache Superset построен на Flask/WSGI и запускается через Gunicorn с пре-форком процессов. Такая модель имеет три фундаментальных ограничения:
 
-<!-- File hosted here https://github.com/apache/superset-site/raw/lfs/superset-video-4k.mp4 -->
+1. **Блокирующий ввод-вывод.** При длительных запросах к аналитическим СУБД поток выполнения простаивает в ожидании ответа, не обслуживая другие запросы.
+2. **Высокое потребление памяти.** Каждый worker-процесс копирует всё приложение и держит собственный пул соединений к БД метаданных.
+3. **Ограниченный параллелизм.** Количество одновременных запросов жёстко ограничено числом процессов × потоков.
 
-[superset-video-1080p.webm](https://github.com/user-attachments/assets/b37388f7-a971-409c-96a7-90c4e31322e6)
+Liteset устраняет эти узкие места, переводя весь веб-слой на асинхронную модель ASGI. Ожидаемый эффект — прирост RPS в 2-3 раза на IO-bound-нагрузках и существенное снижение резидентной памяти за счёт перехода с пре-форка процессов на один event loop.
 
-<br/>
+---
 
-**Large Gallery of Visualizations**
+## Целевая архитектура
 
-<kbd><img title="Gallery" src="https://superset.apache.org/img/screenshots/gallery.jpg"/></kbd><br/>
+Серверная часть Liteset построена по принципам Clean Architecture. Приложение разделено на четыре слоя; зависимости направлены строго внутрь — внутренние слои не импортируют из внешних.
 
-**Craft Beautiful, Dynamic Dashboards**
+![Clean Architecture Layers](docs/plans/clean-architecture-layers.png)
 
-<kbd><img title="View Dashboards" src="https://superset.apache.org/img/screenshots/slack_dash.jpg"/></kbd><br/>
+| Слой | Ответственность | Реализация |
+|---|---|---|
+| **Presentation** | Контроллеры, DTO, сериализация, авторизационные предикаты | `superset/controllers/`, `superset/schemas/`, `superset/guards/` — `async def` обработчики Litestar, DTO на `msgspec.Struct`, Guards для RBAC |
+| **Business Logic** | Бизнес-правила (`validate() → run()`) | `superset/commands/` — `AsyncBaseCommand`, фреймворк-независимые классы Command |
+| **Data Access** | Доступ к данным через SQLAlchemy 2.0 Select API | `superset/db/base_dao.py`, `superset/db/daos/` — `BaseAsyncDAO[T]` с `AsyncSession` в конструкторе |
+| **Infrastructure** | Middleware, DI, конфигурация, движок БД | `superset/middleware/`, `superset/dependencies.py`, `superset/config.py` |
 
-**No-Code Chart Builder**
+---
 
-<kbd><img title="Slice & dice your data" src="https://superset.apache.org/img/screenshots/explore.jpg"/></kbd><br/>
+## Технологический стек
 
-**Powerful SQL Editor**
+| Категория | Компонент | Роль                                                                   |
+|---|---|------------------------------------------------------------------------|
+| **ASGI-фреймворк** | [Litestar](https://litestar.dev/) | Маршрутизация, DI, OpenAPI, Guards, Middleware                         |
+| **ASGI-сервер** | Uvicorn + uvloop | Event loop на базе libuv                                               |
+| **ORM** | SQLAlchemy 2.0 (Async) | Declarative-модели, запросы к БД                                       |
+| **Драйвер метаданных** | asyncpg / aiosqlite | Асинхронный доступ к БД метаданных                                     |
+| **Сериализация** | [msgspec](https://jcristharif.com/msgspec/) | DTO + валидация, заменяет Marshmallow и Pydantic v1                    |
+| **Конфигурация** | pydantic-settings | Типизированная конфигурация с backward-compat для `superset_config.py` |
+| **Миграции** | Alembic (psycopg2, sync) | Схема БД наследуется 1-в-1 от Superset 6.0.0                           |
+| **Фоновые задачи** | Celery | Оставлен без изменений (ортогонален HTTP-слою)                         |
+| **WebSocket** | Нативный Litestar | Заменяет отдельный Node.js-сервис `superset-websocket`                 |
+| **Кэш** | Redis (redis-py async) | Per-request cache, auth user cache, async events                       |
+| **Логирование** | structlog | Структурированные JSON-логи                                            |
 
-<kbd><img title="SQL Lab" src="https://superset.apache.org/img/screenshots/sql_lab.jpg"/></kbd><br/>
+---
 
-## Supported Databases
+## Гарантии совместимости
 
-Superset can query data from any SQL-speaking datastore or data engine (Presto, Trino, Athena, [and more](https://superset.apache.org/docs/configuration/databases)) that has a Python DB-API driver and a SQLAlchemy dialect.
+Liteset — это **drop-in replacement** для Apache Superset 6.0.0 на уровне backend-а. Фиксируются три инварианта:
 
-Here are some of the major database solutions that are supported:
+### 1. БД метаданных
 
-<p align="center">
-  <img src="https://superset.apache.org/img/databases/redshift.png" alt="redshift" border="0" width="200"/>
-  <img src="https://superset.apache.org/img/databases/google-biquery.png" alt="google-bigquery" border="0" width="200"/>
-  <img src="https://superset.apache.org/img/databases/snowflake.png" alt="snowflake" border="0" width="200"/>
-  <img src="https://superset.apache.org/img/databases/trino.png" alt="trino" border="0" width="150" />
-  <img src="https://superset.apache.org/img/databases/presto.png" alt="presto" border="0" width="200"/>
-  <img src="https://superset.apache.org/img/databases/databricks.png" alt="databricks" border="0" width="160" />
-  <img src="https://superset.apache.org/img/databases/druid.png" alt="druid" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/firebolt.png" alt="firebolt" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/timescale.png" alt="timescale" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/postgresql.png" alt="postgresql" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/mysql.png" alt="mysql" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/mssql-server.png" alt="mssql-server" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/ibm-db2.svg" alt="db2" border="0" width="220" />
-  <img src="https://superset.apache.org/img/databases/sqlite.png" alt="sqlite" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/sybase.png" alt="sybase" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/mariadb.png" alt="mariadb" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/vertica.png" alt="vertica" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/oracle.png" alt="oracle" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/firebird.png" alt="firebird" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/greenplum.png" alt="greenplum" border="0" width="200"  />
-  <img src="https://superset.apache.org/img/databases/clickhouse.png" alt="clickhouse" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/exasol.png" alt="exasol" border="0" width="160" />
-  <img src="https://superset.apache.org/img/databases/monet-db.png" alt="monet-db" border="0" width="200"  />
-  <img src="https://superset.apache.org/img/databases/apache-kylin.png" alt="apache-kylin" border="0" width="80"/>
-  <img src="https://superset.apache.org/img/databases/hologres.png" alt="hologres" border="0" width="80"/>
-  <img src="https://superset.apache.org/img/databases/netezza.png" alt="netezza" border="0" width="80"/>
-  <img src="https://superset.apache.org/img/databases/pinot.png" alt="pinot" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/teradata.png" alt="teradata" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/yugabyte.png" alt="yugabyte" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/databend.png" alt="databend" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/starrocks.png" alt="starrocks" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/doris.png" alt="doris" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/oceanbase.svg" alt="oceanbase" border="0" width="220" />
-  <img src="https://superset.apache.org/img/databases/sap-hana.png" alt="sap-hana" border="0" width="220" />
-  <img src="https://superset.apache.org/img/databases/denodo.png" alt="denodo" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/ydb.svg" alt="ydb" border="0" width="200" />
-  <img src="https://superset.apache.org/img/databases/tdengine.png" alt="TDengine" border="0" width="200" />
+Схема таблиц метаданных (`ab_user`, `ab_role`, `dashboards`, `slices`, `tables`, `dbs`, `query`, `saved_query`, `report_schedule` и т.д.) наследуется без изменений. Alembic-ревизии перенесены целиком. Существующая инсталляция Superset может быть мигрирована простой подменой бекенда — без `superset db upgrade`.
+
+### 2. Фронтенд
+
+**Код фронтенда (`superset-frontend/`) запрещено изменять.** Liteset обязан воспроизводить все эндпоинты, форматы JSON-ответов, cookie-формат сессии (Flask-подписанные session cookies декодируются нативно), CSRF-токены (`X-CSRFToken`), rison-параметры запросов и SPA-шаблон `/superset/welcome`.
+
+### 3. HTTP API
+
+Все 37+ REST-контроллеров воспроизводят контракт Superset 1:1 — URL-маршруты, коды ответа, имена полей (поддерживается двойной `camelCase`/`snake_case` lookup на стороне msgspec), структура пагинации, ошибки SIP-40, формат Swagger-спеки. OpenAPI-документация автогенерируется на `/swagger/v1`.
+
+---
+
+## Структура проекта
+
+```
+liteset/
+├── superset/                       # Async backend на Litestar
+│   ├── app.py                      # Фабрика Litestar-приложения
+│   ├── config.py                   # SupersetSettings (pydantic-settings)
+│   ├── dependencies.py             # DI Provide'ы (session, user, security_manager)
+│   ├── exceptions.py               # Иерархия SIP-40 + handlers
+│   ├── controllers/                # Presentation layer — 37 контроллеров
+│   │   ├── base.py                 # RISON-хелперы, пагинация, сериализация
+│   │   ├── chart.py, dashboard.py, database.py, dataset.py, …
+│   │   └── sqllab.py, report.py, security.py, user.py, …
+│   ├── commands/                   # Business Logic layer
+│   │   ├── base.py                 # AsyncBaseCommand (validate/run)
+│   │   └── chart.py, dashboard.py, database.py, …
+│   ├── db/
+│   │   ├── session.py              # AsyncEngine, async_sessionmaker
+│   │   ├── base_dao.py             # BaseAsyncDAO[T]
+│   │   ├── daos/                   # Data Access layer
+│   │   │   ├── chart.py, dashboard.py, database.py, …
+│   │   │   └── security.py, user.py, …
+│   │   └── engine_specs/           # Async DB адаптеры
+│   │       ├── base.py             # BaseAsyncEngineSpec
+│   │       ├── postgres.py         # Нативный asyncpg
+│   │       ├── mysql.py            # Нативный asyncmy
+│   │       ├── clickhouse.py       # aiochclient
+│   │       ├── trino.py            # aiotrino
+│   │       └── sync_fallback.py    # Обёртка для 50+ СУБД через conn.run_sync()
+│   ├── guards/                     # RBAC Guards
+│   ├── middleware/                 # Auth, CSRF, locale, security headers, proxy fix
+│   ├── schemas/                    # DTO на msgspec.Struct
+│   ├── security/                   # AsyncSecurityManager (порт FAB)
+│   ├── async_events/               # Redis-streams-based async events
+│   ├── websocket/                  # Нативный Litestar WebSocket
+│   ├── common/                     # QueryContext/QueryObject
+│   ├── models/                     # SQLAlchemy 2.0 declarative models
+│   ├── migrations/                 # Alembic (psycopg2, sync)
+│   ├── db_engine_specs/            # Sync BaseEngineSpec (для SQL-диалектов)
+│   ├── sql/                        # SQL parser, Jinja templating
+│   ├── viz.py                      # Legacy viz engine (explore_json)
+│   └── static/, templates/         # SPA bundle, Jinja-шаблоны
+├── superset-frontend/              # React-фронтенд (не модифицируется)
+├── tests/                          # pytest
+├── requirements/                   # base.in, development.in, …
+└── pyproject.toml
+```
+
+---
+
+## Установка и запуск
+
+Ознакомьтесь с [руководством](https://liteset.happykust.dev/docs/quickstart/) Liteset или изучите [варианты развёртывания в продуктивной среде](https://liteset.happykust.dev/docs/installation/architecture/).
+
+---
+
+## Лицензия
+
+Liteset распространяется под лицензией [Apache License 2.0](LICENSE.txt), наследуя её от Apache Superset. Все заимствованные файлы из Apache Superset 6.0.0 сохраняют оригинальные ASF-хедеры.
+
+---
+
+<p>
+  <em>Liteset — это академический порт, автор проекта мог пропустить важные детали, которые вызовут регрессию относительно Apache Superset 6.0.0. Для production-инсталляций Apache Superset по-прежнему используйте <a href="https://github.com/apache/superset">apache/superset</a>.</em>
 </p>
-
-**A more comprehensive list of supported databases** along with the configuration instructions can be found [here](https://superset.apache.org/docs/configuration/databases).
-
-Want to add support for your datastore or data engine? Read more [here](https://superset.apache.org/docs/frequently-asked-questions#does-superset-work-with-insert-database-engine-here) about the technical requirements.
-
-## Installation and Configuration
-
-Try out Superset's [quickstart](https://superset.apache.org/docs/quickstart/) guide or learn about [the options for production deployments](https://superset.apache.org/docs/installation/architecture/).
-
-## Get Involved
-
-- Ask and answer questions on [StackOverflow](https://stackoverflow.com/questions/tagged/apache-superset) using the **apache-superset** tag
-- [Join our community's Slack](http://bit.ly/join-superset-slack)
-  and please read our [Slack Community Guidelines](https://github.com/apache/superset/blob/master/CODE_OF_CONDUCT.md#slack-community-guidelines)
-- [Join our dev@superset.apache.org Mailing list](https://lists.apache.org/list.html?dev@superset.apache.org). To join, simply send an email to [dev-subscribe@superset.apache.org](mailto:dev-subscribe@superset.apache.org)
-- If you want to help troubleshoot GitHub Issues involving the numerous database drivers that Superset supports, please consider adding your name and the databases you have access to on the [Superset Database Familiarity Rolodex](https://docs.google.com/spreadsheets/d/1U1qxiLvOX0kBTUGME1AHHi6Ywel6ECF8xk_Qy-V9R8c/edit#gid=0)
-- Join Superset's Town Hall and [Operational Model](https://preset.io/blog/the-superset-operational-model-wants-you/) recurring meetings. Meeting info is available on the [Superset Community Calendar](https://superset.apache.org/community)
-
-## Contributor Guide
-
-Interested in contributing? Check out our
-[CONTRIBUTING.md](https://github.com/apache/superset/blob/master/CONTRIBUTING.md)
-to find resources around contributing along with a detailed guide on
-how to set up a development environment.
-
-## Resources
-
-- [Superset "In the Wild"](https://github.com/apache/superset/blob/master/RESOURCES/INTHEWILD.md) - open a PR to add your org to the list!
-- [Feature Flags](https://github.com/apache/superset/blob/master/RESOURCES/FEATURE_FLAGS.md) - the status of Superset's Feature Flags.
-- [Standard Roles](https://github.com/apache/superset/blob/master/RESOURCES/STANDARD_ROLES.md) - How RBAC permissions map to roles.
-- [Superset Wiki](https://github.com/apache/superset/wiki) - Tons of additional community resources: best practices, community content and other information.
-- [Superset SIPs](https://github.com/orgs/apache/projects/170) - The status of Superset's SIPs (Superset Improvement Proposals) for both consensus and implementation status.
-
-Understanding the Superset Points of View
-
-- [The Case for Dataset-Centric Visualization](https://preset.io/blog/dataset-centric-visualization/)
-- [Understanding the Superset Semantic Layer](https://preset.io/blog/understanding-superset-semantic-layer/)
-
-- Getting Started with Superset
-  - [Superset in 2 Minutes using Docker Compose](https://superset.apache.org/docs/installation/docker-compose#installing-superset-locally-using-docker-compose)
-  - [Installing Database Drivers](https://superset.apache.org/docs/configuration/databases#installing-database-drivers)
-  - [Building New Database Connectors](https://preset.io/blog/building-database-connector/)
-  - [Create Your First Dashboard](https://superset.apache.org/docs/using-superset/creating-your-first-dashboard/)
-  - [Comprehensive Tutorial for Contributing Code to Apache Superset
-    ](https://preset.io/blog/tutorial-contributing-code-to-apache-superset/)
-- [Resources to master Superset by Preset](https://preset.io/resources/)
-
-- Deploying Superset
-
-  - [Official Docker image](https://hub.docker.com/r/apache/superset)
-  - [Helm Chart](https://github.com/apache/superset/tree/master/helm/superset)
-
-- Recordings of Past [Superset Community Events](https://preset.io/events)
-
-  - [Mixed Time Series Charts](https://preset.io/events/mixed-time-series-visualization-in-superset-workshop/)
-  - [How the Bing Team Customized Superset for the Internal Self-Serve Data & Analytics Platform](https://preset.io/events/how-the-bing-team-heavily-customized-superset-for-their-internal-data/)
-  - [Live Demo: Visualizing MongoDB and Pinot Data using Trino](https://preset.io/events/2021-04-13-visualizing-mongodb-and-pinot-data-using-trino/)
-  - [Introduction to the Superset API](https://preset.io/events/introduction-to-the-superset-api/)
-  - [Building a Database Connector for Superset](https://preset.io/events/2021-02-16-building-a-database-connector-for-superset/)
-
-- Visualizations
-
-  - [Creating Viz Plugins](https://superset.apache.org/docs/contributing/creating-viz-plugins/)
-  - [Managing and Deploying Custom Viz Plugins](https://medium.com/nmc-techblog/apache-superset-manage-custom-viz-plugins-in-production-9fde1a708e55)
-  - [Why Apache Superset is Betting on Apache ECharts](https://preset.io/blog/2021-4-1-why-echarts/)
-
-- [Superset API](https://superset.apache.org/docs/rest-api)
-
-## Repo Activity
-
-<a href="https://next.ossinsight.io/widgets/official/compose-last-28-days-stats?repo_id=39464018" target="_blank" align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://next.ossinsight.io/widgets/official/compose-last-28-days-stats/thumbnail.png?repo_id=39464018&image_size=auto&color_scheme=dark" width="655" height="auto" />
-    <img alt="Performance Stats of apache/superset - Last 28 days" src="https://next.ossinsight.io/widgets/official/compose-last-28-days-stats/thumbnail.png?repo_id=39464018&image_size=auto&color_scheme=light" width="655" height="auto" />
-  </picture>
-</a>
-
-<!-- Made with [OSS Insight](https://ossinsight.io/) -->
-
-<!-- telemetry/analytics pixel: -->
-<img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=bc1c90cd-bc04-4e11-8c7b-289fb2839492" />

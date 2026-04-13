@@ -28,7 +28,7 @@ from datetime import date, time, timedelta
 from typing import Any
 
 import numpy as np
-import pytz  # type: ignore[import-untyped]
+import pytz
 from jsonpath_ng import parse
 
 from superset.constants import PASSWORD_MASK
@@ -95,6 +95,12 @@ def base_json_conv(obj: Any) -> Any:  # noqa: C901
                 return obj.decode("utf-16")
             except Exception:
                 return "[bytes]"
+
+    # msgspec Struct — convert to dict for JSON serialization
+    if hasattr(obj, "__struct_fields__"):
+        import msgspec as _msgspec
+
+        return _msgspec.to_builtins(obj)
 
     raise TypeError(f"Unserializable object {obj} of type {type(obj)}")
 

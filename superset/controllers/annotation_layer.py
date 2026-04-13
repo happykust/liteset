@@ -104,6 +104,7 @@ class AnnotationLayerController(Controller):
                 "created_by.first_name",
                 "created_by.last_name",
             ],
+            list_title="List Annotation Layer",
         )
 
     # ------------------------------------------------------------------
@@ -225,7 +226,7 @@ class AnnotationLayerController(Controller):
     async def bulk_delete(
         self,
         dao: Any,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
     ) -> dict[str, str]:
         """DELETE /api/v1/annotation_layer/?q=(...) — bulk delete layers."""
         ids = extract_ids_required(rison_params)

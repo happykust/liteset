@@ -27,6 +27,7 @@ import re
 from re import Pattern
 from typing import Any, TYPE_CHECKING
 
+from superset.db_engine_specs.base import BasicParametersMixin
 from superset.db_engine_specs.postgres import PostgresBaseEngineSpec
 
 if TYPE_CHECKING:
@@ -60,7 +61,7 @@ CONNECTION_UNKNOWN_DATABASE_REGEX = re.compile(
 )
 
 
-class RedshiftEngineSpec(PostgresBaseEngineSpec):
+class RedshiftEngineSpec(BasicParametersMixin, PostgresBaseEngineSpec):
     engine = "redshift"
     engine_name = "Amazon Redshift"
     max_column_name_length = 127

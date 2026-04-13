@@ -79,31 +79,55 @@ class CurrentUserController(Controller):
 
         Returns bootstrap_user_data-compatible payload including roles
         (with their permissions) and a flat permissions dict.
+
+        Handles both ORM User objects (roles have .permissions with
+        PermissionView objects) and CachedUser objects (_CachedRole with
+        only id/name — permissions are on the user object directly).
         """
+        from superset.middleware.auth import CachedUser
+
         user_roles = getattr(current_user, "roles", [])
 
         roles: dict[str, list[tuple[str, str]]] = {}
         permissions: dict[str, list[str]] = {}
-        for role in user_roles:
-            role_name = getattr(role, "name", "")
-            role_perms: list[tuple[str, str]] = []
-            for pvm in getattr(role, "permissions", []):
-                perm_name = getattr(
-                    getattr(pvm, "permission", None),
-                    "name",
-                    "",
-                )
-                view_name = getattr(
-                    getattr(pvm, "view_menu", None),
-                    "name",
-                    "",
-                )
-                if perm_name and view_name:
-                    role_perms.append((perm_name, view_name))
-                    permissions.setdefault(perm_name, [])
-                    if view_name not in permissions[perm_name]:
-                        permissions[perm_name].append(view_name)
-            roles[role_name] = role_perms
+
+        # CachedUser: roles are _CachedRole (id + name only, no
+        # .permissions attribute).  Use the flat user.permissions set
+        # and assign to every role (same approach as _build_user_data).
+        if isinstance(current_user, CachedUser):
+            user_perms: set[tuple[str, str]] = getattr(
+                current_user, "permissions", set()
+            )
+            sorted_perms = sorted(user_perms)
+            for role in user_roles:
+                role_name = getattr(role, "name", "")
+                roles[role_name] = list(sorted_perms)
+            for action, resource in sorted_perms:
+                permissions.setdefault(action, [])
+                if resource not in permissions[action]:
+                    permissions[action].append(resource)
+        else:
+            # ORM User: roles have .permissions (PermissionView objects)
+            for role in user_roles:
+                role_name = getattr(role, "name", "")
+                role_perms: list[tuple[str, str]] = []
+                for pvm in getattr(role, "permissions", []):
+                    perm_name = getattr(
+                        getattr(pvm, "permission", None),
+                        "name",
+                        "",
+                    )
+                    view_name = getattr(
+                        getattr(pvm, "view_menu", None),
+                        "name",
+                        "",
+                    )
+                    if perm_name and view_name:
+                        role_perms.append((perm_name, view_name))
+                        permissions.setdefault(perm_name, [])
+                        if view_name not in permissions[perm_name]:
+                            permissions[perm_name].append(view_name)
+                roles[role_name] = role_perms
 
         return {
             "result": {
@@ -136,17 +160,17 @@ class CurrentUserController(Controller):
         has_password = data.password is not None
 
         if updates or has_password:
-            user = await user_dao.get_by_id(current_user.id)
-            if user is not None:
-                for attr, value in updates.items():
-                    setattr(user, attr, value)
+            hashed_password: str | None = None
+            if has_password:
+                from superset.utils.password import generate_password_hash
 
-                if has_password:
-                    from superset.utils.password import generate_password_hash
+                hashed_password = generate_password_hash(data.password or "")
 
-                    user.password = generate_password_hash(data.password or "")
-
-                await user_dao.session.flush()
+            await user_dao.update_profile(
+                user_id=current_user.id,
+                attributes=updates,
+                hashed_password=hashed_password,
+            )
 
         event_logger.log("user.update_me", user_id=current_user.id)
         return {"result": updates}

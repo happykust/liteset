@@ -27,8 +27,8 @@ import logging
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 
-from croniter import croniter  # type: ignore[import-untyped]
-from pytz import (  # type: ignore[import-untyped]
+from croniter import croniter
+from pytz import (
     timezone as pytz_timezone,
     UnknownTimeZoneError,
 )

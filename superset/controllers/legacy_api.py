@@ -14,50 +14,123 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Legacy API controller -- deprecated endpoint stubs returning 410 Gone."""
+"""Legacy API controller.
+
+Ports still-active endpoints from the original ``superset/views/api.py``
+(class ``Api`` extending ``BaseSupersetView``). Currently hosts the
+``/api/v1/time_range/`` endpoint that the Explore UI hits every time a user
+edits a time range filter.
+"""
 
 from __future__ import annotations
 
-from litestar import Controller, get
+import logging
+from typing import Any
+
+from litestar import Controller, Request, get
 from litestar.response import Response
+
+from superset.exceptions import SupersetValidationException
+from superset.guards.rbac import require_authentication
+from superset.typing import UserProtocol
+from superset.utils.date import (
+    TimeRangeAmbiguousError,
+    TimeRangeParseFailError,
+    get_since_until,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_rison_time_ranges(raw: str | None) -> Any:
+    """Decode the ``q=`` Rison-encoded query parameter used by the original
+    ``/api/v1/time_range/`` endpoint. Accepts either a single string or a
+    list of ``{timeRange, shift}`` objects.
+    """
+    if raw is None:
+        raise SupersetValidationException(
+            message="Missing required query parameter 'q'",
+        )
+    try:
+        import prison
+
+        return prison.loads(raw)
+    except Exception as ex:  # noqa: BLE001
+        raise SupersetValidationException(
+            message=f"Invalid Rison query parameter: {ex}",
+            extra={"raw_value": raw[:200]},
+        ) from ex
 
 
 class LegacyApiController(Controller):
+    """Legacy ``/api/v1/*`` routes ported from ``superset/views/api.py``."""
+
     path = "/api/v1"
     tags = ["Legacy"]
 
-    @get("/query/", opt={"exclude_from_auth": False}, status_code=410)
-    async def deprecated_query(self) -> Response[dict[str, str]]:
-        """GET /api/v1/query/ -- deprecated query polling."""
-        return Response(
-            content={"message": "Deprecated. Use /api/v1/sqllab/ instead."},
-            status_code=410,
-            headers={
-                "Deprecation": "true",
-                "X-Deprecated-Endpoint": "/api/v1/query/",
-            },
-        )
+    @get("/time_range/", status_code=200, guards=[require_authentication])
+    async def time_range(
+        self,
+        request: Request[Any, Any, Any],
+        current_user: UserProtocol,
+    ) -> Response[dict[str, Any]]:
+        """GET /api/v1/time_range/?q=<rison>
 
-    @get("/form_data/", opt={"exclude_from_auth": False}, status_code=410)
-    async def deprecated_form_data(self) -> Response[dict[str, str]]:
-        """GET /api/v1/form_data/ -- deprecated form_data endpoint."""
-        return Response(
-            content={"message": "Deprecated. Use /api/v1/explore/form_data/ instead."},
-            status_code=410,
-            headers={
-                "Deprecation": "true",
-                "X-Deprecated-Endpoint": "/api/v1/form_data/",
-            },
-        )
+        Return ``since`` / ``until`` datetimes from human-readable ``timeRange``
+        expressions (e.g. ``"Last week"``, ``"100 years ago : now"``). The
+        ``q`` argument is a Rison-encoded string or list of
+        ``{timeRange, shift}`` objects. Response matches the original Flask
+        view shape:
 
-    @get("/time_range/", opt={"exclude_from_auth": False}, status_code=410)
-    async def deprecated_time_range(self) -> Response[dict[str, str]]:
-        """GET /api/v1/time_range/ -- deprecated time range endpoint."""
-        return Response(
-            content={"message": "Deprecated. Use chart data queries instead."},
-            status_code=410,
-            headers={
-                "Deprecation": "true",
-                "X-Deprecated-Endpoint": "/api/v1/time_range/",
-            },
-        )
+            {"result": [{"since": "...", "until": "...", "timeRange": "...",
+                          "shift": "..."}, ...]}
+        """
+        # require_authentication guard enforces a valid user session.
+        del current_user  # parameter exists only to trigger the guard
+        raw = request.query_params.get("q")
+        time_ranges = _parse_rison_time_ranges(raw)
+
+        if isinstance(time_ranges, str):
+            time_ranges = [{"timeRange": time_ranges}]
+        if not isinstance(time_ranges, list):
+            return Response(
+                content={
+                    "message": "'q' must be a string or list of "
+                    "{timeRange, shift} objects",
+                },
+                status_code=400,
+            )
+
+        try:
+            rv: list[dict[str, Any]] = []
+            for entry in time_ranges:
+                if not isinstance(entry, dict) or "timeRange" not in entry:
+                    return Response(
+                        content={
+                            "message": "Each time range entry must be an "
+                            "object with a 'timeRange' key",
+                        },
+                        status_code=400,
+                    )
+                since, until = get_since_until(
+                    time_range=entry["timeRange"],
+                    time_shift=entry.get("shift"),
+                )
+                rv.append(
+                    {
+                        "since": since.isoformat() if since else "",
+                        "until": until.isoformat() if until else "",
+                        "timeRange": entry["timeRange"],
+                        "shift": entry.get("shift"),
+                    }
+                )
+            return Response(content={"result": rv}, status_code=200)
+        except (
+            ValueError,
+            TimeRangeParseFailError,
+            TimeRangeAmbiguousError,
+        ) as ex:
+            return Response(
+                content={"message": f"Unexpected time range: {ex}"},
+                status_code=400,
+            )

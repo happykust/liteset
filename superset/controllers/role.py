@@ -271,20 +271,20 @@ class RoleController(Controller):
     # GET — role permissions
     # ------------------------------------------------------------------
     @get(
-        "/{pk:int}/permissions/",
+        "/{role_id:int}/permissions/",
         guards=[require_permission("can_read", "Role")],
     )
     async def get_permissions(
         self,
         role_dao: Any,
-        pk: int,
+        role_id: int,
     ) -> dict[str, Any]:
-        """GET /api/v1/security/roles/{pk}/permissions/ — list role permissions."""
-        role = await role_dao.find_by_id(pk)
+        """GET /api/v1/security/roles/{role_id}/permissions/ — list role permissions."""
+        role = await role_dao.find_by_id(role_id)
         if role is None:
-            raise ObjectNotFoundError("Role", pk)
+            raise ObjectNotFoundError("Role", role_id)
 
-        permission_views = await role_dao.get_permissions(pk)
+        permission_views = await role_dao.get_permissions(role_id)
 
         result = [
             PermissionViewResponse(
@@ -299,7 +299,7 @@ class RoleController(Controller):
             for pv in permission_views
         ]
 
-        event_logger.log("role.permissions", object_ref=str(pk))
+        event_logger.log("role.permissions", object_ref=str(role_id))
         return msgspec.to_builtins(
             RolePermissionsResponse(
                 result=result,
@@ -308,27 +308,27 @@ class RoleController(Controller):
         )
 
     # ------------------------------------------------------------------
-    # POST /{pk}/permissions — set role permissions
+    # POST /{role_id}/permissions — set role permissions
     # ------------------------------------------------------------------
     @post(
-        "/{pk:int}/permissions",
+        "/{role_id:int}/permissions",
         guards=[require_permission("can_write", "Role")],
     )
     async def set_permissions(
         self,
         role_dao: Any,
-        pk: int,
+        role_id: int,
         data: RolePermissionsPostBody,
     ) -> dict[str, Any]:
-        """POST /api/v1/security/roles/{pk}/permissions — replace role permissions.
+        """POST /api/v1/security/roles/{role_id}/permissions — replace role permissions.
 
         Body: {permission_view_menu_ids: [int, ...]}
         """
-        result = await role_dao.set_permissions(pk, data.permission_view_menu_ids)
+        result = await role_dao.set_permissions(role_id, data.permission_view_menu_ids)
         if result is None:
-            raise ObjectNotFoundError("Role", pk)
+            raise ObjectNotFoundError("Role", role_id)
 
-        event_logger.log("role.set_permissions", object_ref=str(pk))
+        event_logger.log("role.set_permissions", object_ref=str(role_id))
         return {
             "result": {
                 "permission_view_menu_ids": data.permission_view_menu_ids,
@@ -336,55 +336,55 @@ class RoleController(Controller):
         }
 
     # ------------------------------------------------------------------
-    # PUT /{pk}/users — set role users
+    # PUT /{role_id}/users — set role users
     # ------------------------------------------------------------------
     @put(
-        "/{pk:int}/users",
+        "/{role_id:int}/users",
         guards=[require_permission("can_write", "Role")],
     )
     async def set_users(
         self,
         role_dao: Any,
-        pk: int,
+        role_id: int,
         data: RoleUsersPutBody,
     ) -> dict[str, Any]:
-        """PUT /api/v1/security/roles/{pk}/users — replace role users.
+        """PUT /api/v1/security/roles/{role_id}/users — replace role users.
 
         Body: {user_ids: [int, ...]}
         """
-        result = await role_dao.set_users(pk, data.user_ids)
+        result = await role_dao.set_users(role_id, data.user_ids)
         if result is None:
-            raise ObjectNotFoundError("Role", pk)
+            raise ObjectNotFoundError("Role", role_id)
         if result == "not_found":
             raise ObjectNotFoundError("User", "some user_ids not found")
 
-        event_logger.log("role.set_users", object_ref=str(pk))
+        event_logger.log("role.set_users", object_ref=str(role_id))
         return {"result": {"user_ids": data.user_ids}}
 
     # ------------------------------------------------------------------
-    # PUT /{pk}/groups — set role groups
+    # PUT /{role_id}/groups — set role groups
     # ------------------------------------------------------------------
     @put(
-        "/{pk:int}/groups",
+        "/{role_id:int}/groups",
         guards=[require_permission("can_write", "Role")],
     )
     async def set_groups(
         self,
         role_dao: Any,
-        pk: int,
+        role_id: int,
         data: RoleGroupsPutBody,
     ) -> dict[str, Any]:
-        """PUT /api/v1/security/roles/{pk}/groups — replace role groups.
+        """PUT /api/v1/security/roles/{role_id}/groups — replace role groups.
 
         Body: {group_ids: [int, ...]}
         """
-        result = await role_dao.set_groups(pk, data.group_ids)
+        result = await role_dao.set_groups(role_id, data.group_ids)
         if result is None:
-            raise ObjectNotFoundError("Role", pk)
+            raise ObjectNotFoundError("Role", role_id)
         if result == "not_found":
             raise ObjectNotFoundError("Group", "some group_ids not found")
 
-        event_logger.log("role.set_groups", object_ref=str(pk))
+        event_logger.log("role.set_groups", object_ref=str(role_id))
         return {"result": {"group_ids": data.group_ids}}
 
     # ------------------------------------------------------------------

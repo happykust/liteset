@@ -214,3 +214,96 @@ class UnsetSystemDarkCommand(AsyncBaseCommand[None]):
         if current_dark:
             current_dark.is_system_dark = False
             await self._dao.session.flush()
+
+
+class ExportThemesCommand(AsyncBaseCommand[list[tuple[str, str]]]):
+    """Export all themes as a list of (filename, yaml_content) tuples.
+
+    Ported from superset_old/commands/theme/export.py.
+    """
+
+    def __init__(self, dao: AsyncThemeDAO) -> None:
+        self._dao = dao
+
+    async def validate(self) -> None:
+        pass
+
+    async def run(self) -> list[tuple[str, str]]:
+        import yaml
+
+        from superset.utils.file import get_filename
+
+        themes = await self._dao.find_all()
+        result: list[tuple[str, str]] = []
+        for theme in themes:
+            file_name = get_filename(theme.theme_name, theme.id, skip_id=True)
+            payload = theme.export_to_dict(
+                recursive=False,
+                include_parent_ref=False,
+                include_defaults=True,
+                export_uuids=True,
+            )
+            # Parse json_data for readability (matching original)
+            if payload.get("json_data"):
+                try:
+                    import json as _json
+
+                    json_data = _json.loads(payload["json_data"])
+                    payload["json_data"] = json_data
+                except (TypeError, ValueError):
+                    pass
+            payload["version"] = "1.0.0"
+            file_content = yaml.safe_dump(payload, sort_keys=False)
+            result.append((f"themes/{file_name}.yaml", file_content))
+        return result
+
+
+class ImportThemesCommand(AsyncBaseCommand[int]):
+    """Import themes from parsed YAML configs. Returns count of imported themes.
+
+    Ported from superset_old/commands/theme/import_themes.py.
+    """
+
+    def __init__(
+        self,
+        dao: AsyncThemeDAO,
+        contents: dict[str, Any],
+        overwrite: bool = False,
+    ) -> None:
+        self._dao = dao
+        self._contents = contents
+        self._overwrite = overwrite
+
+    async def validate(self) -> None:
+        if not self._contents:
+            raise CommandInvalidError("No theme contents provided")
+
+    async def run(self) -> int:
+        count = 0
+        for file_name, config in self._contents.items():
+            if not file_name.startswith("themes/"):
+                continue
+            if not isinstance(config, dict):
+                continue
+
+            # Convert json_data from dict to string if needed
+            if isinstance(config.get("json_data"), dict):
+                import json as _json
+
+                config["json_data"] = _json.dumps(config["json_data"])
+
+            uuid_val = config.get("uuid")
+            existing = None
+            if uuid_val:
+                existing = await self._dao.find_by_uuid(uuid_val)
+
+            if existing:
+                if self._overwrite:
+                    await self._dao.update(existing, config)
+                # else skip
+            else:
+                await self._dao.create(config)
+            count += 1
+
+        await self._dao.session.flush()
+        return count

@@ -85,6 +85,45 @@ if TYPE_CHECKING:
     from superset.config import SupersetSettings
     from superset.db.daos.chart import AsyncChartDAO
 
+
+# ---------------------------------------------------------------------------
+# Custom RISON filters for charts
+# ---------------------------------------------------------------------------
+def _chart_custom_filters(current_user: Any) -> dict[str, Any]:
+    """Return custom filter callables keyed by RISON ``opr`` name.
+
+    Each callable has signature ``(model_cls, value) -> clause | None``.
+    """
+
+    def _chart_is_favorite(model_cls: Any, value: Any) -> Any:
+        """Filter charts that the current user has favorited."""
+        from sqlalchemy import select as sa_select
+
+        from superset.models.core import FavStar
+
+        user_id = getattr(current_user, "id", None)
+        if user_id is None:
+            return None
+        fav_subq = sa_select(FavStar.obj_id).where(
+            FavStar.class_name == "slice",
+            FavStar.user_id == user_id,
+        )
+        if value:
+            return model_cls.id.in_(fav_subq)
+        return ~model_cls.id.in_(fav_subq)
+
+    def _chart_is_certified(model_cls: Any, value: Any) -> Any:
+        """Filter charts by certified status."""
+        if value:
+            return model_cls.certified_by.isnot(None)
+        return model_cls.certified_by.is_(None)
+
+    return {
+        "chart_is_favorite": _chart_is_favorite,
+        "chart_is_certified": _chart_is_certified,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Markdown helper — converts description to sanitised HTML
 # ---------------------------------------------------------------------------
@@ -167,6 +206,7 @@ class ChartController(Controller):
         rison_filters, order_by, page, page_size = build_rison_query_params(
             Slice,
             rison_params,
+            custom_filters=_chart_custom_filters(current_user),
         )
         base_filters = await chart_access_filters(security_manager, current_user)
         all_filters = (base_filters or []) + rison_filters
@@ -222,6 +262,19 @@ class ChartController(Controller):
                 "tags.id",
                 "tags.name",
                 "tags.type",
+            ],
+            list_title="List Slice",
+            order_columns=[
+                "changed_by.first_name",
+                "changed_on_delta_humanized",
+                "datasource_id",
+                "datasource_name",
+                "last_saved_at",
+                "last_saved_by.id",
+                "last_saved_by.first_name",
+                "last_saved_by.last_name",
+                "slice_name",
+                "viz_type",
             ],
         )
         for item in payload["result"]:
@@ -308,7 +361,7 @@ class ChartController(Controller):
         return await get_info_payload(
             dao=dao,
             model_name="Chart",
-            permissions=["can_read", "can_write"],
+            permissions=["can_warm_up_cache", "can_read", "can_write", "can_export"],
         )
 
     @get(
@@ -422,6 +475,7 @@ class ChartController(Controller):
         data: ChartPostSchema,
         dao: ChartDAOProtocol,
         current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> ChartGetResponse:
         cmd = CreateChartCommand(
             dao=cast("AsyncChartDAO", dao),
@@ -448,6 +502,7 @@ class ChartController(Controller):
                 }
             ),
             user_id=current_user.id,
+            security_manager=security_manager,
         )
         chart = await cmd.execute()
         chart_id = int(chart.id)
@@ -547,7 +602,7 @@ class ChartController(Controller):
         dao: ChartDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
     ) -> dict[str, str]:
         ids = extract_ids_required(rison_params)
         cmd = BulkDeleteChartsCommand(
@@ -562,7 +617,9 @@ class ChartController(Controller):
             user_id=current_user.id,
             extra={"count": len(ids)},
         )
-        return {"message": "OK"}
+        num = len(ids)
+        msg = f"Deleted {num} chart" if num == 1 else f"Deleted {num} charts"
+        return {"message": msg}
 
     @get(
         "/{pk:int}/cache_screenshot/",
@@ -735,7 +792,7 @@ class ChartController(Controller):
     async def export(
         self,
         dao: ChartDAOProtocol,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
         token: str | None = Parameter(query="token", default=None),
     ) -> Stream:
         ids = extract_ids(rison_params)
@@ -1106,6 +1163,7 @@ class ChartController(Controller):
     @post(
         "/data",
         guards=[require_permission("can_read", "Chart")],
+        status_code=200,
     )
     async def data(  # noqa: C901
         self,
@@ -1356,15 +1414,74 @@ class ChartController(Controller):
                     q.pop("query", None)
 
         # Convert DataFrames to JSON-serializable dicts before response
+        from datetime import date as _date_t
+        from datetime import datetime as _datetime_t
+        from decimal import Decimal as _Decimal_t
+
+        from superset.typing import GenericDataType
+
         for q in result.get("queries", []):
             if isinstance(q, dict) and isinstance(q.get("df"), pd.DataFrame):
                 df = q.pop("df")
                 q["data"] = df.to_dict(orient="records")
                 q["colnames"] = list(df.columns)
-                q["coltypes"] = []
+                # Frontend viz plugins (gauge, graph, table, etc.) need
+                # ``coltypes`` to know whether each column is temporal,
+                # numeric, boolean or string. Map pandas dtypes to the
+                # ``GenericDataType`` integers the frontend expects:
+                # 0=NUMERIC, 1=STRING, 2=TEMPORAL, 3=BOOLEAN.
+                #
+                # For ``object`` dtype columns (the asyncpg path returns
+                # ``Decimal`` for ``SUM(bigint)`` and ``date`` for
+                # date/datetime, both of which collapse to ``object``),
+                # peek at the first non-null value to infer the real type
+                # rather than blindly tagging everything STRING.
+                coltypes: list[int] = []
+                for col in df.columns:
+                    dtype = df[col].dtype
+                    if pd.api.types.is_bool_dtype(dtype):
+                        coltypes.append(GenericDataType.BOOLEAN)
+                    elif pd.api.types.is_datetime64_any_dtype(dtype):
+                        coltypes.append(GenericDataType.TEMPORAL)
+                    elif pd.api.types.is_numeric_dtype(dtype):
+                        coltypes.append(GenericDataType.NUMERIC)
+                    else:
+                        sample = next(
+                            (v for v in df[col] if v is not None and v == v),  # noqa: PLR0124
+                            None,
+                        )
+                        if isinstance(sample, bool):
+                            coltypes.append(GenericDataType.BOOLEAN)
+                        elif isinstance(sample, (int, float, _Decimal_t)):
+                            coltypes.append(GenericDataType.NUMERIC)
+                        elif isinstance(sample, (_datetime_t, _date_t)):
+                            coltypes.append(GenericDataType.TEMPORAL)
+                        else:
+                            coltypes.append(GenericDataType.STRING)
+                q["coltypes"] = coltypes
                 q.setdefault("rowcount", len(df))
 
-        # P2-11: NaN / Inf / numpy / datetime cleanup for valid JSON
+        # P2-11: NaN / Inf / numpy / datetime / Decimal cleanup for valid JSON.
+        #
+        # asyncpg returns PostgreSQL NUMERIC (and ``SUM(bigint)``) as
+        # Python ``Decimal``; without this normalization those values
+        # end up as strings in the JSON payload, breaking numeric
+        # comparisons in Cypress snapshots (e.g. table viz sort tests).
+        #
+        # Datetime / date / Timestamp values are serialized as epoch
+        # milliseconds to match the original Flask chart data API
+        # (``json_int_dttm_ser`` in ``superset_old/utils/json.py``).
+        # Frontend chart components (Table, TimeSeries, …) expect
+        # numeric timestamps so they can apply ``smart_date`` formatting
+        # driven by ``time_grain_sqla`` — ISO strings break this flow.
+        from datetime import date as _date_t
+        from datetime import datetime as _datetime_t
+        from decimal import Decimal
+
+        from superset.utils.json import datetime_to_epoch
+
+        _EPOCH_DATE = _datetime_t(1970, 1, 1).date()
+
         for q in result.get("queries", []):
             if isinstance(q, dict) and "data" in q:
                 for row in q["data"]:
@@ -1373,14 +1490,31 @@ class ChartController(Controller):
                             math.isnan(val) or math.isinf(val)
                         ):
                             row[key] = None
+                        elif isinstance(val, Decimal):
+                            # Preserve integer-ness when the value has no
+                            # fractional part (e.g. SUM over BIGINT) —
+                            # matches the original Flask/SQLAlchemy path
+                            # which emitted ints for whole-number sums.
+                            if val == val.to_integral_value():
+                                row[key] = int(val)
+                            else:
+                                row[key] = float(val)
                         elif isinstance(val, np.integer):
                             row[key] = int(val)
                         elif isinstance(val, np.floating):
                             row[key] = float(val) if not np.isnan(val) else None
                         elif isinstance(val, np.bool_):
                             row[key] = bool(val)
-                        elif hasattr(val, "isoformat"):
-                            row[key] = val.isoformat()
+                        elif isinstance(val, pd.Timestamp):
+                            if pd.isna(val):
+                                row[key] = None
+                            else:
+                                row[key] = datetime_to_epoch(val.to_pydatetime())
+                        elif isinstance(val, _datetime_t):
+                            row[key] = datetime_to_epoch(val)
+                        elif isinstance(val, _date_t):
+                            # plain ``date`` (no time component)
+                            row[key] = (val - _EPOCH_DATE).total_seconds() * 1000
 
         # Ensure indexnames is present in each query result
         for q in result.get("queries", []):

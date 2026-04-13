@@ -26,10 +26,17 @@ from sqlalchemy.engine.url import URL
 
 from superset.constants import TimeGrain
 from superset.databases.utils import make_url_safe
-from superset.db_engine_specs.base import BaseEngineSpec
+from superset.db_engine_specs.base import (
+    BaseEngineSpec,
+    BasicParametersMixin,
+    BasicParametersType,
+    BasicPropertiesType,
+)
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+from superset.utils.network import is_hostname_valid, is_port_open
 
 
-class CouchbaseEngineSpec(BaseEngineSpec):
+class CouchbaseEngineSpec(BasicParametersMixin, BaseEngineSpec):
     engine = "couchbase"
     engine_aliases = {"couchbasedb"}
     engine_name = "Couchbase"
@@ -72,7 +79,7 @@ class CouchbaseEngineSpec(BaseEngineSpec):
     @classmethod
     def build_sqlalchemy_uri(
         cls,
-        parameters: dict[str, Any],
+        parameters: BasicParametersType,
         encrypted_extra: Optional[dict[str, Any]] = None,
     ) -> str:
         query_params = parameters.get("query", {}).copy()
@@ -81,20 +88,34 @@ class CouchbaseEngineSpec(BaseEngineSpec):
         else:
             query_params["ssl"] = "false"
 
-        uri = URL.create(
-            "couchbase",
-            username=parameters.get("username"),
-            password=parameters.get("password"),
-            host=parameters["host"],
-            port=parameters.get("port"),
-            query=query_params,
-        )
-        return str(uri)
+        if parameters.get("port") is None:
+            uri = URL.create(
+                "couchbase",
+                username=parameters.get("username"),
+                password=parameters.get("password"),
+                host=parameters["host"],
+                port=None,
+                query=query_params,
+            )
+        else:
+            uri = URL.create(
+                "couchbase",
+                username=parameters.get("username"),
+                password=parameters.get("password"),
+                host=parameters["host"],
+                port=parameters.get("port"),
+                query=query_params,
+            )
+        print(uri)
+        # SQLAlchemy 2.x masks password in ``str(URL)`` — use
+        # render_as_string to preserve the original 1.4 behaviour.
+        return uri.render_as_string(hide_password=False)
 
     @classmethod
     def get_parameters_from_uri(
         cls, uri: str, encrypted_extra: Optional[dict[str, Any]] = None
-    ) -> dict[str, Any]:
+    ) -> BasicParametersType:
+        print("get_parameters is called : ", uri)
         url = make_url_safe(uri)
         query = {
             key: value
@@ -103,15 +124,89 @@ class CouchbaseEngineSpec(BaseEngineSpec):
         }
         ssl_value = url.query.get("ssl", "false").lower()
         encryption = ssl_value == "true"
-        return {
-            "username": url.username,
-            "password": url.password,
-            "host": url.host,
-            "port": url.port,
-            "database": url.database,
-            "query": query,
-            "encryption": encryption,
-        }
+        return BasicParametersType(
+            username=url.username,
+            password=url.password,
+            host=url.host,
+            port=url.port,
+            database=url.database,
+            query=query,
+            encryption=encryption,
+        )
+
+    @classmethod
+    def validate_parameters(
+        cls, properties: BasicPropertiesType
+    ) -> list[SupersetError]:
+        """
+        Couchbase local server needs hostname and port but on cloud we need only connection String along with credentials to connect.
+        """  # noqa: E501
+        errors: list[SupersetError] = []
+
+        required = {"host", "username", "password", "database"}
+        parameters = properties.get("parameters", {})
+        present = {key for key in parameters if parameters.get(key, ())}
+
+        if missing := sorted(required - present):
+            errors.append(
+                SupersetError(
+                    message=f"One or more parameters are missing: {', '.join(missing)}",
+                    error_type=SupersetErrorType.CONNECTION_MISSING_PARAMETERS_ERROR,
+                    level=ErrorLevel.WARNING,
+                    extra={"missing": missing},
+                ),
+            )
+
+        host = parameters.get("host", None)
+        if not host:
+            return errors
+        # host can be a connection string in case of couchbase cloud. So Connection Check is not required in that case.  # noqa: E501
+        if not is_hostname_valid(host):
+            errors.append(
+                SupersetError(
+                    message="The hostname provided can't be resolved.",
+                    error_type=SupersetErrorType.CONNECTION_INVALID_HOSTNAME_ERROR,
+                    level=ErrorLevel.ERROR,
+                    extra={"invalid": ["host"]},
+                ),
+            )
+            return errors
+
+        if port := parameters.get("port", None):
+            try:
+                port = int(port)
+            except (ValueError, TypeError):
+                errors.append(
+                    SupersetError(
+                        message="Port must be a valid integer.",
+                        error_type=SupersetErrorType.CONNECTION_INVALID_PORT_ERROR,
+                        level=ErrorLevel.ERROR,
+                        extra={"invalid": ["port"]},
+                    ),
+                )
+            if not (isinstance(port, int) and 0 <= port < 2**16):
+                errors.append(
+                    SupersetError(
+                        message=(
+                            "The port must be an integer between 0 and 65535 "
+                            "(inclusive)."
+                        ),
+                        error_type=SupersetErrorType.CONNECTION_INVALID_PORT_ERROR,
+                        level=ErrorLevel.ERROR,
+                        extra={"invalid": ["port"]},
+                    ),
+                )
+            elif not is_port_open(host, port):
+                errors.append(
+                    SupersetError(
+                        message="The port is closed.",
+                        error_type=SupersetErrorType.CONNECTION_PORT_CLOSED_ERROR,
+                        level=ErrorLevel.ERROR,
+                        extra={"invalid": ["port"]},
+                    ),
+                )
+
+        return errors
 
     @classmethod
     def get_schema_from_engine_params(

@@ -47,7 +47,11 @@ from sqlalchemy.dialects.mysql import (
 from sqlalchemy.engine.url import URL
 
 from superset.constants import TimeGrain
-from superset.db_engine_specs.base import BaseEngineSpec, ColumnTypeMapping
+from superset.db_engine_specs.base import (
+    BaseEngineSpec,
+    BasicParametersMixin,
+    ColumnTypeMapping,
+)
 from superset.typing import GenericDataType
 
 if TYPE_CHECKING:
@@ -74,7 +78,7 @@ SYNTAX_ERROR_REGEX = re.compile(
 )
 
 
-class MySQLEngineSpec(BaseEngineSpec):
+class MySQLEngineSpec(BasicParametersMixin, BaseEngineSpec):
     engine = "mysql"
     engine_name = "MySQL"
     max_column_name_length = 64

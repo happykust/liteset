@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy import (
@@ -64,6 +65,32 @@ logger = logging.getLogger(__name__)
 def _escape_sql_string(value: str) -> str:
     """Escape single quotes in a SQL literal value."""
     return value.replace("'", "''")
+
+
+# SQL reserved keywords (conservative superset of ANSI SQL and common
+# dialect reservations). Used by ``SqlaTable._quote_col_if_needed`` to
+# decide whether a simple identifier needs quoting. Kept in sync with the
+# list SQLAlchemy uses internally for default quoting behaviour.
+_SQL_RESERVED_WORDS: frozenset[str] = frozenset(
+    {
+        "all", "analyse", "analyze", "and", "any", "array", "as", "asc",
+        "asymmetric", "both", "case", "cast", "check", "collate", "column",
+        "constraint", "create", "current_catalog", "current_date",
+        "current_role", "current_time", "current_timestamp", "current_user",
+        "default", "deferrable", "desc", "distinct", "do", "else", "end",
+        "except", "false", "fetch", "for", "foreign", "from", "grant",
+        "group", "having", "in", "initially", "intersect", "into", "lateral",
+        "leading", "limit", "localtime", "localtimestamp", "not", "null",
+        "offset", "on", "only", "or", "order", "placing", "primary",
+        "references", "returning", "select", "session_user", "some",
+        "symmetric", "table", "then", "to", "trailing", "true", "union",
+        "unique", "user", "using", "variadic", "when", "where", "window",
+        "with",
+        # additional commonly-reserved identifiers across engines
+        "date", "time", "timestamp", "year", "month", "day", "hour",
+        "minute", "second", "level", "number", "position", "value",
+    }
+)
 
 
 def _parse_dttm(value: Any) -> datetime | None:
@@ -171,6 +198,12 @@ class BaseDatasource:
 
     This is an abstract mixin -- not a mapped class itself.
     """
+
+    # Used to do code highlighting when displaying the query in the UI
+    query_language: str | None = None
+
+    # Only some datasources support Row Level Security
+    is_rls_supported: bool = False
 
     description = Column(Text)
     default_endpoint = Column(Text)
@@ -338,6 +371,10 @@ class SqlaTable(
 ):
     """A SQL dataset (table or virtual query)."""
 
+    type = "table"
+    query_language = "sql"
+    is_rls_supported = True
+
     __tablename__ = "tables"
     __table_args__ = (
         UniqueConstraint("database_id", "catalog", "schema", "table_name"),
@@ -385,14 +422,17 @@ class SqlaTable(
     #: Datasource type identifier used by QueryContext
     type: str = "table"
 
-    #: Aggregation functions mapping for SIMPLE adhoc metrics
+    #: Aggregation functions mapping for SIMPLE adhoc metrics.
+    # Function names are lowercase to match the original SQLAlchemy output
+    # (``sa.func.SUM(col)`` compiles to ``sum(col)``), which Cypress tests
+    # rely on.
     _SQLA_AGGREGATIONS: dict[str, str] = {
         "COUNT_DISTINCT": "COUNT(DISTINCT {col})",
         "COUNT": "COUNT({col})",
-        "SUM": "SUM({col})",
-        "AVG": "AVG({col})",
-        "MIN": "MIN({col})",
-        "MAX": "MAX({col})",
+        "SUM": "sum({col})",
+        "AVG": "avg({col})",
+        "MIN": "min({col})",
+        "MAX": "max({col})",
     }
 
     #: Simple filter operator mapping
@@ -745,6 +785,27 @@ class SqlaTable(
             return f"[{name}]"
         return f'"{name}"'
 
+    def _quote_col_if_needed(self, name: str) -> str:
+        """Quote a column reference only when the identifier actually
+        requires quoting (mirrors SQLAlchemy's default behaviour for
+        ``column()`` / ``literal_column()``).
+
+        An identifier is returned unquoted when it consists solely of
+        lowercase ASCII letters, digits, and underscores, does not start
+        with a digit, and is not on the list of SQL reserved keywords.
+        Everything else is passed through :meth:`_quote_identifier`.
+        """
+        if not name:
+            return name
+        if not (name[0].isalpha() or name[0] == "_"):
+            return self._quote_identifier(name)
+        for ch in name:
+            if not (ch.isdigit() or ch == "_" or ("a" <= ch <= "z")):
+                return self._quote_identifier(name)
+        if name in _SQL_RESERVED_WORDS:
+            return self._quote_identifier(name)
+        return name
+
     def get_column(self, column_name: str | None) -> TableColumn | None:
         """Retrieve a TableColumn by name, or None."""
         if column_name is None:
@@ -912,13 +973,25 @@ class SqlaTable(
             if expr_type == "SIMPLE":
                 col_obj = metric.get("column") or {}
                 col_name = col_obj.get("column_name", "*")
+                # If the column has an expression (calculated/virtual column),
+                # use it instead of the physical column name.
+                # Matches original adhoc_metric_to_sqla + make_sqla_column logic.
+                col_expression = col_obj.get("expression")
                 aggregate = metric.get("aggregate", "COUNT")
-                tmpl = self._SQLA_AGGREGATIONS.get(aggregate, f"{aggregate}({{col}})")
-                return tmpl.format(
-                    col=self._quote_identifier(col_name)
-                    if col_name != "*"
-                    else col_name
-                ), label
+                tmpl = self._SQLA_AGGREGATIONS.get(
+                    aggregate, f"{aggregate.lower()}({{col}})"
+                )
+                if col_expression:
+                    col_ref = col_expression
+                elif col_name != "*":
+                    # Use SQLAlchemy-style conditional quoting so simple
+                    # lowercase identifiers like ``num_girls`` remain
+                    # unquoted; matches original ``sa.func.SUM(column(...))``
+                    # compilation output.
+                    col_ref = self._quote_col_if_needed(col_name)
+                else:
+                    col_ref = col_name
+                return tmpl.format(col=col_ref), label
 
             if expr_type == "SQL":
                 sql_expr = (
@@ -984,6 +1057,26 @@ class SqlaTable(
             return None
 
         op_upper = op.upper().strip()
+
+        # Mirror the original ``BaseDatasource._get_sqla_query`` behaviour:
+        # if the filter references a column that doesn't exist on this
+        # datasource (and isn't an adhoc/SQL expression), silently drop
+        # the filter rather than generating SQL that the database will
+        # reject. The column is recorded under ``rejected_filter_columns``
+        # in the response payload by ``query_context_processor``. Only
+        # plain column-name strings are validated; dicts (adhoc columns)
+        # are passed through unchanged.
+        #
+        # This check runs BEFORE TEMPORAL_RANGE handling because a
+        # TEMPORAL_RANGE filter referencing a non-existent datetime
+        # column would still generate SQL like ``"ds" >= ...`` that
+        # fails at execute. Cypress tests override datasources (e.g.
+        # graph test targets energy_usage which has no ``ds`` column)
+        # and rely on stale temporal filters being silently dropped.
+        if isinstance(col, str):
+            known_cols = {c.column_name for c in (self.columns or [])}
+            if known_cols and col not in known_cols:
+                return None
 
         # Handle TEMPORAL_RANGE filter
         if op_upper == "TEMPORAL_RANGE" and isinstance(val, str):
@@ -1104,12 +1197,37 @@ class SqlaTable(
         series_limit: int | None = query_dict.get("series_limit")
         series_limit_metric: Any = query_dict.get("series_limit_metric")
 
+        # Fallback: if granularity column doesn't exist in this
+        # dataset's datetime columns, use main_dttm_col instead.
+        # Matches original get_sqla_query() logic in helpers.py:1683-1684.
+        if granularity is not None and granularity not in self.dttm_cols:
+            granularity = self.main_dttm_col
+
         # Parse datetime bounds
         from_dttm = _parse_dttm(from_dttm)
         to_dttm = _parse_dttm(to_dttm)
 
-        # Determine if we need aggregation
+        # Determine if we need aggregation.  Matches original
+        # ``helpers.get_sqla_query`` logic (lines 1814-1822): we start with
+        # ``need_groupby = bool(metrics or groupby)`` and then flip it to
+        # ``True`` if ``orderby`` references any metric — adhoc or named —
+        # because in that case the query must aggregate even when the form
+        # has no metrics selected (e.g. table viz in raw mode ordering by
+        # ``SUM(num) DESC`` with only ``columns=['name']``).
         need_groupby = bool(metrics_raw or groupby_raw)
+        if not need_groupby and orderby:
+            named_metrics = {m.metric_name for m in (self.metrics or [])}
+            for item in orderby:
+                if not (isinstance(item, (list, tuple)) and len(item) == 2):
+                    continue
+                col_spec = item[0]
+                if isinstance(col_spec, dict):
+                    # Adhoc metric dict — mirror original's need_groupby flip
+                    need_groupby = True
+                    break
+                if isinstance(col_spec, str) and col_spec in named_metrics:
+                    need_groupby = True
+                    break
 
         # ----- SELECT clause -----
         select_parts: list[str] = []
@@ -1208,13 +1326,28 @@ class SqlaTable(
         # ----- ORDER BY clause -----
         order_parts: list[str] = []
         if orderby:
+            metrics_by_name = {m.metric_name: m for m in (self.metrics or [])}
+            columns_by_name = {c.column_name: c for c in (self.columns or [])}
             for item in orderby:
                 if isinstance(item, (list, tuple)) and len(item) == 2:
                     col_spec, ascending = item
-                    # Resolve the column/metric for ordering
+                    # Resolve the column/metric for ordering.
+                    # Original logic (helpers.py:1815-1826): checks
+                    # metrics_exprs_by_label → metrics_by_name → columns_by_name
                     if isinstance(col_spec, str):
-                        # Could be a metric name or column name
-                        order_ref = self._quote_identifier(col_spec)
+                        if col_spec in metrics_by_name:
+                            # Named metric — use its stored expression
+                            order_ref = metrics_by_name[col_spec].expression
+                        elif col_spec in columns_by_name:
+                            col_obj = columns_by_name[col_spec]
+                            order_ref = (
+                                col_obj.expression
+                                if col_obj.expression
+                                else self._quote_identifier(col_spec)
+                            )
+                        else:
+                            # Could be a label alias from the SELECT list
+                            order_ref = self._quote_identifier(col_spec)
                     elif isinstance(col_spec, dict):
                         expr, _label = self._resolve_metric_expression(col_spec)
                         order_ref = expr
@@ -1324,6 +1457,48 @@ class SqlaTable(
         return sql, from_dttm, to_dttm
 
     # -- Async query execution ------------------------------------------------
+
+    async def async_values_for_column(
+        self,
+        column_name: str,
+        limit: int = 10000,
+    ) -> list[Any]:
+        """Return distinct values of ``column_name`` for filter dropdowns.
+
+        Async port of ``superset_old.models.helpers.values_for_column``.
+        Builds ``SELECT DISTINCT <col> AS column_values FROM <table>
+        [WHERE <fetch_values_predicate>] LIMIT <n>`` and executes it via
+        the dataset's async engine.
+        """
+        cols = {c.column_name: c for c in (self.columns or [])}
+        if column_name not in cols:
+            raise KeyError(column_name)
+
+        target_col = cols[column_name]
+
+        # Respect calculated columns: use ``expression`` when present,
+        # otherwise quote the physical column name.
+        col_expr = getattr(target_col, "expression", None)
+        if col_expr:
+            projection = f"{col_expr} AS column_values"
+        else:
+            projection = f"{self._quote_identifier(column_name)} AS column_values"
+
+        table_ref = self._get_table_ref()
+        sql = f"SELECT DISTINCT {projection} FROM {table_ref}"
+
+        fvp = getattr(self, "fetch_values_predicate", None)
+        if fvp:
+            sql += f" WHERE {fvp}"
+
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+
+        df = await self._execute_sql(sql)
+        if df.empty or "column_values" not in df.columns:
+            return []
+        values = df["column_values"].replace({np.nan: None}).tolist()
+        return values
 
     async def _execute_sql(self, sql: str) -> pd.DataFrame:
         """Execute SQL against the dataset's database and return a DataFrame."""

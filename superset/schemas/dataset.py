@@ -392,11 +392,28 @@ class DatasetDetailResult(ModelStruct):
 
     @classmethod
     def _resolve_order_by_choices(cls, obj: Any) -> list[list[Any]]:
+        """Build ``order_by_choices`` in the shape expected by the
+        frontend control ``order_by_cols`` and the table-viz save flow.
+
+        The original implementation in
+        ``superset_old/connectors/sqla/models.py:337`` returns a list of
+        ``(json.dumps([column, asc]), "column [asc|desc]")`` pairs.
+        The frontend's SelectControl compares saved values (JSON-encoded
+        strings like ``'["num", false]'``) against the ``value`` of each
+        choice, so the first element MUST be the json-encoded string and
+        not a raw ``[column, bool]`` list — otherwise the control can't
+        match its saved state and silently drops the selection, resulting
+        in empty ``orderby`` in the chart query.
+        """
+        import json as _json
+
         choices: list[list[Any]] = []
         for col in getattr(obj, "columns", None) or []:
-            col_name = getattr(col, "column_name", "")
-            choices.append([col_name, True])
-            choices.append([col_name, False])
+            col_name = getattr(col, "column_name", "") or ""
+            if not col_name:
+                continue
+            choices.append([_json.dumps([col_name, True]), f"{col_name} [asc]"])
+            choices.append([_json.dumps([col_name, False]), f"{col_name} [desc]"])
         return choices
 
     @classmethod

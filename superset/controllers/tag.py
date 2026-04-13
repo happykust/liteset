@@ -33,6 +33,7 @@ from superset.commands.tag import (
     UpdateTagCommand,
 )
 from superset.controllers.base import (
+    _serialize_item,
     build_rison_query_params,
     extract_ids,
     extract_ids_required,
@@ -102,6 +103,7 @@ class TagController(Controller):
                 "created_by.first_name",
                 "created_by.last_name",
             ],
+            list_title="List Tag",
         )
 
     @get("/{pk:int}", guards=[require_permission("can_read", "Tag")])
@@ -111,7 +113,23 @@ class TagController(Controller):
         item = await dao.find_by_id(pk)
         if item is None:
             raise ObjectNotFoundError("Tag", pk)
-        return {"result": item}
+        return {
+            "result": _serialize_item(
+                item,
+                [
+                    "id",
+                    "name",
+                    "type",
+                    "description",
+                    "changed_on_delta_humanized",
+                    "created_on_delta_humanized",
+                    "changed_by.first_name",
+                    "changed_by.last_name",
+                    "created_by.first_name",
+                    "created_by.last_name",
+                ],
+            )
+        }
 
     @post("/", guards=[require_permission("can_write", "Tag")], status_code=201)
     async def create_tag(
@@ -160,7 +178,7 @@ class TagController(Controller):
     async def bulk_delete(
         self,
         dao: Any,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
         ids = extract_ids_required(rison_params)
@@ -317,7 +335,6 @@ class TagController(Controller):
             object_id=object_id,
             tag_names=data.properties.tags,
         )
-        await dao.session.flush()
         event_logger.log(
             "tag.add_objects",
             extra={"object_type": object_type, "object_id": object_id},
@@ -358,7 +375,6 @@ class TagController(Controller):
             object_id=object_id,
             tag_name=tag,
         )
-        await dao.session.flush()
         event_logger.log(
             "tag.delete_object",
             extra={

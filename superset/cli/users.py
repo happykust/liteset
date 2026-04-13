@@ -342,11 +342,16 @@ def list_users() -> None:
 
 
 _TEST_USERS = [
-    ("admin", "Admin", "User", "admin@superset.org", "Admin"),
-    ("alpha", "Alpha", "User", "alpha@superset.org", "Alpha"),
-    ("gamma", "Gamma", "User", "gamma@superset.org", "Gamma"),
-    ("gamma2", "Gamma2", "User", "gamma2@superset.org", "Gamma"),
-    ("gamma_sqllab", "Gamma Sqllab", "User", "gamma_sqllab@superset.org", "sql_lab"),
+    # (username, first_name, last_name, email, role)
+    # Must match original FAB test users exactly: first_name=username,
+    # last_name="user", email=username@fab.org — Cypress tests assert on
+    # the rendered "alpha user" string and email addresses.
+    ("admin", "admin", "user", "admin@fab.org", "Admin"),
+    ("alpha", "alpha", "user", "alpha@fab.org", "Alpha"),
+    ("gamma", "gamma", "user", "gamma@fab.org", "Gamma"),
+    ("gamma2", "gamma2", "user", "gamma2@fab.org", "Gamma"),
+    ("gamma_sqllab", "gamma_sqllab", "user", "gamma_sqllab@fab.org", "sql_lab"),
+    ("gamma_no_csv", "gamma_no_csv", "user", "gamma_no_csv@fab.org", "gamma_no_csv"),
 ]
 
 
@@ -361,67 +366,131 @@ def load_test_users(password: str) -> None:
     import anyio
 
     async def _load() -> None:
-        from sqlalchemy import text
-
         session_factory, engine = _get_async_session_factory()
         async with session_factory() as session:
+            from sqlalchemy import select
+            from sqlalchemy.orm import selectinload
+
+            from superset.models.security import (
+                Permission,
+                PermissionView,
+                Role,
+                User,
+                ViewMenu,
+            )
+            from superset.security.dao import AsyncSecurityDAO
+
+            dao = AsyncSecurityDAO(session)
             hashed = _hash_password(password)
             now = datetime.now(timezone.utc).replace(tzinfo=None)
 
+            # -----------------------------------------------------------
+            # Sync standard FAB roles (Admin, Alpha, Gamma, Public,
+            # sql_lab) BEFORE creating users.  Mirrors the original
+            # superset_old/cli/test.py:49 which calls
+            # ``sm.sync_role_definitions()`` first; without this, the
+            # subsequent user creation loop cannot find the "Admin" /
+            # "Alpha" / "Gamma" / "sql_lab" roles (they are created by
+            # ``superset init``, which runs AFTER ``load_test_users`` in
+            # the Cypress bootstrap flow in docker/docker-init.sh).
+            # -----------------------------------------------------------
+            from superset.config import SupersetSettings
+            from superset.security.sync_roles import sync_role_definitions
+
+            settings = SupersetSettings()  # type: ignore[call-arg]
+            public_role_like = getattr(settings, "public_role_like", None)
+            sync_summary = await sync_role_definitions(
+                session,
+                public_role_like=public_role_like,
+            )
+            click.secho(
+                f"  Synced standard roles: {sync_summary}",
+                fg="green",
+            )
+            await session.flush()
+
+            # -----------------------------------------------------------
+            # Create custom test roles (gamma_sqllab, gamma_no_csv)
+            # matching original superset_old/cli/test.py:50-61.
+            #
+            # gamma_sqllab = Gamma + sql_lab permissions
+            # gamma_no_csv = Gamma + sql_lab permissions MINUS "can csv on Superset"
+            # -----------------------------------------------------------
+            for custom_role_name in ("gamma_sqllab", "gamma_no_csv"):
+                existing = await dao.get_role_by_name(custom_role_name)
+                if existing is not None:
+                    continue
+
+                new_role = Role(name=custom_role_name)
+                session.add(new_role)
+                await session.flush()
+                await session.refresh(new_role, ["permissions"])
+
+                # Collect permissions from Gamma + sql_lab source roles
+                source_pvs: list[PermissionView] = []
+                for source_name in ("Gamma", "sql_lab"):
+                    source_role = await dao.get_role_by_name(source_name)
+                    if source_role is None:
+                        continue
+                    # Eagerly load permissions for this role
+                    await session.refresh(source_role, ["permissions"])
+                    source_pvs.extend(source_role.permissions or [])
+
+                # Deduplicate
+                seen_pv_ids: set[int] = set()
+                for pv in source_pvs:
+                    if pv.id in seen_pv_ids:
+                        continue
+                    seen_pv_ids.add(pv.id)
+
+                    # For gamma_no_csv, skip "can csv on Superset"
+                    if custom_role_name == "gamma_no_csv":
+                        await session.refresh(pv, ["permission", "view_menu"])
+                        p_name = getattr(pv.permission, "name", "")
+                        vm_name = getattr(pv.view_menu, "name", "")
+                        if p_name == "can_csv" and vm_name == "Superset":
+                            continue
+
+                    new_role.permissions.append(pv)
+
+                await session.flush()
+                click.secho(
+                    f"  Created role: {custom_role_name} "
+                    f"({len(seen_pv_ids)} permissions)",
+                    fg="green",
+                )
+
+            # -----------------------------------------------------------
+            # Create test users matching original cli/test.py:63-81
+            # -----------------------------------------------------------
             for uname, fname, lname, email, role_name in _TEST_USERS:
                 # Skip if already exists
-                result = await session.execute(
-                    text("SELECT id FROM ab_user WHERE username = :u"),
-                    {"u": uname},
-                )
-                if result.first() is not None:
+                existing_user = await dao.get_user_by_username(uname)
+                if existing_user is not None:
                     click.echo(f"  User {uname} already exists, skipping.")
                     continue
 
                 # Find role
-                result = await session.execute(
-                    text("SELECT id FROM ab_role WHERE name = :r"),
-                    {"r": role_name},
-                )
-                role_row = result.first()
-                if role_row is None:
+                role = await dao.get_role_by_name(role_name)
+                if role is None:
                     click.secho(
                         f"  Role {role_name} not found for user {uname}, skipping.",
                         fg="yellow",
                     )
                     continue
-                role_id = role_row[0]
 
-                await session.execute(
-                    text(
-                        "INSERT INTO ab_user "
-                        "(first_name, last_name, username, email, password, "
-                        " active, created_on, changed_on) "
-                        "VALUES (:fn, :ln, :un, :em, :pw, :act, :co, :ch)"
-                    ),
-                    {
-                        "fn": fname,
-                        "ln": lname,
-                        "un": uname,
-                        "em": email,
-                        "pw": hashed,
-                        "act": True,
-                        "co": now,
-                        "ch": now,
-                    },
+                user = User(
+                    first_name=fname,
+                    last_name=lname,
+                    username=uname,
+                    email=email,
+                    password=hashed,
+                    active=True,
+                    created_on=now,
+                    changed_on=now,
                 )
-                result = await session.execute(
-                    text("SELECT id FROM ab_user WHERE username = :u"),
-                    {"u": uname},
-                )
-                user_id = result.scalar_one()
-                await session.execute(
-                    text(
-                        "INSERT INTO ab_user_role (user_id, role_id) "
-                        "VALUES (:uid, :rid)"
-                    ),
-                    {"uid": user_id, "rid": role_id},
-                )
+                user.roles = [role]
+                session.add(user)
                 click.secho(f"  Created test user: {uname} ({role_name})", fg="green")
 
             await session.commit()

@@ -274,6 +274,18 @@ class DashboardDetailResult(ModelStruct):
     # -- custom resolvers for non-trivial fields --
 
     @classmethod
+    def _resolve_changed_by_name(cls, obj: Any) -> str | None:
+        """Resolve without triggering lazy load on changed_by relationship."""
+        from sqlalchemy.orm import attributes
+
+        state = attributes.instance_state(obj)
+        # Only read the property if changed_by is already loaded
+        if "changed_by" in state.dict:
+            cb = obj.changed_by
+            return str(cb) if cb else ""
+        return None
+
+    @classmethod
     def _resolve_charts(cls, obj: Any) -> list[str]:
         """Charts come from ``dashboard.slices``, mapped to slice_name."""
         slices = getattr(obj, "slices", None) or []

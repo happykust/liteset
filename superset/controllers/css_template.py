@@ -104,6 +104,7 @@ class CssTemplateController(Controller):
                 "created_by.id",
                 "created_by.last_name",
             ],
+            list_title="List Css Template",
         )
 
     @get(
@@ -238,7 +239,7 @@ class CssTemplateController(Controller):
     async def bulk_delete(
         self,
         dao: CRUDDAOProtocol,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
     ) -> dict[str, str]:
         """DELETE /api/v1/css_template/?q=(ids:!(...)) — bulk delete CSS templates."""
         ids = extract_ids_required(rison_params)

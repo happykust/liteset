@@ -29,7 +29,9 @@ import re
 from typing import Any, cast, TYPE_CHECKING
 
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import NoResultFound, SQLAlchemyError
 
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import SupersetSecurityException
 from superset.security.permissions import (
     ALL_DATABASE_ACCESS,
@@ -154,12 +156,26 @@ class AsyncSecurityManager:
         public_role_name: str = "Public",
         guest_role_name: str = "Guest",
         dashboard_rbac_enabled: bool = False,
+        embedded_superset_enabled: bool = False,
     ) -> None:
         self.dao = dao
         self._admin_role_name = admin_role_name
         self._public_role_name = public_role_name
         self._guest_role_name = guest_role_name
         self._dashboard_rbac_enabled = dashboard_rbac_enabled
+        self._embedded_superset_enabled = embedded_superset_enabled
+
+    @staticmethod
+    def get_exclude_users_from_lists() -> list[str]:
+        """Override to dynamically identify usernames to exclude from
+        all UI dropdown lists (owners, created_by filters, etc.).
+
+        Mirrors the original ``SupersetSecurityManager.get_exclude_users_from_lists``
+        which is called as a fallback when ``EXCLUDE_USERS_FROM_LISTS`` config is None.
+
+        :return: A list of usernames to exclude
+        """
+        return []
 
     async def find_user_by_id(self, user_id: int) -> Any | None:
         """Find a user by primary key (ab_user table)."""
@@ -193,7 +209,7 @@ class AsyncSecurityManager:
         # Fast path: check pre-resolved permissions (CachedUser, GuestUser)
         user_perms = getattr(user, "permissions", None)
         if isinstance(user_perms, (set, frozenset)):
-            return f"{permission_name}_{view_name}" in user_perms
+            return (permission_name, view_name) in user_perms
         # Slow path: DAO query for ORM users
         role_ids = [r.id for r in getattr(user, "roles", [])]
         if not role_ids:
@@ -216,166 +232,514 @@ class AsyncSecurityManager:
         """Get all roles for a user."""
         return await self.dao.get_user_roles(user)
 
-    async def raise_for_access(  # noqa: C901
+    async def raise_for_access(  # noqa: C901, PLR0912, PLR0915
         self,
         *,
         user: Any,
         database: Any | None = None,
         catalog: str | None = None,
         schema: str | None = None,
+        table: Any | None = None,
         datasource: Any | None = None,
         dashboard: Any | None = None,
         chart: Any | None = None,
         query: Any | None = None,
         query_context: Any | None = None,
+        viz: Any | None = None,
+        sql: str | None = None,
+        template_params: dict[str, Any] | None = None,
     ) -> None:
-        """Raise SupersetSecurityException if user lacks access."""
+        """Raise SupersetSecurityException if user lacks access.
+
+        Mirrors the original ``SupersetSecurityManager.raise_for_access``
+        with the same ordering:
+        1. sql + database -> synthetic Query creation
+        2. table/query path (database -> catalog -> schema -> datasource)
+        3. Guest query_context modification check
+        4. datasource/query_context/viz path (with dashboard RBAC fallback)
+        5. dashboard path
+        6. chart path
+
+        :param database: The Superset database
+        :param datasource: The Superset datasource
+        :param query: The SQL Lab query
+        :param query_context: The query context
+        :param table: The Superset table (requires database)
+        :param viz: The visualization
+        :param sql: The SQL string (requires database)
+        :param catalog: Optional catalog name
+        :param schema: Optional schema name
+        :param template_params: Optional template parameters for Jinja templating
+        :raises SupersetSecurityException: If the user cannot access the resource
+        """
         if self.is_admin(user):
             return
 
-        # Guest users can only access dashboards and their charts.
-        # All other resource types (database, datasource, query) are denied.
-        if self.is_guest_user(user):
-            if dashboard is not None:
-                if not await self.has_guest_access(dashboard, user=user):
-                    error = self.get_dashboard_access_error_object(dashboard)
-                    raise SupersetSecurityException(message=error["message"])
-                return
-            if chart is not None:
-                chart_dashboards = getattr(chart, "dashboards", None) or []
-                if not chart_dashboards:
-                    raise SupersetSecurityException(
-                        message=(
-                            "Guest access denied: chart is not"
-                            " associated with any dashboard"
-                        )
-                    )
-                has_access = False
-                for d in chart_dashboards:
-                    if await self.has_guest_access(d, user=user):
-                        has_access = True
-                        break
-                if not has_access:
-                    raise SupersetSecurityException(
-                        message="Guest access denied to chart"
-                    )
-                return
-            if query_context is not None:
-                if query_context_modified(query_context):
-                    raise SupersetSecurityException(
-                        message="Guest users cannot modify query context",
-                    )
-                # Verify datasource belongs to an accessible dashboard
-                qc_datasource = getattr(query_context, "datasource", None)
-                if qc_datasource is not None:
-                    qc_dashboards = getattr(qc_datasource, "dashboards", []) or []
-                    has_access = False
-                    for d in qc_dashboards:
-                        if await self.has_guest_access(d, user=user):
-                            has_access = True
-                            break
-                    if not has_access:
-                        raise SupersetSecurityException(
-                            message=(
-                                "Guest access denied: datasource "
-                                "not in an accessible dashboard"
-                            ),
-                        )
-                return
-            # Guest users cannot access databases, datasources, or queries
-            raise SupersetSecurityException(
-                message="Guest users can only access embedded dashboards"
+        # ------------------------------------------------------------------
+        # Synthetic Query from raw SQL  (original lines 2315-2324)
+        # ------------------------------------------------------------------
+        if sql and database:
+            from superset.models.sql_lab import Query as QueryModel
+            from superset.utils.core import shortid
+
+            query = QueryModel(
+                database=database,
+                sql=sql,
+                schema=schema,
+                catalog=catalog,
+                client_id=shortid()[:10],
+                user_id=getattr(user, "id", None),
+            )
+            # Expunge from session so it's not persisted — mirrors
+            # ``self.session.expunge(query)`` in the original.
+            try:
+                from sqlalchemy import inspect as sa_inspect
+
+                state = sa_inspect(query, raiseerr=False)
+                if state is not None and state.session is not None:
+                    state.session.expunge(query)
+            except Exception:  # noqa: BLE001, S110
+                pass  # Query may not be in a session — safe to ignore
+
+        # ------------------------------------------------------------------
+        # Path 1: database + table  OR  query
+        # Mirrors original lines 2326-2397
+        # ------------------------------------------------------------------
+        if (database and table) or query:
+            if query:
+                database = getattr(query, "database", database)
+
+            database = cast(Any, database)
+            default_catalog = (
+                database.db_engine_spec.get_default_catalog(database)
+                if hasattr(database, "db_engine_spec")
+                else None
             )
 
-        if database is not None:
-            if not await self.can_access_database(database, user=user):
-                raise SupersetSecurityException(
-                    message="Access denied to database: "
-                    f"{getattr(database, 'perm', '')}"
+            if await self.can_access_database(database, user=user):
+                return
+
+            tables: set[Any] = set()
+            if query:
+                # Extract all referenced tables from the SQL via Jinja
+                # rendering + SQLGlot parsing.
+                # Mirrors original lines 2336-2355.
+                default_schema = self._get_default_schema_for_query(
+                    database, query, template_params
                 )
-            if catalog is not None:
-                if not await self.can_access_catalog(database, catalog, user=user):
-                    raise SupersetSecurityException(
-                        message=f"Access denied to catalog: {catalog}"
+                try:
+                    from superset.sql.parse import process_jinja_sql
+
+                    jinja_result = process_jinja_sql(
+                        query.sql, database, template_params
                     )
-                if schema is not None:
-                    if not await self.can_access_schema(
-                        database, schema, catalog=catalog, user=user
-                    ):
-                        raise SupersetSecurityException(
-                            message=f"Access denied to schema: {schema}"
+                    tables = {
+                        table_.qualify(
+                            catalog=getattr(query, "catalog", None) or default_catalog,
+                            schema=default_schema,
                         )
-            elif schema is not None:
-                if not await self.can_access_schema(database, schema, user=user):
-                    raise SupersetSecurityException(
-                        message=f"Access denied to schema: {schema}"
+                        for table_ in jinja_result.tables
+                    }
+                except Exception:  # noqa: BLE001
+                    # If Jinja/SQLGlot parsing fails, fall back to
+                    # direct SQL parsing without Jinja rendering.
+                    logger.warning(
+                        "Failed to process Jinja SQL, falling back to direct parsing",
+                        exc_info=True,
                     )
-            return
+                    try:
+                        from superset.sql.parse import SQLScript
 
-        if datasource is not None:
-            if not await self.can_access_datasource(datasource, user=user):
-                error = self.get_datasource_access_error_object(datasource)
-                raise SupersetSecurityException(message=error["message"])
-            return
+                        engine = (
+                            database.db_engine_spec.engine
+                            if hasattr(database, "db_engine_spec")
+                            else "base"
+                        )
+                        parsed = SQLScript(query.sql, engine=engine)
+                        tables = set()
+                        for stmt in parsed.statements:
+                            tables |= {
+                                t.qualify(
+                                    catalog=(
+                                        getattr(query, "catalog", None)
+                                        or default_catalog
+                                    ),
+                                    schema=default_schema,
+                                )
+                                for t in stmt.tables
+                            }
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "Failed to parse SQL for table extraction",
+                            exc_info=True,
+                        )
 
-        if dashboard is not None:
-            if not await self.can_access_dashboard(dashboard, user=user):
-                error = self.get_dashboard_access_error_object(dashboard)
-                raise SupersetSecurityException(message=error["message"])
-            return
+            elif table:
+                # Make sure table has the default catalog, if not specified.
+                if hasattr(table, "qualify"):
+                    table = table.qualify(catalog=default_catalog)
+                tables = {table}
 
-        if chart is not None:
-            if not await self.can_access_chart(chart, user=user):
-                raise SupersetSecurityException(message="Access denied to chart")
-            return
+            denied: set[Any] = set()
+            for table_ in tables:
+                # Catalog-level check
+                catalog_perm = self.get_catalog_perm(
+                    getattr(database, "database_name", ""),
+                    getattr(table_, "catalog", None) or "",
+                )
+                if catalog_perm and await self.can_access(
+                    CATALOG_ACCESS, catalog_perm, user=user
+                ):
+                    continue
 
-        if query is not None:
-            # Check ownership first — query creator always has access
-            created_by = getattr(query, "created_by_fk", None) or getattr(
-                query, "user_id", None
+                # Schema-level check
+                schema_perm = self.get_schema_perm(
+                    database,
+                    getattr(table_, "schema", None) or "",
+                    catalog=getattr(table_, "catalog", None),
+                )
+                if schema_perm and await self.can_access(
+                    SCHEMA_ACCESS, schema_perm, user=user
+                ):
+                    continue
+
+                # Datasource-level check + ownership
+                table_name = getattr(table_, "table", None) or str(table_)
+                if await self._can_access_table_datasource(
+                    database,
+                    table_name,
+                    getattr(table_, "schema", None),
+                    getattr(table_, "catalog", None),
+                    user=user,
+                ):
+                    continue
+
+                denied.add(table_)
+
+            if denied:
+                raise SupersetSecurityException(
+                    self.get_table_access_error_object(denied)
+                )
+
+        # ------------------------------------------------------------------
+        # Path 2: Guest user query_context modification check
+        # Mirrors original lines 2399-2412.
+        # MUST come between table/query and datasource/query_context/viz.
+        # ------------------------------------------------------------------
+        if (
+            query_context
+            and self.is_guest_user(user)
+            and query_context_modified(query_context)
+        ):
+            raise SupersetSecurityException(
+                SupersetError(
+                    error_type=SupersetErrorType.DASHBOARD_SECURITY_ACCESS_ERROR,
+                    message="Guest user cannot modify chart payload",
+                    level=ErrorLevel.WARNING,
+                )
             )
-            if created_by and created_by == getattr(user, "id", None):
+
+        # ------------------------------------------------------------------
+        # Path 3: datasource / query_context / viz
+        # Mirrors original lines 2414-2485 — includes dashboard RBAC fallback.
+        # ------------------------------------------------------------------
+        if datasource or query_context or viz:
+            form_data: dict[str, Any] | None = None
+
+            if query_context:
+                datasource = getattr(query_context, "datasource", datasource)
+                form_data = getattr(query_context, "form_data", None)
+            elif viz:
+                datasource = getattr(viz, "datasource", datasource)
+                form_data = getattr(viz, "form_data", None)
+
+            assert datasource
+
+            # Check direct access first, then dashboard RBAC fallback
+            has_direct_access = (
+                await self._can_access_datasource_schema(datasource, user=user)
+                or await self.can_access(
+                    DATASOURCE_ACCESS,
+                    getattr(datasource, "perm", "") or "",
+                    user=user,
+                )
+                or self.is_owner(datasource, user)
+            )
+
+            if not has_direct_access:
+                # Dashboard RBAC fallback: when user lacks direct datasource
+                # access but has access to a dashboard using it (via
+                # form_data.dashboardId), access is granted.
+                # Mirrors original lines 2435-2481.
+                dashboard_fallback = False
+                if form_data and (dashboard_id := form_data.get("dashboardId")):
+                    dashboard_ = await self._get_dashboard_by_id(dashboard_id)
+                    if dashboard_ is not None:
+                        # Check if dashboard RBAC or embedded guest applies
+                        rbac_or_guest = (
+                            self._dashboard_rbac_enabled
+                            and getattr(dashboard_, "roles", [])
+                        ) or (
+                            self._embedded_superset_enabled and self.is_guest_user(user)
+                        )
+
+                        if rbac_or_guest:
+                            # Validate the specific resource (native filter,
+                            # chart, or drill-by)
+                            resource_valid = False
+
+                            if form_data.get("type") == "NATIVE_FILTER":
+                                # Native filter validation
+                                native_filter_id = form_data.get("native_filter_id")
+                                json_metadata_raw = getattr(
+                                    dashboard_, "json_metadata", None
+                                )
+                                if native_filter_id and json_metadata_raw:
+                                    try:
+                                        json_metadata = json.loads(json_metadata_raw)
+                                    except (json.JSONDecodeError, TypeError):
+                                        json_metadata = {}
+                                    resource_valid = any(
+                                        target.get("datasetId") == datasource.id
+                                        for fltr in json_metadata.get(
+                                            "native_filter_configuration", []
+                                        )
+                                        for target in fltr.get("targets", [])
+                                        if native_filter_id == fltr.get("id")
+                                    )
+                            else:
+                                slice_id = form_data.get("slice_id")
+                                if slice_id:
+                                    # Chart-in-dashboard validation
+                                    slc = await self._get_slice_by_id(slice_id)
+                                    if (
+                                        slc is not None
+                                        and slc in getattr(dashboard_, "slices", [])
+                                        and getattr(slc, "datasource", None)
+                                        == datasource
+                                    ):
+                                        resource_valid = True
+
+                                # Drill-by access check
+                                if not resource_valid:
+                                    resource_valid = await self._has_drill_by_access(
+                                        form_data, dashboard_, datasource
+                                    )
+
+                            # Finally check dashboard-level access
+                            if resource_valid and await self.can_access_dashboard(
+                                dashboard_, user=user
+                            ):
+                                dashboard_fallback = True
+
+                if not dashboard_fallback:
+                    raise SupersetSecurityException(
+                        self.get_datasource_access_error_object(datasource)
+                    )
+
+        # ------------------------------------------------------------------
+        # Path 4: dashboard
+        # Mirrors original lines 2487-2527.
+        # ------------------------------------------------------------------
+        if dashboard:
+            if self.is_guest_user(user):
+                # Guest user is currently used for embedded dashboards only.
+                if await self.has_guest_access(dashboard, user=user):
+                    return
+                raise SupersetSecurityException(
+                    self.get_dashboard_access_error_object(dashboard)
+                )
+
+            if self.is_admin(user) or self.is_owner(dashboard, user):
                 return
 
-            # Schema-level check: if the query has both database and schema,
-            # allow access when the user has schema-level permission.
-            query_database = getattr(query, "database", None)
-            query_schema = getattr(query, "schema", None)
-            if query_database and query_schema:
-                if await self.can_access_schema(
-                    query_database, query_schema, user=user
-                ):
+            # DASHBOARD_RBAC logic
+            if self._dashboard_rbac_enabled and getattr(dashboard, "roles", []):
+                if getattr(dashboard, "published", False) and {
+                    role.id for role in getattr(dashboard, "roles", [])
+                } & {role.id for role in getattr(user, "roles", [])}:
                     return
 
-            # Datasource-level check
-            query_datasource = getattr(query, "datasource", None)
-            if query_datasource and not await self.can_access_datasource(
-                query_datasource, user=user
-            ):
-                raise SupersetSecurityException(
-                    message="Access denied to query datasource"
-                )
-            elif not query_datasource:
-                query_database_fallback = query_database or getattr(
-                    query, "database", None
-                )
-                if query_database_fallback and not await self.can_access_database(
-                    query_database_fallback, user=user
-                ):
-                    raise SupersetSecurityException(
-                        message="Access denied to query database"
-                    )
-            return
+            # REGULAR RBAC logic
+            else:
+                datasources = getattr(dashboard, "datasources", None)
+                if not datasources:
+                    return
+                for ds in datasources:
+                    if await self.can_access_datasource(ds, user=user):
+                        return
 
-        if query_context is not None:
-            datasource = getattr(query_context, "datasource", None)
-            if datasource and not await self.can_access_datasource(
-                datasource, user=user
-            ):
-                raise SupersetSecurityException(
-                    message="Access denied to query context datasource"
-                )
-            return
+            raise SupersetSecurityException(
+                self.get_dashboard_access_error_object(dashboard)
+            )
+
+        # ------------------------------------------------------------------
+        # Path 5: chart
+        # Mirrors original lines 2529-2536.
+        # ------------------------------------------------------------------
+        if chart:
+            if self.is_admin(user) or self.is_owner(chart, user):
+                return
+
+            chart_ds = getattr(chart, "datasource", None)
+            if chart_ds and await self.can_access_datasource(chart_ds, user=user):
+                return
+
+            raise SupersetSecurityException(
+                self.get_chart_access_error_object(chart)
+            )
+
+    @staticmethod
+    def _get_default_schema_for_query(
+        database: Any,
+        query: Any,
+        template_params: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Return the default schema for a given query.
+
+        Mirrors ``Database.get_default_schema_for_query`` from the original
+        which delegates to ``db_engine_spec.get_default_schema_for_query``.
+
+        Since the liteset Database model may not have this method, we
+        replicate the logic from ``BaseEngineSpec.get_default_schema_for_query``:
+
+        1. If the engine spec supports dynamic schemas, use the query schema.
+        2. Otherwise check if the schema is in the SQLAlchemy URI / connect_args.
+        3. Fall back to ``get_default_schema(database, query.catalog)``.
+        """
+        if not hasattr(database, "db_engine_spec"):
+            return getattr(query, "schema", None)
+
+        spec = database.db_engine_spec
+
+        # Original: Database.get_default_schema_for_query delegates to engine spec
+        if hasattr(spec, "get_default_schema_for_query"):
+            return spec.get_default_schema_for_query(database, query, template_params)
+
+        # Inline the BaseEngineSpec.get_default_schema_for_query logic
+        if getattr(spec, "supports_dynamic_schema", False):
+            return getattr(query, "schema", None)
+
+        # Check if schema is stored in SQLAlchemy URI or connect_args
+        try:
+            connect_args = database.get_extra()["engine_params"]["connect_args"]
+        except (KeyError, TypeError):
+            connect_args = {}
+
+        if hasattr(spec, "get_schema_from_engine_params"):
+            from sqlalchemy.engine import make_url as make_url_safe
+
+            sqlalchemy_uri = make_url_safe(database.sqlalchemy_uri)
+            schema_from_params = spec.get_schema_from_engine_params(
+                sqlalchemy_uri, connect_args
+            )
+            if schema_from_params:
+                return schema_from_params
+
+        # Fall back to default schema for the catalog
+        if hasattr(spec, "get_default_schema"):
+            return spec.get_default_schema(database, getattr(query, "catalog", None))
+
+        return getattr(query, "schema", None)
+
+    async def _can_access_datasource_schema(
+        self, datasource: Any, *, user: Any
+    ) -> bool:
+        """Check schema-level access for a datasource.
+
+        Mirrors the original ``can_access_schema(datasource)`` which takes
+        a datasource and checks all_datasource_access, database, catalog,
+        and schema_perm.
+        """
+        if await self.has_access(
+            ALL_DATASOURCE_ACCESS, ALL_DATASOURCE_ACCESS, user=user
+        ):
+            return True
+        database = getattr(datasource, "database", None)
+        if database and await self.can_access_database(database, user=user):
+            return True
+        ds_catalog = getattr(datasource, "catalog", None)
+        if ds_catalog and database:
+            if await self.can_access_catalog(database, ds_catalog, user=user):
+                return True
+        schema_perm = getattr(datasource, "schema_perm", None)
+        if schema_perm and await self.can_access(SCHEMA_ACCESS, schema_perm, user=user):
+            return True
+        return False
+
+    async def _get_dashboard_by_id(self, dashboard_id: Any) -> Any | None:
+        """Load a Dashboard by ID for dashboard RBAC fallback.
+
+        Mirrors the original ``self.session.query(Dashboard)
+        .filter(Dashboard.id == dashboard_id).one_or_none()``.
+        """
+        from superset.models.dashboard import Dashboard
+
+        stmt = select(Dashboard).where(Dashboard.id == dashboard_id)
+        result = await self.dao.session.execute(stmt)
+        return result.scalars().one_or_none()
+
+    async def _get_slice_by_id(self, slice_id: Any) -> Any | None:
+        """Load a Slice by ID for chart-in-dashboard validation."""
+        from superset.models.slice import Slice
+
+        stmt = select(Slice).where(Slice.id == slice_id)
+        result = await self.dao.session.execute(stmt)
+        return result.scalars().one_or_none()
+
+    async def _has_drill_by_access(
+        self,
+        form_data: dict[str, Any],
+        dashboard: Any,
+        datasource: Any,
+    ) -> bool:
+        """Check if form_data is performing a supported drill-by operation.
+
+        Mirrors the original ``has_drill_by_access`` exactly:
+        - type != NATIVE_FILTER
+        - slice_id == 0
+        - chart_id must reference a chart in the dashboard
+        - chart datasource must match
+        - requested dimensions must be a subset of drillable columns
+        """
+        from superset.models.connectors import TableColumn
+        from superset.models.slice import Slice
+
+        if form_data.get("type") == "NATIVE_FILTER":
+            return False
+        if form_data.get("slice_id") != 0:
+            return False
+        chart_id = form_data.get("chart_id")
+        if not chart_id:
+            return False
+
+        # Load the chart
+        stmt = select(Slice).where(Slice.id == chart_id)
+        result = await self.dao.session.execute(stmt)
+        slc = result.scalars().one_or_none()
+        if slc is None:
+            return False
+        if slc not in getattr(dashboard, "slices", []):
+            return False
+        if getattr(slc, "datasource", None) != datasource:
+            return False
+
+        dimensions = form_data.get("groupby")
+        if not dimensions:
+            return False
+
+        # Load drillable columns
+        stmt_cols = (
+            select(TableColumn.column_name)
+            .where(TableColumn.table_id == datasource.id)
+            .where(TableColumn.groupby.is_(True))
+        )
+        result_cols = await self.dao.session.execute(stmt_cols)
+        drillable_columns = {row[0] for row in result_cols.all()}
+        if not drillable_columns:
+            return False
+
+        return set(dimensions).issubset(drillable_columns)
 
     async def can_access_database(self, database: Any, *, user: Any) -> bool:
         """Check if user can access a database."""
@@ -402,13 +766,24 @@ class AsyncSecurityManager:
     ) -> bool:
         """Check if user can access a specific schema.
 
+        Mirrors the original ``can_access_schema(datasource)`` hierarchy:
+        all_datasource_access -> database_access -> catalog_access -> schema_access.
+
         For catalog-aware databases (e.g. ClickHouse, Trino), pass the
         ``catalog`` parameter to build the 3-part permission string
         ``[db].[catalog].[schema]``.  Without a catalog the traditional
         2-part ``[db].[schema]`` is used.
         """
+        if await self.has_access(
+            ALL_DATASOURCE_ACCESS, ALL_DATASOURCE_ACCESS, user=user
+        ):
+            return True
         if await self.can_access_database(database, user=user):
             return True
+        # Catalog-level check — mirrors original line 555-557
+        if catalog:
+            if await self.can_access_catalog(database, catalog, user=user):
+                return True
         db_name = getattr(database, "database_name", "")
         if catalog:
             schema_perm = f"[{db_name}].[{catalog}].[{schema}]"
@@ -416,8 +791,86 @@ class AsyncSecurityManager:
             schema_perm = f"[{db_name}].[{schema}]"
         return await self.has_access(SCHEMA_ACCESS, schema_perm, user=user)
 
+    async def can_access_table(
+        self,
+        database: Any,
+        table: Any,
+        *,
+        user: Any,
+    ) -> bool:
+        """Check if user can access a specific table.
+
+        Mirrors ``SupersetSecurityManager.can_access_table`` from the
+        original FAB-based security manager.
+
+        :param database: The Database model instance
+        :param table: A ``Table`` instance with ``.table``, ``.schema``,
+            ``.catalog`` attributes
+        :param user: The current user
+        :returns: Whether the user can access the table
+        """
+        try:
+            await self.raise_for_access(database=database, table=table, user=user)
+        except SupersetSecurityException:
+            return False
+        return True
+
+    async def _can_access_table_datasource(
+        self,
+        database: Any,
+        table_name: str,
+        schema: str | None,
+        catalog: str | None,
+        *,
+        user: Any,
+    ) -> bool:
+        """Check datasource-level access for a specific table.
+
+        Looks up SqlaTable rows matching the given table name and checks
+        if the user has ``datasource_access`` or is owner of any matching
+        datasource.  Mirrors the original FAB table-level access check
+        where individual datasource permissions are checked after
+        database/catalog/schema checks fail.
+        """
+        try:
+            from superset.models.connectors import SqlaTable
+
+            session = self.dao.session
+            stmt = select(SqlaTable).where(
+                SqlaTable.table_name == table_name,
+                SqlaTable.database_id == database.id,
+            )
+            if schema is not None:
+                stmt = stmt.where(SqlaTable.schema == schema)
+            if catalog is not None and hasattr(SqlaTable, "catalog"):
+                stmt = stmt.where(SqlaTable.catalog == catalog)
+
+            result = await session.execute(stmt)
+            datasources = result.scalars().all()
+
+            for ds in datasources:
+                if await self.can_access_datasource(ds, user=user):
+                    return True
+                if self.is_owner(ds, user):
+                    return True
+        except (SQLAlchemyError, NoResultFound):
+            logger.warning(
+                "Failed to check table datasource access for %s.%s",
+                schema,
+                table_name,
+                exc_info=True,
+            )
+        return False
+
     async def can_access_datasource(self, datasource: Any, *, user: Any) -> bool:
-        """Check if user can access a datasource."""
+        """Check if user can access a datasource.
+
+        Note: The original ``can_access_datasource`` delegates to
+        ``raise_for_access(datasource=datasource)`` which checks
+        schema access, datasource_access perm, AND ownership.
+        We inline those checks here rather than recursing into
+        raise_for_access to avoid the dashboard RBAC fallback path.
+        """
         if self.is_admin(user):
             return True
         if await self.has_access(
@@ -427,10 +880,12 @@ class AsyncSecurityManager:
         perm = getattr(datasource, "perm", None)
         if perm and await self.has_access(DATASOURCE_ACCESS, perm, user=user):
             return True
-        database = getattr(datasource, "database", None)
-        schema = getattr(datasource, "schema", None)
-        if database and schema:
-            return await self.can_access_schema(database, schema, user=user)
+        # Ownership check — mirrors original raise_for_access line 2429
+        if self.is_owner(datasource, user):
+            return True
+        # Schema-level check (includes database, catalog, schema_perm)
+        if await self._can_access_datasource_schema(datasource, user=user):
+            return True
         return False
 
     async def can_access_dashboard(self, dashboard: Any, *, user: Any) -> bool:  # noqa: C901
@@ -807,57 +1262,87 @@ class AsyncSecurityManager:
         }
 
     # --- Error object methods ---
+    # These return SupersetError dataclasses, matching the original 1:1.
 
     @staticmethod
+    def get_datasource_access_error_msg(datasource: Any) -> str:
+        """Return the error message for the denied datasource."""
+        ds_id = getattr(datasource, "id", "")
+        return (
+            f"This endpoint requires the datasource {ds_id}, "
+            "database or `all_datasource_access` permission"
+        )
+
+    @staticmethod
+    def get_datasource_access_link(datasource: Any) -> str | None:
+        """Return the link for the denied datasource."""
+        return None
+
     def get_datasource_access_error_object(
+        self,
         datasource: Any,
-    ) -> dict[str, Any]:
-        """Return a SupersetError-compatible dict for datasource access denial."""
-        return {
-            "message": (
-                f"Access denied to datasource: {getattr(datasource, 'perm', '')}"
-            ),
-            "error_type": "DATASOURCE_SECURITY_ACCESS_ERROR",
-            "level": "warning",
-            "extra": {
-                "link": f"/accessrequest?datasource={getattr(datasource, 'perm', '')}",
-                "datasource": getattr(datasource, "perm", ""),
+    ) -> SupersetError:
+        """Return the SupersetError for the denied datasource."""
+        return SupersetError(
+            error_type=SupersetErrorType.DATASOURCE_SECURITY_ACCESS_ERROR,
+            message=self.get_datasource_access_error_msg(datasource),
+            level=ErrorLevel.WARNING,
+            extra={
+                "link": self.get_datasource_access_link(datasource),
+                "datasource": getattr(datasource, "id", ""),
+                "datasource_name": getattr(datasource, "name", ""),
             },
-        }
+        )
 
     @staticmethod
     def get_dashboard_access_error_object(
         dashboard: Any,
-    ) -> dict[str, Any]:
-        """Return a SupersetError-compatible dict for dashboard access denial."""
-        return {
-            "message": (
-                "Access denied to dashboard: "
-                f"{getattr(dashboard, 'dashboard_title', '')}"
-            ),
-            "error_type": "DASHBOARD_SECURITY_ACCESS_ERROR",
-            "level": "warning",
-            "extra": {
-                "link": f"/accessrequest?dashboard_id={getattr(dashboard, 'id', '')}",
-                "dashboard_id": getattr(dashboard, "id", ""),
-            },
-        }
+    ) -> SupersetError:
+        """Return the SupersetError for the denied dashboard."""
+        return SupersetError(
+            error_type=SupersetErrorType.DASHBOARD_SECURITY_ACCESS_ERROR,
+            message="You don't have access to this dashboard.",
+            level=ErrorLevel.WARNING,
+        )
 
     @staticmethod
+    def get_chart_access_error_object(
+        chart: Any,
+    ) -> SupersetError:
+        """Return the SupersetError for the denied chart."""
+        return SupersetError(
+            error_type=SupersetErrorType.CHART_SECURITY_ACCESS_ERROR,
+            message="You don't have access to this chart.",
+            level=ErrorLevel.WARNING,
+        )
+
+    def get_table_access_error_msg(self, tables: set[Any]) -> str:
+        """Return the error message for the denied SQL tables."""
+        quoted_tables = [f"`{table}`" for table in tables]
+        return (
+            f"You need access to the following tables: {', '.join(quoted_tables)},\n"
+            "            `all_database_access` or `all_datasource_access` permission"
+        )
+
+    @staticmethod
+    def get_table_access_link(tables: set[Any]) -> str | None:
+        """Return the access link for the denied SQL tables."""
+        return None
+
     def get_table_access_error_object(
-        tables: list[Any],
-    ) -> dict[str, Any]:
-        """Return a SupersetError-compatible dict for table access denial."""
-        table_names = [getattr(t, "perm", str(t)) for t in tables]
-        return {
-            "message": f"Access denied to tables: {', '.join(table_names)}",
-            "error_type": "TABLE_SECURITY_ACCESS_ERROR",
-            "level": "warning",
-            "extra": {
-                "link": "/accessrequest",
-                "tables": table_names,
+        self,
+        tables: set[Any],
+    ) -> SupersetError:
+        """Return the SupersetError for the denied SQL tables."""
+        return SupersetError(
+            error_type=SupersetErrorType.TABLE_SECURITY_ACCESS_ERROR,
+            message=self.get_table_access_error_msg(tables),
+            level=ErrorLevel.WARNING,
+            extra={
+                "link": self.get_table_access_link(tables),
+                "tables": [str(table) for table in tables],
             },
-        }
+        )
 
     # --- Ownership checks ---
 
@@ -889,7 +1374,13 @@ class AsyncSecurityManager:
     # --- Guest user checks ---
 
     def is_guest_user(self, user: Any | None = None) -> bool:
-        """Check if the given user is a guest user (JWT-authenticated)."""
+        """Check if the given user is a guest user (JWT-authenticated).
+
+        Mirrors the original ``SupersetSecurityManager.is_guest_user``:
+        returns False unless the EMBEDDED_SUPERSET feature flag is enabled.
+        """
+        if not self._embedded_superset_enabled:
+            return False
         if user is None:
             return False
         return getattr(user, "is_guest", False)
@@ -960,6 +1451,7 @@ class AsyncSecurityManager:
         rls: list[dict[str, Any]],
         algorithm: str = "HS256",
         exp_seconds: int = 300,
+        audience: str = "",
     ) -> str:
         """Create a guest access JWT token.
 
@@ -974,6 +1466,7 @@ class AsyncSecurityManager:
             resources=resources,
             rls=rls,
             exp_seconds=exp_seconds,
+            audience=audience,
         )
 
     @staticmethod

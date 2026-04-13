@@ -287,7 +287,14 @@ def load_chart_data_into_cache(
             factory = create_session_factory(engine)
             async with factory() as async_session:
                 dao = AsyncSecurityDAO(async_session)
-                sec_mgr = AsyncSecurityManager(dao=dao)
+                feature_flags = getattr(settings, "feature_flags", {})
+                embedded_enabled = getattr(
+                    settings, "embedded_superset", False
+                ) or feature_flags.get("EMBEDDED_SUPERSET", False)
+                sec_mgr = AsyncSecurityManager(
+                    dao=dao,
+                    embedded_superset_enabled=embedded_enabled,
+                )
                 processor = AsyncQueryContextProcessor(
                     datasource=datasource,
                     settings=settings,

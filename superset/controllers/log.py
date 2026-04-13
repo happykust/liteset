@@ -85,6 +85,7 @@ class LogController(Controller):
                 "user.last_name",
                 "user.username",
             ],
+            list_title="List Log",
         )
 
     @get(
@@ -163,27 +164,8 @@ class LogController(Controller):
         dashboard_ids = {item.dashboard_id for item in items if item.dashboard_id}
         slice_ids = {item.slice_id for item in items if item.slice_id}
 
-        dashboard_titles: dict[int, str] = {}
-        slice_names: dict[int, str] = {}
-
-        if dashboard_ids or slice_ids:
-            from sqlalchemy import select as sa_select
-
-        if dashboard_ids:
-            from superset.models.dashboard import Dashboard
-
-            stmt = sa_select(Dashboard.id, Dashboard.dashboard_title).where(
-                Dashboard.id.in_(dashboard_ids)
-            )
-            rows = (await dao.session.execute(stmt)).all()
-            dashboard_titles = {int(r[0]): r[1] or "" for r in rows}
-
-        if slice_ids:
-            from superset.models.slice import Slice
-
-            stmt = sa_select(Slice.id, Slice.slice_name).where(Slice.id.in_(slice_ids))
-            rows = (await dao.session.execute(stmt)).all()
-            slice_names = {int(r[0]): r[1] or "" for r in rows}
+        dashboard_titles = await dao.get_dashboard_titles(dashboard_ids)
+        slice_names = await dao.get_slice_names(slice_ids)
 
         now = datetime.now()
         result = []

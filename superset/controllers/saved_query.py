@@ -65,6 +65,31 @@ if TYPE_CHECKING:
     from superset.db.daos.query import AsyncSavedQueryDAO
 
 
+# ---------------------------------------------------------------------------
+# Custom RISON filters for saved queries
+# ---------------------------------------------------------------------------
+def _saved_query_custom_filters(current_user: Any) -> dict[str, Any]:
+    def _saved_query_is_fav(model_cls: Any, value: Any) -> Any:
+        from sqlalchemy import select as sa_select
+
+        from superset.models.core import FavStar
+
+        user_id = getattr(current_user, "id", None)
+        if user_id is None:
+            return None
+        fav_subq = sa_select(FavStar.obj_id).where(
+            FavStar.class_name == "query",
+            FavStar.user_id == user_id,
+        )
+        if value:
+            return model_cls.id.in_(fav_subq)
+        return ~model_cls.id.in_(fav_subq)
+
+    return {
+        "saved_query_is_fav": _saved_query_is_fav,
+    }
+
+
 class SavedQueryController(Controller):
     path = "/api/v1/saved_query"
     tags = ["Saved Queries"]
@@ -93,6 +118,7 @@ class SavedQueryController(Controller):
         rison_filters, order_by, page, page_size = build_rison_query_params(
             SavedQuery,
             rison_params,
+            custom_filters=_saved_query_custom_filters(current_user),
         )
         if not order_by:
             order_by = [SavedQuery.changed_on.desc()]
@@ -145,6 +171,7 @@ class SavedQueryController(Controller):
                 "tags.name",
                 "tags.type",
             ],
+            list_title="List Saved Query",
         )
         # Post-process: add computed properties the frontend expects.
         from datetime import datetime as _dt
@@ -260,16 +287,11 @@ class SavedQueryController(Controller):
 
         base_filters = await saved_query_access_filters(security_manager, current_user)
         if base_filters:
-            from sqlalchemy import select as sa_select
-
-            model_cls = getattr(dao, "model_cls", None)
-            if model_cls is not None:
-                stmt = sa_select(model_cls.id).where(
-                    model_cls.id == query.id, *base_filters
-                )
-                result = await dao.session.scalar(stmt)
-                if result is None:
-                    raise ObjectNotFoundError("SavedQuery", pk)
+            accessible = await dao.count(
+                filters=[SavedQuery.id == query.id, *base_filters]
+            )
+            if not accessible:
+                raise ObjectNotFoundError("SavedQuery", pk)
         return SavedQueryGetResponse(
             id=query.id,
             result=SavedQueryDetailResult.from_model(query),
@@ -375,7 +397,7 @@ class SavedQueryController(Controller):
         dao: CRUDDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
     ) -> dict[str, str]:
         ids = extract_ids_required(rison_params)
         cmd = BulkDeleteSavedQueriesCommand(
@@ -396,7 +418,7 @@ class SavedQueryController(Controller):
     async def export(
         self,
         dao: CRUDDAOProtocol,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
         token: str | None = Parameter(query="token", default=None),
     ) -> Stream:
         ids = extract_ids(rison_params)

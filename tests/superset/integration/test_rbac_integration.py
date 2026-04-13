@@ -32,8 +32,8 @@ from superset.guards.rbac import require_permission
 @dataclass
 class FakeUser:
     username: str = "admin"
-    permissions: set[str] = field(
-        default_factory=lambda: {"can_read_Chart", "can_write_Chart"}
+    permissions: set[tuple[str, str]] = field(
+        default_factory=lambda: {("can_read", "Chart"), ("can_write", "Chart")}
     )
     is_authenticated: bool = True
 
@@ -41,7 +41,9 @@ class FakeUser:
 @dataclass
 class FakeViewerUser:
     username: str = "viewer"
-    permissions: set[str] = field(default_factory=lambda: {"can_read_Chart"})
+    permissions: set[tuple[str, str]] = field(
+        default_factory=lambda: {("can_read", "Chart")}
+    )
     is_authenticated: bool = True
 
 

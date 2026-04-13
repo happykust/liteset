@@ -34,19 +34,22 @@ from typing import Any, Callable, NamedTuple, TYPE_CHECKING, TypedDict, Union
 
 from sqlalchemy import column, select, types
 from sqlalchemy.engine.interfaces import Compiled, Dialect
+from sqlalchemy.engine.url import URL
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql import literal_column, quoted_name, text
 from sqlalchemy.sql.expression import ColumnClause, Select, TextClause
 from sqlalchemy.sql.type_api import TypeEngine
 
+from superset.databases.utils import make_url_safe
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.sql.parse import LimitMethod, RLSMethod, SQLScript, SQLStatement, Table
 from superset.utils.hashing import md5_sha_from_str
 from superset.utils.json import redact_sensitive, reveal_sensitive
+from superset.utils.network import is_hostname_valid, is_port_open
 
 if TYPE_CHECKING:
     from sqlalchemy.engine.base import Engine
     from sqlalchemy.engine.reflection import Inspector
-    from sqlalchemy.engine.url import URL
 
     from superset.models.core import Database
     from superset.models.sql_lab import Query
@@ -1609,8 +1612,290 @@ class BaseEngineSpec:  # noqa: PLR0904
         """
 
 
+# ---------------------------------------------------------------------------
+# BasicParametersMixin — configures engine specs via a dict of parameters
+# instead of a raw SQLAlchemy URI.  Ported 1:1 from
+# ``superset_old/db_engine_specs/base.py`` (``class BasicParametersMixin``).
+# ---------------------------------------------------------------------------
+
+
+class BasicParametersType(TypedDict, total=False):
+    """Typed dict describing the fields accepted by ``BasicParametersMixin``."""
+
+    username: str | None
+    password: str | None
+    host: str
+    port: int
+    database: str
+    query: dict[str, Any]
+    encryption: bool
+
+
+class BasicPropertiesType(TypedDict):
+    """Top-level payload shape passed to ``validate_parameters``."""
+
+    parameters: BasicParametersType
+
+
+# The original code uses a Marshmallow ``Schema`` subclass here.  We don't
+# ship Marshmallow in liteset, so we expose an equivalent hand-coded dict
+# that mimics the OpenAPI output of ``MarshmallowPlugin``.  It is kept as
+# a class attribute so that ``hasattr(spec, "parameters_schema")`` — which
+# callers use as a "supports dynamic form" probe — still returns ``True``.
+BASIC_PARAMETERS_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "username": {
+            "type": "string",
+            "nullable": True,
+            "description": "Username",
+        },
+        "password": {
+            "type": "string",
+            "nullable": True,
+            "description": "Password",
+        },
+        "host": {
+            "type": "string",
+            "description": "Hostname or IP address",
+        },
+        "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0,
+            "maximum": 65535,
+            "exclusiveMaximum": True,
+            "description": "Database port",
+        },
+        "database": {
+            "type": "string",
+            "description": "Database name",
+        },
+        "query": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Additional parameters",
+        },
+        "encryption": {
+            "type": "boolean",
+            "description": "Use an encrypted connection to the database",
+        },
+        "ssh": {
+            "type": "boolean",
+            "description": "Use an ssh tunnel connection to the database",
+        },
+    },
+    "required": ["database", "host", "port", "username"],
+}
+
+
+class BasicParametersSchema:
+    """
+    Minimal stand-in for the original ``BasicParametersSchema`` Marshmallow
+    class.  Only the surface area actually used by the engine specs is
+    implemented: ``hasattr(cls, "parameters_schema")`` must keep returning
+    ``True``, and the object must be truthy so that
+    ``if not cls.parameters_schema`` in ``parameters_json_schema`` short-
+    circuits correctly.
+
+    Any attribute lookup that isn't part of that minimal surface area
+    raises ``NotImplementedError`` so that unexpected Marshmallow-style
+    method calls (``dump``, ``load``, ``validate``, ``declared_fields``,
+    etc.) fail loudly instead of returning ``None`` or a bound method
+    that silently no-ops.
+    """
+
+    def __bool__(self) -> bool:
+        return True
+
+    def __getattr__(self, name: str) -> Any:
+        raise NotImplementedError(
+            f"BasicParametersSchema is a stub; attribute {name!r} is not "
+            "implemented in liteset.  The original Marshmallow schema was "
+            "removed during the migration -- use the hand-coded "
+            "BASIC_PARAMETERS_JSON_SCHEMA fragment instead."
+        )
+
+
+class BasicParametersMixin:
+    """
+    Mixin for configuring DB engine specs via a dictionary.
+
+    With this mixin the SQLAlchemy engine can be configured through
+    individual parameters, instead of the full SQLAlchemy URI. This
+    mixin is for the most common pattern of URI:
+
+        engine+driver://user:password@host:port/dbname[?key=value&key=value...]
+
+    """
+
+    # schema describing the parameters used to configure the DB
+    parameters_schema = BasicParametersSchema()
+
+    # recommended driver name for the DB engine spec
+    default_driver = ""
+
+    # query parameter to enable encryption in the database connection
+    # for Postgres this would be `{"sslmode": "verify-ca"}`, eg.
+    encryption_parameters: dict[str, str] = {}
+
+    @classmethod
+    def build_sqlalchemy_uri(  # pylint: disable=unused-argument
+        cls,
+        parameters: BasicParametersType,
+        encrypted_extra: dict[str, str] | None = None,
+    ) -> str:
+        # TODO (betodealmeida): this method should also build `connect_args`
+        # make a copy so that we don't update the original
+        query = parameters.get("query", {}).copy()
+        if parameters.get("encryption"):
+            if not cls.encryption_parameters:
+                raise Exception(  # pylint: disable=broad-exception-raised  # noqa: TRY002
+                    "Unable to build a URL with encryption enabled"
+                )
+            query.update(cls.encryption_parameters)
+
+        # NOTE: In SQLAlchemy 2.x, ``str(URL)`` masks the password as
+        # ``***``.  We must call ``render_as_string(hide_password=False)``
+        # to get the full URI with the plain-text password, which is
+        # what the original Apache Superset (SQLAlchemy 1.4) returned
+        # via ``str(URL.create(...))``.
+        return URL.create(
+            f"{cls.engine}+{cls.default_driver}".rstrip("+"),  # type: ignore[attr-defined]
+            username=parameters.get("username"),
+            password=parameters.get("password"),
+            host=parameters["host"],
+            port=parameters["port"],
+            database=parameters["database"],
+            query=query,
+        ).render_as_string(hide_password=False)
+
+    @classmethod
+    def get_parameters_from_uri(  # pylint: disable=unused-argument
+        cls, uri: str, encrypted_extra: dict[str, Any] | None = None
+    ) -> BasicParametersType:
+        url = make_url_safe(uri)
+        query = {
+            key: value
+            for (key, value) in url.query.items()
+            if (key, value) not in cls.encryption_parameters.items()
+        }
+        encryption = all(
+            item in url.query.items() for item in cls.encryption_parameters.items()
+        )
+        return {
+            "username": url.username,
+            "password": url.password,
+            "host": url.host,
+            "port": url.port,
+            "database": url.database,
+            "query": query,
+            "encryption": encryption,
+        }
+
+    @classmethod
+    def validate_parameters(
+        cls, properties: BasicPropertiesType
+    ) -> list[SupersetError]:
+        """
+        Validates any number of parameters, for progressive validation.
+
+        If only the hostname is present it will check if the name is resolvable. As
+        more parameters are present in the request, more validation is done.
+        """
+        errors: list[SupersetError] = []
+
+        required = {"host", "port", "username", "database"}
+        parameters = properties.get("parameters", {})
+        present = {key for key in parameters if parameters.get(key, ())}
+
+        if missing := sorted(required - present):
+            errors.append(
+                SupersetError(
+                    message=(
+                        f"One or more parameters are missing: {', '.join(missing)}"
+                    ),
+                    error_type=SupersetErrorType.CONNECTION_MISSING_PARAMETERS_ERROR,
+                    level=ErrorLevel.WARNING,
+                    extra={"missing": missing},
+                ),
+            )
+
+        host = parameters.get("host", None)
+        if not host:
+            return errors
+        if not is_hostname_valid(host):
+            errors.append(
+                SupersetError(
+                    message="The hostname provided can't be resolved.",
+                    error_type=SupersetErrorType.CONNECTION_INVALID_HOSTNAME_ERROR,
+                    level=ErrorLevel.ERROR,
+                    extra={"invalid": ["host"]},
+                ),
+            )
+            return errors
+
+        port = parameters.get("port", None)
+        if not port:
+            return errors
+        try:
+            port = int(port)
+        except (ValueError, TypeError):
+            errors.append(
+                SupersetError(
+                    message="Port must be a valid integer.",
+                    error_type=SupersetErrorType.CONNECTION_INVALID_PORT_ERROR,
+                    level=ErrorLevel.ERROR,
+                    extra={"invalid": ["port"]},
+                ),
+            )
+        if not (isinstance(port, int) and 0 <= port < 2**16):
+            errors.append(
+                SupersetError(
+                    message=(
+                        "The port must be an integer between 0 and 65535 (inclusive)."
+                    ),
+                    error_type=SupersetErrorType.CONNECTION_INVALID_PORT_ERROR,
+                    level=ErrorLevel.ERROR,
+                    extra={"invalid": ["port"]},
+                ),
+            )
+        elif not is_port_open(host, port):
+            errors.append(
+                SupersetError(
+                    message="The port is closed.",
+                    error_type=SupersetErrorType.CONNECTION_PORT_CLOSED_ERROR,
+                    level=ErrorLevel.ERROR,
+                    extra={"invalid": ["port"]},
+                ),
+            )
+
+        return errors
+
+    @classmethod
+    def parameters_json_schema(cls) -> Any:
+        """
+        Return configuration parameters as OpenAPI.
+
+        In the original implementation this is generated from the Marshmallow
+        ``BasicParametersSchema`` via ``apispec`` / ``MarshmallowPlugin``.  In
+        liteset we don't use Marshmallow for engine specs, so we return an
+        equivalent hand-coded OpenAPI fragment (see
+        ``BASIC_PARAMETERS_JSON_SCHEMA`` above).
+        """
+        if not cls.parameters_schema:
+            return None
+
+        return BASIC_PARAMETERS_JSON_SCHEMA
+
+
 __all__ = [
+    "BASIC_PARAMETERS_JSON_SCHEMA",
     "BaseEngineSpec",
+    "BasicParametersMixin",
+    "BasicParametersSchema",
+    "BasicParametersType",
+    "BasicPropertiesType",
     "ColumnSpec",
     "ColumnTypeMapping",
     "GenericDBException",

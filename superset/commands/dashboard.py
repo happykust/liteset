@@ -328,6 +328,7 @@ async def _import_dashboard(  # noqa: C901
             if security_manager is not None:
                 can_access = await security_manager.can_access_dashboard(existing)
                 is_admin = await security_manager.is_admin()
+                await session.refresh(existing, ["owners"])
                 if not can_access or (
                     current_user not in existing.owners and not is_admin
                 ):
@@ -386,8 +387,10 @@ async def _import_dashboard(  # noqa: C901
     await session.flush()
 
     # Owner management
-    if current_user is not None and current_user not in dashboard.owners:
-        dashboard.owners.append(current_user)
+    if current_user is not None:
+        await session.refresh(dashboard, ["owners"])
+        if current_user not in dashboard.owners:
+            dashboard.owners.append(current_user)
 
     return dashboard
 
@@ -428,14 +431,18 @@ class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         self._dao.session.add(dashboard)
         await self._dao.session.flush()
 
-        # Resolve owners
+        # Resolve owners — refresh first to avoid MissingGreenlet
+        # on the lazy-loaded collection in async context.
+        await self._dao.session.refresh(dashboard, ["owners"])
         owner_ids = self._data.get("owners", [])
+        resolved_owner_ids: list[int] = []
         if owner_ids and self._security_manager is not None:
             owners = []
             for oid in owner_ids:
                 user = await self._security_manager.find_user_by_id(oid)
                 if user:
                     owners.append(user)
+                    resolved_owner_ids.append(user.id)
             dashboard.owners = owners
         elif (
             not owner_ids
@@ -445,6 +452,7 @@ class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
             user = await self._security_manager.find_user_by_id(self._user_id)
             if user:
                 dashboard.owners = [user]
+                resolved_owner_ids.append(user.id)
 
         # Resolve roles
         role_ids = self._data.get("roles", [])
@@ -458,9 +466,7 @@ class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
 
         # Add implicit type: and owner: tags
         # (async port of DashboardUpdater.after_insert)
-        owner_ids = (
-            [o.id for o in dashboard.owners] if hasattr(dashboard, "owners") else []
-        )
+        owner_ids = resolved_owner_ids
         await add_implicit_tags_after_insert(
             self._dao.session, "dashboard", dashboard.id, owner_ids
         )
@@ -485,7 +491,22 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         self._dashboard: Any | None = None
 
     async def validate(self) -> None:
-        self._dashboard = await self._dao.find_by_id(self._dashboard_id)
+        # Eager-load the M2M relationships that are (re)assigned in
+        # ``run()``. Without this, the `.owners = [...]` assignment
+        # triggers a lazy reload of the existing values, which crashes
+        # under asyncpg with ``MissingGreenlet``.
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.dashboard import Dashboard
+
+        self._dashboard = await self._dao.find_by_id_with_options(
+            self._dashboard_id,
+            options=[
+                selectinload(Dashboard.owners),
+                selectinload(Dashboard.roles),
+                selectinload(Dashboard.tags),
+            ],
+        )
         if not self._dashboard:
             raise ObjectNotFoundError("Dashboard", self._dashboard_id)
         if self._security_manager is not None:
@@ -546,6 +567,7 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         await self._dao.session.flush()
 
         # Sync implicit owner: tags (async port of DashboardUpdater.after_update)
+        await self._dao.session.refresh(self._dashboard, ["owners"])
         owner_ids = (
             [o.id for o in self._dashboard.owners]
             if hasattr(self._dashboard, "owners")

@@ -44,7 +44,7 @@ from superset.utils import filter_unset
 
 
 class AnnotationController(Controller):
-    path = "/api/v1/annotation_layer/{layer_pk:int}/annotation"
+    path = "/api/v1/annotation_layer/{pk:int}/annotation"
     tags = ["Annotations"]
     dependencies = {
         "ann_dao": Provide(provide_annotation_dao, sync_to_thread=False),
@@ -61,26 +61,26 @@ class AnnotationController(Controller):
     )
     async def get_list(
         self,
-        layer_pk: int,
+        pk: int,
         ann_dao: Any,
         layer_dao: Any,
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """GET /api/v1/annotation_layer/<layer_pk>/annotation/ — list annotations."""
+        """GET /api/v1/annotation_layer/<pk>/annotation/ — list annotations."""
         # Verify layer exists
-        layer = await layer_dao.find_by_id(layer_pk)
+        layer = await layer_dao.find_by_id(pk)
         if not layer:
-            raise ObjectNotFoundError("AnnotationLayer", layer_pk)
+            raise ObjectNotFoundError("AnnotationLayer", pk)
 
         from superset.models.annotations import Annotation
 
         page, page_size = extract_pagination(rison_params)
-        layer_filter = [Annotation.layer_id == layer_pk]
+        layer_filter = [Annotation.layer_id == pk]
         items = await ann_dao.find_all(
             filters=layer_filter, page=page, page_size=page_size
         )
         total = await ann_dao.count(filters=layer_filter)
-        event_logger.log("annotation.list", extra={"layer_id": layer_pk})
+        event_logger.log("annotation.list", extra={"layer_id": pk})
         return {
             "result": [
                 {
@@ -108,26 +108,26 @@ class AnnotationController(Controller):
     # GET — single annotation
     # ------------------------------------------------------------------
     @get(
-        "/{pk:int}",
+        "/{annotation_id:int}",
         guards=[require_permission("can_read", "Annotation")],
     )
     async def get_single(
         self,
-        layer_pk: int,
         pk: int,
+        annotation_id: int,
         ann_dao: Any,
         layer_dao: Any,
     ) -> dict[str, Any]:
-        """GET /api/v1/annotation_layer/<layer_pk>/annotation/<pk>."""
-        layer = await layer_dao.find_by_id(layer_pk)
+        """GET /api/v1/annotation_layer/<pk>/annotation/<annotation_id>."""
+        layer = await layer_dao.find_by_id(pk)
         if not layer:
-            raise ObjectNotFoundError("AnnotationLayer", layer_pk)
-        annotation = await ann_dao.find_by_id(pk)
-        if not annotation or getattr(annotation, "layer_id", None) != layer_pk:
-            raise ObjectNotFoundError("Annotation", pk)
+            raise ObjectNotFoundError("AnnotationLayer", pk)
+        annotation = await ann_dao.find_by_id(annotation_id)
+        if not annotation or getattr(annotation, "layer_id", None) != pk:
+            raise ObjectNotFoundError("Annotation", annotation_id)
         changed_on = getattr(annotation, "changed_on", None)
         created_on = getattr(annotation, "created_on", None)
-        event_logger.log("annotation.get", object_ref=f"annotation:{pk}")
+        event_logger.log("annotation.get", object_ref=f"annotation:{annotation_id}")
         return {
             "id": annotation.id,
             "result": {
@@ -160,16 +160,16 @@ class AnnotationController(Controller):
     )
     async def create(
         self,
-        layer_pk: int,
+        pk: int,
         data: AnnotationPostSchema,
         ann_dao: Any,
         layer_dao: Any,
     ) -> dict[str, Any]:
-        """POST /api/v1/annotation_layer/<layer_pk>/annotation/ — create."""
+        """POST /api/v1/annotation_layer/<pk>/annotation/ — create."""
         cmd = CreateAnnotationCommand(
             dao=ann_dao,
             layer_dao=layer_dao,
-            layer_pk=layer_pk,
+            layer_pk=pk,
             data={
                 "short_descr": data.short_descr,
                 "long_descr": data.long_descr,
@@ -182,7 +182,7 @@ class AnnotationController(Controller):
         event_logger.log(
             "annotation.create",
             object_ref=f"annotation:{annotation.id}",
-            extra={"layer_id": layer_pk},
+            extra={"layer_id": pk},
         )
         return {
             "id": annotation.id,
@@ -207,22 +207,22 @@ class AnnotationController(Controller):
     # PUT — update annotation
     # ------------------------------------------------------------------
     @put(
-        "/{pk:int}",
+        "/{annotation_id:int}",
         guards=[require_permission("can_write", "Annotation")],
     )
     async def update(
         self,
-        layer_pk: int,
         pk: int,
+        annotation_id: int,
         data: AnnotationPutSchema,
         ann_dao: Any,
         layer_dao: Any,
     ) -> dict[str, Any]:
-        """PUT /api/v1/annotation_layer/<layer_pk>/annotation/<pk>."""
+        """PUT /api/v1/annotation_layer/<pk>/annotation/<annotation_id>."""
         # Verify layer exists
-        layer = await layer_dao.find_by_id(layer_pk)
+        layer = await layer_dao.find_by_id(pk)
         if not layer:
-            raise ObjectNotFoundError("AnnotationLayer", layer_pk)
+            raise ObjectNotFoundError("AnnotationLayer", pk)
 
         update_data = filter_unset(
             {
@@ -233,11 +233,11 @@ class AnnotationController(Controller):
                 "json_metadata": data.json_metadata,
             }
         )
-        cmd = UpdateAnnotationCommand(dao=ann_dao, pk=pk, data=update_data)
+        cmd = UpdateAnnotationCommand(dao=ann_dao, pk=annotation_id, data=update_data)
         annotation = await cmd.execute()
         changed_on = getattr(annotation, "changed_on", None)
         created_on = getattr(annotation, "created_on", None)
-        event_logger.log("annotation.update", object_ref=f"annotation:{pk}")
+        event_logger.log("annotation.update", object_ref=f"annotation:{annotation_id}")
         return {
             "id": annotation.id,
             "result": {
@@ -264,27 +264,27 @@ class AnnotationController(Controller):
     # DELETE — single annotation
     # ------------------------------------------------------------------
     @delete(
-        "/{pk:int}",
+        "/{annotation_id:int}",
         guards=[require_permission("can_write", "Annotation")],
         status_code=200,
     )
     async def delete_annotation(
         self,
-        layer_pk: int,
         pk: int,
+        annotation_id: int,
         ann_dao: Any,
         layer_dao: Any,
     ) -> dict[str, str]:
-        """DELETE /api/v1/annotation_layer/<layer_pk>/annotation/<pk>."""
-        layer = await layer_dao.find_by_id(layer_pk)
+        """DELETE /api/v1/annotation_layer/<pk>/annotation/<annotation_id>."""
+        layer = await layer_dao.find_by_id(pk)
         if not layer:
-            raise ObjectNotFoundError("AnnotationLayer", layer_pk)
-        cmd = DeleteAnnotationCommand(dao=ann_dao, pk=pk)
+            raise ObjectNotFoundError("AnnotationLayer", pk)
+        cmd = DeleteAnnotationCommand(dao=ann_dao, pk=annotation_id)
         await cmd.execute()
         event_logger.log(
             "annotation.delete",
-            object_ref=f"annotation:{pk}",
-            extra={"layer_id": layer_pk},
+            object_ref=f"annotation:{annotation_id}",
+            extra={"layer_id": pk},
         )
         return {"message": "OK"}
 
@@ -298,21 +298,21 @@ class AnnotationController(Controller):
     )
     async def bulk_delete(
         self,
-        layer_pk: int,
+        pk: int,
         ann_dao: Any,
         layer_dao: Any,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
     ) -> dict[str, str]:
-        """DELETE /api/v1/annotation_layer/<layer_pk>/annotation/?q=(...)."""
-        layer = await layer_dao.find_by_id(layer_pk)
+        """DELETE /api/v1/annotation_layer/<pk>/annotation/?q=(...)."""
+        layer = await layer_dao.find_by_id(pk)
         if not layer:
-            raise ObjectNotFoundError("AnnotationLayer", layer_pk)
+            raise ObjectNotFoundError("AnnotationLayer", pk)
         ids = extract_ids_required(rison_params)
         cmd = BulkDeleteAnnotationCommand(dao=ann_dao, ids=ids)
         await cmd.execute()
         event_logger.log(
             "annotation.bulk_delete",
-            extra={"layer_id": layer_pk, "count": len(ids)},
+            extra={"layer_id": pk, "count": len(ids)},
         )
         return {"message": "OK"}
 
@@ -321,7 +321,7 @@ class AnnotationController(Controller):
         guards=[require_permission("can_read", "Annotation")],
     )
     async def info(self, ann_dao: Any) -> dict[str, Any]:
-        """GET /api/v1/annotation_layer/{layer_pk}/annotation/_info."""
+        """GET /api/v1/annotation_layer/{pk}/annotation/_info."""
         return await get_info_payload(
             dao=ann_dao,
             model_name="Annotation",

@@ -500,9 +500,18 @@ class ChartDetailResult(ModelStruct):
 
     @classmethod
     def _resolve_datasource_uuid(cls, obj: Any) -> str | None:
-        table = getattr(obj, "table", None)
-        if table and getattr(table, "uuid", None):
-            return str(table.uuid)
+        # Avoid lazy-load on ``obj.table`` in async context (MissingGreenlet).
+        # Read from the instance dict directly; if not loaded, skip.
+        from sqlalchemy.orm import attributes
+
+        try:
+            state = attributes.instance_state(obj)
+            if "table" in state.dict:
+                table = obj.table
+                if table and getattr(table, "uuid", None):
+                    return str(table.uuid)
+        except Exception:  # noqa: BLE001, S110
+            pass
         return None
 
 

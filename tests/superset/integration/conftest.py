@@ -122,29 +122,29 @@ class MockUser:
     username: str = "admin"
     email: str = "admin@test.com"
     is_authenticated: bool = True
-    permissions: set[str] = field(
+    permissions: set[tuple[str, str]] = field(
         default_factory=lambda: {
-            "can_read_Chart",
-            "can_write_Chart",
-            "can_read_Dashboard",
-            "can_write_Dashboard",
-            "can_read_Database",
-            "can_write_Database",
-            "can_read_Dataset",
-            "can_write_Dataset",
-            "can_read_Query",
-            "can_write_Query",
-            "can_read_SavedQuery",
-            "can_write_SavedQuery",
-            "can_read_SQLLab",
-            "can_write_SQLLab",
-            "can_sqllab_Superset",
-            "can_read_DashboardFilterStateRestApi",
-            "can_write_DashboardFilterStateRestApi",
-            "can_read_DashboardPermalinkRestApi",
-            "can_write_DashboardPermalinkRestApi",
-            "can_read_SqlLabPermalinkRestApi",
-            "can_write_SqlLabPermalinkRestApi",
+            ("can_read", "Chart"),
+            ("can_write", "Chart"),
+            ("can_read", "Dashboard"),
+            ("can_write", "Dashboard"),
+            ("can_read", "Database"),
+            ("can_write", "Database"),
+            ("can_read", "Dataset"),
+            ("can_write", "Dataset"),
+            ("can_read", "Query"),
+            ("can_write", "Query"),
+            ("can_read", "SavedQuery"),
+            ("can_write", "SavedQuery"),
+            ("can_read", "SQLLab"),
+            ("can_write", "SQLLab"),
+            ("can_sqllab", "Superset"),
+            ("can_read", "DashboardFilterStateRestApi"),
+            ("can_write", "DashboardFilterStateRestApi"),
+            ("can_read", "DashboardPermalinkRestApi"),
+            ("can_write", "DashboardPermalinkRestApi"),
+            ("can_read", "SqlLabPermalinkRestApi"),
+            ("can_write", "SqlLabPermalinkRestApi"),
         }
     )
 
@@ -157,7 +157,9 @@ class MockLimitedUser:
     username: str = "viewer"
     email: str = "viewer@test.com"
     is_authenticated: bool = True
-    permissions: set[str] = field(default_factory=lambda: {"can_read_Chart"})
+    permissions: set[tuple[str, str]] = field(
+        default_factory=lambda: {("can_read", "Chart")}
+    )
 
 
 class InjectMockUserMiddleware(ASGIMiddleware):

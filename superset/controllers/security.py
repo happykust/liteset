@@ -212,6 +212,7 @@ class SecurityController(Controller):
     async def guest_token(
         self,
         data: GuestTokenCreateSchema,
+        request: Request[Any, Any, Any],
         security_manager: SecurityManagerProtocol,
         state: State,
     ) -> dict[str, str]:
@@ -289,6 +290,19 @@ class SecurityController(Controller):
 
         exp_seconds: int = getattr(settings, "guest_token_jwt_exp_seconds", 3600)
 
+        # Resolve audience: GUEST_TOKEN_JWT_AUDIENCE config or request URL.
+        # Matches the original _get_guest_token_jwt_audience() logic.
+        audience_setting = getattr(settings, "guest_token_jwt_audience", None)
+        if audience_setting is not None:
+            audience = (
+                audience_setting() if callable(audience_setting) else audience_setting
+            )
+        else:
+            host = request.headers.get("host", "")
+            scheme = request.scope.get("scheme", "http")
+            audience = f"{scheme}://{host}" if host else ""
+        audience = str(audience) if audience else ""
+
         user_dict: dict[str, Any] = {
             "username": data.user.username,
             "first_name": data.user.first_name,
@@ -302,6 +316,7 @@ class SecurityController(Controller):
             resources=resources_raw,
             rls=rls_raw,
             exp_seconds=exp_seconds,
+            audience=audience,
         )
         event_logger.log("security.guest_token", extra={"username": data.user.username})
         return {"token": token}

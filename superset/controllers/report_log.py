@@ -43,7 +43,7 @@ _LIST_COLUMNS = [
 
 
 class ReportExecutionLogController(Controller):
-    path = "/api/v1/report/{report_pk:int}/log"
+    path = "/api/v1/report/{pk:int}/log"
     tags = ["Report Execution Log"]
     dependencies = {
         "dao": Provide(provide_report_execution_log_dao, sync_to_thread=False),
@@ -56,32 +56,34 @@ class ReportExecutionLogController(Controller):
     )
     async def get_list(
         self,
-        report_pk: int,
+        pk: int,
         dao: Any,
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """GET /api/v1/report/{report_pk}/log/ -- list logs for a report."""
+        """GET /api/v1/report/{pk}/log/ -- list logs for a report."""
         page, page_size = extract_pagination(rison_params)
         model_cls = dao.model_cls
-        filters = [model_cls.report_schedule_id == report_pk]
+        filters = [model_cls.report_schedule_id == pk]
         items = await dao.find_all(filters=filters, page=page, page_size=page_size)
         total = await dao.count(filters=filters)
-        return serialize_list_response(items, total, _LIST_COLUMNS)
+        return serialize_list_response(
+            items, total, _LIST_COLUMNS, list_title="List Report Log",
+        )
 
     @get(
-        "/{pk:int}",
+        "/{log_id:int}",
         guards=[require_permission("can_read", "ReportSchedule")],
     )
     async def get_single(
         self,
-        report_pk: int,
         pk: int,
+        log_id: int,
         dao: Any,
     ) -> dict[str, Any]:
-        """GET /api/v1/report/{report_pk}/log/{pk} -- get single log entry."""
-        item = await dao.find_by_id(pk)
+        """GET /api/v1/report/{pk}/log/{log_id} -- get single log entry."""
+        item = await dao.find_by_id(log_id)
         if item is None:
-            raise ObjectNotFoundError("ReportExecutionLog", pk)
-        if getattr(item, "report_schedule_id", None) != report_pk:
-            raise ObjectNotFoundError("ReportExecutionLog", pk)
+            raise ObjectNotFoundError("ReportExecutionLog", log_id)
+        if getattr(item, "report_schedule_id", None) != pk:
+            raise ObjectNotFoundError("ReportExecutionLog", log_id)
         return {"result": item}

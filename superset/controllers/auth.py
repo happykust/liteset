@@ -23,8 +23,10 @@ that ``SupersetAuthMiddleware`` decodes via ``SessionDecoder``.
 from __future__ import annotations
 
 import logging
+import unicodedata
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Any
+from urllib.parse import urlparse
 
 import jwt
 from litestar import Controller, get, post, Request
@@ -33,6 +35,7 @@ from litestar.response import Redirect, Template
 
 from superset.config import SupersetSettings
 from superset.controllers.spa import _build_bootstrap_data
+from superset.db.daos.user import AsyncUserDAO
 from superset.middleware.auth import UnauthenticatedUser
 from superset.utils.password import check_password_hash as _check_password_hash
 
@@ -58,6 +61,51 @@ _FAKE_PASSWORD_HASH = (
     "0000000000000000000000000000000000000000000000000000"
     "00000000000000000000000000000000"
 )
+
+
+def _is_safe_redirect_url(url: str, request_host: str = "") -> bool:
+    """Check whether a redirect URL is safe (relative or same-host).
+
+    Mirrors Flask-AppBuilder's ``is_safe_redirect_url`` but without
+    Flask dependencies.  Prevents open-redirect attacks by rejecting
+    URLs with external hosts or non-http(s) schemes.
+
+    Args:
+        url: The candidate redirect URL.
+        request_host: The ``Host`` header of the current request,
+            used to allow same-origin absolute URLs.
+    """
+    if not url:
+        return False
+    if url.startswith("///"):
+        return False
+    try:
+        url_info = urlparse(url)
+    except ValueError:
+        return False
+    if not url_info.netloc and url_info.scheme:
+        return False
+    # Reject control characters at start (e.g. ``\x00//evil.com``)
+    if unicodedata.category(url[0])[0] == "C":
+        return False
+    scheme = url_info.scheme
+    if not url_info.scheme and url_info.netloc:
+        scheme = "http"
+    valid_schemes = ("http", "https")
+    # Allow relative URLs (no netloc) or same-host absolute URLs
+    if url_info.netloc and url_info.netloc != request_host:
+        return False
+    return not scheme or scheme in valid_schemes
+
+
+def _get_safe_redirect(url: str, request_host: str = "", fallback: str = "/") -> str:
+    """Return *url* if safe, otherwise return *fallback*.
+
+    Mirrors Flask-AppBuilder's ``get_safe_redirect``.
+    """
+    if url and _is_safe_redirect_url(url, request_host=request_host):
+        return url
+    return fallback
 
 
 def _get_secret_key(settings: SupersetSettings) -> str:
@@ -126,8 +174,31 @@ class AuthController(Controller):
                 ["warning", urllib.parse.unquote(flash_raw)],
             ]
 
+        # Build anonymous user with Public role permissions (if configured),
+        # matching Flask-AppBuilder behaviour where anonymous visitors see
+        # the Public role's permissions in bootstrap data.
+        anon_user = UnauthenticatedUser()
+        role_name = getattr(settings, "auth_role_public", "")
+        if role_name:
+            from superset.security.dao import AsyncSecurityDAO
+
+            session_factory = state.session_factory
+            try:
+                async with session_factory() as session:
+                    dao = AsyncSecurityDAO(session)
+                    permissions = await dao.get_permissions_for_role_name(role_name)
+                    if permissions:
+                        from superset.middleware.auth import _CachedRole
+
+                        anon_user = UnauthenticatedUser(
+                            roles=[_CachedRole(id=0, name=role_name)],
+                            permissions=permissions,
+                        )
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to load Public role permissions for login page")
+
         bootstrap = _build_bootstrap_data(
-            UnauthenticatedUser(),
+            anon_user,
             settings,
             flash_messages=flash_messages,
         )
@@ -180,18 +251,42 @@ class AuthController(Controller):
         On failure, redirects back to ``/login/`` -- the React SPA renders
         the login form and error feedback (via flash_messages in bootstrap).
         """
-        from sqlalchemy import update
-
-        from superset.models.security import User
         from superset.security.dao import AsyncSecurityDAO
 
         settings: SupersetSettings = state.settings
-        form_data = await request.form()
-        username = str(form_data.get("username", "")).strip()
-        password = str(form_data.get("password", ""))
+
+        # Accept both form data and JSON body (Cypress sends JSON,
+        # browser login form sends application/x-www-form-urlencoded).
+        content_type = request.content_type or ""
+        json_data: dict[str, Any] = {}
+        form_data: Any = {}
+        if "application/json" in content_type:
+            try:
+                json_data = await request.json() or {}
+            except Exception:  # noqa: BLE001
+                json_data = {}
+            username = str(json_data.get("username", "")).strip()
+            password = str(json_data.get("password", ""))
+        else:
+            form_data = await request.form()
+            username = str(form_data.get("username", "")).strip()
+            password = str(form_data.get("password", ""))
+
+        # Read the ``next`` redirect target from query params or form data.
+        # Mirrors FAB's ``get_safe_redirect(request.args.get("next", ""))``.
+        next_url = request.query_params.get("next", "")
+        if not next_url:
+            if "application/json" in content_type:
+                next_url = str(json_data.get("next", ""))
+            else:
+                next_url = str(form_data.get("next", ""))
+        request_host = request.headers.get("host", "")
+        safe_redirect_target = _get_safe_redirect(
+            next_url, request_host=request_host, fallback="/"
+        )
 
         if not username or not password:
-            return _login_failed_redirect()
+            return _login_failed_redirect(next_url=next_url)
 
         session_factory = state.session_factory
 
@@ -239,17 +334,14 @@ class AuthController(Controller):
             if first_user_id is not None:
                 try:
                     async with session_factory() as session:
-                        await session.execute(
-                            update(User)
-                            .where(User.id == first_user_id)
-                            .values(
-                                login_count=first_user_login_count,
-                            )
+                        user_dao = AsyncUserDAO(session)
+                        await user_dao.update_login_count(
+                            first_user_id, first_user_login_count
                         )
                         await session.commit()
                 except Exception:  # noqa: BLE001
                     logger.debug("Noop user update failed")
-            return _login_failed_redirect()
+            return _login_failed_redirect(next_url=next_url)
 
         # ------------------------------------------------------------------
         # Verify password (FAB stores werkzeug-hashed passwords)
@@ -261,17 +353,12 @@ class AuthController(Controller):
             )
             try:
                 async with session_factory() as session:
-                    await session.execute(
-                        update(User)
-                        .where(User.id == user_id)
-                        .values(
-                            fail_login_count=User.fail_login_count + 1,
-                        )
-                    )
+                    user_dao = AsyncUserDAO(session)
+                    await user_dao.increment_fail_login_count(user_id)
                     await session.commit()
             except Exception:  # noqa: BLE001
                 logger.debug("Failed to update fail_login_count")
-            return _login_failed_redirect()
+            return _login_failed_redirect(next_url=next_url)
 
         # ------------------------------------------------------------------
         # Authentication successful -- create session cookie
@@ -288,15 +375,8 @@ class AuthController(Controller):
         # Update login metadata (best-effort)
         try:
             async with session_factory() as session:
-                await session.execute(
-                    update(User)
-                    .where(User.id == user_id)
-                    .values(
-                        last_login=datetime.now(),
-                        login_count=User.login_count + 1,
-                        fail_login_count=0,
-                    )
-                )
+                user_dao = AsyncUserDAO(session)
+                await user_dao.record_successful_login(user_id)
                 await session.commit()
         except Exception:  # noqa: BLE001
             logger.debug(
@@ -306,8 +386,8 @@ class AuthController(Controller):
 
         logger.info("User '%s' logged in successfully", username)
 
-        # Redirect to home; set session cookie via response headers
-        redirect = Redirect(path="/")
+        # Redirect to ``?next=`` target (validated) or home
+        redirect = Redirect(path=safe_redirect_target)
         redirect.cookies.append(
             _make_session_cookie(
                 cookie_name,
@@ -315,7 +395,9 @@ class AuthController(Controller):
                 max_age=session_max_age,
                 secure=getattr(settings, "session_cookie_secure", False),
                 httponly=getattr(settings, "session_cookie_httponly", True),
-                samesite=getattr(settings, "session_cookie_samesite", "lax"),
+                samesite=str(
+                    getattr(settings, "session_cookie_samesite", "lax")
+                ).lower(),
             ),
         )
         return redirect
@@ -341,12 +423,25 @@ class AuthController(Controller):
 
         # Invalidate Redis cache and blacklist JWT tokens (best-effort)
         try:
-            from superset.security.session_decoder import FlaskSessionDecoder
-
             secret_key = _get_secret_key(settings)
-            decoder = FlaskSessionDecoder(secret_key=secret_key)
             cookie_value = request.cookies.get(cookie_name)
-            user_id = decoder.decode(cookie_value)
+            user_id: int | None = None
+
+            # Try JWT decode first (Liteset-native session cookies)
+            if cookie_value:
+                try:
+                    payload = jwt.decode(cookie_value, secret_key, algorithms=["HS256"])
+                    user_id = payload.get("user_id")
+                except Exception:  # noqa: BLE001, S110
+                    pass
+
+            # Fallback: itsdangerous (Flask legacy cookies)
+            if user_id is None and cookie_value:
+                from superset.security.session_decoder import FlaskSessionDecoder
+
+                decoder = FlaskSessionDecoder(secret_key=secret_key)
+                user_id = decoder.get_user_id(cookie_value)
+
             if user_id is not None:
                 redis = getattr(state, "redis", None)
                 if redis is not None:
@@ -377,25 +472,35 @@ class AuthController(Controller):
                 max_age=0,
                 secure=getattr(settings, "session_cookie_secure", False),
                 httponly=getattr(settings, "session_cookie_httponly", True),
-                samesite=getattr(settings, "session_cookie_samesite", "lax"),
+                samesite=str(
+                    getattr(settings, "session_cookie_samesite", "lax")
+                ).lower(),
             ),
         )
         return redirect
 
 
-def _login_failed_redirect() -> Redirect:
+def _login_failed_redirect(next_url: str = "") -> Redirect:
     """Return a redirect to /login/ with a flash cookie for the error message.
 
     Mirrors Flask-AppBuilder's ``flash(self.invalid_login_message, "warning")``
-    followed by ``redirect(get_url_for_login)``.  The GET /login/ handler reads
-    the ``_flash`` cookie, includes it in ``bootstrap_data.common.flash_messages``,
-    and clears the cookie so the message shows only once.
+    followed by ``redirect(get_url_for_login_with(next_url))``.  The GET /login/
+    handler reads the ``_flash`` cookie, includes it in
+    ``bootstrap_data.common.flash_messages``, and clears the cookie so the
+    message shows only once.
+
+    If *next_url* is provided, it is preserved as a query parameter on the
+    redirect so the user can be sent to their intended destination after a
+    successful re-login attempt.
     """
     import urllib.parse
 
     from litestar.datastructures import Cookie
 
-    redirect = Redirect(path="/login/")
+    login_path = "/login/"
+    if next_url:
+        login_path = f"/login/?next={urllib.parse.quote(next_url, safe='')}"
+    redirect = Redirect(path=login_path)
     redirect.cookies.append(
         Cookie(
             key=_FLASH_COOKIE_NAME,
@@ -416,7 +521,7 @@ def _make_session_cookie(
     *,
     secure: bool = False,
     httponly: bool = True,
-    samesite: Literal["lax", "strict", "none"] = "lax",
+    samesite: str = "lax",
 ) -> Any:
     """Create a Cookie object for session management.
 
@@ -437,5 +542,5 @@ def _make_session_cookie(
         path="/",
         httponly=httponly,
         secure=secure,
-        samesite=samesite,
+        samesite=samesite,  # type: ignore[arg-type]
     )

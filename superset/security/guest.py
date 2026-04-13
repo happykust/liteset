@@ -54,11 +54,12 @@ class GuestUser:
     last_name: str = ""
     is_authenticated: bool = True
     is_active: bool = True
+    active: int = 1
     is_guest: bool = True
     roles: list[Any] = field(default_factory=list)
     resources: list[dict[str, Any]] = field(default_factory=list)
     rls_rules: list[dict[str, Any]] = field(default_factory=list)
-    permissions: set[str] = field(default_factory=set)
+    permissions: set[tuple[str, str]] = field(default_factory=set)
 
     @classmethod
     def from_token_payload(cls, payload: dict[str, Any]) -> GuestUser:
@@ -67,13 +68,13 @@ class GuestUser:
         resources = payload.get("resources", [])
 
         # Derive permissions from resource types
-        permissions: set[str] = set()
+        permissions: set[tuple[str, str]] = set()
         for resource in resources:
             res_type = resource.get("type", "") if isinstance(resource, dict) else ""
             if res_type == "dashboard":
-                permissions.update({"can_read_Dashboard", "can_read_Chart"})
+                permissions.update({("can_read", "Dashboard"), ("can_read", "Chart")})
             elif res_type == "chart":
-                permissions.add("can_read_Chart")
+                permissions.add(("can_read", "Chart"))
 
         return cls(
             username=user_info.get("username", "guest"),
@@ -92,6 +93,7 @@ def create_guest_access_token(
     resources: list[dict[str, Any]],
     rls: list[dict[str, Any]],
     exp_seconds: int = _GUEST_TOKEN_EXP_SECONDS,
+    audience: str = "",
 ) -> str:
     """Create a guest access JWT token.
 
@@ -101,12 +103,15 @@ def create_guest_access_token(
         resources: List of resource access dicts (type, id).
         rls: List of Row Level Security rule dicts (clause).
         exp_seconds: Token expiry in seconds (default: 300).
+        audience: JWT audience claim. When non-empty, encoded into the
+            token and validated on decode. Matches the original
+            ``GUEST_TOKEN_JWT_AUDIENCE`` config behaviour.
 
     Returns:
         Encoded JWT token string.
     """
     now = int(time.time())
-    payload = {
+    payload: dict[str, Any] = {
         "user": user,
         "resources": resources,
         "rls_rules": rls,
@@ -114,6 +119,8 @@ def create_guest_access_token(
         "iat": now,
         "exp": now + exp_seconds,
     }
+    if audience:
+        payload["aud"] = audience
     return jwt.encode(payload, secret_key, algorithm=_GUEST_TOKEN_ALGORITHM)
 
 
@@ -121,6 +128,7 @@ def parse_guest_token(
     token: str,
     secret_key: str,
     algorithm: str = _GUEST_TOKEN_ALGORITHM,
+    audience: str = "",
 ) -> dict[str, Any] | None:
     """Parse and validate a guest JWT token.
 
@@ -128,15 +136,23 @@ def parse_guest_token(
         token: Raw JWT token string.
         secret_key: Application secret key for validation.
         algorithm: JWT algorithm (default: HS256).
+        audience: Expected JWT audience claim. When non-empty, PyJWT
+            validates the ``aud`` claim matches. Mirrors the original
+            ``GUEST_TOKEN_JWT_AUDIENCE`` behaviour.
 
     Returns:
         Decoded payload dict if valid, None otherwise.
     """
+    decode_kwargs: dict[str, Any] = {
+        "algorithms": [algorithm],
+    }
+    if audience:
+        decode_kwargs["audience"] = audience
     try:
         payload = jwt.decode(
             token,
             secret_key,
-            algorithms=[algorithm],
+            **decode_kwargs,
         )
     except jwt.ExpiredSignatureError:
         logger.debug("Guest token expired")

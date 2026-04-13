@@ -40,6 +40,7 @@ from superset.db.daos.security import (
     AsyncSecurityDAO,
     AsyncUserCrudDAO,
 )
+from superset.db.daos.tab_state import AsyncTableSchemaDAO, AsyncTabStateDAO
 from superset.db.daos.tag import AsyncTagDAO
 from superset.db.daos.theme import AsyncThemeDAO
 from superset.db.daos.user import AsyncUserDAO
@@ -68,6 +69,8 @@ __all__ = [
     "AsyncSavedQueryDAO",
     "AsyncSecurityDAO",
     "AsyncSSHTunnelDAO",
+    "AsyncTabStateDAO",
+    "AsyncTableSchemaDAO",
     "AsyncTagDAO",
     "AsyncThemeDAO",
     "AsyncUserCrudDAO",

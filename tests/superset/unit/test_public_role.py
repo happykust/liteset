@@ -101,20 +101,20 @@ class TestUnauthenticatedUser:
     def test_with_public_role_permissions(self) -> None:
         user = UnauthenticatedUser(
             roles=[MockRole()],
-            permissions={"can_read_Dashboard", "can_read_Chart"},
+            permissions={("can_read", "Dashboard"), ("can_read", "Chart")},
         )
         assert user.is_authenticated is False
         assert len(user.roles) == 1
         assert user.roles[0].name == "Public"
-        assert "can_read_Dashboard" in user.permissions
-        assert "can_read_Chart" in user.permissions
+        assert ("can_read", "Dashboard") in user.permissions
+        assert ("can_read", "Chart") in user.permissions
 
     def test_has_permissions_helper_works(self) -> None:
         user = UnauthenticatedUser(
-            permissions={"can_read_Dashboard"},
+            permissions={("can_read", "Dashboard")},
         )
-        assert has_permissions(user, {"can_read_Dashboard"}) is True
-        assert has_permissions(user, {"can_write_Dashboard"}) is False
+        assert has_permissions(user, {("can_read", "Dashboard")}) is True
+        assert has_permissions(user, {("can_write", "Dashboard")}) is False
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ class TestRequireAuthenticationWithPublicRole:
         require_authentication(conn, MagicMock())
 
     def test_allows_anonymous_with_public_permissions(self) -> None:
-        user = UnauthenticatedUser(permissions={"can_read_Dashboard"})
+        user = UnauthenticatedUser(permissions={("can_read", "Dashboard")})
         conn = _make_mock_connection(user)
         # Should not raise
         require_authentication(conn, MagicMock())
@@ -148,7 +148,7 @@ class TestRequireAuthenticatedUser:
         require_authenticated_user(conn, MagicMock())
 
     def test_rejects_anonymous_even_with_permissions(self) -> None:
-        user = UnauthenticatedUser(permissions={"can_read_Dashboard"})
+        user = UnauthenticatedUser(permissions={("can_read", "Dashboard")})
         conn = _make_mock_connection(user)
         with pytest.raises(NotAuthorizedException, match="Not authenticated"):
             require_authenticated_user(conn, MagicMock())
@@ -164,7 +164,7 @@ class TestRequirePermissionWithPublicRole:
     def test_anonymous_with_matching_public_permission(self) -> None:
         """Anonymous user with can_read_Dashboard in Public role should pass."""
         guard = require_permission("can_read", "Dashboard")
-        user = UnauthenticatedUser(permissions={"can_read_Dashboard"})
+        user = UnauthenticatedUser(permissions={("can_read", "Dashboard")})
         conn = _make_mock_connection(user)
         # Should not raise
         guard(conn, MagicMock())
@@ -172,7 +172,7 @@ class TestRequirePermissionWithPublicRole:
     def test_anonymous_without_matching_permission(self) -> None:
         """Anonymous user without the required permission should be rejected."""
         guard = require_permission("can_write", "Dashboard")
-        user = UnauthenticatedUser(permissions={"can_read_Dashboard"})
+        user = UnauthenticatedUser(permissions={("can_read", "Dashboard")})
         conn = _make_mock_connection(user)
         with pytest.raises(NotAuthorizedException, match="Not authenticated"):
             guard(conn, MagicMock())
@@ -189,7 +189,7 @@ class TestRequirePermissionWithPublicRole:
         guard = require_permission("can_read", "Chart")
         user = MagicMock(
             is_authenticated=True,
-            permissions={"can_read_Chart"},
+            permissions={("can_read", "Chart")},
             roles=[],
         )
         conn = _make_mock_connection(user)
@@ -199,11 +199,11 @@ class TestRequirePermissionWithPublicRole:
         guard = require_permission("can_write", "Chart")
         user = MagicMock(
             is_authenticated=True,
-            permissions={"can_read_Chart"},
+            permissions={("can_read", "Chart")},
             roles=[],
         )
         conn = _make_mock_connection(user)
-        with pytest.raises(PermissionDeniedException, match="can_write_Chart"):
+        with pytest.raises(PermissionDeniedException, match="can_write on Chart"):
             guard(conn, MagicMock())
 
     def test_admin_bypasses_permission_check(self) -> None:
@@ -266,15 +266,15 @@ class TestBuildAnonymousUser:
         mock_perms = {("can_read", "Dashboard"), ("can_read", "Chart")}
         with patch(
             "superset.middleware.auth.SupersetAuthMiddleware._resolve_public_permissions",
-            return_value={"can_read_Dashboard", "can_read_Chart"},
+            return_value={("can_read", "Dashboard"), ("can_read", "Chart")},
         ):
             async with AsyncTestClient(app=app) as client:
                 resp = await client.get("/check-anon")
                 assert resp.status_code == 200
                 data = resp.json()
                 assert data["is_authenticated"] is False
-                assert "can_read_Dashboard" in data["permissions"]
-                assert "can_read_Chart" in data["permissions"]
+                assert ["can_read", "Chart"] in data["permissions"]
+                assert ["can_read", "Dashboard"] in data["permissions"]
                 assert data["has_roles"] is True
 
     async def test_anonymous_no_permissions_when_public_role_empty(
@@ -335,7 +335,7 @@ class TestBuildAnonymousUser:
     ) -> None:
         """When Redis has cached public permissions, DB is not queried."""
         mock_redis = AsyncMock()
-        cached_perms = json.dumps(["can_read_Dashboard", "can_read_Chart"])
+        cached_perms = json.dumps([["can_read", "Dashboard"], ["can_read", "Chart"]])
         mock_redis.get = AsyncMock(return_value=cached_perms)
 
         state = State(
@@ -358,7 +358,7 @@ class TestBuildAnonymousUser:
                 resp = await client.get("/check-anon")
                 assert resp.status_code == 200
                 data = resp.json()
-                assert "can_read_Dashboard" in data["permissions"]
+                assert ["can_read", "Dashboard"] in data["permissions"]
                 # DB should NOT be called since Redis had the data
                 mock_resolve.assert_not_called()
 
@@ -385,13 +385,13 @@ class TestBuildAnonymousUser:
 
         with patch(
             "superset.middleware.auth.SupersetAuthMiddleware._resolve_public_permissions",
-            return_value={"can_read_Dashboard"},
+            return_value={("can_read", "Dashboard")},
         ):
             async with AsyncTestClient(app=app) as client:
                 resp = await client.get("/check-anon")
                 assert resp.status_code == 200
                 data = resp.json()
-                assert "can_read_Dashboard" in data["permissions"]
+                assert ["can_read", "Dashboard"] in data["permissions"]
 
                 # Verify Redis was populated
                 mock_redis.set.assert_called_once()
@@ -422,13 +422,13 @@ class TestBuildAnonymousUser:
 
         with patch(
             "superset.middleware.auth.SupersetAuthMiddleware._resolve_public_permissions",
-            return_value={"can_read_Dashboard"},
+            return_value={("can_read", "Dashboard")},
         ):
             async with AsyncTestClient(app=app) as client:
                 resp = await client.get("/check-anon")
                 assert resp.status_code == 200
                 data = resp.json()
-                assert "can_read_Dashboard" in data["permissions"]
+                assert ["can_read", "Dashboard"] in data["permissions"]
 
 
 # ---------------------------------------------------------------------------

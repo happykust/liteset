@@ -25,6 +25,7 @@ a sync engine.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import click
 
@@ -151,6 +152,15 @@ def load_examples(
     try:
         load_examples_run(load_test_data, load_big_data, only_metadata, force)
         _ctx.commit()
+
+        # Backfill the admin user as the owner of every example object.
+        # The YAML/legacy loaders don't populate the M2M owners tables,
+        # which breaks Cypress tests that filter by ``owners rel_m_m
+        # <user_id>`` (save-modal dashboard dropdown, dashboard list
+        # filter, etc.). Assigning admin ensures a realistic default.
+        _assign_admin_to_examples()
+        _ctx.commit()
+
         click.secho("Example data loaded successfully.", fg="green")
     except Exception:
         logger.exception("Failed to load examples")
@@ -159,3 +169,68 @@ def load_examples(
         raise
     finally:
         _ctx.teardown()
+
+
+def _assign_admin_to_examples() -> None:
+    """Assign the first admin user as owner on all example resources.
+
+    Mirrors what ``load_test_users`` already does for Cypress setup —
+    because the legacy example loader does not populate the M2M owners
+    tables, dashboards/charts/datasets/databases are ownerless after a
+    fresh ``load-examples`` run. This makes owner-filtered queries
+    (e.g. the save-chart-to-dashboard modal) return empty.
+    """
+    from superset.examples import _ctx as ctx
+
+    session = ctx.session
+    if session is None:  # pragma: no cover — defensive
+        return
+
+    from sqlalchemy import select
+
+    from superset.models.dashboard import Dashboard
+    from superset.models.security import User
+    from superset.models.slice import Slice
+
+    admin = session.execute(
+        select(User).join(User.roles).where(User.active.is_(True))
+    ).scalars().first()
+    if admin is None:
+        click.secho(
+            "  No active user found; skipping admin owner backfill.",
+            fg="yellow",
+        )
+        return
+
+    def _ensure_owner(items: list[Any]) -> int:
+        changes = 0
+        for item in items:
+            if not hasattr(item, "owners"):
+                continue
+            owners = list(item.owners)
+            if admin not in owners:
+                owners.append(admin)
+                item.owners = owners
+                changes += 1
+        return changes
+
+    dashboards = list(session.execute(select(Dashboard)).scalars().all())
+    slices = list(session.execute(select(Slice)).scalars().all())
+
+    from superset.models.connectors import SqlaTable
+
+    datasets = list(session.execute(select(SqlaTable)).scalars().all())
+
+    dash_changed = _ensure_owner(dashboards)
+    slice_changed = _ensure_owner(slices)
+    ds_changed = _ensure_owner(datasets)
+
+    # Database doesn't have an ``owners`` M2M in the schema — it has
+    # ``created_by_fk`` / ``changed_by_fk`` only. Nothing to backfill
+    # there, and Cypress' owner-filter tests only hit dashboards/charts.
+
+    click.secho(
+        f"  Backfilled admin as owner: {dash_changed} dashboards, "
+        f"{slice_changed} charts, {ds_changed} datasets.",
+        fg="green",
+    )

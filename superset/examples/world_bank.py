@@ -115,6 +115,10 @@ def load_world_bank_health_n_pop(  # pylint: disable=too-many-locals
                 SqlMetric(metric_name=metric, expression=f"{aggr_func}({col})")
             )
 
+    # Flush to ensure tbl.id is assigned before creating slices
+    # that reference it via datasource_id.
+    _ctx.session.flush()
+
     slices = create_slices(tbl)
     misc_dash_slices.add(str(slices[-1].slice_name))
     for slc in slices:

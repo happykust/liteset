@@ -17,8 +17,10 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,12 +35,16 @@ class AsyncUserDAO:
     at runtime rather than being a fixed class attribute.
     """
 
-    def __init__(self, session: AsyncSession, user_model: type | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        user_model: type[Any] | None = None,
+    ) -> None:
         self.session = session
         self._user_model = user_model
 
     @property
-    def user_model(self) -> type:
+    def user_model(self) -> type[Any]:
         if self._user_model is None:
             from superset.models.security import User
 
@@ -48,6 +54,26 @@ class AsyncUserDAO:
     async def get_by_id(self, user_id: int) -> Any | None:
         """Get a user by ID."""
         return await self.session.get(self.user_model, user_id)
+
+    async def update_profile(
+        self,
+        user_id: int,
+        attributes: dict[str, Any],
+        hashed_password: str | None = None,
+    ) -> bool:
+        """Update user profile attributes and optionally set a new password.
+
+        Returns True if the user was found and updated, False otherwise.
+        """
+        user = await self.get_by_id(user_id)
+        if user is None:
+            return False
+        for attr, value in attributes.items():
+            setattr(user, attr, value)
+        if hashed_password is not None:
+            user.password = hashed_password
+        await self.session.flush()
+        return True
 
     async def set_avatar_url(self, user: Any, avatar_url: str) -> None:
         """Set the avatar URL for a user.
@@ -74,3 +100,44 @@ class AsyncUserDAO:
                 self.session.add(attr)
             except ImportError:
                 logger.debug("UserAttribute model not available")
+
+    async def update_login_count(self, user_id: int, login_count: int) -> None:
+        """Set the login_count for a user (noop update for timing balance).
+
+        Used during failed auth when the user is not found or inactive,
+        to mirror the DB write timing of a successful login and prevent
+        timing-based user enumeration.
+        """
+        User = self.user_model  # noqa: N806
+        await self.session.execute(
+            update(User).where(User.id == user_id).values(login_count=login_count)
+        )
+
+    async def increment_fail_login_count(self, user_id: int) -> None:
+        """Increment fail_login_count by 1 for a user.
+
+        Called when a valid user provides the wrong password.
+        """
+        User = self.user_model  # noqa: N806
+        await self.session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(fail_login_count=User.fail_login_count + 1)
+        )
+
+    async def record_successful_login(self, user_id: int) -> None:
+        """Record a successful login for a user.
+
+        Sets last_login to now, increments login_count by 1,
+        and resets fail_login_count to 0.
+        """
+        User = self.user_model  # noqa: N806
+        await self.session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(
+                last_login=datetime.now(),
+                login_count=User.login_count + 1,
+                fail_login_count=0,
+            )
+        )

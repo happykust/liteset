@@ -155,6 +155,7 @@ async def _import_chart(  # noqa: C901
             if security_manager is not None:
                 can_access = await security_manager.can_access_chart(existing)
                 is_admin = await security_manager.is_admin()
+                await session.refresh(existing, ["owners"])
                 if not can_access or (
                     current_user not in existing.owners and not is_admin
                 ):
@@ -204,8 +205,10 @@ async def _import_chart(  # noqa: C901
     await session.flush()
 
     # Owner management
-    if current_user is not None and current_user not in chart.owners:
-        chart.owners.append(current_user)
+    if current_user is not None:
+        await session.refresh(chart, ["owners"])
+        if current_user not in chart.owners:
+            chart.owners.append(current_user)
 
     return chart
 
@@ -364,12 +367,14 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
 
         # Resolve owners
         owner_ids = self._data.get("owners", [])
+        resolved_owner_ids: list[int] = []
         if owner_ids and self._security_manager is not None:
             owners = []
             for oid in owner_ids:
                 user = await self._security_manager.find_user_by_id(oid)
                 if user:
                     owners.append(user)
+                    resolved_owner_ids.append(user.id)
             chart.owners = owners
         elif (
             not owner_ids
@@ -379,12 +384,13 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
             user = await self._security_manager.find_user_by_id(self._user_id)
             if user:
                 chart.owners = [user]
+                resolved_owner_ids.append(user.id)
 
         self._dao.session.add(chart)
         await self._dao.session.flush()
 
         # Add implicit type: and owner: tags (async port of ChartUpdater.after_insert)
-        owner_ids = [o.id for o in chart.owners] if hasattr(chart, "owners") else []
+        owner_ids = resolved_owner_ids
         await add_implicit_tags_after_insert(
             self._dao.session, "chart", chart.id, owner_ids
         )
@@ -409,7 +415,25 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
         self._chart: Any | None = None
 
     async def validate(self) -> None:  # noqa: C901
-        self._chart = await self._dao.find_by_id(self._chart_id)
+        # Eager-load the M2M relationships that ``run()`` re-assigns so
+        # that assignments don't trigger lazy reloads under asyncpg
+        # (which crash with ``MissingGreenlet``).
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.slice import Slice
+
+        stmt = (
+            select(Slice)
+            .where(Slice.id == self._chart_id)
+            .options(
+                selectinload(Slice.owners),
+                selectinload(Slice.tags),
+                selectinload(Slice.dashboards),
+            )
+        )
+        result = await self._dao.session.execute(stmt)
+        self._chart = result.scalars().unique().one_or_none()
         if not self._chart:
             raise ObjectNotFoundError("Chart", self._chart_id)
 
@@ -437,7 +461,7 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
         if dashboard_ids and self._security_manager is not None:
             from superset.models.dashboard import Dashboard
 
-            # Get existing dashboard IDs
+            # Dashboards are already pre-loaded in ``validate()``.
             existing_dashboard_ids = (
                 {d.id for d in self._chart.dashboards}
                 if hasattr(self._chart, "dashboards") and self._chart.dashboards
@@ -478,7 +502,9 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
             if hasattr(self._chart, key):
                 setattr(self._chart, key, value)
 
-        # Resolve owners
+        # Resolve owners — ``validate()`` already pre-loaded the
+        # collection via ``selectinload`` so the assignment below will
+        # not trigger a lazy load.
         owner_ids = self._data.get("owners")
         if owner_ids is not None and self._security_manager is not None:
             owners = []
@@ -506,7 +532,8 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
         self._chart.last_saved_at = datetime.now()
         await self._dao.session.flush()
 
-        # Sync implicit owner: tags (async port of ChartUpdater.after_update)
+        # Sync implicit owner: tags (async port of ChartUpdater.after_update).
+        # Owners are already loaded from ``validate()``.
         owner_ids = (
             [o.id for o in self._chart.owners] if hasattr(self._chart, "owners") else []
         )

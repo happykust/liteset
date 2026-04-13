@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,21 @@ from pydantic_settings import (
 # Minimum 16 characters for secret key (validated via field_validator below).
 # SecretStr masks the value in repr/logs to prevent accidental exposure.
 SecretKeyStr = SecretStr
+
+# Module-level constants (must be importable by superset_test_config.py etc.)
+BASE_DIR = str(files("superset"))
+if "SUPERSET_HOME" in os.environ:
+    DATA_DIR = os.environ["SUPERSET_HOME"]
+else:
+    DATA_DIR = os.path.expanduser("~/.superset")
+
+# Module-level compat variables expected by superset_test_config.py
+# (which does ``from superset.config import *`` then ``**FEATURE_FLAGS``)
+FEATURE_FLAGS: dict[str, bool] = {}
+
+import logging as _logging  # noqa: E402
+
+logger = _logging.getLogger(__name__)
 
 _SYNC_TO_ASYNC_DRIVERS = {
     "postgresql://": "postgresql+asyncpg://",
@@ -65,6 +81,7 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "CACHE_CONFIG": "cache_config",
     "QUERY_CACHE_CONFIG": "query_cache_config",
     "FEATURE_FLAGS": "feature_flags",
+    "REDIS_URL": "redis_url",
     "MAPBOX_API_KEY": "mapbox_api_key",
     "DEFAULT_RELATIVE_START_TIME": "default_relative_start_time",
     "DEFAULT_RELATIVE_END_TIME": "default_relative_end_time",
@@ -625,9 +642,9 @@ class SupersetSettings(BaseSettings):
     # Security headers
     content_security_policy: str = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-        "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data: blob:; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "img-src 'self' data: blob: https://cdn.jsdelivr.net; "
         "font-src 'self' data:; "
         "connect-src 'self' ws: wss:; "
         "worker-src 'self' blob:"
@@ -639,7 +656,7 @@ class SupersetSettings(BaseSettings):
 
     # User-provided feature flag overrides.  Merged on top of
     # _DEFAULT_FEATURE_FLAGS via model_validator below.
-    feature_flags: dict[str, bool] = {}
+    feature_flags: dict[str, Any] = {}
 
     # DASHBOARD_RBAC feature flag
     dashboard_rbac: bool = False
@@ -649,7 +666,7 @@ class SupersetSettings(BaseSettings):
     guest_token_jwt_secret: str = ""
     guest_token_jwt_algo: str = "HS256"  # noqa: S105
     guest_token_jwt_exp_seconds: int = 3600
-    guest_token_header_name: str = "Authorization"  # noqa: S105
+    guest_token_header_name: str = "X-GuestToken"  # noqa: S105
     guest_token_validator_hook: Any | None = None
 
     # ── UI / Branding ──
@@ -1075,7 +1092,7 @@ class SupersetSettings(BaseSettings):
     # ── Tracking / Polling ──
     tracking_url_transformer: Any | None = None  # Callable[[str], str]
     db_poll_interval_seconds: dict[str, int] = {}
-    presto_poll_interval: int = 1
+    presto_poll_interval: float = 1
 
     # ── DB auth / connection ──
     allowed_extra_authentications: dict[str, dict[str, Any]] = {}

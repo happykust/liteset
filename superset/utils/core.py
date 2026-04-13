@@ -23,7 +23,10 @@ Flask, marshmallow, or other removed dependencies.
 
 from __future__ import annotations
 
+import re
 import uuid
+from contextvars import ContextVar
+from enum import Enum, StrEnum
 from typing import Any, cast, TypeVar
 
 import sqlalchemy as sa
@@ -32,6 +35,12 @@ from sqlalchemy.dialects.mysql import LONGTEXT, MEDIUMTEXT
 from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.sql.type_api import Variant
 
+from superset.constants import (
+    EXTRA_FORM_DATA_APPEND_KEYS,
+    EXTRA_FORM_DATA_OVERRIDE_EXTRA_KEYS,
+    EXTRA_FORM_DATA_OVERRIDE_REGULAR_MAPPINGS,
+    NO_TIME_RANGE,
+)
 from superset.utils.hashing import md5_sha_from_dict
 
 # ---------------------------------------------------------------------------
@@ -256,3 +265,239 @@ def split_adhoc_filters_into_base_filters(
         form_data["where"] = " AND ".join([f"({sql})" for sql in sql_where_filters])
         form_data["having"] = " AND ".join([f"({sql})" for sql in sql_having_filters])
         form_data["filters"] = simple_where_filters
+
+
+# ---------------------------------------------------------------------------
+# FilterOperator enum (ported from superset_old/utils/core.py)
+# ---------------------------------------------------------------------------
+class FilterOperator(StrEnum):
+    """Operators used filter controls"""
+
+    EQUALS = "=="
+    NOT_EQUALS = "!="
+    GREATER_THAN = ">"
+    LESS_THAN = "<"
+    GREATER_THAN_OR_EQUALS = ">="
+    LESS_THAN_OR_EQUALS = "<="
+    LIKE = "LIKE"
+    NOT_LIKE = "NOT LIKE"
+    ILIKE = "ILIKE"
+    IS_NULL = "IS NULL"
+    IS_NOT_NULL = "IS NOT NULL"
+    IN = "IN"
+    NOT_IN = "NOT IN"
+    IS_TRUE = "IS TRUE"
+    IS_FALSE = "IS FALSE"
+    TEMPORAL_RANGE = "TEMPORAL_RANGE"
+
+
+class FilterStringOperators(StrEnum):
+    EQUALS = "EQUALS"
+    NOT_EQUALS = "NOT_EQUALS"
+    LESS_THAN = "LESS_THAN"
+    GREATER_THAN = "GREATER_THAN"
+    LESS_THAN_OR_EQUAL = "LESS_THAN_OR_EQUAL"
+    GREATER_THAN_OR_EQUAL = "GREATER_THAN_OR_EQUAL"
+    IN = "IN"
+    NOT_IN = "NOT_IN"
+    ILIKE = "ILIKE"
+    LIKE = "LIKE"
+    IS_NOT_NULL = "IS_NOT_NULL"
+    IS_NULL = "IS_NULL"
+    LATEST_PARTITION = "LATEST_PARTITION"
+    IS_TRUE = "IS_TRUE"
+    IS_FALSE = "IS_FALSE"
+
+
+# ---------------------------------------------------------------------------
+# QuerySource / get_user_agent (ported from superset_old/utils/core.py)
+# Used by DB engine specs (e.g. Databricks) to stamp connections with
+# identifying user-agent strings.
+# ---------------------------------------------------------------------------
+class QuerySource(Enum):
+    """
+    The source of a SQL query.
+    """
+
+    CHART = 0
+    DASHBOARD = 1
+    SQL_LAB = 2
+
+
+def get_user_agent(database: Any, source: QuerySource | None) -> str:
+    """
+    Return the user-agent to advertise when connecting to ``database``.
+
+    Ported 1:1 from ``superset_old/utils/core.py``.  The original reads
+    ``USER_AGENT_FUNC`` from Flask's ``current_app.config``; in liteset we
+    resolve it via the pydantic settings module instead, but the behaviour
+    is byte-for-byte equivalent.
+    """
+    # pylint: disable=import-outside-toplevel
+    from superset.constants import DEFAULT_USER_AGENT
+
+    try:
+        from superset.config import SupersetSettings
+
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        user_agent_func = getattr(settings, "user_agent_func", None)
+    except Exception:  # noqa: BLE001
+        user_agent_func = None
+
+    if user_agent_func is not None:
+        return user_agent_func(database, source)
+
+    return DEFAULT_USER_AGENT
+
+
+# ---------------------------------------------------------------------------
+# User context helpers (request-free versions for use in jinja templates)
+#
+# In the original Superset these read from Flask's ``g`` object. In Liteset
+# the request context is threaded via Litestar's dependency injection.  For
+# code paths that do *not* have access to a ``Request`` (e.g. Celery tasks,
+# Jinja template rendering triggered outside a controller) we use a
+# context-var based approach.
+# ---------------------------------------------------------------------------
+_current_user_ctx: ContextVar[Any] = ContextVar("_current_user_ctx", default=None)
+
+
+def set_current_user(user: Any) -> None:
+    """Set the current user for the running async context."""
+    _current_user_ctx.set(user)
+
+
+def get_current_user() -> Any:
+    """Return the current user or ``None``."""
+    return _current_user_ctx.get(None)
+
+
+def get_username() -> str | None:
+    try:
+        user = get_current_user()
+        return user.username if user else None
+    except Exception:
+        return None
+
+
+def get_user_email() -> str | None:
+    try:
+        user = get_current_user()
+        return user.email if user else None
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# merge_extra_form_data / merge_extra_filters
+# Ported 1:1 from superset_old/utils/core.py
+# ---------------------------------------------------------------------------
+
+
+def merge_extra_form_data(form_data: dict[str, Any]) -> None:  # noqa: C901
+    """
+    Merge extra form data (appends and overrides) into the main payload
+    and add applied time extras to the payload.
+    """
+    filter_keys = ["filters", "adhoc_filters"]
+    extra_form_data = form_data.pop("extra_form_data", {})
+    append_filters: list[QueryObjectFilterClause] = extra_form_data.get("filters", None)
+
+    # merge append extras
+    for key in [key for key in EXTRA_FORM_DATA_APPEND_KEYS if key not in filter_keys]:
+        extra_value = getattr(extra_form_data, key, {})
+        form_value = getattr(form_data, key, {})
+        form_value.update(extra_value)
+        if form_value:
+            form_data["key"] = extra_value
+
+    # map regular extras that apply to form data properties
+    for src_key, target_key in EXTRA_FORM_DATA_OVERRIDE_REGULAR_MAPPINGS.items():
+        value = extra_form_data.get(src_key)
+        if value is not None:
+            form_data[target_key] = value
+
+    # map extras that apply to form data extra properties
+    extras = form_data.get("extras", {})
+    for key in EXTRA_FORM_DATA_OVERRIDE_EXTRA_KEYS:
+        value = extra_form_data.get(key)
+        if value is not None:
+            extras[key] = value
+    if extras:
+        form_data["extras"] = extras
+
+    adhoc_filters: list[AdhocFilterClause] = form_data.get("adhoc_filters", [])
+    form_data["adhoc_filters"] = adhoc_filters
+    append_adhoc_filters: list[AdhocFilterClause] = extra_form_data.get(
+        "adhoc_filters", []
+    )
+    adhoc_filters.extend(
+        cast("AdhocFilterClause", {"isExtra": True, **adhoc_filter})
+        for adhoc_filter in append_adhoc_filters
+    )
+    if append_filters:
+        for key, value in form_data.items():
+            if re.match("adhoc_filter.*", key):
+                value.extend(
+                    simple_filter_to_adhoc({"isExtra": True, **fltr})
+                    for fltr in append_filters
+                    if fltr
+                )
+    if form_data.get("time_range") and not form_data.get("granularity_sqla"):
+        for adhoc_filter in form_data.get("adhoc_filters", []):
+            if adhoc_filter.get("operator") == "TEMPORAL_RANGE":
+                adhoc_filter["comparator"] = form_data["time_range"]
+
+
+def merge_extra_filters(form_data: dict[str, Any]) -> None:  # noqa: C901
+    """
+    Merge extra_filters (temporary/contextual filters using legacy constructs)
+    into the main payload.
+    """
+    form_data.setdefault("applied_time_extras", {})
+    adhoc_filters = form_data.get("adhoc_filters", [])
+    form_data["adhoc_filters"] = adhoc_filters
+    merge_extra_form_data(form_data)
+    if "extra_filters" in form_data:
+        date_options = {
+            "__time_range": "time_range",
+            "__time_col": "granularity_sqla",
+            "__time_grain": "time_grain_sqla",
+        }
+
+        def get_filter_key(f: dict[str, Any]) -> str:
+            if "expressionType" in f:
+                return f"{f['subject']}__{f['operator']}"
+            return f"{f['col']}__{f['op']}"
+
+        existing_filters = {}
+        for existing in adhoc_filters:
+            if (
+                existing["expressionType"] == "SIMPLE"
+                and existing.get("comparator") is not None
+                and existing.get("subject") is not None
+            ):
+                existing_filters[get_filter_key(existing)] = existing["comparator"]
+
+        for filtr in form_data["extra_filters"]:
+            filtr["isExtra"] = True
+            filter_column = filtr["col"]
+            if time_extra := date_options.get(filter_column):
+                time_extra_value = filtr.get("val")
+                if time_extra_value and time_extra_value != NO_TIME_RANGE:
+                    form_data[time_extra] = time_extra_value
+                    form_data["applied_time_extras"][filter_column] = time_extra_value
+            elif filtr["val"]:
+                if (filter_key := get_filter_key(filtr)) in existing_filters:
+                    if isinstance(filtr["val"], list):
+                        if isinstance(existing_filters[filter_key], list):
+                            if set(existing_filters[filter_key]) != set(filtr["val"]):
+                                adhoc_filters.append(simple_filter_to_adhoc(filtr))
+                        else:
+                            adhoc_filters.append(simple_filter_to_adhoc(filtr))
+                    else:
+                        if filtr["val"] != existing_filters[filter_key]:
+                            adhoc_filters.append(simple_filter_to_adhoc(filtr))
+                else:
+                    adhoc_filters.append(simple_filter_to_adhoc(filtr))
+        del form_data["extra_filters"]

@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 
 import msgspec
@@ -66,8 +67,8 @@ class AnnotationPostSchema(msgspec.Struct):
     """POST /api/v1/annotation_layer/<layer_pk>/annotation/"""
 
     short_descr: Annotated[str, Meta(min_length=1)]
-    start_dttm: str
-    end_dttm: str
+    start_dttm: datetime
+    end_dttm: datetime
     long_descr: str = ""
     json_metadata: str = ""
 
@@ -77,8 +78,8 @@ class AnnotationPutSchema(msgspec.Struct):
 
     short_descr: str | None | msgspec.UnsetType = msgspec.UNSET
     long_descr: str | None | msgspec.UnsetType = msgspec.UNSET
-    start_dttm: str | None | msgspec.UnsetType = msgspec.UNSET
-    end_dttm: str | None | msgspec.UnsetType = msgspec.UNSET
+    start_dttm: datetime | None | msgspec.UnsetType = msgspec.UNSET
+    end_dttm: datetime | None | msgspec.UnsetType = msgspec.UNSET
     json_metadata: str | None | msgspec.UnsetType = msgspec.UNSET
 
 

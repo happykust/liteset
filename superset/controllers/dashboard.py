@@ -97,6 +97,37 @@ if TYPE_CHECKING:
     from superset.db.daos.key_value import AsyncKeyValueDAO
 
 
+# ---------------------------------------------------------------------------
+# Custom RISON filters for dashboards
+# ---------------------------------------------------------------------------
+def _dashboard_custom_filters(current_user: Any) -> dict[str, Any]:
+    def _dashboard_is_favorite(model_cls: Any, value: Any) -> Any:
+        from sqlalchemy import select as sa_select
+
+        from superset.models.core import FavStar
+
+        user_id = getattr(current_user, "id", None)
+        if user_id is None:
+            return None
+        fav_subq = sa_select(FavStar.obj_id).where(
+            FavStar.class_name == "Dashboard",
+            FavStar.user_id == user_id,
+        )
+        if value:
+            return model_cls.id.in_(fav_subq)
+        return ~model_cls.id.in_(fav_subq)
+
+    def _dashboard_is_certified(model_cls: Any, value: Any) -> Any:
+        if value:
+            return model_cls.certified_by.isnot(None)
+        return model_cls.certified_by.is_(None)
+
+    return {
+        "dashboard_is_favorite": _dashboard_is_favorite,
+        "dashboard_is_certified": _dashboard_is_certified,
+    }
+
+
 class DashboardController(Controller):
     path = "/api/v1/dashboard"
     tags = ["Dashboards"]
@@ -130,6 +161,7 @@ class DashboardController(Controller):
         rison_filters, order_by, page, page_size = build_rison_query_params(
             Dashboard,
             rison_params,
+            custom_filters=_dashboard_custom_filters(current_user),
         )
         # Default ordering: changed_on desc (matches original base_order)
         if order_by is None:
@@ -187,6 +219,15 @@ class DashboardController(Controller):
                 "tags.type",
                 "is_managed_externally",
             ],
+            list_title="List Dashboard",
+            order_columns=[
+                "changed_by.first_name",
+                "changed_on_delta_humanized",
+                "created_by.first_name",
+                "dashboard_title",
+                "published",
+                "changed_on",
+            ],
         )
 
     # ------------------------------------------------------------------
@@ -201,7 +242,18 @@ class DashboardController(Controller):
         return await get_info_payload(
             dao=dao,
             model_name="Dashboard",
-            permissions=["can_read", "can_write"],
+            # Mirrors the original FAB-generated permission list exposed
+            # by ``/api/v1/dashboard/_info``; the list order is preserved to
+            # match what Cypress snapshots assume.
+            permissions=[
+                "can_read",
+                "can_get_embedded",
+                "can_delete_embedded",
+                "can_export",
+                "can_cache_dashboard_screenshot",
+                "can_set_embedded",
+                "can_write",
+            ],
         )
 
     # ------------------------------------------------------------------
@@ -271,7 +323,6 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> DashboardGetResponse:
-        from sqlalchemy import select as sa_select
         from sqlalchemy.orm import selectinload
 
         from superset.db.filters import dashboard_access_filters
@@ -286,10 +337,9 @@ class DashboardController(Controller):
         base_filters = await dashboard_access_filters(security_manager, current_user)
         all_filters = [id_filter] + (base_filters or [])
 
-        stmt = (
-            sa_select(Dashboard)
-            .where(*all_filters)
-            .options(
+        dashboard = await dao.find_with_filters_and_options(
+            filters=all_filters,
+            options=[
                 selectinload(Dashboard.owners),
                 selectinload(Dashboard.roles),
                 selectinload(Dashboard.tags),
@@ -297,10 +347,8 @@ class DashboardController(Controller):
                 selectinload(Dashboard.created_by),
                 selectinload(Dashboard.slices),
                 selectinload(Dashboard.theme),
-            )
+            ],
         )
-        result = await dao.session.execute(stmt)
-        dashboard = result.scalars().unique().one_or_none()
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
 
@@ -371,12 +419,23 @@ class DashboardController(Controller):
                 for c in columns
                 if getattr(c, "is_dttm", False) and getattr(c, "column_name", None)
             ]
+            # Build ``order_by_choices`` in the shape expected by the
+            # frontend (json-encoded string + human label). See
+            # ``superset/schemas/dataset.py._resolve_order_by_choices``
+            # for the full rationale — raw [col, bool] pairs break the
+            # table viz ``order_by_cols`` SelectControl hydration.
+            import json as _json
+
             order_by_choices: list[list[Any]] = []
             for c in columns:
                 col_name = getattr(c, "column_name", None)
                 if col_name:
-                    order_by_choices.append([col_name, True])
-                    order_by_choices.append([col_name, False])
+                    order_by_choices.append(
+                        [_json.dumps([col_name, True]), f"{col_name} [asc]"]
+                    )
+                    order_by_choices.append(
+                        [_json.dumps([col_name, False]), f"{col_name} [desc]"]
+                    )
             owners_list = [
                 {
                     "id": o.id,
@@ -574,6 +633,7 @@ class DashboardController(Controller):
         data: DashboardPostSchema,
         dao: DashboardDAOProtocol,
         current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> DashboardGetResponse:
         cmd = CreateDashboardCommand(
             dao=cast("AsyncDashboardDAO", dao),
@@ -597,6 +657,7 @@ class DashboardController(Controller):
                 }
             ),
             user_id=current_user.id,
+            security_manager=security_manager,
         )
         dashboard = await cmd.execute()
         dashboard_id = int(dashboard.id)
@@ -652,6 +713,27 @@ class DashboardController(Controller):
             user_id=current_user.id,
         )
         dashboard = await cmd.execute()
+
+        # Eager-load relationships for serialization (avoids lazy load on async)
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.dashboard import Dashboard
+
+        refreshed = await dao.find_by_id_with_options(
+            dashboard_id=dashboard.id,
+            options=[
+                selectinload(Dashboard.owners),
+                selectinload(Dashboard.roles),
+                selectinload(Dashboard.tags),
+                selectinload(Dashboard.changed_by),
+                selectinload(Dashboard.created_by),
+                selectinload(Dashboard.slices),
+                selectinload(Dashboard.theme),
+            ],
+        )
+        assert refreshed is not None  # just updated, must exist
+        dashboard = refreshed
+
         event_logger.log(
             "dashboard.update",
             object_ref=f"dashboard:{pk}",
@@ -795,7 +877,7 @@ class DashboardController(Controller):
         dao: DashboardDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
     ) -> dict[str, str]:
         ids = extract_ids_required(rison_params)
         cmd = BulkDeleteDashboardsCommand(
@@ -810,7 +892,11 @@ class DashboardController(Controller):
             user_id=current_user.id,
             extra={"count": len(ids)},
         )
-        return {"message": "OK"}
+        num = len(ids)
+        msg = (
+            f"Deleted {num} dashboard" if num == 1 else f"Deleted {num} dashboards"
+        )
+        return {"message": msg}
 
     # ------------------------------------------------------------------
     # GET — export (ZIP)
@@ -823,7 +909,7 @@ class DashboardController(Controller):
     async def export(
         self,
         dao: DashboardDAOProtocol,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
         token: str | None = Parameter(query="token", default=None),
     ) -> Stream:
         ids = extract_ids(rison_params)

@@ -26,8 +26,6 @@ from litestar import Controller, get, post
 from litestar.datastructures import State
 from litestar.di import Provide
 from litestar.response import Response
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from superset.commands.sqllab import (
     EstimateQueryCostCommand,
@@ -35,10 +33,12 @@ from superset.commands.sqllab import (
     FormatSQLCommand,
     GetSQLResultsCommand,
 )
+from superset.db.daos.database import AsyncDatabaseDAO
+from superset.db.daos.tab_state import AsyncTabStateDAO
 from superset.events import event_logger
 from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
-from superset.providers import provide_query_dao
+from superset.providers import provide_database_dao, provide_query_dao
 from superset.schemas.sqllab import (
     EstimateQueryCostSchema,
     ExecutePayloadSchema,
@@ -67,11 +67,17 @@ _DATABASE_KEYS = frozenset(
 )
 
 
+def _provide_tab_state_dao(session: Any) -> AsyncTabStateDAO:
+    return AsyncTabStateDAO(session)
+
+
 class SqlLabController(Controller):
     path = "/api/v1/sqllab"
     tags = ["SqlLab"]
     dependencies = {
         "dao": Provide(provide_query_dao, sync_to_thread=False),
+        "database_dao": Provide(provide_database_dao, sync_to_thread=False),
+        "tab_state_dao": Provide(_provide_tab_state_dao, sync_to_thread=False),
         "rison_params": Provide(provide_rison_query),
     }
 
@@ -83,21 +89,18 @@ class SqlLabController(Controller):
         self,
         current_user: UserProtocol,
         dao: QueryDAOProtocol,
+        database_dao: AsyncDatabaseDAO,
+        tab_state_dao: AsyncTabStateDAO,
     ) -> dict[str, Any]:
         """GET /api/v1/sqllab/ — bootstrap data for SqlLab UI.
 
         Loads active tab state IDs, databases exposed in SQLLab, and the
         user's active tab -- mirroring the original Flask bootstrap_sqllab_data().
         """
-        from superset.models.core import Database
-        from superset.models.sql_lab import TabState
-
-        session: AsyncSession = dao.session
-
-        # 1. Load all databases and filter to _DATABASE_KEYS
-        db_result = await session.execute(select(Database))
+        # 1. Load all databases via DAO and filter to _DATABASE_KEYS
+        all_dbs = await database_dao.find_all()
         databases: dict[int, dict[str, Any]] = {}
-        for db_row in db_result.scalars().all():
+        for db_row in all_dbs:
             db_dict: dict[str, Any] = {}
             for key in _DATABASE_KEYS:
                 if hasattr(db_row, key):
@@ -107,39 +110,9 @@ class SqlLabController(Controller):
                 db_dict["backend"] = db_row.backend
             databases[int(db_row.id)] = db_dict
 
-        # 2. Load tab state IDs for the current user
-        tab_stmt = select(TabState.id, TabState.label).where(
-            TabState.user_id == current_user.id
-        )
-        tab_result = await session.execute(tab_stmt)
-        tab_state_ids: list[dict[str, Any]] = [
-            {"id": row.id, "label": row.label} for row in tab_result.all()
-        ]
-
-        # 3. Load the active tab (first active, or first available)
-        #    Eager-load relationships to avoid MissingGreenlet on to_dict().
-        from sqlalchemy.orm import selectinload
-
-        active_tab_stmt = (
-            select(TabState)
-            .where(TabState.user_id == current_user.id)
-            .order_by(TabState.active.desc())
-            .limit(1)
-            .options(
-                selectinload(TabState.table_schemas),
-                selectinload(TabState.latest_query),
-                selectinload(TabState.saved_query),
-            )
-        )
-        active_tab_result = await session.execute(active_tab_stmt)
-        active_tab_row = active_tab_result.scalars().first()
-        active_tab: dict[str, Any] | None = None
-        if active_tab_row is not None:
-            active_tab = (
-                active_tab_row.to_dict()
-                if hasattr(active_tab_row, "to_dict")
-                else {"id": active_tab_row.id, "label": active_tab_row.label}
-            )
+        # 2. Load tab state IDs and active tab via DAO
+        tab_state_ids = await tab_state_dao.get_tab_state_ids(current_user.id)
+        active_tab = await tab_state_dao.get_active_tab(current_user.id)
 
         event_logger.log("sqllab.bootstrap", user_id=current_user.id)
         return {
@@ -154,6 +127,7 @@ class SqlLabController(Controller):
     @post(
         "/estimate/",
         guards=[require_permission("can_read", "SQLLab")],
+        status_code=200,
     )
     async def estimate(self, data: EstimateQueryCostSchema) -> dict[str, Any]:
         cmd = EstimateQueryCostCommand(
@@ -168,6 +142,7 @@ class SqlLabController(Controller):
     @post(
         "/format_sql/",
         guards=[require_permission("can_read", "SQLLab")],
+        status_code=200,
     )
     async def format_sql(self, data: FormatSQLSchema) -> dict[str, str]:
         cmd = FormatSQLCommand(sql=data.sql, engine=data.engine)

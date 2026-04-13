@@ -124,6 +124,12 @@ class DashboardDAOProtocol(CRUDDAOProtocol, Protocol):
     async def validate_update_slug_uniqueness(
         self, dashboard_id: int, slug: str | None
     ) -> bool: ...
+    async def find_with_filters_and_options(
+        self, filters: list[Any], options: list[Any] | None = None
+    ) -> Any: ...
+    async def find_by_id_with_options(
+        self, dashboard_id: int | Any, options: list[Any] | None = None
+    ) -> Any: ...
 
 
 @runtime_checkable
@@ -136,6 +142,12 @@ class DatabaseDAOProtocol(CRUDDAOProtocol, Protocol):
     async def validate_update_uniqueness(
         self, database_id: int, database_name: str
     ) -> bool: ...
+    async def get_table_extra_lookup(
+        self,
+        database_id: int | Any,
+        table_names: Any,
+        schema: str | None = None,
+    ) -> dict[str, dict[str, Any]]: ...
 
 
 @runtime_checkable
@@ -268,6 +280,7 @@ class SecurityManagerProtocol(Protocol):
         rls: list[dict[str, Any]],
         algorithm: str = "HS256",
         exp_seconds: int = 300,
+        audience: str = "",
     ) -> str: ...
 
 
@@ -299,4 +312,4 @@ class UserProtocol(Protocol):
     def is_authenticated(self) -> bool: ...
 
     @property
-    def permissions(self) -> set[str]: ...
+    def permissions(self) -> set[tuple[str, str]]: ...

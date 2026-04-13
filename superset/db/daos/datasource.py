@@ -65,6 +65,10 @@ class AsyncDatasourceDAO:
                     selectinload(SqlaTable.database),
                     selectinload(SqlaTable.columns),
                     selectinload(SqlaTable.metrics),
+                    # Eager-load owners so security_manager.is_owner() can
+                    # access the M2M relationship without triggering a
+                    # lazy-load under asyncpg (which raises MissingGreenlet).
+                    selectinload(SqlaTable.owners),
                 )
             )
             result = await self.session.execute(stmt)

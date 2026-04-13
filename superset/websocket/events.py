@@ -40,6 +40,16 @@ from litestar.exceptions import WebSocketDisconnect
 
 from superset.websocket.auth import authenticate_websocket, validate_origin
 
+# Graceful disconnect exceptions — import defensively
+try:
+    from uvicorn.protocols.utils import ClientDisconnected as _ClientDisconnected
+except ImportError:
+    _ClientDisconnected = ConnectionError  # type: ignore[assignment,misc]
+try:
+    from websockets.exceptions import ConnectionClosed as _ConnectionClosed
+except ImportError:
+    _ConnectionClosed = ConnectionError  # type: ignore[assignment,misc]
+
 logger = logging.getLogger(__name__)
 
 # Custom WebSocket close codes
@@ -94,7 +104,7 @@ class AsyncQueryWebSocket(Controller):
     opt = {"exclude_from_auth": True}
 
     @websocket("/ws")
-    async def on_event(self, socket: WebSocket[Any, Any, Any], state: State) -> None:
+    async def on_event(self, socket: WebSocket[Any, Any, Any], state: State) -> None:  # noqa: C901
         """Handle WebSocket connection for async query events."""
         settings = state.settings
 
@@ -112,11 +122,16 @@ class AsyncQueryWebSocket(Controller):
         if hasattr(jwt_secret, "get_secret_value"):
             jwt_secret = jwt_secret.get_secret_value()
 
-        auth_result = await authenticate_websocket(socket, jwt_secret=jwt_secret)
+        session_cookie_name = getattr(settings, "session_cookie_name", "session")
+        auth_result = await authenticate_websocket(
+            socket,
+            jwt_secret=jwt_secret,
+            session_cookie_name=session_cookie_name,
+        )
         if auth_result is None:
             await socket.accept()
             await socket.close(code=WS_CLOSE_UNAUTHORIZED)
-            logger.warning("WebSocket rejected: authentication failed")
+            logger.debug("WebSocket rejected: authentication failed")
             return
 
         # --- Per-user connection limit enforcement ---
@@ -170,14 +185,41 @@ class AsyncQueryWebSocket(Controller):
                 last_id,
             )
 
+        relay_task = asyncio.create_task(self._relay_events(socket, state, channel))
+        heartbeat_task = asyncio.create_task(self._heartbeat(socket))
         try:
-            async with asyncio.TaskGroup() as tg:
-                tg.create_task(self._relay_events(socket, state, channel))
-                tg.create_task(self._heartbeat(socket))
-        except (WebSocketDisconnect, ConnectionError):
+            done, pending = await asyncio.wait(
+                [relay_task, heartbeat_task],
+                return_when=asyncio.FIRST_EXCEPTION,
+            )
+            for task in pending:
+                task.cancel()
+            # Re-raise non-disconnect exceptions
+            for task in done:
+                exc = task.exception()
+                if exc is not None and not isinstance(
+                    exc,
+                    (
+                        WebSocketDisconnect,
+                        ConnectionError,
+                        OSError,
+                        _ClientDisconnected,
+                        _ConnectionClosed,
+                    ),
+                ):
+                    logger.exception(
+                        "WebSocket error for user %d",
+                        auth_result.user_id,
+                        exc_info=exc,
+                    )
+        except (
+            WebSocketDisconnect,
+            ConnectionError,
+            OSError,
+            _ClientDisconnected,
+            _ConnectionClosed,
+        ):
             pass  # Client disconnected — clean exit
-        except Exception:
-            logger.exception("WebSocket error for user %d", auth_result.user_id)
         finally:
             active_ws.pop(socket, None)
             try:

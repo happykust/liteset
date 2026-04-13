@@ -29,6 +29,7 @@ from litestar.datastructures import State
 from litestar.di import Provide
 from litestar.handlers import post
 from litestar.openapi import OpenAPIConfig
+from litestar.openapi.plugins import SwaggerRenderPlugin
 from litestar.response import Response
 from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
@@ -59,7 +60,7 @@ from superset.logging import configure_logging
 from superset.middleware.auth import SupersetAuthMiddleware
 from superset.middleware.locale import LocaleMiddleware
 from superset.middleware.proxy_fix import ProxyFixMiddleware
-from superset.middleware.rate_limit import RateLimitMiddleware
+from superset.middleware.request_dump import RequestDumpMiddleware
 from superset.middleware.security_headers import SecurityHeadersMiddleware
 
 logger = logging.getLogger(__name__)
@@ -255,10 +256,12 @@ def create_app(  # noqa: C901
     from superset.controllers.group import GroupController
     from superset.controllers.import_export import ImportExportController
 
-    # LegacyApiController deferred — its /api/v1 path prefix overlaps
-    # with existing controllers. Will be added with path aliases in Phase 7.
-    # from superset.controllers.legacy_api import LegacyApiController
+    from superset.controllers.legacy_api import LegacyApiController
+    from superset.controllers.legacy_datasource import LegacyDatasourceController
     from superset.controllers.log import LogController
+    from superset.controllers.menu import MenuController
+    from superset.controllers.openapi import OpenApiController
+    from superset.controllers.permission import PermissionController
     from superset.controllers.permission_view import PermissionViewController
     from superset.controllers.query import QueryController
     from superset.controllers.report import ReportScheduleController
@@ -274,8 +277,13 @@ def create_app(  # noqa: C901
     )
     from superset.controllers.tag import TagController
     from superset.controllers.theme import ThemeController
-    from superset.controllers.user import UserController, UserRegistrationsController
+    from superset.controllers.user import (
+        UserController,
+        UserPublicController,
+        UserRegistrationsController,
+    )
     from superset.controllers.user_me import CurrentUserController
+    from superset.controllers.view_menu import ViewMenuController
 
     # Import WebSocket handler (Phase 6)
     from superset.websocket.events import AsyncQueryWebSocket
@@ -360,18 +368,16 @@ def create_app(  # noqa: C901
             _REJECTED_KEYS = {"js_tooltip", "js_onclick_href", "js_data_mutator"}  # noqa: N806
             form_data = {k: v for k, v in form_data.items() if k not in _REJECTED_KEYS}
 
-        # ---- 1c. Merge saved slice params if slice_id present ----
-        slice_id = form_data.get("slice_id")
-        if slice_id:
-            from superset.models.slice import Slice  # noqa: E402
-
-            slice_stmt = select(Slice).where(Slice.id == int(slice_id))
-            slice_result = await session.execute(slice_stmt)
-            slc = slice_result.scalars().one_or_none()
-            if slc:
-                slice_form_data = _json.loads(str(slc.params or "{}"))
-                slice_form_data.update(form_data)
-                form_data = slice_form_data
+        # NOTE: unlike the /api/v1/explore endpoint, the legacy
+        # /superset/explore_json endpoint must NOT merge saved slice
+        # params with the caller's form_data.  The original Flask view at
+        # ``superset_old/views/core.py::explore_json`` calls
+        # ``get_form_data()`` with the default ``use_slice_data=False``,
+        # which only merges when the incoming form_data contains ONLY
+        # slice_id/extra_filters/adhoc_filters/viz_type (a "valid slice
+        # id" payload).  Any richer payload — as Cypress tests send — is
+        # used as-is.  Merging here duplicates saved metrics on top of
+        # the user-provided ones and produces extra chart series.
 
         # ---- 2. Resolve datasource info ----
         # form_data.datasource = "<id>__<type>" takes precedence
@@ -527,7 +533,6 @@ def create_app(  # noqa: C901
         AuthController,
         SPAController,
         SecurityController,
-        # Phase 4: core API
         ChartController,
         DashboardController,
         DashboardFilterStateController,
@@ -539,7 +544,6 @@ def create_app(  # noqa: C901
         SqlLabPermalinkController,
         TabStateController,
         TableSchemaController,
-        # Phase 5: remaining API
         AnnotationLayerController,
         AnnotationController,
         CssTemplateController,
@@ -553,6 +557,7 @@ def create_app(  # noqa: C901
         LogController,
         CurrentUserController,
         UserController,
+        UserPublicController,
         UserRegistrationsController,
         TagController,
         ThemeController,
@@ -561,13 +566,16 @@ def create_app(  # noqa: C901
         AsyncEventController,
         RLSController,
         ImportExportController,
-        # LegacyApiController,  # deferred — path overlap (see import)
-        # Phase 7: cleanup — datasource, role, group, permission-view controllers
+        LegacyApiController,
+        LegacyDatasourceController,
         DatasourceController,
         RoleController,
         GroupController,
+        PermissionController,
         PermissionViewController,
-        # Phase 6: WebSocket
+        ViewMenuController,
+        MenuController,
+        OpenApiController,
         AsyncQueryWebSocket,
     ]
     startup_hooks: list[Any] = [on_startup]
@@ -615,7 +623,7 @@ def create_app(  # noqa: C901
 
     # Build CSRF middleware (session-based, Flask-WTF compatible)
     csrf_middleware = None  # Don't use Litestar built-in CSRF config
-    if settings.csrf_enabled:
+    if settings.csrf_enabled and settings.wtf_csrf_enabled:
         from superset.middleware.csrf import (
             create_csrf_middleware,
         )
@@ -669,14 +677,31 @@ def create_app(  # noqa: C901
             "security_manager": Provide(provide_security_manager),
             "event_manager": Provide(provide_event_manager),
         },
+        type_decoders=[
+            # Protocol types (UserProtocol, SecurityManagerProtocol, etc.)
+            # are used as DI parameter annotations in controllers.
+            # msgspec cannot convert concrete instances to Protocol types,
+            # so we pass them through as-is.
+            # _is_protocol is set by the Protocol metaclass on all Protocol
+            # subclasses — safer than issubclass() which requires
+            # @runtime_checkable.
+            (
+                lambda t: getattr(t, "_is_protocol", False),
+                lambda t, v: v,
+            ),
+        ],
         middleware=[
+            RequestDumpMiddleware.configure(
+                output_path="./superset_dump_run9.jsonl",
+                exclude_paths=("/static/", "/health", "/healthcheck", "/ping"),
+            ),
             *(
                 [ProxyFixMiddleware(**settings.proxy_fix_config)]
                 if settings.enable_proxy_fix
                 else []
             ),
             SecurityHeadersMiddleware(),
-            RateLimitMiddleware(),
+            # RateLimitMiddleware(),  # disabled — too aggressive for dev/testing
             LocaleMiddleware(),
             SupersetAuthMiddleware,
             *([csrf_middleware] if csrf_middleware else []),
@@ -689,13 +714,16 @@ def create_app(  # noqa: C901
             Exception: generic_exception_handler,
         },
         openapi_config=OpenAPIConfig(
-            title="Superset API",
-            version="v1",
+            title=settings.app_name,
+            version=settings.version_string or "v0.0.0-dev",
             path="/swagger/v1",
+            render_plugins=[SwaggerRenderPlugin()],
         ),
-        cors_config=CORSConfig(allow_origins=settings.cors_allow_origins)
-        if settings.cors_allow_origins
-        else None,
+        cors_config=(
+            CORSConfig(allow_origins=settings.cors_allow_origins)
+            if settings.cors_allow_origins
+            else None
+        ),
         compression_config=CompressionConfig(backend="gzip"),
         template_config=TemplateConfig(
             directory=Path(__file__).parent / "templates",

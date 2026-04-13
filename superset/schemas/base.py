@@ -103,8 +103,15 @@ class FavoriteStatusResponse(msgspec.Struct):
 # ---------------------------------------------------------------------------
 
 
-class ModelStruct(msgspec.Struct, omit_defaults=True):
+class ModelStruct(msgspec.Struct):
     """Base class for API response Structs with automatic ORM→Struct mapping.
+
+    Note: ``omit_defaults`` is intentionally **disabled** so that fields
+    with ``None`` / ``False`` / ``[]`` values are always serialised.
+    The original Superset API (Flask/Marshmallow) always includes every
+    column in the response, even when the value is null.  The frontend
+    relies on this: e.g. ``position_json``, ``json_metadata``, ``owners``
+    must be present even when empty.
 
     Subclasses declare typed fields matching ORM model attribute names.
     :meth:`from_model` inspects ``msgspec.structs.fields(cls)`` and
@@ -136,7 +143,14 @@ class ModelStruct(msgspec.Struct, omit_defaults=True):
                 kwargs[name] = resolver(obj)
                 continue
 
-            raw = getattr(obj, name, None)
+            try:
+                raw = getattr(obj, name, None)
+            except Exception:
+                # Attribute access may trigger lazy load on async sessions
+                # (MissingGreenlet). Fall back to field default.
+                raw = field.default if field.default is not msgspec.NODEFAULT else None
+                kwargs[name] = raw
+                continue
 
             # Nested ModelStruct (scalar relationship)
             nested_type = _extract_model_struct_type(field)
@@ -192,10 +206,9 @@ def _extract_model_struct_type(
     import types
 
     ft = field.type
-    origin = getattr(ft, "__origin__", None)
 
-    # Union (X | None)
-    if origin is types.UnionType:
+    # Union (X | None) — Python 3.10+ ``X | Y`` is types.UnionType
+    if isinstance(ft, types.UnionType):
         for arg in ft.__args__:
             if isinstance(arg, type) and issubclass(arg, ModelStruct):
                 return arg

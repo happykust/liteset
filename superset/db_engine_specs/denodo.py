@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 from sqlalchemy.types import Date, DateTime
 
-from superset.db_engine_specs.base import BaseEngineSpec
+from superset.db_engine_specs.base import BaseEngineSpec, BasicParametersMixin
 from superset.errors import SupersetErrorType
 
 
@@ -50,7 +50,7 @@ class _ErrorPatterns:  # pylint: disable=too-few-public-methods
     )
 
 
-class DenodoEngineSpec(BaseEngineSpec):
+class DenodoEngineSpec(BaseEngineSpec, BasicParametersMixin):
     engine = "denodo"
     engine_name = "Denodo"
 

@@ -33,6 +33,7 @@ def headless_url(path: str, user_friendly: bool = False) -> str:
 
 
 def get_url_path(view: str, user_friendly: bool = False, **kwargs: Any) -> str:
+    request_context: Any
     if has_request_context():
         request_context = nullcontext
     else:

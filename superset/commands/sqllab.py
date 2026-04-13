@@ -55,6 +55,37 @@ _ASYNC_DRIVER_REPLACEMENTS: dict[str, str] = {
     "sqlite+aiosqlite": "sqlite",
 }
 
+# SQLAlchemy backend name -> sqlglot dialect name. sqlglot uses "postgres"
+# while SQLAlchemy uses "postgresql"; a few others also differ.
+_SQLGLOT_DIALECT_ALIASES: dict[str, str] = {
+    "postgresql": "postgres",
+    "mssql": "tsql",
+    "mysql": "mysql",
+    "sqlite": "sqlite",
+    "trino": "trino",
+    "presto": "presto",
+    "snowflake": "snowflake",
+    "bigquery": "bigquery",
+    "redshift": "redshift",
+    "clickhouse": "clickhouse",
+    "oracle": "oracle",
+    "hive": "hive",
+    "spark": "spark",
+    "databricks": "databricks",
+    "duckdb": "duckdb",
+}
+
+
+def _map_sqlglot_dialect(engine: str | None) -> str | None:
+    """Map a SQLAlchemy backend name (e.g. "postgresql") to a sqlglot
+    dialect name (e.g. "postgres"). Returns None if no engine is given,
+    letting sqlglot auto-detect. Unknown engines are returned as-is.
+    """
+    if not engine:
+        return None
+    name = engine.split("+", 1)[0].lower()
+    return _SQLGLOT_DIALECT_ALIASES.get(name, name)
+
 
 def _make_json_safe(value: Any) -> Any:
     """Convert Python values to JSON-serializable types."""
@@ -413,17 +444,18 @@ class FormatSQLCommand(AsyncBaseCommand[str]):
             logger.debug("sqlglot not available, returning unformatted SQL")
             return self._sql
 
+        dialect = _map_sqlglot_dialect(self._engine)
         try:
             # sqlglot.transpile is CPU-bound; offload to a thread to avoid
             # blocking the async event loop.
             result = await asyncio.to_thread(
                 sqlglot.transpile,
                 self._sql,
-                read=self._engine,
+                read=dialect,
                 pretty=True,
             )
             return result[0]
-        except SqlglotError:
+        except (SqlglotError, ValueError):
             logger.warning("SQL formatting failed, returning original", exc_info=True)
             return self._sql
 

@@ -148,10 +148,14 @@ class DatasourceController(Controller):
         if datasource is None:
             raise ObjectNotFoundError("Datasource", datasource_id)
 
-        # Try the values_for_column method on the datasource model
-        if hasattr(datasource, "values_for_column"):
+        # Use the async port of ``values_for_column``. The original sync
+        # implementation in ``helpers.py`` requires a sync SQLAlchemy
+        # engine that we don't wire up in the Litestar port; instead we
+        # provide ``SqlaTable.async_values_for_column`` which runs
+        # against the existing asyncpg connection pool.
+        if hasattr(datasource, "async_values_for_column"):
             try:
-                payload = datasource.values_for_column(
+                payload = await datasource.async_values_for_column(
                     column_name=column_name,
                     limit=1000,
                 )

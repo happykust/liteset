@@ -43,7 +43,7 @@ _EXCLUDED_PATHS: frozenset[str] = frozenset(
     }
 )
 
-_DEFAULT_RATE_LIMIT = 100  # requests
+_DEFAULT_RATE_LIMIT = 1000  # requests (relaxed for development; tighten in production)
 _DEFAULT_RATE_LIMIT_WINDOW = 60  # seconds
 _REDIS_KEY_PREFIX = "ratelimit:"
 

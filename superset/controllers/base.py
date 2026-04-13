@@ -102,15 +102,51 @@ def _get_model_columns(model_cls: type[Any] | None) -> dict[str, Any]:
     return {col.key: col for col in mapper.columns}
 
 
+@functools.lru_cache(maxsize=32)
+def _get_model_relationships(model_cls: type[Any] | None) -> dict[str, Any]:
+    """Return a mapping of relationship key -> relationship for a model (cached)."""
+    if model_cls is None:
+        return {}
+    from sqlalchemy import inspect as sa_inspect
+
+    mapper: Any = sa_inspect(model_cls)
+    return {rel.key: rel for rel in mapper.relationships}
+
+
+def _cast_pk(value: Any) -> Any:
+    """Cast a RISON filter value to int if it looks like an integer PK.
+
+    RISON encodes all values as strings.  asyncpg is strict about types
+    and will refuse ``integer = varchar`` comparisons, so we convert
+    string-encoded integers back to ``int`` before passing them to
+    SQLAlchemy filters.
+    """
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return value
+    return value
+
+
 def build_rison_query_params(  # noqa: C901
     model_cls: type[Any],
     rison_params: dict[str, Any] | None,
+    *,
+    custom_filters: dict[str, Any] | None = None,
 ) -> tuple[list[Any], list[Any] | None, int, int]:
     """Parse Rison query parameters into filters, ordering, and pagination.
 
     Supports the following filter operators:
         eq, neq, sw (starts with), ew (ends with), ct (contains),
-        nct (not contains), gt, lt, gte, lte.
+        nct (not contains), gt, lt, gte, lte,
+        rel_m_m (many-to-many relationship), rel_o_m (many-to-one / FK).
+
+    Custom filters (e.g. ``chart_is_favorite``, ``chart_is_certified``)
+    are supported via the ``custom_filters`` parameter — a dict mapping
+    ``opr`` names to callables ``(model_cls, value) -> SQLAlchemy clause``.
 
     Returns:
         A tuple of ``(filters, order_by, page, page_size)``.
@@ -123,6 +159,7 @@ def build_rison_query_params(  # noqa: C901
 
     # -- Validate column names via SQLAlchemy mapper inspection --
     valid_columns = _get_model_columns(model_cls)  # type: ignore[arg-type]
+    valid_rels = _get_model_relationships(model_cls)  # type: ignore[arg-type]
 
     # -- Build filters --
     filters: list[Any] = []
@@ -130,6 +167,40 @@ def build_rison_query_params(  # noqa: C901
         col_name = flt.get("col")
         op = flt.get("opr")
         value = flt.get("value")
+
+        # 1. Custom filters (chart_is_favorite, chart_is_certified, etc.)
+        if custom_filters and op in custom_filters:
+            clause = custom_filters[op](model_cls, value)
+            if clause is not None:
+                filters.append(clause)
+            continue
+
+        # 2. Relationship filters: rel_m_m and rel_o_m
+        #    RISON passes IDs as strings (e.g. value:'1').  asyncpg is
+        #    strict about types, so we must cast to int for integer PKs.
+        if op == "rel_m_m" and col_name in valid_rels:
+            rel = valid_rels[col_name]
+            rel_model = rel.mapper.class_
+            typed_value = _cast_pk(value)
+            rel_attr = getattr(model_cls, col_name)
+            filters.append(rel_attr.any(rel_model.id == typed_value))
+            continue
+
+        if op == "rel_o_m" and col_name in valid_rels:
+            # For many-to-one relationships, filter by the FK column directly
+            typed_value = _cast_pk(value)
+            fk_col_name = f"{col_name}_fk"
+            if hasattr(model_cls, fk_col_name):
+                filters.append(getattr(model_cls, fk_col_name) == typed_value)
+            else:
+                # Fallback: try .has() for scalar relationships
+                rel = valid_rels[col_name]
+                rel_model = rel.mapper.class_
+                rel_attr = getattr(model_cls, col_name)
+                filters.append(rel_attr.has(rel_model.id == typed_value))
+            continue
+
+        # 3. Simple column filters
         if col_name not in valid_columns:
             continue
         col_attr = getattr(model_cls, col_name)
@@ -190,7 +261,7 @@ def extract_ids(rison_params: list[int] | dict[str, Any] | None) -> list[int]:
     return ids
 
 
-def extract_ids_required(rison_params: dict[str, Any] | None) -> list[int]:
+def extract_ids_required(rison_params: list[int] | dict[str, Any] | None) -> list[int]:
     """Extract IDs from Rison params, raising SupersetValidationException if empty."""
     ids = extract_ids(rison_params)
     if not ids:
@@ -283,10 +354,29 @@ def _serialize_item(item: Any, columns: list[str]) -> dict[str, Any]:
     return result
 
 
+def _prettify_column(name: str) -> str:
+    """Convert a column name to a human-readable label.
+
+    Matches Flask-AppBuilder's ``_prettify_column`` logic:
+    ``cache_timeout`` → ``Cache Timeout``,
+    ``changed_by.first_name`` → ``Changed By First Name``.
+    """
+    return (
+        name.replace(".", " ")
+        .replace("_", " ")
+        .title()
+    )
+
+
 def serialize_list_response(
     items: list[Any],
     total: int,
     columns: list[str],
+    *,
+    list_title: str = "",
+    order_columns: list[str] | None = None,
+    label_columns: dict[str, str] | None = None,
+    description_columns: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Serialize a list of models into ApiListResponse-compatible dict.
 
@@ -300,11 +390,29 @@ def serialize_list_response(
       processing or JSON serialization
     """
     result = [_serialize_item(item, columns) for item in (items or [])]
+    ids: list[Any] = []
     for row in result:
         # uuid → string
         if "uuid" in row and row["uuid"] is not None:
             row["uuid"] = str(row["uuid"])
-    return {"result": result, "count": total}
+        if "id" in row:
+            ids.append(row["id"])
+
+    # Auto-generate label_columns if not provided
+    if label_columns is None:
+        label_columns = {col: _prettify_column(col) for col in columns}
+
+    response: dict[str, Any] = {
+        "count": total,
+        "description_columns": description_columns or {},
+        "ids": ids,
+        "label_columns": label_columns,
+        "list_title": list_title,
+        "result": result,
+    }
+    if order_columns is not None:
+        response["order_columns"] = order_columns
+    return response
 
 
 async def get_info_payload(
@@ -360,6 +468,13 @@ async def get_info_payload(
     }
 
 
+_EXTRA_FIELDS_REL: dict[str, list[str]] = {
+    "owners": ["email", "active"],
+    "created_by": ["email", "active"],
+    "changed_by": ["email", "active"],
+}
+
+
 async def get_related_payload(  # noqa: C901
     dao: Any,
     column_name: str,
@@ -412,21 +527,32 @@ async def get_related_payload(  # noqa: C901
 
         # Apply text filter if provided
         if filter_value:
-            # Try common name columns
-            for name_col in (
-                "name",
-                "username",
-                "database_name",
-                "table_name",
-                "label",
-            ):
-                if hasattr(rel_model, name_col):
-                    stmt = stmt.where(
-                        getattr(rel_model, name_col).ilike(
-                            f"%{_escape_like(filter_value)}%"
+            from sqlalchemy import or_
+
+            like_value = f"%{_escape_like(filter_value)}%"
+
+            # For User-like models (with first_name + last_name), apply
+            # combined name search matching FilterRelatedOwners behavior
+            if hasattr(rel_model, "first_name") and hasattr(rel_model, "last_name"):
+                combined = rel_model.first_name + " " + rel_model.last_name
+                or_clauses = [combined.ilike(like_value)]
+                if hasattr(rel_model, "username"):
+                    or_clauses.append(rel_model.username.ilike(like_value))
+                stmt = stmt.where(or_(*or_clauses))
+            else:
+                # Try common name columns for non-User models
+                for name_col in (
+                    "name",
+                    "username",
+                    "database_name",
+                    "table_name",
+                    "label",
+                ):
+                    if hasattr(rel_model, name_col):
+                        stmt = stmt.where(
+                            getattr(rel_model, name_col).ilike(like_value)
                         )
-                    )
-                    break
+                        break
 
         total = await dao.session.scalar(
             sa_select(func.count()).select_from(stmt.subquery())
@@ -452,15 +578,22 @@ async def get_related_payload(  # noqa: C901
                 extra_count = len(items) - original_count
                 total = (total or 0) + extra_count
 
+        extra_fields = _EXTRA_FIELDS_REL.get(column_name, [])
+
+        def _build_item(item: Any) -> dict[str, Any]:
+            entry: dict[str, Any] = {
+                "value": item.id,
+                "text": str(item),
+            }
+            if extra_fields:
+                entry["extra"] = {
+                    field: getattr(item, field, None) for field in extra_fields
+                }
+            return entry
+
         return {
             "count": total or 0,
-            "result": [
-                {
-                    "value": item.id,
-                    "text": str(item),
-                }
-                for item in items
-            ],
+            "result": [_build_item(item) for item in items],
         }
     except (SQLAlchemyError, AttributeError, ValueError):
         logger.warning("Failed to resolve related '%s'", column_name, exc_info=True)

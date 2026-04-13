@@ -42,7 +42,7 @@ import geohash
 import numpy as np
 import pandas as pd
 import polyline
-from dateutil import relativedelta as rdelta  # type: ignore[import-untyped]
+from dateutil import relativedelta as rdelta
 from geopy.point import Point
 from pandas.tseries.frequencies import to_offset
 

@@ -72,7 +72,8 @@ class RLSController(Controller):
         total = await dao.count()
         event_logger.log("rls.list")
         return serialize_list_response(
-            items, total, ["id", "name", "filter_type", "clause", "group_key"]
+            items, total, ["id", "name", "filter_type", "clause", "group_key"],
+            list_title="List Row Level Security",
         )
 
     # ------------------------------------------------------------------
@@ -163,7 +164,7 @@ class RLSController(Controller):
     async def bulk_delete(
         self,
         dao: CRUDDAOProtocol,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
     ) -> dict[str, str]:
         """DELETE /api/v1/rowlevelsecurity/ — bulk delete RLS filters."""
         ids = extract_ids_required(rison_params)

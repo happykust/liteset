@@ -124,6 +124,24 @@ def provide_permission_view_dao(session: AsyncSession) -> Any:
     return AsyncPermissionViewDAO(session)
 
 
+def provide_permission_dao(session: AsyncSession) -> Any:
+    from superset.db.daos.security import AsyncPermissionDAO
+
+    return AsyncPermissionDAO(session)
+
+
+def provide_view_menu_dao(session: AsyncSession) -> Any:
+    from superset.db.daos.security import AsyncViewMenuDAO
+
+    return AsyncViewMenuDAO(session)
+
+
+def provide_register_user_dao(session: AsyncSession) -> Any:
+    from superset.db.daos.security import AsyncRegisterUserDAO
+
+    return AsyncRegisterUserDAO(session)
+
+
 def provide_css_template_dao(session: AsyncSession) -> Any:
     from superset.db.daos.css import AsyncCssTemplateDAO
 

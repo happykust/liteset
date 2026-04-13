@@ -131,7 +131,9 @@ class QueryController(Controller):
         )
         total = await dao.count(filters=base_filters or None)
         event_logger.log("query.list", user_id=current_user.id)
-        return serialize_list_response(queries, total, ["id", "status", "sql"])
+        return serialize_list_response(
+            queries, total, ["id", "status", "sql"], list_title="List Query",
+        )
 
     @get(
         "/_info",

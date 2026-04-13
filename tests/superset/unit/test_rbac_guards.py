@@ -13,7 +13,7 @@ class MockUser:
     username: str = "admin"
     is_authenticated: bool = True
     permissions: set = field(
-        default_factory=lambda: {"can_read_Chart", "can_write_Chart"}
+        default_factory=lambda: {("can_read", "Chart"), ("can_write", "Chart")}
     )
 
 
@@ -21,7 +21,7 @@ class MockUser:
 class MockLimitedUser:
     username: str = "viewer"
     is_authenticated: bool = True
-    permissions: set = field(default_factory=lambda: {"can_read_Chart"})
+    permissions: set = field(default_factory=lambda: {("can_read", "Chart")})
 
 
 @dataclass
@@ -39,17 +39,19 @@ def _make_mock_connection(user: MockUser | MockLimitedUser) -> MagicMock:
 
 def test_has_permissions_true():
     user = MockUser()
-    assert has_permissions(user, {"can_read_Chart"}) is True
+    assert has_permissions(user, {("can_read", "Chart")}) is True
 
 
 def test_has_permissions_false():
     user = MockLimitedUser()
-    assert has_permissions(user, {"can_write_Chart"}) is False
+    assert has_permissions(user, {("can_write", "Chart")}) is False
 
 
 def test_has_permissions_multiple():
     user = MockUser()
-    assert has_permissions(user, {"can_read_Chart", "can_write_Chart"}) is True
+    assert (
+        has_permissions(user, {("can_read", "Chart"), ("can_write", "Chart")}) is True
+    )
 
 
 def test_has_permissions_empty_required():
@@ -73,7 +75,7 @@ def test_require_permission_denies_unauthorized_user():
     guard = require_permission("can_write", "Chart")
     conn = _make_mock_connection(MockLimitedUser())
     handler = MagicMock()
-    with pytest.raises(PermissionDeniedException, match="can_write_Chart"):
+    with pytest.raises(PermissionDeniedException, match="can_write on Chart"):
         guard(conn, handler)
 
 

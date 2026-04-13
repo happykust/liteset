@@ -22,7 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 from litestar import Controller, delete, get, post, put
-from litestar.datastructures import UploadFile
+from litestar.datastructures import State, UploadFile
 from litestar.di import Provide
 from litestar.enums import RequestEncodingType
 from litestar.params import Body
@@ -43,6 +43,7 @@ from superset.controllers.base import (
     extract_ids_required,
     extract_pagination,
     get_info_payload,
+    get_related_payload,
     serialize_list_response,
 )
 from superset.events import event_logger
@@ -92,6 +93,7 @@ class ThemeController(Controller):
                 "description",
                 "is_system_default",
             ],
+            list_title="List Theme",
         )
 
     # ------------------------------------------------------------------
@@ -268,7 +270,7 @@ class ThemeController(Controller):
     async def bulk_delete(
         self,
         dao: CRUDDAOProtocol,
-        rison_params: dict[str, Any] | None,
+        rison_params: list[int] | dict[str, Any] | None,
         current_user: UserProtocol,
     ) -> dict[str, str]:
         """DELETE /api/v1/theme/?q=(ids:!(...)) -- bulk delete themes."""
@@ -439,4 +441,100 @@ class ThemeController(Controller):
             dao=dao,
             model_name="Theme",
             permissions=["can_read", "can_write"],
+        )
+
+    # ------------------------------------------------------------------
+    # GET /related/{column_name} — related values for dropdowns
+    # ------------------------------------------------------------------
+    @get(
+        "/related/{column_name:str}",
+        guards=[require_permission("can_read", "Theme")],
+    )
+    async def related(
+        self,
+        column_name: str,
+        dao: CRUDDAOProtocol,
+        rison_params: dict[str, Any] | None,
+        state: State,
+        security_manager: Any,
+    ) -> dict[str, Any]:
+        """GET /api/v1/theme/related/{column_name} — related values.
+
+        Returns distinct values for a relationship column (e.g. created_by,
+        changed_by) for use in select dropdown filters.
+
+        Ported from superset_old/themes/api.py ``ThemeRestApi`` which
+        included ``RouteMethod.RELATED`` with
+        ``allowed_rel_fields = {"created_by", "changed_by"}``.
+
+        The original FAB ``related`` method returns 404 when column_name
+        is not in ``allowed_rel_fields``. The original also applies:
+        - ``related_field_filters``: combined first_name + last_name search
+          via ``FilterRelatedOwners`` on ``changed_by``
+        - ``base_related_field_filters``: excludes users in
+          ``EXCLUDE_USERS_FROM_LISTS`` via ``BaseFilterRelatedUsers``
+        - ``EXTRA_RELATED_QUERY_FILTERS["user"]`` hook for additional filtering
+        """
+        allowed_rel_fields = frozenset({"created_by", "changed_by"})
+
+        # FAB returns 404 when the column is not in allowed_rel_fields
+        if column_name not in allowed_rel_fields:
+            raise ObjectNotFoundError("related", column_name)
+
+        # Build base_filters matching the original BaseFilterRelatedUsers
+        # (superset_old/views/filters.py lines 72-87):
+        # 1. Apply EXTRA_RELATED_QUERY_FILTERS["user"] hook
+        # 2. If EXCLUDE_USERS_FROM_LISTS is None, fall back to
+        #    security_manager.get_exclude_users_from_lists()
+        # 3. Exclude matched usernames
+        base_filters: list[Any] = []
+        try:
+            from superset.models.security import User
+
+            settings = getattr(state, "settings", None)
+
+            # Step 1: Apply EXTRA_RELATED_QUERY_FILTERS["user"] hook
+            extra_related_filters: dict[str, Any] = (
+                getattr(settings, "extra_related_query_filters", {}) if settings else {}
+            )
+            user_extra_filter = extra_related_filters.get("user")
+            if callable(user_extra_filter):
+                # The hook is a callable that receives and returns a query;
+                # we store it for get_related_payload to apply as a stmt filter.
+                # Since our get_related_payload applies base_filters as WHERE
+                # clauses, and the original hook transforms a query, we need
+                # to capture the filter clause. For simple callable filters
+                # that return a clause, we pass it through.
+                result = user_extra_filter(None)
+                if result is not None:
+                    base_filters.append(result)
+
+            # Step 2: Determine exclude_users list with fallback
+            # Original: EXCLUDE_USERS_FROM_LISTS is None -> call
+            # security_manager.get_exclude_users_from_lists()
+            exclude_users: list[str] | None = (
+                getattr(settings, "exclude_users_from_lists", None)
+                if settings
+                else None
+            )
+            if exclude_users is None:
+                # Fallback: security_manager.get_exclude_users_from_lists()
+                get_exclude = getattr(
+                    security_manager, "get_exclude_users_from_lists", None
+                )
+                if callable(get_exclude):
+                    exclude_users = get_exclude()
+
+            # Step 3: Exclude matched usernames
+            if exclude_users:
+                base_filters.append(User.username.not_in(exclude_users))
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+        return await get_related_payload(
+            dao=dao,
+            column_name=column_name,
+            rison_params=rison_params,
+            allowed_fields=allowed_rel_fields,
+            base_filters=base_filters if base_filters else None,
         )

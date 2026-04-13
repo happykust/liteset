@@ -71,6 +71,7 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                     object_type=obj_type,
                 )
                 self.session.add(tagged)
+        await self.session.flush()
 
     async def _find_tagged_object(
         self,
@@ -111,6 +112,7 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
             TaggedObject.object_id == object_id,
         )
         await self.session.execute(stmt)
+        await self.session.flush()
 
     async def delete_tags(self, tag_names: list[str]) -> None:
         """Delete tags and their tagged objects by names."""

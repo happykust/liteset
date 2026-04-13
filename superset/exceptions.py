@@ -204,12 +204,25 @@ class SupersetSecurityException(SupersetException):
 
     def __init__(
         self,
+        error: Any = None,
         message: str = "",
         payload: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
+        from superset.errors import SupersetError as _SupersetError
+
+        self.error: _SupersetError | None = None
         self.payload = payload
-        super().__init__(message=message or self.__class__.message, **kwargs)
+
+        if isinstance(error, _SupersetError):
+            self.error = error
+            super().__init__(
+                message=error.message or self.__class__.message, **kwargs
+            )
+        else:
+            super().__init__(
+                message=message or self.__class__.message, **kwargs
+            )
 
 
 class SupersetVizException(SupersetErrorsException):
@@ -568,9 +581,55 @@ class DeleteFailedError(CommandException):
     message = "Delete failed"
 
 
+class DatasetNotFoundError(CommandException):
+    status_code = 404
+    message = "Dataset does not exist"
+
+
 class ImportFailedError(CommandException):
     status_code = 500
     message = "Import failed"
+
+
+# ======================================================================
+# Database command exceptions (ported 1:1 from
+# superset_old/commands/database/exceptions.py)
+# ======================================================================
+
+
+class DatabaseCreateFailedError(CreateFailedError):
+    message = "Database could not be created."
+
+
+class DatabaseUpdateFailedError(UpdateFailedError):
+    message = "Database could not be updated."
+
+
+class DatabaseConnectionFailedError(  # pylint: disable=too-many-ancestors
+    DatabaseCreateFailedError,
+    DatabaseUpdateFailedError,
+):
+    message = "Connection failed, please check your connection settings"
+
+
+class DatabaseTestConnectionFailedError(SupersetErrorsException):
+    """Raised when a database connection test fails.
+
+    Ported from superset_old/commands/database/exceptions.py:162-164.
+    Original has ``status = 422``.
+    """
+
+    status_code = 422
+    message = "Connection failed, please check your connection settings"
+
+
+class DatabaseTestConnectionDriverError(CommandInvalidError):
+    message = "Could not load database driver"
+
+
+class DatabaseTestConnectionUnexpectedError(SupersetErrorsException):
+    status_code = 422
+    message = "Unexpected error occurred, please check your logs for details"
 
 
 # ======================================================================
@@ -586,6 +645,18 @@ def superset_exception_handler(
     Includes both ``message`` (FAB compat) and ``detail`` (Litestar compat)
     keys in the response body for backward compatibility.
     """
+    # SupersetErrorsException carries a *list* of SIP-40 errors —
+    # return them as-is instead of wrapping in a single-element list.
+    if isinstance(exc, SupersetErrorsException) and exc.errors:
+        return Response(
+            content={
+                "errors": exc.errors,
+                "message": exc.message,
+                "detail": exc.message,
+            },
+            status_code=exc.status_code,
+            media_type=MediaType.JSON,
+        )
     error_detail = exc.to_sip40()
     return Response(
         content={

@@ -31,15 +31,26 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
-from typing import Any, TYPE_CHECKING
+from typing import Any, cast, TYPE_CHECKING
 from urllib import parse
 
 from sqlalchemy import types
 from sqlalchemy.engine.url import URL
+from urllib3.exceptions import NewConnectionError
 
-from superset.db_engine_specs.base import BaseEngineSpec, ColumnTypeMapping
+from superset.databases.utils import make_url_safe
+from superset.db_engine_specs.base import (
+    BaseEngineSpec,
+    BasicParametersMixin,
+    BasicParametersType,
+    BasicPropertiesType,
+    ColumnTypeMapping,
+)
+from superset.db_engine_specs.exceptions import SupersetDBAPIDatabaseError
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.typing import GenericDataType
 from superset.utils.hashing import md5_sha_from_str
+from superset.utils.network import is_hostname_valid, is_port_open
 
 if TYPE_CHECKING:
     from superset.models.core import Database
@@ -145,6 +156,19 @@ class ClickHouseEngineSpec(ClickHouseBaseEngineSpec):
     supports_file_upload = False
 
     @classmethod
+    def get_dbapi_exception_mapping(cls) -> dict[type[Exception], type[Exception]]:
+        return {NewConnectionError: SupersetDBAPIDatabaseError}
+
+    @classmethod
+    def get_dbapi_mapped_exception(cls, exception: Exception) -> Exception:
+        new_exception = cls.get_dbapi_exception_mapping().get(type(exception))
+        if new_exception == SupersetDBAPIDatabaseError:
+            return SupersetDBAPIDatabaseError("Connection failed")
+        if not new_exception:
+            return exception
+        return new_exception(str(exception))
+
+    @classmethod
     def get_function_names(cls, database: Database) -> list[str]:
         """Get a list of function names from system.functions.
 
@@ -180,7 +204,47 @@ class ClickHouseEngineSpec(ClickHouseBaseEngineSpec):
         return []
 
 
-class ClickHouseConnectEngineSpec(ClickHouseEngineSpec):
+# ---------------------------------------------------------------------------
+# clickhouse-connect module-level setup (ported from original).
+#
+# Deviation from original: the original reads
+# ``app.config.get("VERSION_STRING", "dev")`` from Flask's ``current_app``.
+# In liteset we resolve it via ``SupersetSettings`` instead; the semantics
+# are identical.  If ``clickhouse-connect`` is not installed the entire
+# block is a no-op, matching the original.
+# ---------------------------------------------------------------------------
+try:
+    from clickhouse_connect.common import set_setting
+    from clickhouse_connect.datatypes.format import set_default_formats
+
+    # override default formats for compatibility
+    set_default_formats(
+        "FixedString",
+        "string",
+        "IPv*",
+        "string",
+        "UInt64",
+        "signed",
+        "UUID",
+        "string",
+        "*Int256",
+        "string",
+        "*Int128",
+        "string",
+    )
+    try:
+        from superset.config import SupersetSettings
+
+        _settings = SupersetSettings()  # type: ignore[call-arg]
+        _version_string = getattr(_settings, "version_string", "") or "dev"
+    except Exception:  # noqa: BLE001
+        _version_string = "dev"
+    set_setting("product_name", f"superset/{_version_string}")
+except ImportError:  # ClickHouse Connect not installed, do nothing
+    pass
+
+
+class ClickHouseConnectEngineSpec(BasicParametersMixin, ClickHouseEngineSpec):
     """Engine spec for clickhouse-connect connector."""
 
     engine = "clickhousedb"
@@ -197,7 +261,23 @@ class ClickHouseConnectEngineSpec(ClickHouseEngineSpec):
     supports_dynamic_schema = True
 
     @classmethod
+    def get_dbapi_exception_mapping(cls) -> dict[type[Exception], type[Exception]]:
+        return {}
+
+    @classmethod
+    def get_dbapi_mapped_exception(cls, exception: Exception) -> Exception:
+        new_exception = cls.get_dbapi_exception_mapping().get(type(exception))
+        if new_exception == SupersetDBAPIDatabaseError:
+            return SupersetDBAPIDatabaseError("Connection failed")
+        if not new_exception:
+            return exception
+        return new_exception(str(exception))
+
+    @classmethod
     def get_function_names(cls, database: Database) -> list[str]:
+        # pylint: disable=import-outside-toplevel, import-error
+        from clickhouse_connect.driver.exceptions import ClickHouseError
+
         if cls._function_names:
             return cls._function_names
         try:
@@ -207,7 +287,7 @@ class ClickHouseConnectEngineSpec(ClickHouseEngineSpec):
             )["name"].tolist()
             cls._function_names = names
             return names
-        except Exception:  # noqa: BLE001
+        except ClickHouseError:
             logger.exception("Error retrieving system.functions")
             return []
 
@@ -215,6 +295,107 @@ class ClickHouseConnectEngineSpec(ClickHouseEngineSpec):
     def get_datatype(cls, type_code: str) -> str:
         # keep it lowercase, as ClickHouse types aren't typical SHOUTCASE ANSI SQL
         return type_code
+
+    @classmethod
+    def build_sqlalchemy_uri(
+        cls,
+        parameters: BasicParametersType,
+        encrypted_extra: dict[str, str] | None = None,
+    ) -> str:
+        url_params = parameters.copy()
+        if url_params.get("encryption"):
+            query = parameters.get("query", {}).copy()
+            query.update(cls.encryption_parameters)
+            url_params["query"] = query
+        if not url_params.get("database"):
+            url_params["database"] = "__default__"
+
+        return str(
+            URL.create(
+                f"{cls.engine}+{cls.default_driver}",
+                username=url_params.get("username"),
+                password=url_params.get("password"),
+                host=url_params.get("host"),
+                port=url_params.get("port"),
+                database=url_params.get("database"),
+                query=url_params.get("query"),
+            )
+        )
+
+    @classmethod
+    def get_parameters_from_uri(
+        cls, uri: str, encrypted_extra: dict[str, Any] | None = None
+    ) -> BasicParametersType:
+        url = make_url_safe(uri)
+        query = dict(url.query)
+        if "secure" in query:
+            encryption = query.get("secure") == "true"
+            query.pop("secure")
+        else:
+            encryption = False
+        return BasicParametersType(
+            username=url.username,
+            password=url.password,
+            host=url.host,
+            port=url.port,
+            database="" if url.database == "__default__" else cast(str, url.database),
+            query=query,
+            encryption=encryption,
+        )
+
+    @classmethod
+    def validate_parameters(
+        cls, properties: BasicPropertiesType
+    ) -> list[SupersetError]:
+        # pylint: disable=import-outside-toplevel, import-error
+        from clickhouse_connect.driver import default_port
+
+        parameters = properties.get("parameters", {})
+        host = parameters.get("host", None)
+        if not host:
+            return [
+                SupersetError(
+                    "Hostname is required",
+                    SupersetErrorType.CONNECTION_MISSING_PARAMETERS_ERROR,
+                    ErrorLevel.WARNING,
+                    {"missing": ["host"]},
+                )
+            ]
+        if not is_hostname_valid(host):
+            return [
+                SupersetError(
+                    "The hostname provided can't be resolved.",
+                    SupersetErrorType.CONNECTION_INVALID_HOSTNAME_ERROR,
+                    ErrorLevel.ERROR,
+                    {"invalid": ["host"]},
+                )
+            ]
+        port = parameters.get("port")
+        if port is None:
+            port = default_port("http", parameters.get("encryption", False))
+        try:
+            port = int(port)
+        except (ValueError, TypeError):
+            port = -1
+        if port <= 0 or port >= 65535:
+            return [
+                SupersetError(
+                    "Port must be a valid integer between 0 and 65535 (inclusive).",
+                    SupersetErrorType.CONNECTION_INVALID_PORT_ERROR,
+                    ErrorLevel.ERROR,
+                    {"invalid": ["port"]},
+                )
+            ]
+        if not is_port_open(host, port):
+            return [
+                SupersetError(
+                    "The port is closed.",
+                    SupersetErrorType.CONNECTION_PORT_CLOSED_ERROR,
+                    ErrorLevel.ERROR,
+                    {"invalid": ["port"]},
+                )
+            ]
+        return []
 
     @staticmethod
     def _mutate_label(label: str) -> str:

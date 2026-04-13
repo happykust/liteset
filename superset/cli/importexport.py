@@ -32,7 +32,7 @@ from typing import Optional
 from zipfile import is_zipfile, ZipFile
 
 import click
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 logger = logging.getLogger(__name__)
 

@@ -99,6 +99,56 @@ class CreateDatabaseCommand(AsyncBaseCommand["Database"]):
     async def validate(self) -> None:
         if not self._data.get("database_name"):
             raise CommandInvalidError("database_name is required")
+
+        # Build sqlalchemy_uri from parameters when using dynamic_form,
+        # matching original Marshmallow pre_load at
+        # superset_old/databases/schemas.py:304-363.
+        #
+        # Like the original, we MUST pop `parameters`, `engine`, and
+        # `driver` from data — they are not columns on the Database model
+        # and `setattr`/`Model(**data)` will fail on them (e.g. `driver`
+        # is a read-only @property on Database).
+        parameters = self._data.pop("parameters", {}) or {}
+        engine = (
+            self._data.pop("engine", None)
+            or (parameters.pop("engine", None) if isinstance(parameters, dict) else None)
+            or self._data.pop("backend", None)
+        )
+        driver = self._data.pop("driver", None)
+
+        if (
+            not self._data.get("sqlalchemy_uri")
+            and self._data.get("configuration_method") == "dynamic_form"
+        ):
+            if not engine:
+                raise CommandInvalidError(
+                    "An engine must be specified when passing individual "
+                    "parameters to a database."
+                )
+            from superset.db_engine_specs import get_engine_spec
+
+            spec_class = get_engine_spec(engine, driver)
+            if not hasattr(spec_class, "build_sqlalchemy_uri") or not hasattr(
+                spec_class, "parameters_schema"
+            ):
+                raise CommandInvalidError(
+                    f'Engine spec "{engine}" does not support being '
+                    "configured via individual parameters."
+                )
+
+            import json as _json
+
+            encrypted_extra_str = self._data.get("masked_encrypted_extra") or "{}"
+            try:
+                encrypted_extra = _json.loads(encrypted_extra_str)
+            except (ValueError, TypeError):
+                encrypted_extra = {}
+
+            self._data["sqlalchemy_uri"] = spec_class.build_sqlalchemy_uri(
+                parameters,
+                encrypted_extra,
+            )
+
         if not self._data.get("sqlalchemy_uri"):
             raise CommandInvalidError("sqlalchemy_uri is required")
 
@@ -127,32 +177,71 @@ class CreateDatabaseCommand(AsyncBaseCommand["Database"]):
             )
 
     async def run(self) -> "Database":
+        from superset.exceptions import (
+            DatabaseConnectionFailedError,
+            SupersetErrorsException,
+        )
+
+        # -------------------------------------------------------------
+        # Test connection BEFORE creating the database record.
+        #
+        # Matches original CreateDatabaseCommand.run() at
+        # superset_old/commands/database/create.py:58-86 — the test
+        # runs BEFORE self._create_database() so that a failed
+        # connection aborts creation entirely.
+        #
+        # - OAuth2RedirectError is allowed (creation proceeds anyway)
+        # - SupersetErrorsException is re-raised with its original
+        #   SIP-40 error payload so the frontend can show actionable
+        #   CONNECTION_* errors
+        # - Any other exception is wrapped in DatabaseConnectionFailedError
+        # -------------------------------------------------------------
+        try:
+            test_cmd = DatabaseTestConnectionCommand(
+                dao=self._dao,
+                data=dict(self._data),
+            )
+            await test_cmd.validate()
+            await test_cmd.run()
+        except SupersetErrorsException:
+            # Re-raise so the engine-spec-extracted errors reach the client
+            raise
+        except Exception as ex:
+            # OAuth2 not yet implemented in liteset; treat every other
+            # exception as a hard connection failure.
+            raise DatabaseConnectionFailedError() from ex
+
+        # -------------------------------------------------------------
+        # Connection test succeeded — proceed to create the record.
+        # -------------------------------------------------------------
         data = dict(self._data)
+
+        # Rename masked_encrypted_extra → encrypted_extra on create:
+        # when creating a new database we don't need to unmask.
+        # Matches original _create_database at
+        # superset_old/commands/database/create.py:155-163.
+        if "masked_encrypted_extra" in data:
+            data["encrypted_extra"] = data.pop("masked_encrypted_extra", "{}")
+
+        # Filter to only fields the Database model actually accepts
+        # (matches Marshmallow `unknown = EXCLUDE` in DatabasePostSchema).
+        # The frontend POST body includes fields like engine_information,
+        # sqlalchemy_uri_placeholder, ssh_tunnel, etc. that must not be
+        # passed to Database().
+        from sqlalchemy.inspection import inspect as sa_inspect
+
+        from superset.models.core import Database
+
+        allowed_cols = {c.key for c in sa_inspect(Database).mapper.column_attrs}
+        # FK override fields we set below are also allowed
+        allowed_cols |= {"created_by_fk", "changed_by_fk"}
+        data = {k: v for k, v in data.items() if k in allowed_cols}
 
         if self._user_id is not None:
             data["created_by_fk"] = self._user_id
             data["changed_by_fk"] = self._user_id
         db = await self._dao.create(data)
         await self._dao.session.flush()
-
-        # Best-effort connection test after creation.  We don't block
-        # creation on failure because the database may require OAuth2,
-        # VPN, or other setup that isn't available at creation time.
-        try:
-            test_cmd = DatabaseTestConnectionCommand(
-                dao=self._dao,
-                data={"sqlalchemy_uri": data.get("sqlalchemy_uri", "")},
-            )
-            await test_cmd.validate()
-            await test_cmd.run()
-        except Exception:
-            logger.warning(
-                "Connection test failed for new database '%s'; "
-                "creation will proceed anyway",
-                data.get("database_name", "<unknown>"),
-                exc_info=True,
-            )
-
         return db
 
 
@@ -284,10 +373,15 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
         if database_name:
             self._model = await self._dao.get_database_by_name(database_name)
 
-    async def run(self) -> dict[str, Any]:
+    async def run(self) -> dict[str, Any]:  # noqa: C901
         from sqlalchemy.exc import DBAPIError, NoSuchModuleError
 
         from superset.databases.utils import make_url_safe
+        from superset.exceptions import (
+            DatabaseTestConnectionDriverError,
+            DatabaseTestConnectionUnexpectedError,
+            SupersetErrorsException,
+        )
         from superset.utils.database import get_async_connection
 
         uri = self._data.get("sqlalchemy_uri", "")
@@ -299,8 +393,17 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
             if uri == safe_uri:
                 uri = str(self._model.sqlalchemy_uri)
 
-        # Parse URL to validate it is well-formed (raises on invalid URI)
-        make_url_safe(uri)
+        # Parse URL into pieces for error context (hostname, port, etc.).
+        # Used by engine_spec.extract_errors() to produce SIP-40 error
+        # responses.  Matches superset_old/commands/database/test_connection.py:79-89
+        url = make_url_safe(uri)
+        context = {
+            "hostname": url.host,
+            "password": url.password,
+            "port": url.port,
+            "username": url.username,
+            "database": url.database,
+        }
 
         # Build an ephemeral Database model for the connection test
         database = self._dao.build_db_for_connection_test(
@@ -321,12 +424,52 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
             return {"message": "OK"}
 
         except (NoSuchModuleError, ModuleNotFoundError) as ex:
-            raise CommandInvalidError(f"Could not load database driver: {ex}") from ex
-        except DBAPIError as ex:
-            raise CommandInvalidError(f"Connection failed: {ex}") from ex
+            raise DatabaseTestConnectionDriverError(
+                message=(
+                    f"Could not load database driver: "
+                    f"{database.db_engine_spec.__name__}"
+                ),
+            ) from ex
+        except SupersetErrorsException:
+            raise
         except Exception as ex:
+            # Delegate to engine spec for structured SIP-40 errors
+            # (CONNECTION_INVALID_HOSTNAME_ERROR, CONNECTION_ACCESS_DENIED_ERROR,
+            # etc.).  Matches test_connection.py:184-193 — except the
+            # original catches DBAPIError specifically because sync
+            # SQLAlchemy wraps driver errors.  In async with asyncpg,
+            # exceptions raised during pool checkout (e.g.
+            # InvalidPasswordError) are NOT wrapped in DBAPIError, so
+            # we catch Exception and let extract_errors pattern-match
+            # the message.
+            #
+            # NOTE: liteset's extract_errors returns list[dict] while
+            # the original returns list[SupersetError].  We pass the
+            # dicts through as-is — they are already SIP-40 shaped.
+            errors = database.db_engine_spec.extract_errors(ex, context)
+            if errors:
+                raise SupersetErrorsException(
+                    errors=errors,
+                    status_code=400,
+                    message=errors[0].get("message", str(ex)),
+                ) from ex
+            # No custom_errors pattern matched — treat as unexpected
             logger.exception("Unexpected error during connection test")
-            raise CommandInvalidError(f"Connection failed: {ex}") from ex
+            raise DatabaseTestConnectionUnexpectedError(
+                errors=[
+                    {
+                        "message": (
+                            "Unexpected error occurred, please check your "
+                            "logs for details"
+                        ),
+                        "error_type": "GENERIC_DB_ENGINE_ERROR",
+                        "level": "error",
+                        "extra": {},
+                    }
+                ],
+                status_code=422,
+                message=str(ex),
+            ) from ex
 
 
 class ValidateSQLCommand(AsyncBaseCommand[dict[str, Any]]):
@@ -483,16 +626,25 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
 
         # Check that the engine supports parameter-based configuration
         if not hasattr(spec_class, "parameters_schema"):
-            return {
-                "errors": [
+            from superset.exceptions import SupersetErrorsException
+
+            raise SupersetErrorsException(
+                errors=[
                     {
                         "message": (
                             f'Engine "{engine}" cannot be configured '
                             f"through parameters."
                         ),
+                        "error_type": "GENERIC_DB_ENGINE_ERROR",
+                        "level": "error",
+                        "extra": {},
                     }
-                ]
-            }
+                ],
+                status_code=422,
+                message=(
+                    f'Engine "{engine}" cannot be configured through parameters.'
+                ),
+            )
 
         errors: list[dict[str, Any]] = []
 
@@ -504,8 +656,19 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
                     if isinstance(err, dict):
                         errors.append(err)
                     else:
-                        # SupersetError objects
-                        errors.append({"message": str(err)})
+                        # SupersetError objects — convert to SIP-40 dict
+                        errors.append(
+                            {
+                                "message": getattr(err, "message", str(err)),
+                                "error_type": getattr(
+                                    err,
+                                    "error_type",
+                                    "GENERIC_DB_ENGINE_ERROR",
+                                ),
+                                "level": getattr(err, "level", "error"),
+                                "extra": getattr(err, "extra", {}),
+                            }
+                        )
         except NotImplementedError:
             # Engine doesn't implement custom validation — fall through
             # to basic checks below.
@@ -514,7 +677,13 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
             errors.append({"message": str(ex)})
 
         if errors:
-            return {"errors": errors}
+            from superset.exceptions import SupersetErrorsException
+
+            raise SupersetErrorsException(
+                errors=errors,
+                status_code=422,
+                message=errors[0].get("message", "Validation error"),
+            )
 
         # Basic required-field checks for parameter-based configs
         parameters = self._data.get("parameters", {})
@@ -528,7 +697,16 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
                         }
                     )
 
-        return {"errors": errors}
+        if errors:
+            from superset.exceptions import SupersetErrorsException
+
+            raise SupersetErrorsException(
+                errors=errors,
+                status_code=422,
+                message=errors[0].get("message", "Validation error"),
+            )
+
+        return {"message": "OK"}
 
 
 class ExportDatabasesCommand(AsyncExportModelsCommand):

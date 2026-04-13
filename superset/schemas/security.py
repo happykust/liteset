@@ -125,7 +125,47 @@ class GroupsSearchResponse(msgspec.Struct):
 
 
 # ---------------------------------------------------------------------------
-# PermissionView schemas
+# Permission schemas (ab_permission)
+# ---------------------------------------------------------------------------
+
+
+class PermissionResponse(msgspec.Struct):
+    """Single permission in list/show results (maps to ab_permission)."""
+
+    id: int
+    name: str
+
+
+class PermissionsSearchResponse(msgspec.Struct):
+    """Response for GET /api/v1/security/permissions/."""
+
+    result: list[PermissionResponse] = []
+    count: int = 0
+    ids: list[int] = []
+
+
+# ---------------------------------------------------------------------------
+# ViewMenu / Resource schemas (ab_view_menu)
+# ---------------------------------------------------------------------------
+
+
+class ViewMenuResponse(msgspec.Struct):
+    """Single view menu / resource in list/show results (maps to ab_view_menu)."""
+
+    id: int
+    name: str
+
+
+class ViewMenusSearchResponse(msgspec.Struct):
+    """Response for GET /api/v1/security/resources/."""
+
+    result: list[ViewMenuResponse] = []
+    count: int = 0
+    ids: list[int] = []
+
+
+# ---------------------------------------------------------------------------
+# PermissionView schemas (ab_permission_view)
 # ---------------------------------------------------------------------------
 
 
@@ -154,3 +194,4 @@ class PermissionViewsSearchResponse(msgspec.Struct):
 
     result: list[PermissionViewResponse] = []
     count: int = 0
+    ids: list[int] = []

@@ -25,9 +25,9 @@ from superset.commands.base import AsyncBaseCommand
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 
 try:
-    from croniter import croniter  # type: ignore[import-untyped]
+    from croniter import croniter
 except ImportError:
-    croniter = None
+    croniter = None  # type: ignore[assignment, misc]
 
 logger = logging.getLogger(__name__)
 

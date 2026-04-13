@@ -25,38 +25,40 @@ from superset.security.guest import GuestUser
 
 def test_cached_user_has_permissions():
     user = CachedUser(
-        id=1, username="admin", permissions={"can_read_Chart", "can_write_Chart"}
+        id=1,
+        username="admin",
+        permissions={("can_read", "Chart"), ("can_write", "Chart")},
     )
-    assert has_permissions(user, {"can_read_Chart"})
+    assert has_permissions(user, {("can_read", "Chart")})
 
 
 def test_cached_user_without_permission_fails():
-    user = CachedUser(id=1, username="admin", permissions={"can_read_Chart"})
-    assert not has_permissions(user, {"can_write_Dashboard"})
+    user = CachedUser(id=1, username="admin", permissions={("can_read", "Chart")})
+    assert not has_permissions(user, {("can_write", "Dashboard")})
 
 
 def test_empty_permissions_denies_all():
     user = CachedUser(id=1, username="viewer", permissions=set())
-    assert not has_permissions(user, {"can_read_Chart"})
+    assert not has_permissions(user, {("can_read", "Chart")})
 
 
 def test_cached_user_default_permissions_empty():
     user = CachedUser(id=1, username="viewer")
     assert user.permissions == set()
-    assert not has_permissions(user, {"can_read_Chart"})
+    assert not has_permissions(user, {("can_read", "Chart")})
 
 
 def test_cached_user_from_dict_preserves_permissions():
     data = {
         "id": 1,
         "username": "admin",
-        "permissions": ["can_read_Chart", "can_write_Chart"],
+        "permissions": [["can_read", "Chart"], ["can_write", "Chart"]],
         "roles": [],
     }
     user = CachedUser.from_dict(data)
     assert user is not None
-    assert user.permissions == {"can_read_Chart", "can_write_Chart"}
-    assert has_permissions(user, {"can_read_Chart"})
+    assert user.permissions == {("can_read", "Chart"), ("can_write", "Chart")}
+    assert has_permissions(user, {("can_read", "Chart")})
 
 
 def test_cached_user_from_dict_missing_permissions():
@@ -73,9 +75,9 @@ def test_guest_user_dashboard_permissions():
         "rls_rules": [],
     }
     guest = GuestUser.from_token_payload(payload)
-    assert has_permissions(guest, {"can_read_Dashboard"})
-    assert has_permissions(guest, {"can_read_Chart"})
-    assert not has_permissions(guest, {"can_write_Dashboard"})
+    assert has_permissions(guest, {("can_read", "Dashboard")})
+    assert has_permissions(guest, {("can_read", "Chart")})
+    assert not has_permissions(guest, {("can_write", "Dashboard")})
 
 
 def test_guest_user_chart_permissions():
@@ -85,8 +87,8 @@ def test_guest_user_chart_permissions():
         "rls_rules": [],
     }
     guest = GuestUser.from_token_payload(payload)
-    assert has_permissions(guest, {"can_read_Chart"})
-    assert not has_permissions(guest, {"can_read_Dashboard"})
+    assert has_permissions(guest, {("can_read", "Chart")})
+    assert not has_permissions(guest, {("can_read", "Dashboard")})
 
 
 def test_guest_user_no_resources_no_permissions():
@@ -97,4 +99,4 @@ def test_guest_user_no_resources_no_permissions():
     }
     guest = GuestUser.from_token_payload(payload)
     assert guest.permissions == set()
-    assert not has_permissions(guest, {"can_read_Chart"})
+    assert not has_permissions(guest, {("can_read", "Chart")})
