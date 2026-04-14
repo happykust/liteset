@@ -59,6 +59,39 @@ _TIME_GRAIN_LABELS: dict[str | None, str] = {
 }
 
 
+def _column_type_generic(sql_type: str) -> int:
+    """Map a raw SQL column type string to a ``GenericDataType`` int.
+
+    Mirrors ``superset_old/connectors/sqla/models.py:TableColumn.type_generic``
+    which uses ``db_engine_spec.get_column_spec(type).generic_type``. We use a
+    simple substring mapping sufficient for Postgres/MySQL/SQLite — the exact
+    integer values come from :class:`superset.typing.GenericDataType`:
+    ``0 = NUMERIC``, ``1 = STRING``, ``2 = TEMPORAL``, ``3 = BOOLEAN``.
+    """
+    t = (sql_type or "").upper()
+    if "BOOL" in t:
+        return 3
+    if (
+        "TIMESTAMP" in t
+        or "DATETIME" in t
+        or "DATE" in t
+        or "TIME" in t
+    ):
+        return 2
+    if (
+        "INT" in t
+        or "NUMERIC" in t
+        or "DECIMAL" in t
+        or "FLOAT" in t
+        or "DOUBLE" in t
+        or "REAL" in t
+        or "BIGINT" in t
+        or "SMALLINT" in t
+    ):
+        return 0
+    return 1
+
+
 def _build_time_grain_sqla_choices(database: Any) -> list[list[Any]]:
     """Build the ``[(duration, label)]`` list for the time-grain control.
 
@@ -119,6 +152,7 @@ class ExploreController(Controller):
         message = ""
         slice_data: dict[str, Any] | None = None
         dataset_data: dict[str, Any] | None = None
+        chart: Any = None
 
         # 1a. Load form_data from permalink key (metadata DB)
         if permalink_key:
@@ -162,12 +196,94 @@ class ExploreController(Controller):
         if slice_id_raw:
             try:
                 slice_id = int(slice_id_raw)
-                chart = await chart_dao.find_by_id(slice_id)
+                # Eager-load relationships needed by both ``slice_data``
+                # (built here) and ``metadata`` (built further below) so
+                # we can fetch the chart exactly once.  ``slice.owners``
+                # on the payload is required by the frontend
+                # ``SaveModal.canOverwriteSlice`` check — without it
+                # ``slice.owners.includes(userId)`` is falsy, the
+                # overwrite radio is silently disabled, and tests like
+                # ``chart_list::should edit correctly`` and
+                # ``link.test::save as overwrite`` fail on
+                # ``cy.wait('@update')`` timeout because PUT
+                # /api/v1/chart/<id> is never triggered.
+                from sqlalchemy.orm import selectinload
+
+                from superset.models.slice import Slice
+
+                _eager_opts: list[Any] = [
+                    selectinload(Slice.owners),
+                    selectinload(Slice.created_by),  # type: ignore[attr-defined]
+                    selectinload(Slice.changed_by),  # type: ignore[attr-defined]
+                ]
+                # ``Slice.dashboards`` is created via ``backref`` from
+                # ``Dashboard.slices`` so it's only resolvable at
+                # runtime; use ``getattr`` to keep mypy quiet.
+                _dashboards_rel = getattr(Slice, "dashboards", None)
+                if _dashboards_rel is not None:
+                    _eager_opts.append(selectinload(_dashboards_rel))
+
+                chart = await chart_dao.find_by_id_with_options(
+                    slice_id,
+                    options=_eager_opts,
+                )
                 if chart is not None:
+                    from datetime import datetime, timezone
+
+                    import humanize
+
+                    owners_list = [
+                        int(o.id)
+                        for o in (getattr(chart, "owners", None) or [])
+                        if getattr(o, "id", None) is not None
+                    ]
+                    changed_on_dt = getattr(chart, "changed_on", None)
+                    changed_on_iso = (
+                        changed_on_dt.isoformat() if changed_on_dt else None
+                    )
+                    changed_on_humanized = ""
+                    if changed_on_dt:
+                        try:
+                            now = datetime.now(
+                                changed_on_dt.tzinfo or timezone.utc
+                            )
+                            if changed_on_dt.tzinfo is None:
+                                now = datetime.now()
+                            changed_on_humanized = humanize.naturaltime(
+                                now - changed_on_dt
+                            )
+                        except Exception:  # noqa: BLE001
+                            changed_on_humanized = ""
+                    desc = getattr(chart, "description", None) or ""
                     slice_data = {
                         "slice_id": chart.id,
                         "slice_name": getattr(chart, "slice_name", ""),
                         "viz_type": getattr(chart, "viz_type", ""),
+                        "owners": owners_list,
+                        "is_managed_externally": bool(
+                            getattr(chart, "is_managed_externally", False)
+                        ),
+                        "cache_timeout": getattr(chart, "cache_timeout", None),
+                        "certified_by": getattr(chart, "certified_by", None),
+                        "certification_details": getattr(
+                            chart, "certification_details", None
+                        ),
+                        "description": desc or None,
+                        "description_markeddown": (
+                            f"<p>{desc}</p>" if desc else ""
+                        ),
+                        "changed_on": changed_on_iso,
+                        "changed_on_humanized": changed_on_humanized,
+                        "modified": (
+                            f'<span class="no-wrap">{changed_on_humanized}</span>'
+                            if changed_on_humanized
+                            else ""
+                        ),
+                        "edit_url": f"/chart/edit/{chart.id}",
+                        "slice_url": (
+                            f"/explore/?slice_id={chart.id}"
+                            f"&form_data=%7B%22slice_id%22%3A%20{chart.id}%7D"
+                        ),
                     }
                     # Merge chart params into form_data (chart defaults as base).
                     # Mirrors original Slice.form_data property which always
@@ -260,6 +376,7 @@ class ExploreController(Controller):
                         selectinload(SqlaTable.database),
                         selectinload(SqlaTable.columns),
                         selectinload(SqlaTable.metrics),
+                        selectinload(SqlaTable.owners),
                     ],
                 )
                 if results:
@@ -269,34 +386,166 @@ class ExploreController(Controller):
                     dataset_data = {
                         "id": dataset.id,
                         "type": ds_type,
+                        "uid": f"{dataset.id}__{ds_type}",
                         "name": getattr(dataset, "table_name", "")
                         or getattr(dataset, "name", ""),
+                        "datasource_name": getattr(dataset, "table_name", ""),
+                        "table_name": getattr(dataset, "table_name", ""),
                         "database": {
                             "id": db_obj.id if db_obj else 0,
+                            "name": (
+                                getattr(db_obj, "database_name", "")
+                                if db_obj
+                                else ""
+                            ),
                             "backend": (
                                 getattr(db_obj, "backend", "") if db_obj else ""
                             ),
+                            "allows_subquery": (
+                                getattr(db_obj, "allows_subquery", True)
+                                if db_obj
+                                else True
+                            ),
+                            "allow_multi_catalog": (
+                                getattr(db_obj, "allow_multi_catalog", False)
+                                if db_obj
+                                else False
+                            ),
+                            "explore_database_id": (
+                                getattr(db_obj, "explore_database_id", 0)
+                                if db_obj
+                                else 0
+                            ),
                         },
                         "schema": getattr(dataset, "schema", None),
+                        "catalog": getattr(dataset, "catalog", None),
+                        "sql": getattr(dataset, "sql", None),
+                        "is_sqllab_view": getattr(
+                            dataset, "is_sqllab_view", False
+                        ),
+                        "description": getattr(dataset, "description", None),
+                        "default_endpoint": getattr(
+                            dataset, "default_endpoint", None
+                        ),
+                        "cache_timeout": getattr(dataset, "cache_timeout", None),
+                        "offset": getattr(dataset, "offset", 0),
+                        "fetch_values_predicate": getattr(
+                            dataset, "fetch_values_predicate", None
+                        ),
+                        "template_params": getattr(
+                            dataset, "template_params", None
+                        ),
+                        "normalize_columns": getattr(
+                            dataset, "normalize_columns", False
+                        ),
+                        "always_filter_main_dttm": getattr(
+                            dataset, "always_filter_main_dttm", False
+                        ),
+                        "is_managed_externally": getattr(
+                            dataset, "is_managed_externally", False
+                        ),
+                        "extra": getattr(dataset, "extra", None),
+                        "folders": getattr(dataset, "folders", None),
+                        "params": getattr(dataset, "params", None),
+                        "perm": getattr(dataset, "perm", None) or "",
+                        "edit_url": f"/tablemodelview/edit/{dataset.id}",
+                        "select_star": None,
+                        "health_check_message": None,
+                        "column_formats": {},
+                        "currency_formats": {},
+                        "filter_select": bool(
+                            getattr(dataset, "filter_select_enabled", True)
+                        ),
+                        "verbose_map": {
+                            "__timestamp": "Time",
+                            **{
+                                getattr(m, "metric_name", ""): (
+                                    getattr(m, "verbose_name", None)
+                                    or getattr(m, "metric_name", "")
+                                )
+                                for m in (getattr(dataset, "metrics", None) or [])
+                            },
+                            **{
+                                getattr(c, "column_name", ""): (
+                                    getattr(c, "verbose_name", None)
+                                    or getattr(c, "column_name", "")
+                                )
+                                for c in (getattr(dataset, "columns", None) or [])
+                            },
+                        },
+                        # ``owners`` mirrors ``SqlaTable.owners_data`` which
+                        # yields ``{first_name, last_name, username, id}``.
+                        # We additionally keep ``value`` because the
+                        # frontend's ``exploreReducer`` and
+                        # ``DatasourceEditor`` both read ``owner.value``
+                        # without a fallback — dropping it would break the
+                        # Edit-dataset modal's ``Cannot read properties of
+                        # undefined (reading 'map')`` failure mode.
+                        "owners": [
+                            {
+                                "first_name": getattr(o, "first_name", "") or "",
+                                "last_name": getattr(o, "last_name", "") or "",
+                                "username": getattr(o, "username", "") or "",
+                                "id": o.id,
+                                "value": o.id,
+                            }
+                            for o in (getattr(dataset, "owners", None) or [])
+                        ],
                         "columns": [
                             {
+                                "id": getattr(c, "id", None),
+                                "uuid": str(getattr(c, "uuid", "") or "") or None,
                                 "column_name": getattr(c, "column_name", ""),
                                 "type": getattr(c, "type", ""),
+                                "type_generic": _column_type_generic(
+                                    getattr(c, "type", "") or ""
+                                ),
                                 "is_dttm": getattr(c, "is_dttm", False),
                                 "filterable": getattr(c, "filterable", True),
                                 "groupby": getattr(c, "groupby", True),
                                 "verbose_name": getattr(c, "verbose_name", None),
                                 "description": getattr(c, "description", None),
                                 "expression": getattr(c, "expression", None),
+                                "python_date_format": getattr(
+                                    c, "python_date_format", None
+                                ),
+                                "advanced_data_type": getattr(
+                                    c, "advanced_data_type", None
+                                ),
+                                "certified_by": getattr(c, "certified_by", None),
+                                "certification_details": getattr(
+                                    c, "certification_details", None
+                                ),
+                                "is_certified": bool(
+                                    getattr(c, "certified_by", None)
+                                ),
+                                "warning_markdown": getattr(
+                                    c, "warning_markdown", None
+                                ),
                             }
                             for c in (getattr(dataset, "columns", None) or [])
                         ],
                         "metrics": [
                             {
+                                "id": getattr(m, "id", None),
+                                "uuid": str(getattr(m, "uuid", "") or "") or None,
                                 "metric_name": getattr(m, "metric_name", ""),
                                 "verbose_name": getattr(m, "verbose_name", None),
                                 "expression": getattr(m, "expression", ""),
                                 "description": getattr(m, "description", None),
+                                "d3format": getattr(m, "d3format", None),
+                                "currency": getattr(m, "currency", None),
+                                "warning_text": getattr(m, "warning_text", None),
+                                "warning_markdown": getattr(
+                                    m, "warning_markdown", None
+                                ),
+                                "certified_by": getattr(m, "certified_by", None),
+                                "certification_details": getattr(
+                                    m, "certification_details", None
+                                ),
+                                "is_certified": bool(
+                                    getattr(m, "certified_by", None)
+                                ),
                             }
                             for m in (getattr(dataset, "metrics", None) or [])
                         ],
@@ -359,77 +608,54 @@ class ExploreController(Controller):
                 pass  # Dataset metadata is optional, continue without it
 
         # Build metadata matching original GetExploreCommand
-        # (superset_old/commands/explore/get.py:156-169)
+        # (superset_old/commands/explore/get.py:156-169).  Reuses the
+        # ``chart`` loaded above with eager-loaded ``owners``,
+        # ``dashboards``, ``created_by``, ``changed_by`` — no extra
+        # round-trips or direct session access here.
         metadata: dict[str, Any] | None = None
-        if slice_id_raw:
-            try:
-                chart = await chart_dao.find_by_id(int(slice_id_raw))
-                if chart is not None:
-                    from datetime import datetime
+        if chart is not None:
+            from datetime import datetime
 
-                    import humanize
+            import humanize
 
-                    def _humanize_dt(dt: Any) -> str:
-                        if dt and hasattr(dt, "isoformat"):
-                            return humanize.naturaltime(datetime.now() - dt)
-                        return ""
+            def _humanize_dt(dt: Any) -> str:
+                if dt and hasattr(dt, "isoformat"):
+                    return humanize.naturaltime(datetime.now() - dt)
+                return ""
 
-                    metadata = {
-                        "created_on_humanized": _humanize_dt(
-                            getattr(chart, "created_on", None)
-                        ),
-                        "changed_on_humanized": _humanize_dt(
-                            getattr(chart, "changed_on", None)
-                        ),
-                        "owners": [],
-                        "dashboards": [],
+            def _full_name(obj: Any) -> str:
+                if obj is None:
+                    return ""
+                return (
+                    f"{getattr(obj, 'first_name', '')} "
+                    f"{getattr(obj, 'last_name', '')}"
+                ).strip()
+
+            dashboards_rel = getattr(chart, "dashboards", None) or []
+            metadata = {
+                "created_on_humanized": _humanize_dt(
+                    getattr(chart, "created_on", None)
+                ),
+                "changed_on_humanized": _humanize_dt(
+                    getattr(chart, "changed_on", None)
+                ),
+                "owners": [
+                    _full_name(o) for o in (getattr(chart, "owners", None) or [])
+                ],
+                "dashboards": [
+                    {
+                        "id": d.id,
+                        "dashboard_title": getattr(d, "dashboard_title", ""),
                     }
-                    # Load owners/dashboards/changed_by/created_by
-                    # (best-effort — may MissingGreenlet on lazy load)
-                    try:
-                        from sqlalchemy.orm import selectinload
-
-                        from superset.models.slice import Slice
-
-                        from sqlalchemy import select as sa_select
-
-                        refreshed = await chart_dao.session.execute(
-                            sa_select(Slice)
-                            .where(Slice.id == chart.id)
-                            .options(
-                                selectinload(Slice.owners),
-                                selectinload(Slice.dashboards),
-                            )
-                        )
-                        slc = refreshed.scalars().one_or_none()
-                        if slc:
-                            metadata["owners"] = [
-                                f"{getattr(o, 'first_name', '')} {getattr(o, 'last_name', '')}".strip()
-                                for o in (slc.owners or [])
-                            ]
-                            metadata["dashboards"] = [
-                                {
-                                    "id": d.id,
-                                    "dashboard_title": getattr(
-                                        d, "dashboard_title", ""
-                                    ),
-                                }
-                                for d in (slc.dashboards or [])
-                            ]
-                            cb = getattr(slc, "created_by", None)
-                            if cb:
-                                metadata["created_by"] = (
-                                    f"{getattr(cb, 'first_name', '')} {getattr(cb, 'last_name', '')}".strip()
-                                )
-                            chb = getattr(slc, "changed_by", None)
-                            if chb:
-                                metadata["changed_by"] = (
-                                    f"{getattr(chb, 'first_name', '')} {getattr(chb, 'last_name', '')}".strip()
-                                )
-                    except Exception:  # noqa: BLE001, S110
-                        pass
-            except (ValueError, TypeError):
-                pass
+                    for d in dashboards_rel
+                ],
+            }
+            created_by = getattr(chart, "created_by", None)
+            if created_by:
+                metadata["created_by"] = _full_name(created_by)
+            changed_by = getattr(chart, "changed_by", None)
+            if changed_by:
+                metadata["changed_by"] = _full_name(changed_by)
 
         return {
             "result": {
