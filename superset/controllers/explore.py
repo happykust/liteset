@@ -255,40 +255,10 @@ class ExploreController(Controller):
                         except Exception:  # noqa: BLE001
                             changed_on_humanized = ""
                     desc = getattr(chart, "description", None) or ""
-                    slice_data = {
-                        "slice_id": chart.id,
-                        "slice_name": getattr(chart, "slice_name", ""),
-                        "viz_type": getattr(chart, "viz_type", ""),
-                        "owners": owners_list,
-                        "is_managed_externally": bool(
-                            getattr(chart, "is_managed_externally", False)
-                        ),
-                        "cache_timeout": getattr(chart, "cache_timeout", None),
-                        "certified_by": getattr(chart, "certified_by", None),
-                        "certification_details": getattr(
-                            chart, "certification_details", None
-                        ),
-                        "description": desc or None,
-                        "description_markeddown": (
-                            f"<p>{desc}</p>" if desc else ""
-                        ),
-                        "changed_on": changed_on_iso,
-                        "changed_on_humanized": changed_on_humanized,
-                        "modified": (
-                            f'<span class="no-wrap">{changed_on_humanized}</span>'
-                            if changed_on_humanized
-                            else ""
-                        ),
-                        "edit_url": f"/chart/edit/{chart.id}",
-                        "slice_url": (
-                            f"/explore/?slice_id={chart.id}"
-                            f"&form_data=%7B%22slice_id%22%3A%20{chart.id}%7D"
-                        ),
-                    }
-                    # Merge chart params into form_data (chart defaults as base).
-                    # Mirrors original Slice.form_data property which always
-                    # includes datasource, slice_id, viz_type from the chart
-                    # object — not just from stored params JSON.
+                    # Compute ``Slice.form_data``: stored params JSON merged
+                    # with chart-level fields (slice_id, viz_type, datasource,
+                    # cache_timeout) — mirrors ``superset_old/models/slice.py``
+                    # lines 270-288.
                     chart_params = getattr(chart, "params", "{}")
                     if chart_params:
                         try:
@@ -297,7 +267,6 @@ class ExploreController(Controller):
                             defaults = {}
                     else:
                         defaults = {}
-                    # Inject chart-level fields matching Slice.form_data property
                     chart_ds_id = getattr(chart, "datasource_id", None)
                     chart_ds_type = getattr(chart, "datasource_type", "table") or "table"
                     defaults.update(
@@ -316,6 +285,48 @@ class ExploreController(Controller):
                     chart_cache_timeout = getattr(chart, "cache_timeout", None)
                     if chart_cache_timeout:
                         defaults["cache_timeout"] = chart_cache_timeout
+                    # ``slice_data`` mirrors ``Slice.data`` exactly
+                    # (superset_old/models/slice.py:219-248).
+                    slice_data = {
+                        "cache_timeout": chart_cache_timeout,
+                        "changed_on": changed_on_iso,
+                        "changed_on_humanized": changed_on_humanized,
+                        "datasource": getattr(chart, "datasource_name", None),
+                        "description": desc or None,
+                        "description_markeddown": (
+                            f"<p>{desc}</p>" if desc else ""
+                        ),
+                        "edit_url": f"/chart/edit/{chart.id}",
+                        "form_data": defaults,
+                        # ``Slice.query_context`` is stored as a raw JSON
+                        # string on the chart row; the original returns the
+                        # string unparsed (models/slice.py:239).
+                        "query_context": getattr(chart, "query_context", None),
+                        "modified": (
+                            f'<span class="no-wrap">{changed_on_humanized}</span>'
+                            if changed_on_humanized
+                            else ""
+                        ),
+                        "owners": owners_list,
+                        "slice_id": chart.id,
+                        "slice_name": getattr(chart, "slice_name", ""),
+                        "slice_url": (
+                            f"/explore/?slice_id={chart.id}"
+                            f"&form_data=%7B%22slice_id%22%3A%20{chart.id}%7D"
+                        ),
+                        "certified_by": getattr(chart, "certified_by", None),
+                        "certification_details": getattr(
+                            chart, "certification_details", None
+                        ),
+                        "is_managed_externally": bool(
+                            getattr(chart, "is_managed_externally", False)
+                        ),
+                        # ``viz_type`` is not in the original ``Slice.data``
+                        # payload but a number of frontend callsites
+                        # (``SliceHeader``, ``ChartContainer``) read
+                        # ``slice.viz_type`` directly, so we keep it.
+                        "viz_type": getattr(chart, "viz_type", ""),
+                    }
                     merged = {**defaults, **form_data}
                     form_data = merged
                 else:
