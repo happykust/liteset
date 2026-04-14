@@ -929,7 +929,15 @@ class SqlaTable(
     # -- SQL generation -------------------------------------------------------
 
     def _get_table_ref(self) -> str:
-        """Return fully-qualified table reference for FROM clause."""
+        """Return fully-qualified table reference for FROM clause.
+
+        For virtual datasets this wraps the user-provided SQL as a
+        subquery: ``(user_sql) AS virtual_table``.  Callers that need
+        to support databases where CTEs cannot appear inside a
+        subquery (e.g., MSSQL, Ocient) should use
+        :meth:`_get_virtual_from_clause` instead, which returns the
+        CTE text separately so it can be prepended to the full SQL.
+        """
         if self.sql:
             # Virtual dataset — wrap the custom SQL as a subquery
             inner = self.sql.strip().rstrip(";")
@@ -941,6 +949,61 @@ class SqlaTable(
             parts.append(self._quote_identifier(str(self.schema)))
         parts.append(self._quote_identifier(str(self.table_name)))
         return ".".join(parts)
+
+    def _get_virtual_from_clause(self) -> tuple[str, str | None]:
+        """Return ``(table_ref, cte_sql)`` for use in a SELECT.
+
+        Async port of the original ``helpers.get_from_clause`` +
+        ``_apply_cte`` pair (``superset_old/models/helpers.py:1163``
+        and line 942).  Produces the same output shape:
+
+        - For a physical dataset → ``(fully.qualified.table, None)``.
+        - For a virtual dataset on an engine that supports CTEs inside
+          subqueries (the default) → ``((user_sql) AS virtual_table,
+          None)`` — same as :meth:`_get_table_ref`.
+        - For a virtual dataset on an engine that does *not* allow
+          CTEs inside a subquery (e.g., MSSQL, Ocient) *and* whose
+          user SQL itself starts with ``WITH`` → returns
+          ``(__cte, 'WITH __cte AS (...)')`` so callers can prepend
+          the CTE text to the final SQL and select from the alias.
+        """
+        if not self.sql:
+            return self._get_table_ref(), None
+
+        inner = self.sql.strip().rstrip(";")
+        engine_spec = self.database.db_engine_spec
+        cte: str | None = None
+        try:
+            cte = engine_spec.get_cte_query(inner)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to detect CTE in virtual dataset SQL for table %s",
+                self.table_name,
+                exc_info=True,
+            )
+            cte = None
+
+        if cte:
+            # The engine spec's ``get_cte_query`` has rewritten the
+            # SELECT statement to be aliased via ``cte_alias``.  The
+            # FROM clause then selects from that alias.
+            return engine_spec.cte_alias, cte
+
+        # Default virtual-dataset handling: wrap as subquery alias.
+        return f"({inner}) AS virtual_table", None
+
+    @staticmethod
+    def _apply_cte(sql: str, cte: str | None) -> str:
+        """Prepend a CTE statement to a SELECT statement.
+
+        Mirrors ``superset_old.models.helpers._apply_cte`` (line 942):
+        when the engine spec determined the user's virtual-dataset SQL
+        must be hoisted into a top-level CTE, the rendered SELECT is
+        concatenated after the CTE text.
+        """
+        if cte:
+            return f"{cte}\n{sql}"
+        return sql
 
     def _resolve_metric_expression(self, metric: Any) -> tuple[str, str]:
         """Resolve a metric to (sql_expression, label).
@@ -1499,7 +1562,13 @@ class SqlaTable(
         else:
             projection = f"{self._quote_identifier(column_name)} AS column_values"
 
-        table_ref = self._get_table_ref()
+        # Resolve the FROM clause.  For virtual datasets this may
+        # produce a CTE that has to be prepended to the final SQL —
+        # matches original ``helpers.values_for_column`` (lines
+        # 1569 and 1593) where ``get_from_clause`` returns
+        # ``(tbl, cte)`` and ``_apply_cte`` hoists the CTE above the
+        # SELECT.
+        table_ref, cte_sql = self._get_virtual_from_clause()
         sql = f"SELECT DISTINCT {projection} FROM {table_ref}"
 
         # Assemble WHERE clause from fetch_values_predicate + RLS filters.
@@ -1537,6 +1606,10 @@ class SqlaTable(
 
         if limit:
             sql += f" LIMIT {int(limit)}"
+
+        # Prepend the CTE (if any) so engines that disallow CTEs
+        # inside a subquery still execute a well-formed statement.
+        sql = self._apply_cte(sql, cte_sql)
 
         df = await self._execute_sql(sql)
         if df.empty or "column_values" not in df.columns:
