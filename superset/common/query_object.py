@@ -76,14 +76,20 @@ class AsyncQueryObject:
         if self.granularity_sqla and not self.granularity:
             self.granularity = self.granularity_sqla
 
-        # Metric normalization: {"label": "count"} → "count"
-        normalized: list[Any] = []
-        for m in self.metrics or []:
-            if isinstance(m, dict) and set(m.keys()) == {"label"}:
-                normalized.append(m["label"])
-            else:
-                normalized.append(m)
-        self.metrics = normalized
+        # Metric normalization: {"label": "count"} → "count".
+        # Preserve ``metrics is None`` (raw columns mode) — the
+        # ``_build_sql`` logic uses the ``None`` vs ``[]`` distinction
+        # to decide whether to aggregate, matching original
+        # ``helpers.get_sqla_query:1731``: ``bool(metrics is not None
+        # or groupby)``.
+        if self.metrics is not None:
+            normalized: list[Any] = []
+            for m in self.metrics:
+                if isinstance(m, dict) and set(m.keys()) == {"label"}:
+                    normalized.append(m["label"])
+                else:
+                    normalized.append(m)
+            self.metrics = normalized
 
         # P1-10: is_timeseries auto-detection
         if not self.is_timeseries:
@@ -230,7 +236,7 @@ class AsyncQueryObject:
             else:
                 label = str(col)
             labels.append(label)
-        for metric in self.metrics:
+        for metric in self.metrics or []:
             if isinstance(metric, dict):
                 label = metric.get("label") or str(metric)
             else:
@@ -331,19 +337,27 @@ class AsyncQueryObject:
                 to_dttm=q.get("to_dttm"),
                 granularity_sqla=q.get("granularity_sqla"),
             )
+        # ``q.metrics`` may be ``None`` (Table viz raw-mode) — preserve
+        # it so ``_build_sql`` can skip aggregation.  ``[]`` (explicit
+        # empty list) still means "aggregate with empty metric set".
+        _q_metrics = getattr(q, "metrics", None)
         return cls(
             datasource=datasource_ref,
             columns=list(q.columns),
-            metrics=[
-                m
-                if isinstance(m, str)
-                else msgspec.structs.asdict(m)
-                if isinstance(m, msgspec.Struct)
-                else vars(m)
-                if hasattr(m, "__dict__")
-                else m
-                for m in q.metrics
-            ],
+            metrics=(
+                None
+                if _q_metrics is None
+                else [
+                    m
+                    if isinstance(m, str)
+                    else msgspec.structs.asdict(m)
+                    if isinstance(m, msgspec.Struct)
+                    else vars(m)
+                    if hasattr(m, "__dict__")
+                    else m
+                    for m in _q_metrics
+                ]
+            ),
             filters=(
                 [{"col": f.col, "op": f.op, "val": f.val} for f in q.filters]
                 if hasattr(q, "filters")

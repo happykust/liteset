@@ -386,7 +386,14 @@ class ChartDataQueryObject(msgspec.Struct):
     """Query object within a ChartData request."""
 
     columns: list[str | dict[str, Any]] = []
-    metrics: list[str | ChartDataAdhocMetric] = []
+    # ``metrics = None`` carries meaning distinct from ``[]``:
+    # ``None`` means "raw columns mode" (Table viz query_mode='raw')
+    # and bypasses aggregation, while ``[]`` means "user explicitly
+    # picked no metrics" and still triggers ``GROUP BY columns``
+    # (Select native filter distinct-values flow).  Matches original
+    # ``helpers.get_sqla_query:1731`` which uses ``metrics is not
+    # None`` instead of truthy-check.
+    metrics: list[str | ChartDataAdhocMetric] | None = None
     orderby: list[list[Any]] = []
     filters: list[ChartDataFilter] = []
     extras: ChartDataExtras | None = None

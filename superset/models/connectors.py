@@ -1244,9 +1244,19 @@ class SqlaTable(
 
         Returns (sql, from_dttm, to_dttm).
         """
-        columns_raw: list[Any] = query_dict.get("columns", [])
-        metrics_raw: list[Any] = query_dict.get("metrics", [])
-        groupby_raw: list[Any] = query_dict.get("groupby", [])
+        columns_raw: list[Any] = query_dict.get("columns") or []
+        # ``metrics_raw`` preserves the ``None`` vs ``[]`` distinction
+        # from the original ``helpers.get_sqla_query`` where
+        # ``need_groupby = bool(metrics is not None or groupby)``.
+        # An empty list means "user explicitly picked no metrics but
+        # still wants an aggregate query" — this powers the Select
+        # native-filter flow which sends ``columns=[col], metrics=[]``
+        # expecting ``GROUP BY col`` to dedupe values.  ``None`` means
+        # "raw columns mode, do not aggregate" (used by the Table viz
+        # ``query_mode='raw'``).
+        metrics_raw_orig: list[Any] | None = query_dict.get("metrics")
+        metrics_raw: list[Any] = metrics_raw_orig or []
+        groupby_raw: list[Any] = query_dict.get("groupby") or []
         filters: list[dict[str, Any]] = query_dict.get("filter", [])
         extras: dict[str, Any] = query_dict.get("extras", {})
         granularity: str | None = query_dict.get("granularity")
@@ -1272,13 +1282,17 @@ class SqlaTable(
         to_dttm = _parse_dttm(to_dttm)
 
         # Determine if we need aggregation.  Matches original
-        # ``helpers.get_sqla_query`` logic (lines 1814-1822): we start with
-        # ``need_groupby = bool(metrics or groupby)`` and then flip it to
-        # ``True`` if ``orderby`` references any metric — adhoc or named —
-        # because in that case the query must aggregate even when the form
-        # has no metrics selected (e.g. table viz in raw mode ordering by
-        # ``SUM(num) DESC`` with only ``columns=['name']``).
-        need_groupby = bool(metrics_raw or groupby_raw)
+        # ``helpers.get_sqla_query:1731`` which uses
+        # ``bool(metrics is not None or groupby)`` — crucially, an
+        # empty list ``metrics=[]`` still triggers aggregate mode,
+        # only an explicit ``None`` falls through to raw mode.  This
+        # is load-bearing for the Select native filter flow (sends
+        # ``columns=[col], metrics=[]`` and relies on the resulting
+        # ``GROUP BY col`` to dedupe values so the "214 options"
+        # placeholder shows the correct distinct count) while still
+        # letting the Table viz ``query_mode='raw'`` path (metrics
+        # omitted entirely → ``None``) skip aggregation.
+        need_groupby = (metrics_raw_orig is not None) or bool(groupby_raw)
         if not need_groupby and orderby:
             named_metrics = {m.metric_name for m in (self.metrics or [])}
             for item in orderby:
