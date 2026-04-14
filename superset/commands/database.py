@@ -648,9 +648,24 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
 
         errors: list[dict[str, Any]] = []
 
-        # Run engine-specific parameter validation
+        # Run engine-specific parameter validation.
+        #
+        # ``spec_class.validate_parameters`` is a synchronous classmethod
+        # that calls ``is_hostname_valid`` / ``is_port_open`` — both of
+        # which wrap ``socket.getaddrinfo`` and ``socket.connect``.  Those
+        # block for seconds when DNS or the target host is down, which
+        # starves the asyncio event loop and cascades into 5+ sequential
+        # validate requests each taking 4s on a non-resolvable host like
+        # ``badhost``.  In the original Flask backend each request was
+        # on its own worker thread, so the blocking was hidden per-call.
+        # Run the sync validator on the threadpool to restore that
+        # concurrency model.
+        import asyncio
+
         try:
-            spec_errors = spec_class.validate_parameters(self._data)
+            spec_errors = await asyncio.to_thread(
+                spec_class.validate_parameters, self._data
+            )
             if spec_errors:
                 for err in spec_errors:
                     if isinstance(err, dict):

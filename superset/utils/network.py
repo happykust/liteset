@@ -21,6 +21,7 @@ from __future__ import annotations
 import platform
 import socket
 import subprocess
+from typing import Any
 
 PORT_TIMEOUT = 5
 PING_TIMEOUT = 5
@@ -46,14 +47,57 @@ def is_port_open(host: str, port: int) -> bool:
     return False
 
 
+_DNS_RESOLVE_TIMEOUT = 1.0
+_dns_executor: Any = None
+
+
+def _get_dns_executor() -> Any:
+    """Lazy shared thread pool so abandoned DNS lookups don't block shutdown."""
+    global _dns_executor  # noqa: PLW0603
+    if _dns_executor is None:
+        import concurrent.futures
+
+        _dns_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix="superset-dns",
+        )
+    return _dns_executor
+
+
 def is_hostname_valid(host: str) -> bool:
+    """Test if a given hostname can be resolved.
+
+    ``socket.getaddrinfo`` blocks for the full libc resolver retry
+    chain (~4 s default on Linux) when the hostname is unresolvable.
+    In the original sync Flask backend that was tolerable because each
+    request was handled by its own worker thread, but in the async
+    Litestar port the cumulative delay across sequential
+    ``validate_parameters`` requests (one per form-field blur) pushes
+    the ``database/modal`` Cypress test past its 8 s retry budget for
+    the ``Connect`` button-enable assertion.
+
+    ``getaddrinfo`` does not honour ``socket.setdefaulttimeout``, so
+    we enforce an upper bound by running the lookup in a shared worker
+    thread pool and treating any timeout as ``False`` (unresolvable).
+    The shared pool is important: a per-call context manager would
+    block on executor shutdown until the abandoned resolver thread
+    completes, which defeats the timeout.
     """
-    Test if a given hostname can be resolved.
-    """
+    import concurrent.futures
+
+    def _resolve() -> bool:
+        try:
+            socket.getaddrinfo(host, None)
+            return True
+        except socket.gaierror:
+            return False
+
+    future = _get_dns_executor().submit(_resolve)
     try:
-        socket.getaddrinfo(host, None)
-        return True
-    except socket.gaierror:
+        return future.result(timeout=_DNS_RESOLVE_TIMEOUT)
+    except concurrent.futures.TimeoutError:
+        # Don't block on the abandoned lookup; just cancel best-effort.
+        future.cancel()
         return False
 
 
