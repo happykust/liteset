@@ -16,7 +16,11 @@
 # under the License.
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from superset.db.base_dao import BaseAsyncDAO
 from superset.db.daos.favorites_mixin import FavoriteMixin
@@ -43,3 +47,42 @@ class AsyncChartDAO(FavoriteMixin, BaseAsyncDAO[Slice]):
             return None
 
         return await self.find_one_or_none(uuid=uuid_val)
+
+    async def find_by_id_with_options(
+        self,
+        chart_id: int,
+        options: list[Any] | None = None,
+    ) -> Slice | None:
+        """Find a chart by id with optional eager-load ``options``.
+
+        Used when the caller needs to serialize relationship collections
+        (owners, dashboards, tags, …) in the same async context, to avoid
+        MissingGreenlet errors on lazy load.
+        """
+        stmt = select(Slice).where(Slice.id == chart_id)
+        if options:
+            stmt = stmt.options(*options)
+        result = await self.session.execute(stmt)
+        return result.scalars().one_or_none()
+
+    async def find_dashboards_by_ids(self, dashboard_ids: list[int]) -> list[Any]:
+        """Resolve dashboard IDs to Dashboard model instances.
+
+        Used by ``UpdateChartCommand.run`` to reassign the
+        ``Slice.dashboards`` M2M collection when the frontend sends
+        ``{"dashboards": [id, ...]}`` on PUT ``/api/v1/chart/<id>``.
+        Without this method the save-to-dashboard flow silently drops
+        the dashboard list and the ``count-crosslinks`` column in the
+        chart list stays empty.
+        """
+        if not dashboard_ids:
+            return []
+        from superset.models.dashboard import Dashboard
+
+        stmt = (
+            select(Dashboard)
+            .where(Dashboard.id.in_(dashboard_ids))
+            .options(selectinload(Dashboard.owners))
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().unique().all())

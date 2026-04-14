@@ -566,6 +566,26 @@ class ForbiddenError(CommandException):
     message = "Action is forbidden"
 
 
+class DashboardsForbiddenError(ForbiddenError):
+    """Raised when user is not allowed to modify one of the target dashboards.
+
+    Ported 1:1 from ``superset_old/commands/chart/exceptions.py::DashboardsForbiddenError``.
+    """
+
+    message = "Changing one or more of these dashboards is forbidden"
+
+
+class DashboardsNotFoundValidationError(CommandInvalidError):
+    """Raised when one or more requested dashboard ids don't exist.
+
+    Ported 1:1 from
+    ``superset_old/commands/chart/exceptions.py::DashboardsNotFoundValidationError``.
+    """
+
+    status_code = 422
+    message = "Dashboards do not exist"
+
+
 class CreateFailedError(CommandException):
     status_code = 500
     message = "Create failed"

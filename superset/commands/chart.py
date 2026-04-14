@@ -30,6 +30,8 @@ import yaml  # type: ignore[import-untyped]
 from superset.commands.base import AsyncBaseCommand
 from superset.exceptions import (
     CommandInvalidError,
+    DashboardsForbiddenError,
+    DashboardsNotFoundValidationError,
     ForbiddenError,
     ImportFailedError,
     ObjectNotFoundError,
@@ -323,29 +325,30 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
                     )
                 self._data["datasource_name"] = ds.name
 
-        # Validate dashboard access if dashboard IDs are provided
-        dashboard_ids = self._data.get("dashboards", [])
-        if dashboard_ids and self._security_manager is not None:
-            from superset.models.dashboard import Dashboard
+        # Validate/Populate dashboards — ported 1:1 from
+        # ``superset_old/commands/chart/create.py::CreateChartCommand.validate``.
+        # All requested dashboards must exist AND the current user must be
+        # an owner of each of them (admins are treated as owners of all
+        # resources, mirroring ``SecurityManager.raise_for_ownership``),
+        # otherwise creation is rejected.
+        dashboard_ids = self._data.get("dashboards", []) or []
+        if dashboard_ids:
+            dashboards = await self._dao.find_dashboards_by_ids(dashboard_ids)
+            if len(dashboards) != len(dashboard_ids):
+                raise DashboardsNotFoundValidationError()
+            if self._security_manager is not None:
+                from superset.exceptions import SupersetSecurityException
 
-            user = (
-                await self._security_manager.find_user_by_id(self._user_id)
-                if self._user_id
-                else None
-            )
-            if user is not None:
-                for dash_id in dashboard_ids:
-                    dashboard = await self._dao.session.get(Dashboard, dash_id)
-                    if dashboard is None:
-                        raise CommandInvalidError(f"Dashboard {dash_id} not found")
-                    if hasattr(self._security_manager, "can_access_dashboard"):
-                        has_access = await self._security_manager.can_access_dashboard(
-                            dashboard, user=user
+                for dash in dashboards:
+                    try:
+                        await self._security_manager.raise_for_ownership(
+                            dash, self._user_id
                         )
-                        if not has_access:
-                            raise ForbiddenError(
-                                f"User does not have access to dashboard {dash_id}"
-                            )
+                    except SupersetSecurityException as ex:
+                        raise DashboardsForbiddenError() from ex
+            # Store resolved Dashboard objects so ``run()`` can assign directly
+            # without a second DAO round-trip.
+            self._data["dashboards"] = dashboards
 
     async def run(self) -> "Slice":
         from datetime import datetime
@@ -385,6 +388,18 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
             if user:
                 chart.owners = [user]
                 resolved_owner_ids.append(user.id)
+
+        # Assign dashboards M2M BEFORE attaching the chart to the
+        # session.  ``validate()`` already resolved the requested ids to
+        # ``Dashboard`` instances and enforced ownership.  Assigning
+        # after ``session.add`` + ``flush`` would make SQLAlchemy try to
+        # lazy-load the "existing" M2M state for diffing, which blows up
+        # under asyncpg (``MissingGreenlet``).  On a brand-new transient
+        # instance the collection is empty, so no load is needed and the
+        # assignment is just an in-memory write.
+        dashboards = self._data.get("dashboards") or []
+        if dashboards:
+            chart.dashboards = list(dashboards)
 
         self._dao.session.add(chart)
         await self._dao.session.flush()
