@@ -1524,7 +1524,34 @@ class ChartController(Controller):
         event_logger.log("chart.data_post")
         # Frontend expects {"result": [...]} not {"queries": [...]}
         response_payload = {"result": result.get("queries", [])}
-        return Response(content=response_payload, media_type="application/json")
+
+        # Port of original Flask ``json.dumps(..., default=json_int_dttm_ser)``
+        # from ``superset_old/charts/data/api.py``. The original serializer
+        # walks the entire response tree and converts ANY datetime/date value
+        # to epoch milliseconds — not just the ones inside ``data`` rows.
+        # This covers top-level and nested fields such as ``from_dttm``,
+        # ``to_dttm``, ``cached_dttm``, ``changed_on``, and the values inside
+        # ``applied_time_extras``. The in-place normalization above still
+        # handles Decimal/numpy/NaN inside ``data`` rows which msgspec cannot
+        # natively serialize — but datetime conversion is now global.
+        from superset.utils.json import json_int_dttm_ser
+
+        def _enc_hook(obj: Any) -> Any:
+            # pd.Timestamp is a datetime subclass, so isinstance checks in
+            # ``json_int_dttm_ser`` catch it. pd.NaT is also a Timestamp but
+            # ``pd.isna`` is True — emit None in that case.
+            if isinstance(obj, pd.Timestamp):
+                if pd.isna(obj):
+                    return None
+                return datetime_to_epoch(obj.to_pydatetime())
+            try:
+                return json_int_dttm_ser(obj)
+            except TypeError:
+                # Fall back to string to avoid 500s on truly exotic types.
+                return str(obj)
+
+        encoded = _msgspec.json.encode(response_payload, enc_hook=_enc_hook)
+        return Response(content=encoded, media_type="application/json")
 
     @get(
         "/data/{cache_key:str}",
