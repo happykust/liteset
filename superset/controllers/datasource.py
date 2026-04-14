@@ -185,6 +185,14 @@ class DatasourceController(Controller):
         if datasource is None:
             raise ObjectNotFoundError("Datasource", datasource_id)
 
+        # Expose the current user to the Jinja template processor context
+        # var so macros like ``{{ current_username() }}`` — commonly used
+        # inside ``fetch_values_predicate`` — resolve correctly when
+        # ``SqlaTable.async_values_for_column`` renders the predicate.
+        from superset.utils.core import set_current_user
+
+        set_current_user(current_user)
+
         # Gather Row-Level Security filter clauses for this datasource.
         # Mirrors ``query_context_processor._get_query_result`` and matches
         # the original sync ``values_for_column`` which calls

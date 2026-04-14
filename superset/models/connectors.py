@@ -23,6 +23,7 @@ Includes async_query() for chart data execution via the async engine specs.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1507,7 +1508,25 @@ class SqlaTable(
         where_parts: list[str] = []
         fvp = getattr(self, "fetch_values_predicate", None)
         if fvp:
-            where_parts.append(f"({fvp})")
+            # Apply Jinja template processing so expressions like
+            # ``{{ current_username() }}`` or ``{{ current_user_id() }}``
+            # are resolved at query time.  Matches original
+            # ``helpers.values_for_column`` (line 1586) which calls
+            # ``self.get_fetch_values_predicate(template_processor=tp)``
+            # where the processor runs ``process_template(clause)``.
+            # ``process_template`` is pure CPU/Jinja work with no I/O,
+            # so calling it from async code is safe; we still wrap it
+            # in ``asyncio.to_thread`` to match how other long-running
+            # sync helpers are invoked from the async pipeline.
+            from superset.jinja_context import get_template_processor
+
+            processor = get_template_processor(
+                database=self.database, table=self
+            )
+            fvp_processed = await asyncio.to_thread(
+                processor.process_template, fvp
+            )
+            where_parts.append(f"({fvp_processed})")
         if rls_filters:
             for rls_clause in rls_filters:
                 clause = rls_clause.strip() if rls_clause else ""

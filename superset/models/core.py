@@ -221,6 +221,18 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def driver(self) -> str:
         return self.url_object.get_driver_name()
 
+    def get_dialect(self) -> Any:
+        """Return an instantiated SQLAlchemy dialect for this database.
+
+        Ported 1:1 from the original sync ``Database.get_dialect``
+        (``superset_old/models/core.py:1125``) — used by the Jinja
+        template processor, ``WhereInMacro``, and other code paths
+        that need dialect-specific behavior (identifier quoting,
+        reserved words, literal binding).
+        """
+        sqla_url = make_url_safe(self.sqlalchemy_uri_decrypted)
+        return sqla_url.get_dialect()()
+
     # ------------------------------------------------------------------
     # Engine spec
     # ------------------------------------------------------------------
