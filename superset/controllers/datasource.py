@@ -28,7 +28,11 @@ from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError, SupersetValidationException
 from superset.guards.rbac import require_authentication
 from superset.providers import provide_datasource_dao
-from superset.typing import DatasourceDAOProtocol
+from superset.typing import (
+    DatasourceDAOProtocol,
+    SecurityManagerProtocol,
+    UserProtocol,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +122,37 @@ class DatasourceController(Controller):
         )
         return {"result": result}
 
+    @staticmethod
+    async def _fetch_rls_clauses(
+        security_manager: SecurityManagerProtocol,
+        datasource: Any,
+        current_user: UserProtocol,
+    ) -> list[str]:
+        """Return active RLS filter clauses for ``datasource``.
+
+        Mirrors the pattern used by
+        ``query_context_processor._get_query_result`` — fetches filters
+        via ``security_manager.get_rls_filters`` and extracts the raw
+        SQL clause strings.  Admin users receive an empty list because
+        the security manager bypasses RLS for them.
+        """
+        if not hasattr(security_manager, "get_rls_filters"):
+            return []
+        try:
+            rls_filters = await security_manager.get_rls_filters(
+                datasource, user=current_user
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to retrieve RLS filters for datasource %s",
+                getattr(datasource, "id", None),
+                exc_info=True,
+            )
+            return []
+        return [
+            f.clause for f in rls_filters if getattr(f, "clause", None)
+        ]
+
     @get(
         "/{datasource_type:str}/{datasource_id:int}/column/{column_name:str}/values/",
         guards=[require_authentication],
@@ -128,6 +163,8 @@ class DatasourceController(Controller):
         datasource_id: int,
         column_name: str,
         ds_dao: DatasourceDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
         """GET /api/v1/datasource/{type}/{id}/column/{name}/values/
 
@@ -148,6 +185,14 @@ class DatasourceController(Controller):
         if datasource is None:
             raise ObjectNotFoundError("Datasource", datasource_id)
 
+        # Gather Row-Level Security filter clauses for this datasource.
+        # Mirrors ``query_context_processor._get_query_result`` and matches
+        # the original sync ``values_for_column`` which calls
+        # ``self.get_sqla_row_level_filters`` internally.
+        rls_clauses = await self._fetch_rls_clauses(
+            security_manager, datasource, current_user
+        )
+
         # Use the async port of ``values_for_column``. The original sync
         # implementation in ``helpers.py`` requires a sync SQLAlchemy
         # engine that we don't wire up in the Litestar port; instead we
@@ -158,6 +203,7 @@ class DatasourceController(Controller):
                 payload = await datasource.async_values_for_column(
                     column_name=column_name,
                     limit=1000,
+                    rls_filters=rls_clauses or None,
                 )
                 event_logger.log(
                     "datasource.column_values",

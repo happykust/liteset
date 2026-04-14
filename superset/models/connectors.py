@@ -1462,13 +1462,27 @@ class SqlaTable(
         self,
         column_name: str,
         limit: int = 10000,
+        rls_filters: list[str] | None = None,
     ) -> list[Any]:
         """Return distinct values of ``column_name`` for filter dropdowns.
 
         Async port of ``superset_old.models.helpers.values_for_column``.
         Builds ``SELECT DISTINCT <col> AS column_values FROM <table>
-        [WHERE <fetch_values_predicate>] LIMIT <n>`` and executes it via
-        the dataset's async engine.
+        [WHERE <fetch_values_predicate> AND <rls_filters>] LIMIT <n>`` and
+        executes it via the dataset's async engine.
+
+        Args:
+            column_name: The dataset column whose distinct values are
+                requested.
+            limit: Maximum number of distinct values to return.
+            rls_filters: Optional list of raw SQL WHERE-clause fragments
+                from Row-Level Security rules. The caller (controller)
+                is responsible for obtaining these from the security
+                manager via ``get_rls_filters`` — mirrors the pattern
+                used by ``async_query`` and matches the original sync
+                ``values_for_column`` which calls
+                ``self.get_sqla_row_level_filters`` and ANDs them into
+                the WHERE clause.
         """
         cols = {c.column_name: c for c in (self.columns or [])}
         if column_name not in cols:
@@ -1487,9 +1501,20 @@ class SqlaTable(
         table_ref = self._get_table_ref()
         sql = f"SELECT DISTINCT {projection} FROM {table_ref}"
 
+        # Assemble WHERE clause from fetch_values_predicate + RLS filters.
+        # Matches original ``helpers.values_for_column`` (lines 1585-1589)
+        # where both predicates are ANDed together.
+        where_parts: list[str] = []
         fvp = getattr(self, "fetch_values_predicate", None)
         if fvp:
-            sql += f" WHERE {fvp}"
+            where_parts.append(f"({fvp})")
+        if rls_filters:
+            for rls_clause in rls_filters:
+                clause = rls_clause.strip() if rls_clause else ""
+                if clause:
+                    where_parts.append(f"({clause})")
+        if where_parts:
+            sql += f" WHERE {' AND '.join(where_parts)}"
 
         if limit:
             sql += f" LIMIT {int(limit)}"
