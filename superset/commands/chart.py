@@ -32,7 +32,6 @@ from superset.exceptions import (
     CommandInvalidError,
     DashboardsForbiddenError,
     DashboardsNotFoundValidationError,
-    ForbiddenError,
     ImportFailedError,
     ObjectNotFoundError,
 )
@@ -471,38 +470,56 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
                         f"Datasource {datasource_type}:{datasource_id} not found"
                     )
 
-        # Validate dashboard access if dashboard IDs are provided
-        dashboard_ids = self._data.get("dashboards", [])
-        if dashboard_ids and self._security_manager is not None:
-            from superset.models.dashboard import Dashboard
+        # Validate/Populate dashboards — ported 1:1 from
+        # ``superset_old/commands/chart/update.py::UpdateChartCommand.validate``
+        # (lines 144-156).
+        #
+        # Only runs when ``dashboards`` is present in the payload (``None``
+        # vs empty list matters — omitted means "don't touch", empty list
+        # means "clear").  Every requested id must resolve to a real
+        # dashboard; if any don't, we raise ``DashboardsNotFoundValidationError``
+        # just like the sync original.  For any *new* association (id not
+        # already on the chart) the user must additionally have access to
+        # the dashboard — existing associations are preserved to maintain
+        # chart ownership rights, matching ``_validate_new_dashboard_access``
+        # in the original.
+        dashboard_ids = self._data.get("dashboards")
+        if dashboard_ids is not None:
+            dashboards = await self._dao.find_dashboards_by_ids(dashboard_ids)
+            if len(dashboards) != len(dashboard_ids):
+                raise DashboardsNotFoundValidationError()
 
-            # Dashboards are already pre-loaded in ``validate()``.
             existing_dashboard_ids = (
                 {d.id for d in self._chart.dashboards}
-                if hasattr(self._chart, "dashboards") and self._chart.dashboards
+                if getattr(self._chart, "dashboards", None)
                 else set()
             )
-            new_dashboard_ids = set(dashboard_ids) - existing_dashboard_ids
-
-            # Only validate access for NEW dashboard associations
-            user = (
-                await self._security_manager.find_user_by_id(self._user_id)
-                if self._user_id
-                else None
-            )
-            if user is not None:
-                for dash_id in new_dashboard_ids:
-                    dashboard = await self._dao.session.get(Dashboard, dash_id)
-                    if dashboard is None:
-                        raise CommandInvalidError(f"Dashboard {dash_id} not found")
-                    if hasattr(self._security_manager, "can_access_dashboard"):
+            new_dashboards = [
+                d for d in dashboards if d.id not in existing_dashboard_ids
+            ]
+            if new_dashboards and self._security_manager is not None:
+                user = (
+                    await self._security_manager.find_user_by_id(self._user_id)
+                    if self._user_id
+                    else None
+                )
+                if user is not None and hasattr(
+                    self._security_manager, "can_access_dashboard"
+                ):
+                    for dash in new_dashboards:
                         has_access = await self._security_manager.can_access_dashboard(
-                            dashboard, user=user
+                            dash, user=user
                         )
                         if not has_access:
-                            raise ForbiddenError(
-                                f"User does not have access to dashboard {dash_id}"
-                            )
+                            # Mirror original behaviour: inaccessible new
+                            # dashboards are reported as "not found" rather
+                            # than "forbidden" to avoid leaking their
+                            # existence to users without access.
+                            raise DashboardsNotFoundValidationError()
+
+            # Store resolved Dashboard objects so ``run()`` can assign
+            # directly without a second DAO round-trip.
+            self._data["dashboards"] = dashboards
 
     async def run(self) -> "Slice":
         from datetime import datetime
@@ -534,12 +551,12 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
         if tag_ids is not None and hasattr(self._dao, "find_tags_by_ids"):
             self._chart.tags = await self._dao.find_tags_by_ids(tag_ids)
 
-        # Resolve dashboards
-        dashboard_ids = self._data.get("dashboards")
-        if dashboard_ids is not None and hasattr(self._dao, "find_dashboards_by_ids"):
-            self._chart.dashboards = await self._dao.find_dashboards_by_ids(
-                dashboard_ids
-            )
+        # Assign dashboards — ``validate()`` already resolved the
+        # requested ids to ``Dashboard`` instances and validated access
+        # for any new associations.
+        dashboards = self._data.get("dashboards")
+        if dashboards is not None:
+            self._chart.dashboards = list(dashboards)
 
         if self._user_id is not None:
             self._chart.changed_by_fk = self._user_id
