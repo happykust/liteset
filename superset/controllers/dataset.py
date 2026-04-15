@@ -126,34 +126,14 @@ def _dataset_custom_filters() -> dict[str, Any]:
     }
 
 
-def _build_dataset_result(dataset: Any) -> dict[str, Any]:
-    """Build expanded dataset result dict for create/update responses.
-
-    Returns key fields so the frontend gets a useful response beyond
-    just ``table_name``, matching the original Superset contract.
-    """
-    database = getattr(dataset, "database", None)
-    changed_on = getattr(dataset, "changed_on", None)
-    created_on = getattr(dataset, "created_on", None)
-    return {
-        "table_name": dataset.table_name,
-        "schema": getattr(dataset, "schema", None),
-        "sql": getattr(dataset, "sql", None),
-        "database_id": getattr(dataset, "database_id", None),
-        "uuid": str(dataset.uuid) if getattr(dataset, "uuid", None) else None,
-        "description": getattr(dataset, "description", None),
-        "cache_timeout": getattr(dataset, "cache_timeout", None),
-        "main_dttm_col": getattr(dataset, "main_dttm_col", None),
-        "datasource_type": getattr(dataset, "datasource_type", "table"),
-        "created_on": created_on.isoformat() if created_on else None,
-        "changed_on": changed_on.isoformat() if changed_on else None,
-        "database": {
-            "id": database.id,
-            "database_name": getattr(database, "database_name", ""),
-        }
-        if database
-        else None,
-    }
+# ``DatasetDetailResult.from_model(dataset)`` (see
+# ``superset/schemas/dataset.py:270``) is used directly for create /
+# update response payloads — it mirrors the original Flask
+# ``DatasetRestApi`` Marshmallow schema via ``ModelStruct`` auto-mapping
+# plus ``_resolve_owners`` / ``_resolve_database`` custom resolvers for
+# the relationship fields.  The caller must eager-load ``columns``,
+# ``metrics``, ``owners``, ``database`` so the resolvers don't trigger
+# lazy loads (which crash with ``MissingGreenlet`` under asyncpg).
 
 
 class DatasetController(Controller):
@@ -421,9 +401,30 @@ class DatasetController(Controller):
             object_ref=f"dataset:{dataset.id}",
             user_id=current_user.id,
         )
+
+        # Eager-load the relationships ``DatasetDetailResult`` touches so
+        # the msgspec auto-mapper doesn't trigger lazy loads that crash
+        # with ``MissingGreenlet`` under asyncpg.
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.connectors import SqlaTable
+
+        dataset = await dao.find_by_id_with_options(
+            int(dataset.id),
+            options=[
+                selectinload(SqlaTable.database),
+                selectinload(SqlaTable.columns),
+                selectinload(SqlaTable.metrics),
+                selectinload(SqlaTable.owners),
+            ],
+        )
         return DatasetGetResponse(
-            id=int(dataset.id),
-            result=_build_dataset_result(dataset),
+            id=int(dataset.id) if dataset is not None else 0,
+            result=(
+                DatasetDetailResult.from_model(dataset)
+                if dataset is not None
+                else DatasetDetailResult()
+            ),
         )
 
     @put(
@@ -518,23 +519,35 @@ class DatasetController(Controller):
             user_id=current_user.id,
         )
 
-        # Re-load with ``database`` eager-loaded so ``_build_dataset_result``
-        # can serialize the nested ``database`` dict without triggering a
-        # lazy load on the returned model (which crashes with
-        # ``MissingGreenlet`` under asyncpg).  Observed while running the
-        # ``explore/control.test.ts::should allow edit dataset`` Cypress
-        # spec which hits ``PUT /api/v1/dataset/<id>?override_columns=true``.
+        # Re-load the dataset with every relationship ``DatasetDetailResult``
+        # touches eager-loaded so the msgspec auto-mapper doesn't trigger
+        # lazy loads that crash with ``MissingGreenlet`` under asyncpg.
+        # The response payload must include ``columns`` / ``metrics`` /
+        # ``owners`` to match the original Flask ``DatasetRestApi.put``
+        # shape — the frontend's ``saveDatasource`` reducer replaces the
+        # whole ``explore.datasource`` Redux slice with this dict, and a
+        # thin payload causes the Explore view to render "Missing dataset"
+        # (seen while running ``explore/control.test.ts``).
         from sqlalchemy.orm import selectinload
 
         from superset.models.connectors import SqlaTable
 
         dataset = await dao.find_by_id_with_options(
             int(dataset.id),
-            options=[selectinload(SqlaTable.database)],
+            options=[
+                selectinload(SqlaTable.database),
+                selectinload(SqlaTable.columns),
+                selectinload(SqlaTable.metrics),
+                selectinload(SqlaTable.owners),
+            ],
         )
         return DatasetGetResponse(
             id=int(dataset.id) if dataset is not None else int(pk),
-            result=_build_dataset_result(dataset) if dataset is not None else {},
+            result=(
+                DatasetDetailResult.from_model(dataset)
+                if dataset is not None
+                else DatasetDetailResult()
+            ),
         )
 
     @delete(
