@@ -775,26 +775,13 @@ class DashboardController(Controller):
             security_manager=security_manager,
             user_id=current_user.id,
         )
-        dashboard = await cmd.execute()
+        updated_configuration = await cmd.execute()
         event_logger.log(
             "dashboard.update_filters",
             object_ref=f"dashboard:{pk}",
             user_id=current_user.id,
         )
-        # Return parsed native_filter_configuration, not raw json_metadata string
-        import json as _json
-
-        nfc: list[dict[str, Any]] = []
-        json_metadata = (
-            str(dashboard.json_metadata) if dashboard.json_metadata else None
-        )
-        if json_metadata:
-            try:
-                meta = _json.loads(json_metadata)
-                nfc = meta.get("native_filter_configuration", [])
-            except (ValueError, TypeError):
-                pass
-        return {"result": nfc}
+        return {"result": updated_configuration}
 
     # ------------------------------------------------------------------
     # PUT — update colors

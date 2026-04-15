@@ -766,7 +766,7 @@ class CopyDashboardCommand(AsyncBaseCommand["Dashboard"]):
         return new_dash
 
 
-class UpdateDashboardFiltersCommand(AsyncBaseCommand["Dashboard"]):
+class UpdateDashboardFiltersCommand(AsyncBaseCommand[list[dict[str, Any]]]):
     def __init__(
         self,
         dao: AsyncDashboardDAO,
@@ -791,35 +791,65 @@ class UpdateDashboardFiltersCommand(AsyncBaseCommand["Dashboard"]):
                 self._dashboard, self._user_id
             )
 
-    async def run(self) -> "Dashboard":
+    async def run(self) -> list[dict[str, Any]]:
         assert self._dashboard is not None
         import json  # noqa: TID251
 
-        existing: dict[str, Any] = {}
+        metadata: dict[str, Any] = {}
         if self._dashboard.json_metadata:
             try:
-                existing = json.loads(self._dashboard.json_metadata)
+                metadata = json.loads(self._dashboard.json_metadata)
             except (json.JSONDecodeError, TypeError):
-                pass
+                metadata = {}
 
-        nfc = existing.get("native_filter_configuration", [])
-        # Process deleted — schema sends list[str] of filter IDs
-        deleted_ids = set(self._data.get("deleted", []))
-        nfc = [f for f in nfc if f["id"] not in deleted_ids]
-        # Process modified — schema sends list[dict] with full filter objects
-        for mod in self._data.get("modified", []):
-            for i, f in enumerate(nfc):
-                if f["id"] == mod["id"]:
-                    nfc[i] = mod
-                    break
-        # Process reordered — schema sends list[str] of filter IDs in desired order
-        if reordered := self._data.get("reordered", []):
-            order_map = {rid: idx for idx, rid in enumerate(reordered)}
-            nfc.sort(key=lambda f: order_map.get(f["id"], len(nfc)))
-        existing["native_filter_configuration"] = nfc
-        self._dashboard.json_metadata = json.dumps(existing)
+        native_filter_configuration: list[dict[str, Any]] = metadata.get(
+            "native_filter_configuration", []
+        )
+        reordered_filter_ids: list[str] = list(self._data.get("reordered") or [])
+        deleted: list[str] = list(self._data.get("deleted") or [])
+        modified: list[dict[str, Any]] = list(self._data.get("modified") or [])
+
+        updated_configuration: list[dict[str, Any]] = []
+        # Modify / Delete existing filters
+        for conf in native_filter_configuration:
+            if any(f == conf.get("id") for f in deleted):
+                continue
+            modified_filter = next(
+                (f for f in modified if f.get("id") == conf.get("id")),
+                None,
+            )
+            if modified_filter is not None:
+                updated_configuration.append(modified_filter)
+            else:
+                updated_configuration.append(conf)
+
+        # Append new filters (present in `modified` but not in the existing config)
+        for new_filter in modified:
+            new_filter_id = new_filter.get("id")
+            if new_filter_id not in [f.get("id") for f in updated_configuration]:
+                updated_configuration.append(new_filter)
+                if (
+                    reordered_filter_ids
+                    and new_filter_id not in reordered_filter_ids
+                ):
+                    reordered_filter_ids.append(new_filter_id)
+
+        # Reorder filters
+        if reordered_filter_ids:
+            filter_map = {
+                filter_config["id"]: filter_config
+                for filter_config in updated_configuration
+            }
+            updated_configuration = [
+                filter_map[filter_id]
+                for filter_id in reordered_filter_ids
+                if filter_id in filter_map
+            ]
+
+        metadata["native_filter_configuration"] = updated_configuration
+        self._dashboard.json_metadata = json.dumps(metadata)
         await self._dao.session.flush()
-        return self._dashboard
+        return updated_configuration
 
 
 class UpdateDashboardColorsCommand(AsyncBaseCommand["Dashboard"]):
