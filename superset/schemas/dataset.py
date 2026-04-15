@@ -271,6 +271,7 @@ class DatasetDetailResult(ModelStruct):
     """Full dataset detail returned by GET /api/v1/dataset/{pk}."""
 
     # --- identifiers ---
+    id: int | None = None
     table_name: str = ""
     datasource_name: str = ""
     name: str = ""
