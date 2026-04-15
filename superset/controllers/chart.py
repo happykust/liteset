@@ -118,9 +118,34 @@ def _chart_custom_filters(current_user: Any) -> dict[str, Any]:
             return model_cls.certified_by.isnot(None)
         return model_cls.certified_by.is_(None)
 
+    def _chart_all_text(model_cls: Any, value: Any) -> Any:
+        """OR-match the search term across slice_name, description,
+        viz_type and the associated dataset's table_name.
+
+        Ported 1:1 from superset_old/charts/filters.py:ChartAllTextFilter.
+        """
+        if not value:
+            return None
+        from sqlalchemy import or_
+        from sqlalchemy import select as sa_select
+
+        from superset.models.connectors import SqlaTable
+
+        ilike_value = f"%{value}%"
+        table_subq = sa_select(SqlaTable.id).where(
+            SqlaTable.table_name.ilike(ilike_value)
+        )
+        return or_(
+            model_cls.slice_name.ilike(ilike_value),
+            model_cls.description.ilike(ilike_value),
+            model_cls.viz_type.ilike(ilike_value),
+            model_cls.datasource_id.in_(table_subq),
+        )
+
     return {
         "chart_is_favorite": _chart_is_favorite,
         "chart_is_certified": _chart_is_certified,
+        "chart_all_text": _chart_all_text,
     }
 
 
