@@ -287,6 +287,30 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
         return base in self._NUMERIC_TYPES
 
     @property
+    def type_generic(self) -> int | None:
+        from superset.typing import GenericDataType
+
+        if self.is_dttm:
+            return int(GenericDataType.TEMPORAL)
+        table = getattr(self, "table", None)
+        database = getattr(table, "database", None)
+        if database is None:
+            return None
+        try:
+            db_extra = database.get_extra()
+        except Exception:  # noqa: BLE001
+            db_extra = None
+        try:
+            column_spec = database.db_engine_spec.get_column_spec(
+                self.type, db_extra=db_extra
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        if column_spec is None:
+            return None
+        return int(column_spec.generic_type)
+
+    @property
     def data(self) -> dict[str, Any]:
         """Data representation sent to the frontend."""
         attrs = (
