@@ -35,6 +35,24 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         """Get a Database by its ID."""
         return await self.session.get(Database, database_id)
 
+    async def find_by_id_with_options(
+        self,
+        dataset_id: int,
+        options: list[Any] | None = None,
+    ) -> SqlaTable | None:
+        """Find a dataset by id with optional eager-load ``options``.
+
+        Used when the caller needs to serialize relationship collections
+        (``database``, ``columns``, ``metrics``, ``owners``, …) in the
+        same async context to avoid ``MissingGreenlet`` errors on lazy
+        relationship access under asyncpg.
+        """
+        stmt = select(SqlaTable).where(SqlaTable.id == dataset_id)
+        if options:
+            stmt = stmt.options(*options)
+        result = await self.session.execute(stmt)
+        return result.scalars().one_or_none()
+
     async def validate_uniqueness(
         self,
         database_id: int,

@@ -517,9 +517,24 @@ class DatasetController(Controller):
             object_ref=f"dataset:{pk}",
             user_id=current_user.id,
         )
+
+        # Re-load with ``database`` eager-loaded so ``_build_dataset_result``
+        # can serialize the nested ``database`` dict without triggering a
+        # lazy load on the returned model (which crashes with
+        # ``MissingGreenlet`` under asyncpg).  Observed while running the
+        # ``explore/control.test.ts::should allow edit dataset`` Cypress
+        # spec which hits ``PUT /api/v1/dataset/<id>?override_columns=true``.
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.connectors import SqlaTable
+
+        dataset = await dao.find_by_id_with_options(
+            int(dataset.id),
+            options=[selectinload(SqlaTable.database)],
+        )
         return DatasetGetResponse(
-            id=int(dataset.id),
-            result=_build_dataset_result(dataset),
+            id=int(dataset.id) if dataset is not None else int(pk),
+            result=_build_dataset_result(dataset) if dataset is not None else {},
         )
 
     @delete(
