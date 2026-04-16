@@ -307,12 +307,15 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
     async def run(self) -> "SqlaTable":
         assert self._dataset is not None
 
-        # Validate SQL access only when SQL is actually being set to a
-        # non-empty value. Empty string means "physical table, no SQL"
-        # and matches the original Flask behaviour of skipping access
-        # checks for non-virtual datasets.
+        # Mirrors UpdateDatasetCommand._validate_sql_access in the
+        # original Flask Superset: ``if sql and sql != self._model.sql``.
+        # Skip when sql is empty (physical table) or unchanged — the
+        # dataset edit modal sends sql="" for every save, so checking
+        # only ``is not None`` would re-validate access on every PUT
+        # and pull in a sync lazy-load of self._dataset.database that
+        # crashes with MissingGreenlet under asyncpg.
         sql = self._data.get("sql")
-        if sql and self._security_manager is not None:
+        if sql and sql != self._dataset.sql and self._security_manager is not None:
             await self._dao.session.refresh(self._dataset, ["database"])
             database = getattr(self._dataset, "database", None)
             if database and hasattr(self._security_manager, "raise_for_access"):
