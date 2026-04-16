@@ -331,6 +331,7 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         data = dict(self._data)
         columns = data.pop("columns", None)
         metrics = data.pop("metrics", None)
+        owner_ids = data.pop("owners", None)
         update_attrs: dict[str, Any] = {}
         if columns is not None:
             update_attrs["columns"] = [
@@ -340,6 +341,13 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             update_attrs["metrics"] = [
                 dict(m) if not isinstance(m, dict) else m for m in metrics
             ]
+        if owner_ids is not None and self._security_manager is not None:
+            owners = []
+            for oid in owner_ids:
+                user = await self._security_manager.find_user_by_id(oid)
+                if user:
+                    owners.append(user)
+            update_attrs["owners"] = owners
         for key, value in data.items():
             if hasattr(self._dataset, key):
                 update_attrs[key] = value
