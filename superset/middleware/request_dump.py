@@ -108,8 +108,15 @@ def _safe_body(
     if isinstance(data, bytes):
         if len(data) > max_size:
             return f"[truncated {len(data)} bytes]"
+        # Try gzip decompression first
+        import gzip as _gzip
+
         try:
-            data = data.decode("utf-8")
+            data = _gzip.decompress(data)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            data = data.decode("utf-8") if isinstance(data, bytes) else data
         except UnicodeDecodeError:
             return f"[binary {len(data)} bytes]"
     if len(data) > max_size:

@@ -177,9 +177,8 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         property_columns: list[dict[str, Any]],
     ) -> None:
         """Update dataset columns: insert new, update existing, delete removed."""
-        stmt = select(TableColumn).where(TableColumn.table_id == model.id)
-        result = await self.session.execute(stmt)
-        existing_columns = {col.id: col for col in result.scalars().all()}
+        await self.session.refresh(model, ["columns"])
+        existing_columns = {col.id: col for col in model.columns}
 
         incoming_ids = set()
         for col_data in property_columns:
@@ -195,12 +194,13 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
                 col_data["table_id"] = model.id
                 col_data.pop("id", None)
                 new_col = TableColumn(**col_data)
-                self.session.add(new_col)
+                model.columns.append(new_col)
 
         ids_to_delete = set(existing_columns.keys()) - incoming_ids
         if ids_to_delete:
-            del_stmt = delete(TableColumn).where(TableColumn.id.in_(ids_to_delete))
-            await self.session.execute(del_stmt)
+            for cid in ids_to_delete:
+                model.columns.remove(existing_columns[cid])
+                await self.session.delete(existing_columns[cid])
 
     async def update_metrics(
         self,
@@ -208,9 +208,8 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         property_metrics: list[dict[str, Any]],
     ) -> None:
         """Update dataset metrics: insert new, update existing, delete removed."""
-        stmt = select(SqlMetric).where(SqlMetric.table_id == model.id)
-        result = await self.session.execute(stmt)
-        existing_metrics = {m.id: m for m in result.scalars().all()}
+        await self.session.refresh(model, ["metrics"])
+        existing_metrics = {m.id: m for m in model.metrics}
 
         incoming_ids = set()
         for metric_data in property_metrics:
@@ -226,12 +225,13 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
                 metric_data["table_id"] = model.id
                 metric_data.pop("id", None)
                 new_metric = SqlMetric(**metric_data)
-                self.session.add(new_metric)
+                model.metrics.append(new_metric)
 
         ids_to_delete = set(existing_metrics.keys()) - incoming_ids
         if ids_to_delete:
-            del_stmt = delete(SqlMetric).where(SqlMetric.id.in_(ids_to_delete))
-            await self.session.execute(del_stmt)
+            for mid in ids_to_delete:
+                model.metrics.remove(existing_metrics[mid])
+                await self.session.delete(existing_metrics[mid])
 
     async def get_related_objects(
         self,
