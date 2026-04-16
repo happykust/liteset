@@ -586,6 +586,13 @@ class DashboardsNotFoundValidationError(CommandInvalidError):
     message = "Dashboards do not exist"
 
 
+class OwnersNotFoundValidationError(CommandInvalidError):
+    """Raised when one or more requested owner ids can't be resolved."""
+
+    status_code = 422
+    message = "Owners are invalid"
+
+
 class CreateFailedError(CommandException):
     status_code = 500
     message = "Create failed"

@@ -32,6 +32,7 @@ import yaml  # type: ignore[import-untyped]
 from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, String, Text
 
 from superset.commands.base import AsyncBaseCommand
+from superset.commands.utils import compute_owner_list
 from superset.exceptions import (
     CommandInvalidError,
     ObjectNotFoundError,
@@ -348,13 +349,14 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             update_attrs["metrics"] = [
                 dict(m) if not isinstance(m, dict) else m for m in metrics
             ]
-        if owner_ids is not None and self._security_manager is not None:
-            owners = []
-            for oid in owner_ids:
-                user = await self._security_manager.find_user_by_id(oid)
-                if user:
-                    owners.append(user)
-            update_attrs["owners"] = owners
+        if self._security_manager is not None:
+            await self._dao.session.refresh(self._dataset, ["owners"])
+            update_attrs["owners"] = await compute_owner_list(
+                self._security_manager,
+                self._user_id,
+                list(self._dataset.owners),
+                owner_ids,
+            )
         for key, value in data.items():
             if hasattr(self._dataset, key):
                 update_attrs[key] = value

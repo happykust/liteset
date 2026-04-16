@@ -30,6 +30,7 @@ from uuid import UUID as _UUID
 import yaml  # type: ignore[import-untyped]
 
 from superset.commands.base import AsyncBaseCommand
+from superset.commands.utils import compute_owner_list, populate_owner_list
 from superset.commands.chart import (
     _get_filename,
     _import_chart,
@@ -434,25 +435,16 @@ class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         # Resolve owners — refresh first to avoid MissingGreenlet
         # on the lazy-loaded collection in async context.
         await self._dao.session.refresh(dashboard, ["owners"])
-        owner_ids = self._data.get("owners", [])
         resolved_owner_ids: list[int] = []
-        if owner_ids and self._security_manager is not None:
-            owners = []
-            for oid in owner_ids:
-                user = await self._security_manager.find_user_by_id(oid)
-                if user:
-                    owners.append(user)
-                    resolved_owner_ids.append(user.id)
+        if self._security_manager is not None:
+            owners = await populate_owner_list(
+                self._security_manager,
+                self._user_id,
+                self._data.get("owners"),
+                default_to_user=True,
+            )
             dashboard.owners = owners
-        elif (
-            not owner_ids
-            and self._user_id is not None
-            and self._security_manager is not None
-        ):
-            user = await self._security_manager.find_user_by_id(self._user_id)
-            if user:
-                dashboard.owners = [user]
-                resolved_owner_ids.append(user.id)
+            resolved_owner_ids = [o.id for o in owners]
 
         # Resolve roles
         role_ids = self._data.get("roles", [])
@@ -544,15 +536,16 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         if "json_metadata" in self._data:
             await self._dao.set_dash_metadata(self._dashboard, self._data)
 
-        # Resolve owners
-        owner_ids = self._data.get("owners", [])
-        if owner_ids and self._security_manager is not None:
-            owners = []
-            for oid in owner_ids:
-                user = await self._security_manager.find_user_by_id(oid)
-                if user:
-                    owners.append(user)
-            self._dashboard.owners = owners
+        # Resolve owners — preserve existing when ``owners`` not in payload,
+        # auto-add caller when non-admin, raise on unknown ids.
+        if "owners" in self._data and self._security_manager is not None:
+            await self._dao.session.refresh(self._dashboard, ["owners"])
+            self._dashboard.owners = await compute_owner_list(
+                self._security_manager,
+                self._user_id,
+                list(self._dashboard.owners),
+                self._data.get("owners"),
+            )
 
         # Resolve roles
         role_ids = self._data.get("roles", [])

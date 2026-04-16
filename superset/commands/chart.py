@@ -28,6 +28,7 @@ from uuid import UUID as _UUID
 import yaml  # type: ignore[import-untyped]
 
 from superset.commands.base import AsyncBaseCommand
+from superset.commands.utils import compute_owner_list, populate_owner_list
 from superset.exceptions import (
     CommandInvalidError,
     DashboardsForbiddenError,
@@ -367,26 +368,17 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
             chart.last_saved_by_fk = self._user_id  # type: ignore[assignment]
         chart.last_saved_at = datetime.now()  # type: ignore[assignment]
 
-        # Resolve owners
-        owner_ids = self._data.get("owners", [])
+        # Resolve owners — defaults to the current user when none provided
         resolved_owner_ids: list[int] = []
-        if owner_ids and self._security_manager is not None:
-            owners = []
-            for oid in owner_ids:
-                user = await self._security_manager.find_user_by_id(oid)
-                if user:
-                    owners.append(user)
-                    resolved_owner_ids.append(user.id)
+        if self._security_manager is not None:
+            owners = await populate_owner_list(
+                self._security_manager,
+                self._user_id,
+                self._data.get("owners"),
+                default_to_user=True,
+            )
             chart.owners = owners
-        elif (
-            not owner_ids
-            and self._user_id is not None
-            and self._security_manager is not None
-        ):
-            user = await self._security_manager.find_user_by_id(self._user_id)
-            if user:
-                chart.owners = [user]
-                resolved_owner_ids.append(user.id)
+            resolved_owner_ids = [o.id for o in owners]
 
         # Assign dashboards M2M BEFORE attaching the chart to the
         # session.  ``validate()`` already resolved the requested ids to
@@ -537,14 +529,13 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
         # Resolve owners — ``validate()`` already pre-loaded the
         # collection via ``selectinload`` so the assignment below will
         # not trigger a lazy load.
-        owner_ids = self._data.get("owners")
-        if owner_ids is not None and self._security_manager is not None:
-            owners = []
-            for oid in owner_ids:
-                user = await self._security_manager.find_user_by_id(oid)
-                if user:
-                    owners.append(user)
-            self._chart.owners = owners
+        if self._security_manager is not None:
+            self._chart.owners = await compute_owner_list(
+                self._security_manager,
+                self._user_id,
+                list(self._chart.owners),
+                self._data.get("owners"),
+            )
 
         # Resolve tags
         tag_ids = self._data.get("tags")
