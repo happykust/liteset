@@ -307,9 +307,13 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
     async def run(self) -> "SqlaTable":
         assert self._dataset is not None
 
-        # Validate SQL access when sql is being changed
+        # Validate SQL access only when SQL is actually being set to a
+        # non-empty value. Empty string means "physical table, no SQL"
+        # and matches the original Flask behaviour of skipping access
+        # checks for non-virtual datasets.
         sql = self._data.get("sql")
-        if sql is not None and self._security_manager is not None:
+        if sql and self._security_manager is not None:
+            await self._dao.session.refresh(self._dataset, ["database"])
             database = getattr(self._dataset, "database", None)
             if database and hasattr(self._security_manager, "raise_for_access"):
                 schema = self._data.get("schema") or getattr(

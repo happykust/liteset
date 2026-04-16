@@ -158,6 +158,16 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         attributes = {**attributes}
         force_update = False
 
+        # Handle relationship reassignments BEFORE columns/metrics so the
+        # subsequent autoflush triggered by update_columns/update_metrics
+        # doesn't lazy-load the old relationship under sync setattr —
+        # which would crash with MissingGreenlet under asyncpg.
+        for rel_key in ("owners", "tags"):
+            if rel_key in attributes:
+                new_value = attributes.pop(rel_key)
+                await self.session.refresh(item, [rel_key])
+                setattr(item, rel_key, new_value)
+
         if "columns" in attributes:
             await self.update_columns(item, attributes.pop("columns"))
             force_update = True
@@ -168,14 +178,6 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
 
         if force_update:
             attributes["changed_on"] = datetime.now()
-
-        # Pre-load any relationship attribute that's about to be reassigned
-        # via ``setattr`` in the base DAO. SQLAlchemy needs the OLD value
-        # to compute the relationship diff, and a lazy-load triggered from
-        # ``setattr`` would attempt sync I/O under asyncpg → MissingGreenlet.
-        rel_keys = [k for k in attributes if k in {"owners", "tags"}]
-        if rel_keys:
-            await self.session.refresh(item, rel_keys)
 
         return await super().update(item, attributes)
 
