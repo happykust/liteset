@@ -499,9 +499,9 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                     is_dttm=getattr(col, "is_dttm", False),
                     expression=getattr(col, "expression", None),
                     python_date_format=getattr(col, "python_date_format", None),
+                    table_id=new_dataset.id,
                 )
-                new_col.table_id = new_dataset.id
-                self._dao.session.add(new_col)
+                new_dataset.columns.append(new_col)
 
         # Copy metrics
         if hasattr(self._source, "metrics"):
@@ -512,9 +512,9 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                     metric_type=getattr(metric, "metric_type", None),
                     description=getattr(metric, "description", None),
                     verbose_name=getattr(metric, "verbose_name", None),
+                    table_id=new_dataset.id,
                 )
-                new_metric.table_id = new_dataset.id
-                self._dao.session.add(new_metric)
+                new_dataset.metrics.append(new_metric)
 
         # Copy additional fields
         new_dataset.template_params = getattr(  # type: ignore[assignment]
@@ -1148,13 +1148,12 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         if not columns_config and not sync:
             return
 
-        # Get existing columns
-        stmt = select(TableColumn).where(TableColumn.table_id == dataset.id)
-        result = await self._dao.session.execute(stmt)  # type: ignore[union-attr]
+        # Refresh relationship to get current DB state
+        await self._dao.session.refresh(dataset, ["columns"])  # type: ignore[union-attr]
         existing_by_uuid: dict[str, TableColumn] = {}
         existing_by_name: dict[str, TableColumn] = {}
         existing_ids: set[int] = set()
-        for col in result.scalars().all():
+        for col in dataset.columns:
             if getattr(col, "uuid", None):
                 existing_by_uuid[str(col.uuid)] = col
             existing_by_name[col.column_name] = col
@@ -1204,14 +1203,18 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                 new_col = TableColumn(**filtered)
                 if col_uuid:
                     new_col.uuid = _UUID(col_uuid)  # type: ignore[assignment]
-                self._dao.session.add(new_col)  # type: ignore[union-attr]
+                dataset.columns.append(new_col)
 
         # Sync: delete columns not present in the import
         if sync:
             ids_to_delete = existing_ids - seen_ids
-            if ids_to_delete:
-                del_stmt = delete(TableColumn).where(TableColumn.id.in_(ids_to_delete))
-                await self._dao.session.execute(del_stmt)  # type: ignore[union-attr]
+            for cid in ids_to_delete:
+                col_obj = next(
+                    (c for c in dataset.columns if c.id == cid), None
+                )
+                if col_obj:
+                    dataset.columns.remove(col_obj)
+                    await self._dao.session.delete(col_obj)  # type: ignore[union-attr]
 
     async def _import_metrics(  # noqa: C901
         self,
@@ -1229,13 +1232,12 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         if not metrics_config and not sync:
             return
 
-        # Get existing metrics
-        stmt = select(SqlMetric).where(SqlMetric.table_id == dataset.id)
-        result = await self._dao.session.execute(stmt)  # type: ignore[union-attr]
+        # Refresh relationship to get current DB state
+        await self._dao.session.refresh(dataset, ["metrics"])  # type: ignore[union-attr]
         existing_by_uuid: dict[str, SqlMetric] = {}
         existing_by_name: dict[str, SqlMetric] = {}
         existing_ids: set[int] = set()
-        for m in result.scalars().all():
+        for m in dataset.metrics:
             if getattr(m, "uuid", None):
                 existing_by_uuid[str(m.uuid)] = m
             existing_by_name[m.metric_name] = m
@@ -1279,13 +1281,17 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                 new_metric = SqlMetric(**filtered)
                 if m_uuid:
                     new_metric.uuid = _UUID(m_uuid)  # type: ignore[assignment]
-                self._dao.session.add(new_metric)  # type: ignore[union-attr]
+                dataset.metrics.append(new_metric)
 
         if sync:
             ids_to_delete = existing_ids - seen_ids
-            if ids_to_delete:
-                del_stmt = delete(SqlMetric).where(SqlMetric.id.in_(ids_to_delete))
-                await self._dao.session.execute(del_stmt)  # type: ignore[union-attr]
+            for mid in ids_to_delete:
+                m_obj = next(
+                    (m for m in dataset.metrics if m.id == mid), None
+                )
+                if m_obj:
+                    dataset.metrics.remove(m_obj)
+                    await self._dao.session.delete(m_obj)  # type: ignore[union-attr]
 
     async def _load_data(  # noqa: C901
         self,

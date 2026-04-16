@@ -93,7 +93,7 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
                 recipient_config_json=config,
                 report_schedule_id=report.id,
             )
-            self.session.add(rec)
+            report.recipients.append(rec)
 
         return report
 
@@ -109,13 +109,11 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
         item = await super().update(item, attributes)
 
         if recipients_data is not None:
-            # Delete existing recipients
-            stmt = delete(ReportRecipients).where(
-                ReportRecipients.report_schedule_id == item.id
-            )
-            await self.session.execute(stmt)
+            await self.session.refresh(item, ["recipients"])
+            for old_rec in list(item.recipients):
+                item.recipients.remove(old_rec)
+                await self.session.delete(old_rec)
 
-            # Add new recipients
             for recipient in recipients_data:
                 config = recipient.get("recipient_config_json", "")
                 if isinstance(config, dict):
@@ -125,7 +123,7 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
                     recipient_config_json=config,
                     report_schedule_id=item.id,
                 )
-                self.session.add(rec)
+                item.recipients.append(rec)
 
         return item
 
