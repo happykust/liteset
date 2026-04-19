@@ -134,7 +134,7 @@ liteset/
 │   │       ├── mysql.py            # Нативный asyncmy
 │   │       ├── clickhouse.py       # aiochclient
 │   │       ├── trino.py            # aiotrino
-│   │       └── sync_fallback.py    # Обёртка для 50+ СУБД через conn.run_sync()
+│   │       └── sync_fallback.py    # Обёртка для СУБД через conn.run_sync()
 │   ├── guards/                     # RBAC Guards
 │   ├── middleware/                 # Auth, CSRF, locale, security headers, proxy fix
 │   ├── schemas/                    # DTO на msgspec.Struct

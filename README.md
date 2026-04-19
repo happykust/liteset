@@ -25,106 +25,98 @@ under the License.
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-red.svg)](https://www.sqlalchemy.org/)
 [![Based on Apache Superset](https://img.shields.io/badge/based%20on-Apache%20Superset%206.0.0-blue.svg)](https://github.com/apache/superset)
 
-<picture width="500">
-  <img
-    width="600"
-    src="https://liteset.happykust.dev/img/liteset-logo-horiz.svg"
-    alt="Superset logo (light)"
-  />
-</picture>
+**Liteset is an async port of Apache Superset, rewritten from Flask/WSGI onto Litestar/ASGI.**
 
-**Liteset — асинхронный порт Apache Superset, переписанный с Flask/WSGI на Litestar/ASGI.**
-
-Проект сохраняет полную обратную совместимость с существующими инсталляциями Apache Superset: схема БД метаданных, HTTP API, WebSocket-контракт и фронтенд остаются неизменными. Достаточно остановить Superset, установить Liteset поверх той же базы данных — и продолжить работу с теми же дашбордами, датасетами, пользователями и ролями.
+The project preserves full backward compatibility with existing Apache Superset installations: the metadata database schema, the HTTP API, the WebSocket contract and the frontend stay unchanged. Stop Superset, install Liteset on top of the same database, and keep working with the same dashboards, datasets, users and roles.
 
 ---
 
-## Оглавление
+## Table of contents
 
-- [Мотивация](#мотивация)
-- [Целевая архитектура](#целевая-архитектура)
-- [Технологический стек](#технологический-стек)
-- [Гарантии совместимости](#гарантии-совместимости)
-- [Структура проекта](#структура-проекта)
-- [Установка и запуск](#установка-и-запуск)
-- [Лицензия](#лицензия)
-
----
-
-## Мотивация
-
-Исторически Apache Superset построен на Flask/WSGI и запускается через Gunicorn с пре-форком процессов. Такая модель имеет три фундаментальных ограничения:
-
-1. **Блокирующий ввод-вывод.** При длительных запросах к аналитическим СУБД поток выполнения простаивает в ожидании ответа, не обслуживая другие запросы.
-2. **Высокое потребление памяти.** Каждый worker-процесс копирует всё приложение и держит собственный пул соединений к БД метаданных.
-3. **Ограниченный параллелизм.** Количество одновременных запросов жёстко ограничено числом процессов × потоков.
-
-Liteset устраняет эти узкие места, переводя весь веб-слой на асинхронную модель ASGI. Ожидаемый эффект — прирост RPS в 2-3 раза на IO-bound-нагрузках и существенное снижение резидентной памяти за счёт перехода с пре-форка процессов на один event loop.
+- [Motivation](#motivation)
+- [Target architecture](#target-architecture)
+- [Technology stack](#technology-stack)
+- [Compatibility guarantees](#compatibility-guarantees)
+- [Project layout](#project-layout)
+- [Installation and running](#installation-and-running)
+- [License](#license)
 
 ---
 
-## Целевая архитектура
+## Motivation
 
-Серверная часть Liteset построена по принципам Clean Architecture. Приложение разделено на четыре слоя; зависимости направлены строго внутрь — внутренние слои не импортируют из внешних.
+Historically Apache Superset is built on Flask/WSGI and runs under Gunicorn with pre-forked processes. This model has three fundamental limitations:
+
+1. **Blocking I/O.** During long-running queries against analytical databases the worker thread sits idle waiting for a response and does not serve other requests.
+2. **High memory footprint.** Every worker process copies the whole application and maintains its own metadata-database connection pool.
+3. **Limited concurrency.** The number of concurrent requests is hard-capped by processes × threads.
+
+Liteset removes these bottlenecks by moving the entire web layer to the async ASGI model. The expected outcome is a 2–3× RPS gain on IO-bound workloads and a substantial reduction in resident memory thanks to switching from pre-forked processes to a single event loop.
+
+---
+
+## Target architecture
+
+The Liteset server is designed along Clean Architecture lines. The application is split into four layers; dependencies point strictly inward — inner layers never import from outer ones.
 
 ![Clean Architecture Layers](docs/plans/clean-architecture-layers.png)
 
-| Слой | Ответственность | Реализация |
+| Layer | Responsibility | Implementation |
 |---|---|---|
-| **Presentation** | Контроллеры, DTO, сериализация, авторизационные предикаты | `superset/controllers/`, `superset/schemas/`, `superset/guards/` — `async def` обработчики Litestar, DTO на `msgspec.Struct`, Guards для RBAC |
-| **Business Logic** | Бизнес-правила (`validate() → run()`) | `superset/commands/` — `AsyncBaseCommand`, фреймворк-независимые классы Command |
-| **Data Access** | Доступ к данным через SQLAlchemy 2.0 Select API | `superset/db/base_dao.py`, `superset/db/daos/` — `BaseAsyncDAO[T]` с `AsyncSession` в конструкторе |
-| **Infrastructure** | Middleware, DI, конфигурация, движок БД | `superset/middleware/`, `superset/dependencies.py`, `superset/config.py` |
+| **Presentation** | Controllers, DTOs, serialization, authorization predicates | `superset/controllers/`, `superset/schemas/`, `superset/guards/` — `async def` Litestar handlers, DTOs built on `msgspec.Struct`, Guards for RBAC |
+| **Business Logic** | Business rules (`validate() → run()`) | `superset/commands/` — `AsyncBaseCommand`, framework-independent Command classes |
+| **Data Access** | Data access through the SQLAlchemy 2.0 Select API | `superset/db/base_dao.py`, `superset/db/daos/` — `BaseAsyncDAO[T]` with an `AsyncSession` in the constructor |
+| **Infrastructure** | Middleware, DI, configuration, DB engine | `superset/middleware/`, `superset/dependencies.py`, `superset/config.py` |
 
 ---
 
-## Технологический стек
+## Technology stack
 
-| Категория | Компонент | Роль                                                                   |
-|---|---|------------------------------------------------------------------------|
-| **ASGI-фреймворк** | [Litestar](https://litestar.dev/) | Маршрутизация, DI, OpenAPI, Guards, Middleware                         |
-| **ASGI-сервер** | Uvicorn + uvloop | Event loop на базе libuv                                               |
-| **ORM** | SQLAlchemy 2.0 (Async) | Declarative-модели, запросы к БД                                       |
-| **Драйвер метаданных** | asyncpg / aiosqlite | Асинхронный доступ к БД метаданных                                     |
-| **Сериализация** | [msgspec](https://jcristharif.com/msgspec/) | DTO + валидация, заменяет Marshmallow и Pydantic v1                    |
-| **Конфигурация** | pydantic-settings | Типизированная конфигурация с backward-compat для `superset_config.py` |
-| **Миграции** | Alembic (psycopg2, sync) | Схема БД наследуется 1-в-1 от Superset 6.0.0                           |
-| **Фоновые задачи** | Celery | Оставлен без изменений (ортогонален HTTP-слою)                         |
-| **WebSocket** | Нативный Litestar | Заменяет отдельный Node.js-сервис `superset-websocket`                 |
-| **Кэш** | Redis (redis-py async) | Per-request cache, auth user cache, async events                       |
-| **Логирование** | structlog | Структурированные JSON-логи                                            |
+| Category | Component | Role                                                                        |
+|---|---|-----------------------------------------------------------------------------|
+| **ASGI framework** | [Litestar](https://litestar.dev/) | Routing, DI, OpenAPI, Guards, Middleware                                    |
+| **ASGI server** | Uvicorn + uvloop | libuv-based event loop                                                      |
+| **ORM** | SQLAlchemy 2.0 (Async) | Declarative models, database queries                                        |
+| **Metadata driver** | asyncpg / aiosqlite | Async access to the metadata DB                                             |
+| **Serialization** | [msgspec](https://jcristharif.com/msgspec/) | DTOs + validation, replaces Marshmallow and Pydantic v1                     |
+| **Configuration** | pydantic-settings | Typed configuration with backward compatibility for `superset_config.py`    |
+| **Migrations** | Alembic (psycopg2, sync) | DB schema is inherited 1:1 from Superset 6.0.0                              |
+| **Background jobs** | Celery | Left unchanged (orthogonal to the HTTP layer)                               |
+| **WebSocket** | Native Litestar | Replaces the standalone Node.js `superset-websocket` service                |
+| **Cache** | Redis (redis-py async) | Per-request cache, auth user cache, async events                            |
+| **Logging** | structlog | Structured JSON logs                                                        |
 
 ---
 
-## Гарантии совместимости
+## Compatibility guarantees
 
-Liteset — это **drop-in replacement** для Apache Superset 6.0.0 на уровне backend-а. Фиксируются три инварианта:
+Liteset is a **drop-in replacement** for Apache Superset 6.0.0 at the backend level. Three invariants are locked in:
 
-### 1. БД метаданных
+### 1. Metadata database
 
-Схема таблиц метаданных (`ab_user`, `ab_role`, `dashboards`, `slices`, `tables`, `dbs`, `query`, `saved_query`, `report_schedule` и т.д.) наследуется без изменений. Alembic-ревизии перенесены целиком. Существующая инсталляция Superset может быть мигрирована простой подменой бекенда — без `superset db upgrade`.
+The schema of the metadata tables (`ab_user`, `ab_role`, `dashboards`, `slices`, `tables`, `dbs`, `query`, `saved_query`, `report_schedule`, etc.) is inherited without changes. Alembic revisions are carried over wholesale. An existing Superset installation can be migrated by simply swapping the backend — no `superset db upgrade` required.
 
-### 2. Фронтенд
+### 2. Frontend
 
-**Код фронтенда (`superset-frontend/`) запрещено изменять.** Liteset обязан воспроизводить все эндпоинты, форматы JSON-ответов, cookie-формат сессии (Flask-подписанные session cookies декодируются нативно), CSRF-токены (`X-CSRFToken`), rison-параметры запросов и SPA-шаблон `/superset/welcome`.
+**The frontend code (`superset-frontend/`) must not be modified.** Liteset is obliged to reproduce every endpoint, JSON response shape, session cookie format (Flask-signed session cookies are decoded natively), CSRF tokens (`X-CSRFToken`), rison request parameters and the `/superset/welcome` SPA template.
 
 ### 3. HTTP API
 
-Все 37+ REST-контроллеров воспроизводят контракт Superset 1:1 — URL-маршруты, коды ответа, имена полей (поддерживается двойной `camelCase`/`snake_case` lookup на стороне msgspec), структура пагинации, ошибки SIP-40, формат Swagger-спеки. OpenAPI-документация автогенерируется на `/swagger/v1`.
+All 37+ REST controllers reproduce the Superset contract 1:1 — URL routes, response codes, field names (dual `camelCase`/`snake_case` lookup is supported on the msgspec side), pagination shape, SIP-40 errors, Swagger spec layout. OpenAPI docs are auto-generated at `/swagger/v1`.
 
 ---
 
-## Структура проекта
+## Project layout
 
 ```
 liteset/
-├── superset/                       # Async backend на Litestar
-│   ├── app.py                      # Фабрика Litestar-приложения
+├── superset/                       # Async backend on Litestar
+│   ├── app.py                      # Litestar application factory
 │   ├── config.py                   # SupersetSettings (pydantic-settings)
-│   ├── dependencies.py             # DI Provide'ы (session, user, security_manager)
-│   ├── exceptions.py               # Иерархия SIP-40 + handlers
-│   ├── controllers/                # Presentation layer — 37 контроллеров
-│   │   ├── base.py                 # RISON-хелперы, пагинация, сериализация
+│   ├── dependencies.py             # DI Provide's (session, user, security_manager)
+│   ├── exceptions.py               # SIP-40 hierarchy + handlers
+│   ├── controllers/                # Presentation layer — 37 controllers
+│   │   ├── base.py                 # RISON helpers, pagination, serialization
 │   │   ├── chart.py, dashboard.py, database.py, dataset.py, …
 │   │   └── sqllab.py, report.py, security.py, user.py, …
 │   ├── commands/                   # Business Logic layer
@@ -136,27 +128,27 @@ liteset/
 │   │   ├── daos/                   # Data Access layer
 │   │   │   ├── chart.py, dashboard.py, database.py, …
 │   │   │   └── security.py, user.py, …
-│   │   └── engine_specs/           # Async DB адаптеры
+│   │   └── engine_specs/           # Async DB adapters
 │   │       ├── base.py             # BaseAsyncEngineSpec
-│   │       ├── postgres.py         # Нативный asyncpg
-│   │       ├── mysql.py            # Нативный asyncmy
+│   │       ├── postgres.py         # Native asyncpg
+│   │       ├── mysql.py            # Native asyncmy
 │   │       ├── clickhouse.py       # aiochclient
 │   │       ├── trino.py            # aiotrino
-│   │       └── sync_fallback.py    # Обёртка для 50+ СУБД через conn.run_sync()
+│   │       └── sync_fallback.py    # Wrapper for other DBs via conn.run_sync()
 │   ├── guards/                     # RBAC Guards
 │   ├── middleware/                 # Auth, CSRF, locale, security headers, proxy fix
-│   ├── schemas/                    # DTO на msgspec.Struct
-│   ├── security/                   # AsyncSecurityManager (порт FAB)
+│   ├── schemas/                    # DTOs on msgspec.Struct
+│   ├── security/                   # AsyncSecurityManager (FAB port)
 │   ├── async_events/               # Redis-streams-based async events
-│   ├── websocket/                  # Нативный Litestar WebSocket
+│   ├── websocket/                  # Native Litestar WebSocket
 │   ├── common/                     # QueryContext/QueryObject
 │   ├── models/                     # SQLAlchemy 2.0 declarative models
 │   ├── migrations/                 # Alembic (psycopg2, sync)
-│   ├── db_engine_specs/            # Sync BaseEngineSpec (для SQL-диалектов)
+│   ├── db_engine_specs/            # Sync BaseEngineSpec (for SQL dialects)
 │   ├── sql/                        # SQL parser, Jinja templating
 │   ├── viz.py                      # Legacy viz engine (explore_json)
-│   └── static/, templates/         # SPA bundle, Jinja-шаблоны
-├── superset-frontend/              # React-фронтенд (не модифицируется)
+│   └── static/, templates/         # SPA bundle, Jinja templates
+├── superset-frontend/              # React frontend (not modified)
 ├── tests/                          # pytest
 ├── requirements/                   # base.in, development.in, …
 └── pyproject.toml
@@ -164,18 +156,18 @@ liteset/
 
 ---
 
-## Установка и запуск
+## Installation and running
 
-Ознакомьтесь с [руководством](https://liteset.happykust.dev/docs/quickstart/) Liteset или изучите [варианты развёртывания в продуктивной среде](https://liteset.happykust.dev/docs/installation/architecture/).
+See the Liteset [quickstart guide](https://liteset.happykust.dev/docs/quickstart/) or explore the [production deployment options](https://liteset.happykust.dev/docs/installation/architecture/).
 
 ---
 
-## Лицензия
+## License
 
-Liteset распространяется под лицензией [Apache License 2.0](LICENSE.txt), наследуя её от Apache Superset. Все заимствованные файлы из Apache Superset 6.0.0 сохраняют оригинальные ASF-хедеры.
+Liteset is distributed under the [Apache License 2.0](LICENSE.txt), inherited from Apache Superset. All files carried over from Apache Superset 6.0.0 preserve their original ASF headers.
 
 ---
 
 <p>
-  <em>Liteset — это академический порт, автор проекта мог пропустить важные детали, которые вызовут регрессию относительно Apache Superset 6.0.0. Для production-инсталляций Apache Superset по-прежнему используйте <a href="https://github.com/apache/superset">apache/superset</a>.</em>
+  <em>Liteset is an academic port; the author may have missed important details that cause regressions relative to Apache Superset 6.0.0. For production installations, keep using <a href="https://github.com/apache/superset">apache/superset</a>.</em>
 </p>
