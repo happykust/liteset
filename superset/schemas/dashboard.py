@@ -40,6 +40,30 @@ def _sanitize_slug(slug: str | None) -> str | None:
     return slug or None
 
 
+def _normalize_id_list(
+    value: list[int | dict[str, Any]] | None | msgspec.UnsetType,
+) -> list[int] | None | msgspec.UnsetType:
+    """Accept either ``[1, 2]`` or ``[{"id": 1}, ...]`` and return ``[1, 2]``.
+
+    The frontend sometimes round-trips nested user/role objects from a GET
+    response straight back into a PUT body (``owners: r.owners``).  The
+    original Superset Marshmallow schema strictly expected ``list[int]`` and
+    would 400 on such payloads, but the Cypress suite — disabled in upstream
+    CI — relies on this shape working.  We accept both and normalise to
+    ids so downstream command code (``compute_owner_list``) receives the
+    canonical ``list[int]``.
+    """
+    if value is msgspec.UNSET or value is None:
+        return value
+    result: list[int] = []
+    for item in value:
+        if isinstance(item, int):
+            result.append(item)
+        elif isinstance(item, dict) and "id" in item:
+            result.append(int(item["id"]))
+    return result
+
+
 class DashboardPostSchema(msgspec.Struct):
     """POST /api/v1/dashboard/"""
 
@@ -53,14 +77,17 @@ class DashboardPostSchema(msgspec.Struct):
     certification_details: str | None = None
     is_managed_externally: bool = False
     external_url: str | None = None
-    owners: list[int] | None = None
-    roles: list[int] | None = None
-    tags: list[int] | None = None
+    owners: list[int | dict[str, Any]] | None = None
+    roles: list[int | dict[str, Any]] | None = None
+    tags: list[int | dict[str, Any]] | None = None
     theme_id: int | None = None
     uuid: str | None = None
 
     def __post_init__(self) -> None:
         self.slug = _sanitize_slug(self.slug)
+        self.owners = _normalize_id_list(self.owners)  # type: ignore[assignment]
+        self.roles = _normalize_id_list(self.roles)  # type: ignore[assignment]
+        self.tags = _normalize_id_list(self.tags)  # type: ignore[assignment]
 
 
 class DashboardPutSchema(msgspec.Struct):
@@ -76,15 +103,18 @@ class DashboardPutSchema(msgspec.Struct):
     certification_details: str | None | msgspec.UnsetType = msgspec.UNSET
     is_managed_externally: bool | None | msgspec.UnsetType = msgspec.UNSET
     external_url: str | None | msgspec.UnsetType = msgspec.UNSET
-    owners: list[int] | None | msgspec.UnsetType = msgspec.UNSET
-    roles: list[int] | None | msgspec.UnsetType = msgspec.UNSET
-    tags: list[int] | None | msgspec.UnsetType = msgspec.UNSET
+    owners: list[int | dict[str, Any]] | None | msgspec.UnsetType = msgspec.UNSET
+    roles: list[int | dict[str, Any]] | None | msgspec.UnsetType = msgspec.UNSET
+    tags: list[int | dict[str, Any]] | None | msgspec.UnsetType = msgspec.UNSET
     theme_id: int | None | msgspec.UnsetType = msgspec.UNSET
     uuid: str | None | msgspec.UnsetType = msgspec.UNSET
 
     def __post_init__(self) -> None:
         if isinstance(self.slug, str):
             self.slug = _sanitize_slug(self.slug)
+        self.owners = _normalize_id_list(self.owners)  # type: ignore[assignment]
+        self.roles = _normalize_id_list(self.roles)  # type: ignore[assignment]
+        self.tags = _normalize_id_list(self.tags)  # type: ignore[assignment]
 
 
 class DashboardCopySchema(msgspec.Struct):
