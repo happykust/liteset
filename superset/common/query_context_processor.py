@@ -429,6 +429,9 @@ class AsyncQueryContextProcessor:
             "coltypes": coltypes,
             "applied_filters": applied_filters,
             "rejected_filters": rejected_filters,
+            # Match original Superset chart/data response shape
+            # (superset_old/common/query_context_processor.py).
+            "result_format": getattr(query_object, "result_format", None) or "json",
         }
 
     async def _get_cache_key(
