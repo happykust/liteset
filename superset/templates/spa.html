@@ -71,7 +71,7 @@
   <body {% if standalone_mode %}class="standalone"{% endif %}>
 
     {% block body %}
-      <div id="app">
+      <div id="app" data-bootstrap="{{ bootstrap_data|e }}">
         <img
           src="{{ assets_prefix }}/static/assets/images/loading.gif"
           alt=""
@@ -85,14 +85,6 @@
           "
         />
       </div>
-      <script nonce="">
-        (function() {
-          var data = {{ bootstrap_data|safe }};
-          document.getElementById('app').setAttribute(
-            'data-bootstrap', JSON.stringify(data)
-          );
-        })();
-      </script>
     {% endblock %}
 
     {% block tail_js %}
