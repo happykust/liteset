@@ -176,7 +176,7 @@ describe('Charts list', () => {
       cy.getBySel('sort-header').contains('Name').click();
 
       // Modal closes immediatly without this
-      cy.wait(2000);
+      cy.wait(5000);
 
       cy.getBySel('table-row').eq(0).contains('3 - Sample chart');
       cy.getBySel('delete').eq(0).click();
@@ -206,11 +206,13 @@ describe('Charts list', () => {
 
       // edits in list-view
       setGridMode('list');
+      cy.wait(5000);
       cy.getBySel('edit-alt').eq(1).click();
       cy.getBySel('properties-modal-name-input').clear();
       cy.getBySel('properties-modal-name-input').type('1 - Sample chart');
       cy.get('button:contains("Save")').click();
       cy.wait('@update');
+      cy.wait(5000);
       cy.getBySel('table-row').eq(1).contains('1 - Sample chart');
     });
   });

@@ -548,7 +548,15 @@ if (isDevMode) {
       overlay: {
         errors: true,
         warnings: false,
-        runtimeErrors: error => !/ResizeObserver/.test(error.message),
+        // In Cypress runs (`CYPRESS_CONFIG=true`) the runtime-error
+        // overlay covers the page (shadow-DOM iframe) and blocks clicks
+        // on the UI underneath — even for benign HMR/PropType errors we
+        // already ignore via Cypress's `uncaught:exception` handler.
+        // Disable it only for Cypress builds; normal `npm run dev-server`
+        // keeps the overlay as a development aid.
+        runtimeErrors: process.env.CYPRESS_CONFIG
+          ? false
+          : error => !/ResizeObserver/.test(error.message),
       },
       logging: 'error',
       webSocketURL: {

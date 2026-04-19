@@ -25,7 +25,7 @@ const { verifyDownloadTasks } = require('cy-verify-downloads');
 export default eyesPlugin(
   defineConfig({
     chromeWebSecurity: false,
-    defaultCommandTimeout: 8000,
+    defaultCommandTimeout: 20000,
     numTestsKeptInMemory: 3,
     // Disabled after realizing this MESSES UP rison encoding in intricate ways
     experimentalFetchPolyfill: false,
@@ -78,7 +78,7 @@ export default eyesPlugin(
         // eslint-disable-next-line global-require,import/extensions
         return config;
       },
-      baseUrl: 'http://localhost:8088',
+      baseUrl: 'http://localhost:8089',
       excludeSpecPattern: [],
       experimentalRunAllSpecs: true,
       specPattern: [

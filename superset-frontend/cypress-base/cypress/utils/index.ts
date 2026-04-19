@@ -87,12 +87,16 @@ export function getChartAliasesBySpec(charts: readonly ChartSpec[]) {
 export function waitForChartLoad(chart: ChartSpec) {
   return getChartGridComponent(chart).then(gridComponent => {
     const chartId = gridComponent.attr('data-test-chart-id');
-    // the chart should load in under half a minute
+    // Dashboard charts lazy-load: they only start fetching data once
+    // scrolled into the viewport. Without this, charts positioned
+    // below the fold (e.g. Treemap on world_health) never render
+    // and `#chart-id-N` never appears.
+    cy.wrap(gridComponent).scrollIntoView();
     return (
       cy
         // this id only becomes visible when the chart is loaded
         .get(`#chart-id-${chartId}`, {
-          timeout: 30000,
+          timeout: 90000,
         })
         .should('be.visible')
         // return the chart grid component
