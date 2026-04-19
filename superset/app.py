@@ -60,7 +60,6 @@ from superset.logging import configure_logging
 from superset.middleware.auth import SupersetAuthMiddleware
 from superset.middleware.locale import LocaleMiddleware
 from superset.middleware.proxy_fix import ProxyFixMiddleware
-from superset.middleware.request_dump import RequestDumpMiddleware
 from superset.middleware.security_headers import SecurityHeadersMiddleware
 
 logger = logging.getLogger(__name__)
@@ -691,10 +690,6 @@ def create_app(  # noqa: C901
             ),
         ],
         middleware=[
-            RequestDumpMiddleware.configure(
-                output_path="./superset_dump_run9.jsonl",
-                exclude_paths=("/static/", "/health", "/healthcheck", "/ping"),
-            ),
             *(
                 [ProxyFixMiddleware(**settings.proxy_fix_config)]
                 if settings.enable_proxy_fix
