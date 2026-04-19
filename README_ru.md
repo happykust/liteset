@@ -59,8 +59,6 @@ Liteset устраняет эти узкие места, переводя вес
 
 Серверная часть Liteset построена по принципам Clean Architecture. Приложение разделено на четыре слоя; зависимости направлены строго внутрь — внутренние слои не импортируют из внешних.
 
-![Clean Architecture Layers](docs/plans/clean-architecture-layers.png)
-
 | Слой | Ответственность | Реализация |
 |---|---|---|
 | **Presentation** | Контроллеры, DTO, сериализация, авторизационные предикаты | `superset/controllers/`, `superset/schemas/`, `superset/guards/` — `async def` обработчики Litestar, DTO на `msgspec.Struct`, Guards для RBAC |

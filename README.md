@@ -59,8 +59,6 @@ Liteset removes these bottlenecks by moving the entire web layer to the async AS
 
 The Liteset server is designed along Clean Architecture lines. The application is split into four layers; dependencies point strictly inward — inner layers never import from outer ones.
 
-![Clean Architecture Layers](docs/plans/clean-architecture-layers.png)
-
 | Layer | Responsibility | Implementation |
 |---|---|---|
 | **Presentation** | Controllers, DTOs, serialization, authorization predicates | `superset/controllers/`, `superset/schemas/`, `superset/guards/` — `async def` Litestar handlers, DTOs built on `msgspec.Struct`, Guards for RBAC |
