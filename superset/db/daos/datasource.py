@@ -53,6 +53,13 @@ class AsyncDatasourceDAO:
 
         Supports 'table' (SqlaTable), 'query' (Query), and
         'saved_query' (SavedQuery) types. Returns None if not found.
+
+        All returned instances have ``database`` (and type-specific
+        relationships) eager-loaded to avoid MissingGreenlet when
+        downstream code accesses them synchronously.  ``populate_existing``
+        forces re-population of options if the instance is already in the
+        session's identity map from an earlier load that didn't use these
+        options.
         """
         model_cls = _DATASOURCE_TYPE_MAP.get(datasource_type)
         if model_cls is None:
@@ -65,12 +72,23 @@ class AsyncDatasourceDAO:
                     selectinload(SqlaTable.database),
                     selectinload(SqlaTable.columns),
                     selectinload(SqlaTable.metrics),
-                    # Eager-load owners so security_manager.is_owner() can
-                    # access the M2M relationship without triggering a
-                    # lazy-load under asyncpg (which raises MissingGreenlet).
                     selectinload(SqlaTable.owners),
                 )
+                .execution_options(populate_existing=True)
             )
-            result = await self.session.execute(stmt)
-            return result.scalars().one_or_none()
-        return await self.session.get(model_cls, datasource_id)
+        elif model_cls is Query:
+            stmt = (
+                select(Query)
+                .where(Query.id == datasource_id)
+                .options(selectinload(Query.database))
+                .execution_options(populate_existing=True)
+            )
+        else:  # SavedQuery
+            stmt = (
+                select(SavedQuery)
+                .where(SavedQuery.id == datasource_id)
+                .options(selectinload(SavedQuery.database))
+                .execution_options(populate_existing=True)
+            )
+        result = await self.session.execute(stmt)
+        return result.scalars().one_or_none()
