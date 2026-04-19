@@ -1294,6 +1294,7 @@ class SqlaTable(
         time_grain: str | None = extras.get("time_grain_sqla")
         series_limit: int | None = query_dict.get("series_limit")
         series_limit_metric: Any = query_dict.get("series_limit_metric")
+        series_columns: list[Any] = query_dict.get("series_columns") or []
 
         # Fallback: if granularity column doesn't exist in this
         # dataset's datetime columns, use main_dttm_col instead.
@@ -1474,13 +1475,36 @@ class SqlaTable(
         # columns (groupby minus the time column), orders by the
         # series_limit_metric (or the first metric), and limits to N.
         # The outer query then filters via WHERE … IN (subquery).
+        # Mirrors original helpers.get_sqla_query (superset_old/models/helpers.py):
+        # only apply the top-N series subquery when the query actually has a
+        # "series" dimension — either is_timeseries without explicit
+        # series_columns (so every groupby column IS a series) or an explicit
+        # series_columns list.  Non-timeseries charts like Treemap/Table set
+        # series_limit to the value of form_data.limit but do NOT expect
+        # top-N subqueries; they should just return all rows.
         series_limit_clause: str | None = None
-        if series_limit and need_groupby and group_by_parts:
-            # Determine which group-by expressions represent the series
-            # (everything except the time grain column).
+        apply_series_limit = (is_timeseries and not series_columns) or bool(
+            series_columns
+        )
+        if series_limit and need_groupby and group_by_parts and apply_series_limit:
+            # Determine which group-by expressions represent the series.
+            # Mirrors original helpers.get_sqla_query logic
+            # (superset_old/models/helpers.py:1879-1882):
+            #   groupby_series_columns[outer.name] = outer IFF
+            #     (is_timeseries and not series_column_labels)  -- every groupby is a series
+            #     OR outer.name in series_column_labels         -- explicit series list
             series_group_exprs: list[str] = []
             series_group_labels: list[str] = []
             groupby_cols_list = groupby_raw or columns_raw
+            # Resolve series_columns to a set of label strings for comparison
+            series_col_names: set[str] = set()
+            for sc in series_columns:
+                if isinstance(sc, str):
+                    series_col_names.add(sc)
+                elif isinstance(sc, dict):
+                    n = sc.get("label") or sc.get("column_name") or ""
+                    if n:
+                        series_col_names.add(n)
             for col_spec in groupby_cols_list:
                 col_name = (
                     col_spec
@@ -1491,9 +1515,17 @@ class SqlaTable(
                         else str(col_spec)
                     )
                 )
-                # Skip the granularity column — it is not a series dimension
-                if col_name == granularity and is_timeseries:
-                    continue
+                # When series_columns is explicit, include ONLY those columns
+                # in the top-N subquery (matches original's
+                # `outer.name in series_column_labels` branch).  Otherwise
+                # (is_timeseries with no series_columns) include every
+                # groupby column except the time-grain granularity.
+                if series_col_names:
+                    if col_name not in series_col_names:
+                        continue
+                else:
+                    if col_name == granularity and is_timeseries:
+                        continue
                 expr, label = self._resolve_column_expression(col_spec)
                 series_group_exprs.append(expr)
                 series_group_labels.append(label)

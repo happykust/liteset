@@ -96,6 +96,27 @@ class AsyncQueryObject:
             if "__timestamp" in (self.columns or []):
                 self.is_timeseries = True
 
+        # Resolve time_range → from_dttm/to_dttm when not explicitly provided.
+        # Mirrors original superset_old/common/query_object_factory.py:74-81,
+        # which calls get_since_until_from_time_range() for every query.
+        # Without this, SQL is emitted without the WHERE time filter and
+        # charts (e.g. Treemap) aggregate across all years → wrong data.
+        if self.time_range and (self.from_dttm is None or self.to_dttm is None):
+            try:
+                from superset.utils.date import get_since_until
+
+                parsed_from, parsed_to = get_since_until(
+                    time_range=self.time_range,
+                    time_shift=self.time_shift,
+                )
+                if self.from_dttm is None:
+                    self.from_dttm = parsed_from
+                if self.to_dttm is None:
+                    self.to_dttm = parsed_to
+            except Exception:  # noqa: BLE001
+                # Malformed time_range — leave dttms None, emit un-filtered SQL
+                pass
+
         # Formula annotation filtering (client-side only)
         if self.annotation_layers:
             self.annotation_layers = [

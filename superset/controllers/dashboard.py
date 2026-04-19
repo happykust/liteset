@@ -375,6 +375,34 @@ class DashboardController(Controller):
             raise ObjectNotFoundError("Dashboard", id_or_slug)
         datasets = await dao.get_datasets_for_dashboard(dashboard)
 
+        def _resolve_generic_type(sqla_type: Any, is_dttm: bool) -> int | None:
+            """Map SQLAlchemy column type → utils.GenericDataType int.
+               0=NUMERIC, 1=STRING, 2=TEMPORAL, 3=BOOLEAN.  Matches
+               ``TableColumn.type_generic`` in superset_old without
+               requiring a live db_engine_spec lookup (which needs a
+               database connection in async context).
+            """
+            if is_dttm:
+                return 2  # TEMPORAL
+            if not sqla_type:
+                return None
+            t = str(sqla_type).upper()
+            if "BOOL" in t:
+                return 3
+            if any(k in t for k in ("DATE", "TIME", "TIMESTAMP")):
+                return 2
+            if any(k in t for k in ("CHAR", "TEXT", "STRING", "JSON", "UUID")):
+                return 1
+            if any(
+                k in t
+                for k in (
+                    "INT", "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE",
+                    "REAL", "BIGINT", "SMALLINT",
+                )
+            ):
+                return 0
+            return None
+
         def _build_dataset_dict(ds: Any) -> dict[str, Any]:
             columns = getattr(ds, "columns", []) or []
             metrics = getattr(ds, "metrics", []) or []
@@ -387,6 +415,18 @@ class DashboardController(Controller):
             column_names = [
                 c.column_name for c in columns if getattr(c, "column_name", None)
             ]
+            # Unique set of generic column types (matches
+            # ``superset_old/connectors/sqla/models.py:482``)
+            column_types: list[int] = []
+            seen_types: set[int] = set()
+            for c in columns:
+                gt = _resolve_generic_type(
+                    getattr(c, "type", None),
+                    getattr(c, "is_dttm", False),
+                )
+                if gt is not None and gt not in seen_types:
+                    seen_types.add(gt)
+                    column_types.append(gt)
             verbose_map = {
                 c.column_name: (getattr(c, "verbose_name", None) or c.column_name)
                 for c in columns
@@ -482,6 +522,7 @@ class DashboardController(Controller):
                 "edit_url": f"/tablemodelview/edit/{ds_id}",
                 "column_names": column_names,
                 "column_formats": {},
+                "column_types": column_types,
                 "verbose_map": verbose_map,
                 "columns": cols_dicts,
                 "metrics": metrics_dicts,
@@ -490,6 +531,11 @@ class DashboardController(Controller):
                 "order_by_choices": order_by_choices,
                 "owners": owners_list,
                 "select_star": None,
+                # ``filter_select`` is a legacy alias kept for frontend
+                # compatibility (TODO deprecate — see superset_old
+                # connectors/sqla/models.py:375).
+                "filter_select": getattr(ds, "filter_select_enabled", False),
+                "health_check_message": getattr(ds, "health_check_message", None),
             }
 
         return {"result": [_build_dataset_dict(ds) for ds in datasets]}
@@ -581,35 +627,28 @@ class DashboardController(Controller):
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
         charts = await dao.get_charts_for_dashboard(dashboard)
-        import json as _json
 
         result = []
         for chart in charts:
-            # Build form_data matching original model property
-            try:
-                fd = _json.loads(chart.params or "{}")
-            except (ValueError, TypeError):
-                fd = {}
-            fd.update(
-                {
-                    "slice_id": chart.id,
-                    "viz_type": chart.viz_type,
-                    "datasource": f"{chart.datasource_id}__{chart.datasource_type}",
-                }
-            )
+            # Use Slice.form_data property — applies update_time_range()
+            # which migrates since/until → time_range.
+            fd = chart.form_data
 
+            desc = getattr(chart, "description", None) or ""
             result.append(
                 {
                     "id": chart.id,
                     "slice_name": chart.slice_name,
-                    "viz_type": chart.viz_type,
                     "cache_timeout": getattr(chart, "cache_timeout", None),
                     "changed_on": (
                         chart.changed_on.isoformat()
                         if getattr(chart, "changed_on", None)
                         else None
                     ),
-                    "description": getattr(chart, "description", None),
+                    "description": desc or None,
+                    "description_markeddown": (
+                        f"<p>{desc}</p>" if desc else ""
+                    ),
                     "form_data": fd,
                     "slice_url": getattr(chart, "slice_url", None),
                     "certified_by": getattr(chart, "certified_by", None),

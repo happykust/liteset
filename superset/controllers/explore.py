@@ -255,36 +255,11 @@ class ExploreController(Controller):
                         except Exception:  # noqa: BLE001
                             changed_on_humanized = ""
                     desc = getattr(chart, "description", None) or ""
-                    # Compute ``Slice.form_data``: stored params JSON merged
-                    # with chart-level fields (slice_id, viz_type, datasource,
-                    # cache_timeout) — mirrors ``superset_old/models/slice.py``
-                    # lines 270-288.
-                    chart_params = getattr(chart, "params", "{}")
-                    if chart_params:
-                        try:
-                            defaults = json.loads(chart_params)
-                        except (json.JSONDecodeError, TypeError):
-                            defaults = {}
-                    else:
-                        defaults = {}
-                    chart_ds_id = getattr(chart, "datasource_id", None)
-                    chart_ds_type = getattr(chart, "datasource_type", "table") or "table"
-                    defaults.update(
-                        {
-                            "slice_id": chart.id,
-                            "viz_type": getattr(chart, "viz_type", ""),
-                            "datasource": (
-                                f"{chart_ds_id}__{chart_ds_type}"
-                                if chart_ds_id
-                                else defaults.get("datasource", "")
-                            ),
-                        }
-                    )
-                    # Original Slice.form_data also injects cache_timeout
-                    # (superset_old/models/slice.py:285-286)
                     chart_cache_timeout = getattr(chart, "cache_timeout", None)
-                    if chart_cache_timeout:
-                        defaults["cache_timeout"] = chart_cache_timeout
+                    # ``Slice.form_data`` property applies update_time_range
+                    # which migrates since/until → time_range
+                    # (superset_old/models/slice.py:287, legacy.py:22-42).
+                    defaults = chart.form_data
                     # ``slice_data`` mirrors ``Slice.data`` exactly
                     # (superset_old/models/slice.py:219-248).
                     slice_data = {

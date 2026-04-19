@@ -407,6 +407,7 @@ def serialize_list_response(
         "description_columns": description_columns or {},
         "ids": ids,
         "label_columns": label_columns,
+        "list_columns": list(columns),
         "list_title": list_title,
         "result": result,
     }

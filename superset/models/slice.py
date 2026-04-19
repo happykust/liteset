@@ -172,6 +172,10 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
 
         if self.cache_timeout:
             form_data["cache_timeout"] = self.cache_timeout
+
+        from superset.legacy import update_time_range
+
+        update_time_range(form_data)
         return form_data
 
     @property
@@ -218,7 +222,13 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
 
     @property
     def slice_url(self) -> str:
-        return self.url
+        # Matches superset_old/models/slice.py:304-321 get_explore_url().
+        # The frontend ``ChartList`` relies on the ``&form_data=...`` suffix
+        # to open a chart row in Explore.
+        import urllib.parse as _urlparse
+
+        params = _urlparse.quote(json.dumps({"slice_id": self.id}))
+        return f"/explore/?slice_id={self.id}&form_data={params}"
 
     @property
     def datasource_name_text(self) -> str | None:

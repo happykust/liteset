@@ -219,7 +219,15 @@ class DatasetController(Controller):
                 item.pop("default_endpoint", None)
                 or f"/explore/?datasource_type=table&datasource_id={item['id']}"
             )
-        return DatasetListResponse(result=payload["result"], count=payload["count"])
+        return DatasetListResponse(
+            result=payload["result"],
+            count=payload["count"],
+            ids=payload.get("ids", []),
+            label_columns=payload.get("label_columns", {}),
+            list_columns=payload.get("list_columns", []),
+            order_columns=payload.get("order_columns", []),
+            description_columns=payload.get("description_columns", {}),
+        )
 
     @get(
         "/_info",
@@ -493,8 +501,24 @@ class DatasetController(Controller):
                 for m in data.metrics
             ]
 
-        # When override_columns is True, refresh columns from the database
-        # instead of applying user-provided column changes.
+        # Always run UpdateDatasetCommand (saves metrics/owners/description/etc.).
+        # When override_columns=true, ALSO run RefreshDatasetCommand afterwards
+        # to resync columns from the physical DB — skipping user-provided
+        # column edits (they're already overridden by the refresh).
+        # Mirrors superset_old/datasets/api.py:441-443:
+        #     changed_model = UpdateDatasetCommand(pk, item, override_columns).run()
+        #     if override_columns:
+        #         RefreshDatasetCommand(pk).run()
+        if override_columns:
+            update_data.pop("columns", None)
+        cmd = UpdateDatasetCommand(
+            dao=cast("AsyncDatasetDAO", dao),
+            dataset_id=pk,
+            data=update_data,
+            user_id=current_user.id,
+            security_manager=security_manager,
+        )
+        dataset = await cmd.execute()
         if override_columns:
             cmd_refresh = RefreshDatasetCommand(
                 dao=cast("AsyncDatasetDAO", dao),
@@ -503,15 +527,6 @@ class DatasetController(Controller):
                 user_id=current_user.id,
             )
             dataset = await cmd_refresh.execute()
-        else:
-            cmd = UpdateDatasetCommand(
-                dao=cast("AsyncDatasetDAO", dao),
-                dataset_id=pk,
-                data=update_data,
-                user_id=current_user.id,
-                security_manager=security_manager,
-            )
-            dataset = await cmd.execute()
 
         event_logger.log(
             "dataset.update",

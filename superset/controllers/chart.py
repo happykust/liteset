@@ -233,6 +233,9 @@ class ChartController(Controller):
             rison_params,
             custom_filters=_chart_custom_filters(current_user),
         )
+        if order_by is None:
+            order_by = [Slice.changed_on.desc()]
+
         base_filters = await chart_access_filters(security_manager, current_user)
         all_filters = (base_filters or []) + rison_filters
 
@@ -253,40 +256,61 @@ class ChartController(Controller):
         )
         total = await dao.count(filters=all_filters or None)
         event_logger.log("chart.list")
+        # Column list matches Flask-AppBuilder ChartRestApi.list_columns
+        # (superset_old/charts/api.py:137-184). The first block are simple
+        # model columns / relationships; the second block are computed
+        # fields populated manually below (so list_columns / label_columns
+        # expose them too).
         payload = serialize_list_response(
             charts,
             total,
             [
-                "id",
-                "uuid",
-                "slice_name",
-                "viz_type",
-                "params",
-                "cache_timeout",
-                "description",
+                "is_managed_externally",
                 "certified_by",
                 "certification_details",
-                "is_managed_externally",
-                "datasource_id",
-                "datasource_type",
+                "cache_timeout",
                 "changed_by.first_name",
                 "changed_by.last_name",
                 "changed_by.id",
+                "changed_by_name",
+                "changed_on_delta_humanized",
+                "changed_on_dttm",
+                "changed_on_utc",
                 "created_by.first_name",
                 "created_by.id",
                 "created_by.last_name",
+                "created_by_name",
+                "created_on_delta_humanized",
+                "datasource_id",
+                "datasource_name_text",
+                "datasource_type",
+                "datasource_url",
+                "description",
+                "description_markeddown",
+                "edit_url",
+                "form_data",
+                "id",
                 "last_saved_at",
                 "last_saved_by.id",
                 "last_saved_by.first_name",
                 "last_saved_by.last_name",
-                "owners.id",
                 "owners.first_name",
+                "owners.id",
                 "owners.last_name",
                 "dashboards.id",
                 "dashboards.dashboard_title",
+                "params",
+                "slice_name",
+                "slice_url",
+                "table.default_endpoint",
+                "table.table_name",
+                "thumbnail_url",
+                "url",
+                "viz_type",
                 "tags.id",
                 "tags.name",
                 "tags.type",
+                "uuid",
             ],
             list_title="List Slice",
             order_columns=[
@@ -338,9 +362,10 @@ class ChartController(Controller):
                 item["edit_url"] = chart_obj.edit_url
                 item["slice_url"] = chart_obj.slice_url
 
-                # changed_on_dttm — epoch float of changed_on
+                # changed_on_dttm — epoch *milliseconds* of changed_on
+                # (superset_old/models/slice.py converts via timestamp() * 1000)
                 item["changed_on_dttm"] = (
-                    float(chart_obj.changed_on.timestamp())
+                    float(chart_obj.changed_on.timestamp()) * 1000
                     if chart_obj.changed_on
                     else None
                 )
@@ -352,28 +377,27 @@ class ChartController(Controller):
                 else:
                     item["description_markeddown"] = ""
 
-                # form_data — dict from params JSON + slice_id/viz_type/datasource
-                try:
-                    fd: dict[str, Any] = _json.loads(chart_obj.params or "{}")
-                except Exception:
-                    fd = {}
-                fd.update(
-                    {
-                        "slice_id": chart_obj.id,
-                        "viz_type": chart_obj.viz_type,
-                        "datasource": (
-                            f"{chart_obj.datasource_id}__{chart_obj.datasource_type}"
-                        ),
-                    }
-                )
-                if chart_obj.cache_timeout:
-                    fd["cache_timeout"] = chart_obj.cache_timeout
-                item["form_data"] = fd
+                # form_data — uses Slice.form_data property which applies
+                # update_time_range() to migrate since/until → time_range.
+                item["form_data"] = chart_obj.form_data
 
                 # table.default_endpoint and table.table_name
                 tbl = chart_obj.table
-                item["table.default_endpoint"] = tbl.default_endpoint if tbl else None
-                item["table.table_name"] = tbl.table_name if tbl else None
+                # Nested ``table`` dict matches original FAB serialization
+                # (superset_old/charts/schemas.py ChartEntityResponseSchema).
+                item["table"] = (
+                    {
+                        "default_endpoint": tbl.default_endpoint if tbl else None,
+                        "table_name": tbl.table_name if tbl else None,
+                    }
+                    if tbl
+                    else None
+                )
+                # Drop the flat-dotted keys that _serialize_item emits for the
+                # ``table.default_endpoint`` / ``table.table_name`` entries in
+                # ``list_columns`` — the frontend reads ``item["table"]``.
+                item.pop("table.default_endpoint", None)
+                item.pop("table.table_name", None)
 
         return payload
 
