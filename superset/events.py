@@ -228,7 +228,11 @@ class AsyncDBEventLogger(EventLogger):
                     duration_ms=duration_ms,
                     referrer=referrer,
                     user_id=user_id,
-                    dttm=datetime.now(tz=timezone.utc),
+                    # ``Log.dttm`` is a naive TIMESTAMP WITHOUT TIME ZONE
+                    # column defaulting to ``datetime.utcnow``.  asyncpg
+                    # rejects tz-aware datetimes for such columns, so we
+                    # strip tzinfo to match the original Superset behaviour.
+                    dttm=datetime.now(tz=timezone.utc).replace(tzinfo=None),
                 )
             )
 

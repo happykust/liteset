@@ -53,10 +53,17 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
         user_id: int,
         last_updated_ms: float | int,
     ) -> list[Query]:
-        """Get user's queries modified after a timestamp (in milliseconds)."""
+        """Get user's queries modified after a timestamp (in milliseconds).
+
+        ``Query.changed_on`` is stored as ``TIMESTAMP WITHOUT TIME ZONE`` and
+        populated with naive UTC (``datetime.utcnow``).  asyncpg refuses to
+        compare it against a tz-aware datetime, so we build a naive UTC
+        value here — identical to the original Superset DAO's
+        ``datetime.utcfromtimestamp(last_updated_ms / 1000)``.
+        """
         last_updated_dt = datetime.fromtimestamp(
             last_updated_ms / 1000, tz=timezone.utc
-        )
+        ).replace(tzinfo=None)
         stmt = select(Query).where(
             Query.user_id == user_id,
             Query.changed_on >= last_updated_dt,
