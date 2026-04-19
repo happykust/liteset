@@ -46,10 +46,13 @@ const { getConfig, setConfig } = failOnConsoleError({
 // Set individual tests to allow certain console errors to NOT fail, e.g
 // cy.allowConsoleErrors(['foo', /^some bar-regex.*/]);
 // This will be reset between tests.
+// NOTE: failOnConsoleError is disabled above, so these commands are no-ops.
+// The previous implementation referenced getConfig/setConfig which are
+// only exported by failOnConsoleError and therefore undefined here,
+// producing `ReferenceError: setConfig is not defined` at call time.
 Cypress.Commands.addAll({
-  getConsoleMessages: () => cy.wrap(getConfig()?.consoleMessages),
-  allowConsoleErrors: (consoleMessages: (string | RegExp)[]) =>
-    setConfig({ ...getConfig(), consoleMessages }),
+  getConsoleMessages: () => cy.wrap<(string | RegExp)[]>([]),
+  allowConsoleErrors: (_consoleMessages: (string | RegExp)[]) => undefined,
 });
 
 const BASE_EXPLORE_URL = '/explore/?form_data=';
@@ -177,6 +180,69 @@ Cypress.on('uncaught:exception', err => {
   return false; // TODO:@geido remove
 });
 /* eslint-enable consistent-return */
+
+// Cypress ships Electron 106 (Chromium 106) which lacks ES2025
+// Set.prototype.{difference,union,intersection,...} — used by the
+// Superset frontend (see dashboardState.js SET_ACTIVE_TAB). Without
+// a polyfill the dashboard crashes with
+// "TypeError: (intermediate value).difference is not a function"
+// the moment a Tab is rendered, triggering the webpack-dev-server
+// error overlay that covers the page and breaks every tabs-related
+// test. Polyfill at `window:before:load` so the app sees the shims
+// before its own bundle evaluates.
+Cypress.on('window:before:load', (win: any) => {
+  const s = win.Set.prototype;
+  if (typeof s.difference !== 'function') {
+    s.difference = function (other: any) {
+      const result = new win.Set(this);
+      for (const el of other) result.delete(el);
+      return result;
+    };
+  }
+  if (typeof s.union !== 'function') {
+    s.union = function (other: any) {
+      const result = new win.Set(this);
+      for (const el of other) result.add(el);
+      return result;
+    };
+  }
+  if (typeof s.intersection !== 'function') {
+    s.intersection = function (other: any) {
+      const result = new win.Set();
+      for (const el of other) if (this.has(el)) result.add(el);
+      return result;
+    };
+  }
+  if (typeof s.isSubsetOf !== 'function') {
+    s.isSubsetOf = function (other: any) {
+      const o = new win.Set(other);
+      for (const el of this) if (!o.has(el)) return false;
+      return true;
+    };
+  }
+  if (typeof s.isSupersetOf !== 'function') {
+    s.isSupersetOf = function (other: any) {
+      for (const el of other) if (!this.has(el)) return false;
+      return true;
+    };
+  }
+  if (typeof s.isDisjointFrom !== 'function') {
+    s.isDisjointFrom = function (other: any) {
+      for (const el of other) if (this.has(el)) return false;
+      return true;
+    };
+  }
+  if (typeof s.symmetricDifference !== 'function') {
+    s.symmetricDifference = function (other: any) {
+      const result = new win.Set(this);
+      for (const el of other) {
+        if (this.has(el)) result.delete(el);
+        else result.add(el);
+      }
+      return result;
+    };
+  }
+});
 
 Cypress.Commands.add('login', () => {
   cy.request({

@@ -104,6 +104,10 @@ export function saveChartToDashboard(chartName: string, dashboardName: string) {
 }
 
 export function visitSampleChartFromList(chartName: string) {
+  // Small settle delay — the chart list table re-renders after async data
+  // loads (charts + cross-referenced dashboards), which detaches the <a>
+  // element between ``.contains()`` resolution and ``.click()`` execution.
+  cy.wait(500);
   cy.getBySel('table-row').contains(chartName).click();
   cy.intercept('POST', '**/superset/explore_json/**').as('getJson');
 }
