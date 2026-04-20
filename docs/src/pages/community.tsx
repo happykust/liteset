@@ -16,74 +16,24 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useState } from 'react';
 import styled from '@emotion/styled';
 import { List } from 'antd';
 import Layout from '@theme/Layout';
+import Translate, { translate } from '@docusaurus/Translate';
+import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import { mq } from '../utils';
 import SectionHeader from '../components/SectionHeader';
 import BlurredSection from '../components/BlurredSection';
 
-const communityLinks = [
-  {
-    url: 'http://bit.ly/join-superset-slack',
-    title: 'Slack',
-    description: 'Interact with other Superset users and community members.',
-    image: 'slack-symbol.jpg',
-    ariaLabel:
-      'Interact with other Superset users and community members on Slack',
-  },
-  {
-    url: 'https://github.com/apache/superset',
-    title: 'GitHub',
-    description:
-      'Create tickets to report issues, report bugs, and suggest new features.',
-    image: 'github-symbol.jpg',
-    ariaLabel:
-      'Create tickets to report issues, report bugs, and suggest new features on Superset GitHub repo',
-  },
-  {
-    url: 'https://lists.apache.org/list.html?dev@superset.apache.org',
-    title: 'dev@ Mailing List',
-    description:
-      'Participate in conversations with committers and contributors.',
-    image: 'email-symbol.png',
-    ariaLabel:
-      'Participate in conversations with committers and contributors on Superset mailing list',
-  },
-  {
-    url: 'https://stackoverflow.com/questions/tagged/apache-superset',
-    title: 'Stack Overflow',
-    description: 'Our growing knowledge base.',
-    image: 'stackoverflow-symbol.jpg',
-    ariaLabel: 'See Superset issues on Stack Overflow',
-  },
-  {
-    url: 'https://www.meetup.com/Global-Apache-Superset-Community-Meetup/',
-    title: 'Superset Meetup Group',
-    description:
-      'Join our monthly virtual meetups and register for any upcoming events.',
-    image: 'coffee-symbol.png',
-    ariaLabel:
-      'Join our monthly virtual meetups and register for any upcoming events on Meetup',
-  },
-  {
-    url: 'https://github.com/apache/superset/blob/master/RESOURCES/INTHEWILD.md',
-    title: 'Organizations',
-    description:
-      'A list of some of the organizations using Superset in production.',
-    image: 'note-symbol.png',
-    ariaLabel: 'See a list of the organizations using Superset in production',
-  },
-  {
-    url: 'https://github.com/apache-superset/awesome-apache-superset',
-    title: 'Contributors Guide',
-    description:
-      'Interested in contributing? Learn how to contribute and best practices.',
-    image: 'writing-symbol.png',
-    ariaLabel: 'Learn how to contribute and best practices on Superset GitHub',
-  },
-];
+interface CommunityLink {
+  url: string;
+  titleId: string;
+  titleDefault: string;
+  descriptionId: string;
+  descriptionDefault: string;
+  image: string;
+  ariaLabel: string;
+}
 
 const StyledJoinCommunity = styled('section')`
   background-color: var(--ifm-background-color);
@@ -131,61 +81,93 @@ const StyledJoinCommunity = styled('section')`
   }
 `;
 
-const StyledCalendarIframe = styled('iframe')`
-  display: block;
-  margin: 20px auto 30px;
-  max-width: 800px;
-  width: 100%;
-  height: 600px;
-  border: 0;
-  ${mq[1]} {
-    width: calc(100% - 40px);
-  }
-`;
-
-const StyledLink = styled('a')`
-  display: inline-flex;
-  align-items: center;
-  font-size: 20px;
-  font-weight: bold;
-  line-height: 1.4;
-  margin-top: 12px;
-  ${mq[1]} {
-    font-size: 18px;
-  }
-  img {
-    width: 24px;
-    height: 24px;
-    margin-right: 12px;
-    ${mq[1]} {
-      display: none;
-    }
-  }
-`;
-
-const FinePrint = styled('div')`
-  font-size: 14px;
+const StyledUpstreamNote = styled('section')`
+  max-width: 720px;
+  margin: 30px auto 60px;
+  padding: 0 20px;
+  text-align: center;
+  font-size: 16px;
+  line-height: 24px;
   color: var(--ifm-secondary-text);
 `;
 
 const Community = () => {
-  const [showCalendar, setShowCalendar] = useState(false); // State to control calendar visibility
+  const { siteConfig } = useDocusaurusContext();
+  const litesetGithub =
+    (siteConfig.customFields?.litesetGithub as string) ??
+    'https://github.com/happykust/liteset';
+  const upstreamGithub =
+    (siteConfig.customFields?.upstreamGithub as string) ??
+    'https://github.com/apache/superset';
 
-  const toggleCalendar = () => {
-    setShowCalendar(!showCalendar); // Toggle calendar visibility
-  };
+  const communityLinks: CommunityLink[] = [
+    {
+      url: litesetGithub,
+      titleId: 'community.link.github.title',
+      titleDefault: 'GitHub repository',
+      descriptionId: 'community.link.github.description',
+      descriptionDefault:
+        'Source code, releases, contributing guidelines and the diploma testing report.',
+      image: 'github-symbol.jpg',
+      ariaLabel: 'Open the Liteset GitHub repository',
+    },
+    {
+      url: `${litesetGithub}/issues`,
+      titleId: 'community.link.issues.title',
+      titleDefault: 'Issues & feature requests',
+      descriptionId: 'community.link.issues.description',
+      descriptionDefault:
+        'Report regressions versus Apache Superset 6.0.0, request features, or pick up a "good first issue".',
+      image: 'note-symbol.png',
+      ariaLabel: 'Open Liteset issues on GitHub',
+    },
+    {
+      url: `${litesetGithub}/discussions`,
+      titleId: 'community.link.discussions.title',
+      titleDefault: 'Discussions',
+      descriptionId: 'community.link.discussions.description',
+      descriptionDefault:
+        'Ask questions, share migration experience and benchmark results.',
+      image: 'coffee-symbol.png',
+      ariaLabel: 'Open Liteset discussions on GitHub',
+    },
+    {
+      url: upstreamGithub,
+      titleId: 'community.link.upstream.title',
+      titleDefault: 'Upstream — Apache Superset',
+      descriptionId: 'community.link.upstream.description',
+      descriptionDefault:
+        'Liteset tracks Apache Superset 6.0.0 — most product questions and bug reports belong upstream.',
+      image: 'writing-symbol.png',
+      ariaLabel: 'Open the Apache Superset GitHub repository',
+    },
+  ];
 
   return (
     <Layout
-      title="Community"
-      description="Community website for Apache Superset™, a data visualization and data exploration platform"
+      title={translate({
+        id: 'community.meta.title',
+        message: 'Community',
+      })}
+      description={translate({
+        id: 'community.meta.description',
+        message:
+          'Liteset community — async port of Apache Superset 6.0.0. GitHub, issues, discussions and the upstream project.',
+      })}
     >
       <main>
         <BlurredSection>
           <SectionHeader
             level="h1"
-            title="Community"
-            subtitle="Get involved in our welcoming, fast growing community!"
+            title={translate({
+              id: 'community.header.title',
+              message: 'Community',
+            })}
+            subtitle={translate({
+              id: 'community.header.subtitle',
+              message:
+                'Liteset is an academic port. The community is small but the upstream Apache Superset community is large and welcoming.',
+            })}
           />
         </BlurredSection>
         <StyledJoinCommunity>
@@ -193,7 +175,15 @@ const Community = () => {
             className="list"
             itemLayout="horizontal"
             dataSource={communityLinks}
-            renderItem={({ url, title, description, image, ariaLabel }) => (
+            renderItem={({
+              url,
+              titleId,
+              titleDefault,
+              descriptionId,
+              descriptionDefault,
+              image,
+              ariaLabel,
+            }) => (
               <List.Item className="item">
                 <List.Item.Meta
                   avatar={
@@ -210,55 +200,31 @@ const Community = () => {
                   title={
                     <a href={url} target="_blank" rel="noreferrer">
                       <p className="title" style={{ marginBottom: 0 }}>
-                        {title}
+                        <Translate id={titleId}>{titleDefault}</Translate>
                       </p>
                     </a>
                   }
-                  description={<p className="description">{description}</p>}
+                  description={
+                    <p className="description">
+                      <Translate id={descriptionId}>
+                        {descriptionDefault}
+                      </Translate>
+                    </p>
+                  }
                   aria-label="Community link"
                 />
               </List.Item>
             )}
           />
         </StyledJoinCommunity>
-        <BlurredSection>
-          <SectionHeader
-            level="h2"
-            title="Superset Community Calendar"
-            subtitle={
-              <>
-                Join us for live demos, meetups, discussions, and more!
-                <br />
-                <StyledLink
-                  href="https://calendar.google.com/calendar/u/0/r?cid=superset.committers@gmail.com"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <img src="/img/calendar-icon.svg" alt="calendar-icon" />
-                  Subscribe to the Superset Community Calendar
-                </StyledLink>
-                <br />
-                <StyledLink onClick={toggleCalendar}>
-                  <img src="/img/calendar-icon.svg" alt="calendar-icon" />
-                  {showCalendar ? 'Hide Calendar' : 'Display Calendar*'}
-                </StyledLink>
-                {!showCalendar && (
-                  <FinePrint>
-                    <sup>*</sup>Clicking on this link will load and send data
-                    from and to Google.
-                  </FinePrint>
-                )}
-              </>
-            }
-          />
-          {showCalendar && (
-            <StyledCalendarIframe
-              src="https://calendar.google.com/calendar/embed?src=superset.committers%40gmail.com&ctz=America%2FLos_Angeles"
-              frameBorder="0"
-              scrolling="no"
-            />
-          )}
-        </BlurredSection>
+        <StyledUpstreamNote>
+          <Translate id="community.upstreamNote">
+            Looking for the broader Superset community — Slack, dev mailing
+            list, monthly meetups, Stack Overflow tag? They live in the
+            upstream Apache Superset project. Liteset reuses the same product;
+            most product-level questions are best asked there.
+          </Translate>
+        </StyledUpstreamNote>
       </main>
     </Layout>
   );

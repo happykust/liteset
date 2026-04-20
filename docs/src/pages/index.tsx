@@ -19,6 +19,8 @@
 import { useRef, useState, useEffect, JSX } from 'react';
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
+import Translate, { translate } from '@docusaurus/Translate';
+import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import { Carousel } from 'antd';
 import styled from '@emotion/styled';
 import GitHubButton from 'react-github-btn';
@@ -26,32 +28,41 @@ import { mq } from '../utils';
 import { Databases } from '../resources/data';
 import SectionHeader from '../components/SectionHeader';
 import BlurredSection from '../components/BlurredSection';
+import BenchmarkCharts from '../components/BenchmarkCharts';
 import '../styles/main.less';
 
 const features = [
   {
     image: 'powerful-yet-easy.jpg',
-    title: 'Powerful yet easy to use',
-    description:
-      'Superset makes it easy to explore your data, using either our simple no-code viz builder or state-of-the-art SQL IDE.',
+    titleId: 'home.features.powerful.title',
+    titleDefault: 'Powerful, but async',
+    descriptionId: 'home.features.powerful.description',
+    descriptionDefault:
+      'Liteset preserves the no-code chart builder and SQL Lab from Apache Superset, but the entire web layer runs on a single ASGI event loop instead of pre-forked Flask workers.',
   },
   {
     image: 'modern-databases.jpg',
-    title: 'Integrates with modern databases',
-    description:
-      'Superset can connect to any SQL-based databases including modern cloud-native databases and engines at petabyte scale.',
+    titleId: 'home.features.databases.title',
+    titleDefault: 'Modern databases, native async drivers',
+    descriptionId: 'home.features.databases.description',
+    descriptionDefault:
+      'Postgres, MySQL, ClickHouse, and Trino use native async drivers (asyncpg, asyncmy, aiochclient, aiotrino). Other databases keep working through a sync-fallback wrapper.',
   },
   {
     image: 'modern-architecture.jpg',
-    title: 'Modern architecture',
-    description:
-      'Superset is lightweight and highly scalable, leveraging the power of your existing data infrastructure without requiring yet another ingestion layer.',
+    titleId: 'home.features.architecture.title',
+    titleDefault: 'Clean async architecture',
+    descriptionId: 'home.features.architecture.description',
+    descriptionDefault:
+      'Four layers — Controllers, Commands, DAOs, AsyncSession — built on Litestar, SQLAlchemy 2.0 and msgspec. No Flask, no synchronous I/O on the hot path.',
   },
   {
     image: 'rich-visualizations.jpg',
-    title: 'Rich visualizations and dashboards',
-    description:
-      'Superset ships with 40+ pre-installed visualization types. Our plug-in architecture makes it easy to build custom visualizations.',
+    titleId: 'home.features.compat.title',
+    titleDefault: 'Drop-in compatibility',
+    descriptionId: 'home.features.compat.description',
+    descriptionDefault:
+      'The metadata DB schema, REST API, WebSocket contract and SPA frontend are inherited 1:1 from Apache Superset 6.0.0. Stop Superset, start Liteset on the same database.',
   },
 ];
 
@@ -87,6 +98,18 @@ const StyledTitleContainer = styled('div')`
       font-size: 25px;
       line-height: 30px;
     }
+  }
+  .version-pill {
+    display: inline-block;
+    margin: 18px auto 0;
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    color: var(--ifm-font-base-color-inverse);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
   }
   .github-section {
     margin-top: 9px;
@@ -380,32 +403,6 @@ const StyledKeyFeatures = styled('div')`
       }
     }
   }
-  .row {
-    display: flex;
-    max-width: 960px;
-    margin: 30px auto 0;
-    & > .column {
-      width: 50%;
-      & > ul {
-        font-size: 17px;
-        list-style: none;
-        padding: 0 20px;
-        text-align: left;
-        margin: 0;
-        & > li {
-          display: flex;
-          margin-bottom: 20px;
-          & > img {
-            width: 20px;
-            height: 20px;
-            flex-shrink: 0;
-            margin-right: 12px;
-            margin-top: 4px;
-          }
-        }
-      }
-    }
-  }
 `;
 
 const StyledIntegrations = styled('div')`
@@ -448,8 +445,40 @@ const StyledIntegrations = styled('div')`
   }
 `;
 
+const StyledBenchmarksSection = styled('div')`
+  padding: 0 20px;
+  .benchmark-cta {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 32px;
+    padding: 12px 24px;
+    border-radius: 10px;
+    font-size: 17px;
+    font-weight: 600;
+    background-color: var(--ifm-color-primary);
+    color: #fff;
+    text-decoration: none;
+    transition: filter 0.2s ease;
+    &:hover {
+      filter: brightness(1.1);
+      text-decoration: none;
+      color: #fff;
+    }
+  }
+`;
+
 export default function Home(): JSX.Element {
   const slider = useRef(null);
+  const { siteConfig } = useDocusaurusContext();
+  const litesetGithub =
+    (siteConfig.customFields?.litesetGithub as string) ??
+    'https://github.com/happykust/liteset';
+  const upstreamGithub =
+    (siteConfig.customFields?.upstreamGithub as string) ??
+    'https://github.com/apache/superset';
+  const litesetVersion =
+    (siteConfig.customFields?.litesetVersion as string) ?? '6.0.0';
 
   const [slideIndex, setSlideIndex] = useState(0);
 
@@ -460,6 +489,7 @@ export default function Home(): JSX.Element {
   const changeToDark = () => {
     const navbar = document.body.querySelector('.navbar');
     const logo = document.body.querySelector('.navbar__logo img');
+    if (!navbar || !logo) return;
     navbar.classList.add('navbar--dark');
     logo.setAttribute('src', '/img/superset-logo-horiz-dark.svg');
   };
@@ -467,6 +497,7 @@ export default function Home(): JSX.Element {
   const changeToLight = () => {
     const navbar = document.body.querySelector('.navbar');
     const logo = document.body.querySelector('.navbar__logo img');
+    if (!navbar || !logo) return;
     navbar.classList.remove('navbar--dark');
     logo.setAttribute('src', '/img/superset-logo-horiz.svg');
   };
@@ -476,7 +507,10 @@ export default function Home(): JSX.Element {
     changeToDark();
 
     const navbarToggle = document.body.querySelector('.navbar__toggle');
-    navbarToggle.addEventListener('click', () => changeToLight());
+    const onToggleClick = () => changeToLight();
+    if (navbarToggle) {
+      navbarToggle.addEventListener('click', onToggleClick);
+    }
 
     const scrollListener = () => {
       if (window.scrollY > 0) {
@@ -490,14 +524,24 @@ export default function Home(): JSX.Element {
 
     return () => {
       window.removeEventListener('scroll', scrollListener);
+      if (navbarToggle) {
+        navbarToggle.removeEventListener('click', onToggleClick);
+      }
       changeToLight();
     };
   }, []);
 
   return (
     <Layout
-      title="Welcome"
-      description="Community website for Apache Superset™, a data visualization and data exploration platform"
+      title={translate({
+        id: 'home.meta.title',
+        message: 'Welcome',
+      })}
+      description={translate({
+        id: 'home.meta.description',
+        message:
+          'Liteset — async port of Apache Superset on Litestar/ASGI with full backward compatibility',
+      })}
       wrapperClassName="under-navbar"
     >
       <StyledMain>
@@ -506,40 +550,53 @@ export default function Home(): JSX.Element {
             <img
               className="superset-mark"
               src="/img/superset-mark-dark.svg"
-              alt="Superset mark"
+              alt="Liteset mark"
             />
             <div className="info-text">
-              Apache Superset&trade; is an open-source modern data exploration
-              and visualization platform.
+              <Translate id="home.hero.tagline">
+                Liteset is an async port of Apache Superset built on
+                Litestar/ASGI — same dashboards, datasets, users and roles, a
+                completely new web layer.
+              </Translate>
+            </div>
+            <div>
+              <span className="version-pill">
+                <Translate
+                  id="home.hero.versionPill"
+                  values={{ version: litesetVersion }}
+                >
+                  {'Liteset {version} · based on Apache Superset 6.0.0'}
+                </Translate>
+              </span>
             </div>
             <img src="/img/community/line.png" alt="line" />
             <div className="github-section">
               <span className="github-button">
                 <GitHubButton
-                  href="https://github.com/apache/superset"
+                  href={litesetGithub}
                   data-size="large"
                   data-show-count="true"
-                  aria-label="Star apache/superset on GitHub"
+                  aria-label="Star happykust/liteset on GitHub"
                 >
                   Star
                 </GitHubButton>
               </span>
               <span className="github-button">
                 <GitHubButton
-                  href="https://github.com/apache/superset/subscription"
+                  href={upstreamGithub}
                   data-size="large"
                   data-show-count="true"
-                  aria-label="Watch apache/superset on GitHub"
+                  aria-label="Star apache/superset on GitHub (upstream)"
                 >
-                  Watch
+                  Upstream
                 </GitHubButton>
               </span>
               <span className="github-button">
                 <GitHubButton
-                  href="https://github.com/apache/superset/fork"
+                  href={`${litesetGithub}/fork`}
                   data-size="large"
                   data-show-count="true"
-                  aria-label="Fork apache/superset on GitHub"
+                  aria-label="Fork happykust/liteset on GitHub"
                 >
                   Fork
                 </GitHubButton>
@@ -547,7 +604,7 @@ export default function Home(): JSX.Element {
             </div>
             <img src="/img/community/line.png" alt="line" />
             <StyledButton className="default-button-theme" href="/docs/intro">
-              Get Started
+              <Translate id="home.hero.cta">Get Started</Translate>
             </StyledButton>
           </div>
           <StyledScreenshotContainer>
@@ -564,28 +621,52 @@ export default function Home(): JSX.Element {
         <BlurredSection>
           <SectionHeader
             level="h2"
-            title="Overview"
-            subtitle="Superset is fast, lightweight, intuitive, and loaded with options that make it easy for users of all skill sets to explore and visualize their data, from simple line charts to highly detailed geospatial charts."
+            title={translate({
+              id: 'home.overview.title',
+              message: 'Overview',
+            })}
+            subtitle={translate({
+              id: 'home.overview.subtitle',
+              message:
+                'Liteset keeps every familiar feature of Apache Superset and replaces the synchronous Flask backend with a single-loop ASGI server. Lower memory footprint, higher concurrency, identical UX.',
+            })}
           />
           <StyledFeaturesList>
-            {features.map(({ image, title, description }) => (
-              <li className="item" key={title}>
-                <div className="image">
-                  <img src={`/img/features/${image}`} />
-                </div>
-                <div className="content">
-                  <h4 className="title">{title}</h4>
-                  <p className="description">{description}</p>
-                </div>
-              </li>
-            ))}
+            {features.map(
+              ({
+                image,
+                titleId,
+                titleDefault,
+                descriptionId,
+                descriptionDefault,
+              }) => (
+                <li className="item" key={titleId}>
+                  <div className="image">
+                    <img src={`/img/features/${image}`} />
+                  </div>
+                  <div className="content">
+                    <h4 className="title">
+                      <Translate id={titleId}>{titleDefault}</Translate>
+                    </h4>
+                    <p className="description">
+                      <Translate id={descriptionId}>
+                        {descriptionDefault}
+                      </Translate>
+                    </p>
+                  </div>
+                </li>
+              ),
+            )}
           </StyledFeaturesList>
         </BlurredSection>
         <BlurredSection>
           <StyledSliderSection>
             <SectionHeader
               level="h2"
-              title="Self-serve analytics for anyone"
+              title={translate({
+                id: 'home.selfServe.title',
+                message: 'Self-serve analytics for anyone',
+              })}
               dark
             />
             <ul className="toggleBtns">
@@ -594,49 +675,65 @@ export default function Home(): JSX.Element {
                 onClick={() => slider.current.goTo(0)}
                 role="button"
               >
-                Dashboards
+                <Translate id="home.selfServe.tab.dashboards">
+                  Dashboards
+                </Translate>
               </li>
               <li
                 className={`toggle ${slideIndex === 1 ? 'active' : null}`}
                 onClick={() => slider.current.goTo(1)}
                 role="button"
               >
-                Chart Builder
+                <Translate id="home.selfServe.tab.chartBuilder">
+                  Chart Builder
+                </Translate>
               </li>
               <li
                 className={`toggle ${slideIndex === 2 ? 'active' : null}`}
                 onClick={() => slider.current.goTo(2)}
                 role="button"
               >
-                SQL Lab
+                <Translate id="home.selfServe.tab.sqlLab">SQL Lab</Translate>
               </li>
               <li
                 className={`toggle ${slideIndex === 3 ? 'active' : null}`}
                 onClick={() => slider.current.goTo(3)}
                 role="button"
               >
-                Datasets
+                <Translate id="home.selfServe.tab.datasets">
+                  Datasets
+                </Translate>
               </li>
             </ul>
             <Carousel ref={slider} effect="scrollx" beforeChange={onChange}>
               <div className="slide">
                 <p>
-                  Explore data and find insights from interactive dashboards.
-                </p>
-              </div>
-              <div className="slide">
-                <p>Drag and drop to create robust charts and tables.</p>
-              </div>
-              <div className="slide">
-                <p>
-                  Write custom SQL queries, browse database metadata, use Jinja
-                  templating, and more.
+                  <Translate id="home.selfServe.text.dashboards">
+                    Explore data and find insights from interactive dashboards.
+                  </Translate>
                 </p>
               </div>
               <div className="slide">
                 <p>
-                  Create physical and virtual datasets to scale chart creation
-                  with unified metric definitions.
+                  <Translate id="home.selfServe.text.chartBuilder">
+                    Drag and drop to create robust charts and tables.
+                  </Translate>
+                </p>
+              </div>
+              <div className="slide">
+                <p>
+                  <Translate id="home.selfServe.text.sqlLab">
+                    Write custom SQL queries, browse database metadata, use
+                    Jinja templating, and more.
+                  </Translate>
+                </p>
+              </div>
+              <div className="slide">
+                <p>
+                  <Translate id="home.selfServe.text.datasets">
+                    Create physical and virtual datasets to scale chart creation
+                    with unified metric definitions.
+                  </Translate>
                 </p>
               </div>
             </Carousel>
@@ -648,74 +745,122 @@ export default function Home(): JSX.Element {
             </video>
           </StyledSliderSection>
           <StyledKeyFeatures>
-            <h3>Key features</h3>
+            <h3>
+              <Translate id="home.keyFeatures.title">Key features</Translate>
+            </h3>
             <div className="grid">
               <div className="item">
                 <img src="/img/check-icon.svg" alt="check-icon" />
                 <div>
-                  <strong>40+ pre-installed visualizations</strong>
+                  <Translate id="home.keyFeatures.f1">
+                    40+ pre-installed visualizations inherited from Apache
+                    Superset
+                  </Translate>
                 </div>
               </div>
               <div className="item">
                 <img src="/img/check-icon.svg" alt="check-icon" />
                 <div>
-                  Support for <strong>drag-and-drop</strong> and{' '}
-                  <strong>SQL queries</strong>
+                  <Translate id="home.keyFeatures.f2">
+                    Full async stack: Litestar + Uvicorn + uvloop +
+                    SQLAlchemy 2.0
+                  </Translate>
                 </div>
               </div>
               <div className="item">
                 <img src="/img/check-icon.svg" alt="check-icon" />
                 <div>
-                  <strong>Data caching</strong> for the faster load time of
-                  charts and dashboards
+                  <Translate id="home.keyFeatures.f3">
+                    Native async drivers for Postgres, MySQL, ClickHouse, Trino
+                  </Translate>
                 </div>
               </div>
               <div className="item">
                 <img src="/img/check-icon.svg" alt="check-icon" />
                 <div>
-                  <strong>Jinja templating and dashboard filters</strong> for
-                  creating interactive dashboards
+                  <Translate id="home.keyFeatures.f4">
+                    msgspec-powered serialization (replaces Marshmallow and
+                    Pydantic v1)
+                  </Translate>
                 </div>
               </div>
               <div className="item">
                 <img src="/img/check-icon.svg" alt="check-icon" />
                 <div>
-                  <strong>CSS templates</strong> to customize charts and
-                  dashboards to your brand’s look and feel
+                  <Translate id="home.keyFeatures.f5">
+                    Drop-in compatibility: same metadata DB schema, same REST
+                    API, same SPA frontend
+                  </Translate>
                 </div>
               </div>
               <div className="item">
                 <img src="/img/check-icon.svg" alt="check-icon" />
                 <div>
-                  <strong>Semantic layer</strong> for SQL data transformations
+                  <Translate id="home.keyFeatures.f6">
+                    Native Litestar WebSocket — no separate Node.js
+                    superset-websocket service
+                  </Translate>
                 </div>
               </div>
               <div className="item">
                 <img src="/img/check-icon.svg" alt="check-icon" />
                 <div>
-                  <strong>Cross-filters, drill-to-detail, and drill-by</strong>{' '}
-                  features for deeper data analysis
+                  <Translate id="home.keyFeatures.f7">
+                    Flask session cookie / CSRF token compatibility — sessions
+                    survive the migration
+                  </Translate>
                 </div>
               </div>
               <div className="item">
                 <img src="/img/check-icon.svg" alt="check-icon" />
                 <div>
-                  <strong>Virtual datasets</strong> for ad-hoc data exploration
+                  <Translate id="home.keyFeatures.f8">
+                    Auto-generated OpenAPI docs at /swagger/v1
+                  </Translate>
                 </div>
               </div>
               <div className="item">
                 <img src="/img/check-icon.svg" alt="check-icon" />
                 <div>
-                  Access to new functionalities through{' '}
-                  <strong>feature flags</strong>
+                  <Translate id="home.keyFeatures.f9">
+                    structlog JSON logging out of the box
+                  </Translate>
                 </div>
               </div>
             </div>
           </StyledKeyFeatures>
         </BlurredSection>
         <BlurredSection>
+          <StyledBenchmarksSection>
+            <SectionHeader
+              level="h2"
+              title={translate({
+                id: 'home.benchmarks.title',
+                message: 'Performance & Benchmarks',
+              })}
+              subtitle={translate({
+                id: 'home.benchmarks.subtitle',
+                message:
+                  'Liteset is being benchmarked against Apache Superset 6.0.0 on identical workloads. Below — a preview of the metrics we collect; full methodology and results live in the testing report.',
+              })}
+            />
+            <BenchmarkCharts />
+            <Link to="/docs/benchmarks/results" className="benchmark-cta">
+              <Translate id="home.benchmarks.cta">
+                Read the full testing report →
+              </Translate>
+            </Link>
+          </StyledBenchmarksSection>
+        </BlurredSection>
+        <BlurredSection>
           <StyledIntegrations>
-            <SectionHeader level="h2" title="Supported Databases" />
+            <SectionHeader
+              level="h2"
+              title={translate({
+                id: 'home.databases.title',
+                message: 'Supported Databases',
+              })}
+            />
             <div className="database-grid">
               {Databases.map(({ title, href, imgName }) => (
                 <div className="item" key={title}>
@@ -730,9 +875,13 @@ export default function Home(): JSX.Element {
               ))}
             </div>
             <span className="database-sub">
-              ...and many other{' '}
+              <Translate id="home.databases.more">
+                ...and many other
+              </Translate>{' '}
               <a href="/docs/configuration/databases#installing-database-drivers">
-                compatible databases
+                <Translate id="home.databases.compatibleLink">
+                  compatible databases
+                </Translate>
               </a>
             </span>
           </StyledIntegrations>
