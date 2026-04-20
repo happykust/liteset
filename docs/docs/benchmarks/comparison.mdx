@@ -1,0 +1,67 @@
+---
+title: Liteset vs Apache Superset
+sidebar_position: 3
+---
+
+# Liteset vs Apache Superset 6.0.0
+
+A feature-by-feature comparison of the two backends. Liteset is a **drop-in replacement** at the wire level — the user-visible behaviour is intentionally identical. Differences are confined to the runtime architecture.
+
+## At a glance
+
+| | Apache Superset 6.0.0 | Liteset |
+|---|---|---|
+| **Web framework** | Flask 2.x (WSGI) | Litestar 2.x (ASGI) |
+| **App server** | Gunicorn (`gevent` / `sync`) | Uvicorn + uvloop |
+| **Concurrency model** | Pre-forked workers × threads | Single event loop |
+| **ORM** | SQLAlchemy 1.4 (sync) | SQLAlchemy 2.0 (async) |
+| **Metadata DB driver** | psycopg2 / mysqlclient | asyncpg / asyncmy / aiosqlite |
+| **DB engine specs** | Sync `BaseEngineSpec` | Native async (Postgres, MySQL, ClickHouse, Trino) + sync fallback |
+| **Serialization** | Marshmallow + Pydantic v1 | msgspec |
+| **Configuration** | `superset_config.py` (Python module) | pydantic-settings (with `superset_config.py` compatibility) |
+| **Auth / RBAC** | Flask-AppBuilder | AsyncSecurityManager (FAB port) |
+| **Background jobs** | Celery | Celery (unchanged) |
+| **WebSocket** | External Node.js `superset-websocket` | Native Litestar WebSocket |
+| **OpenAPI** | flask-appbuilder spec | Litestar auto-generated, served at `/swagger/v1` |
+| **Migrations** | Alembic (psycopg2) | Alembic (psycopg2 — kept sync for migrations) |
+
+## Compatibility matrix
+
+What stays **identical** between the two:
+
+- ✅ Metadata DB schema — same Alembic revisions
+- ✅ REST API — same routes, same response shapes (dual `camelCase`/`snake_case` lookup)
+- ✅ Session cookies — Flask-signed cookies decoded natively
+- ✅ CSRF tokens (`X-CSRFToken`)
+- ✅ Rison-encoded query parameters
+- ✅ SPA frontend bundle (no changes required)
+- ✅ Celery tasks (alerts, reports, thumbnails, async queries)
+- ✅ Feature flags
+- ✅ SIP-40 error envelopes
+- ✅ Per-DB engine spec capabilities
+
+What is **expected to change**:
+
+- 🔁 Logs — Liteset emits structured JSON via structlog
+- 🔁 OpenAPI URL — `/swagger/v1` is auto-generated
+- 🔁 Process model — one Uvicorn process replaces N Gunicorn workers
+- 🔁 Resource footprint — see the [Results](./results.mdx) page
+
+## When to choose which
+
+**Stick with Apache Superset 6.0.0 if:**
+
+- You are running Superset in production today and there is no specific scaling pain
+- You depend on third-party Flask middlewares that have no ASGI equivalent
+- You need the long-term-support guarantees of an Apache project
+
+**Try Liteset if:**
+
+- You hit the worker-count ceiling on a single VM
+- Memory footprint per Superset instance is a real cost line
+- You want to consolidate the WebSocket service back into the main backend
+- You are working on or studying async Python at scale
+
+:::tip
+Liteset is an academic port. For production installations the recommendation remains [`apache/superset`](https://github.com/apache/superset).
+:::

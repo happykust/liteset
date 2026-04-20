@@ -1,0 +1,81 @@
+---
+title: Methodology
+sidebar_position: 1
+---
+
+# Benchmark methodology
+
+This page describes how Liteset is benchmarked against upstream Apache Superset 6.0.0. The goal is **fair, reproducible measurement** — same metadata database, same dashboards, same load profile, only the backend changes.
+
+:::caution Work in progress
+The numbers shown on the [Results](./results.mdx) page are placeholder demo values. Real benchmark runs will be published as part of the diploma testing report.
+:::
+
+## Test bench
+
+| Component | Configuration |
+|---|---|
+| **Hardware** | TBD (single VM, fixed CPU/RAM) |
+| **OS** | Linux (kernel 6.x) |
+| **Python** | 3.12 |
+| **Metadata DB** | PostgreSQL 16 + asyncpg |
+| **Cache** | Redis 7 |
+| **Frontend** | Identical SPA bundle for both backends |
+| **Sample data** | Apache Superset's built-in example dashboards |
+
+## Software under test
+
+| Variant | Stack |
+|---|---|
+| **Apache Superset 6.0.0** | Flask + Gunicorn (`gevent` workers, `WORKERS=4`, `THREADS=10`) |
+| **Liteset** | Litestar + Uvicorn + uvloop, single process |
+
+Both variants run against the **same PostgreSQL metadata database** to keep the data layer isolated as a variable.
+
+## Workloads
+
+The load is generated with [`k6`](https://k6.io/) (preferred) or [`wrk`](https://github.com/wg/wrk). Each workload is run for **5 minutes** at a fixed virtual-user (VU) count, after a 30-second warm-up.
+
+### W1 — Dashboard read
+
+- `GET /api/v1/dashboard/{id}` for an existing example dashboard
+- 100 concurrent virtual users
+- Authenticated requests (Flask session cookie)
+
+### W2 — Chart data
+
+- `POST /api/v1/chart/data` with a pre-rendered query context
+- 50 concurrent virtual users
+- Hits both metadata DB (read) and analytical DB (read)
+
+### W3 — SQL Lab query
+
+- `POST /api/v1/sqllab/execute/` with a small SELECT
+- 25 concurrent virtual users
+
+### W4 — Idle memory
+
+- No load; server warms up, sits idle for 60 s, RSS is recorded
+
+## Metrics
+
+| Metric | Why it matters |
+|---|---|
+| **RPS (req/s)** | Throughput — how many requests the backend serves per second |
+| **p50 / p95 / p99 latency** | Response-time distribution — tail latency reveals queueing |
+| **Resident memory (MB)** | Steady-state RAM footprint — important for cost / density |
+| **Sustained concurrency** | Highest connection count without latency degradation |
+| **Error rate** | Non-2xx responses; must stay at 0 |
+
+## Comparability
+
+Both backends are deployed:
+
+- **Behind the same reverse proxy** (or no proxy at all) — networking is identical
+- **With identical caching policy** — both use Redis, same TTLs
+- **With the same dataset / dashboard fixtures** — bootstrapped from a snapshot
+- **With the same authentication path** — Flask-signed session cookies issued once and reused
+
+## Reproducing
+
+The exact load scripts, infrastructure manifests and raw results are kept in the [`liteset/benchmarks`](https://github.com/happykust/liteset) folder of the upstream repository. Each result on the [Results](./results.mdx) page links to the corresponding run.

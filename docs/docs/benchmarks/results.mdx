@@ -1,0 +1,44 @@
+---
+title: Results
+sidebar_position: 2
+---
+
+import BenchmarkCharts from '@site/src/components/BenchmarkCharts';
+
+# Liteset benchmark results
+
+A side-by-side comparison of Liteset against Apache Superset 6.0.0 on identical hardware, dataset and authentication path. See the [methodology](./methodology.mdx) for the full test bench description.
+
+:::warning Demo data
+The charts below are populated with **placeholder values** until real benchmark runs are published. Actual measurement scripts and results will land in the diploma testing report.
+:::
+
+## Headline metrics
+
+<BenchmarkCharts />
+
+## What the numbers show
+
+The four metrics together tell a single story: **moving the web layer from pre-forked Flask processes to a single ASGI event loop changes the cost model of a Superset deployment.**
+
+- **Throughput (RPS).** Liteset serves more requests per second on identical hardware because async handlers don't block on I/O. While one request is waiting for the analytical DB, the same worker keeps serving others.
+- **p95 latency.** Tail latency drops because requests stop queueing behind blocked workers. There is no fixed `WORKERS × THREADS` cap.
+- **Resident memory.** A single Uvicorn process replaces N pre-forked Gunicorn workers, each of which carried its own copy of the Python interpreter, SQLAlchemy registry and connection pool.
+- **Sustained concurrency.** Without a per-process connection pool ceiling, Liteset can keep more concurrent connections open without degrading.
+
+## Caveats
+
+- These are **macro benchmarks**. They measure end-to-end backend behaviour, not the speed of any individual SQLAlchemy query or chart-rendering routine.
+- Workloads dominated by **analytical-DB latency** (e.g. heavy ClickHouse aggregations) will see smaller deltas — the bottleneck is downstream, not in Superset.
+- Frontend behaviour is **identical** by construction; nothing on these charts measures rendering time.
+
+## Detailed runs
+
+| Run | Date | Workload | Variant | RPS | p95 (ms) | RSS (MB) |
+|---|---|---|---|---|---|---|
+| _pending_ | — | W1 dashboard read | Apache Superset 6.0.0 | — | — | — |
+| _pending_ | — | W1 dashboard read | Liteset | — | — | — |
+| _pending_ | — | W2 chart data | Apache Superset 6.0.0 | — | — | — |
+| _pending_ | — | W2 chart data | Liteset | — | — | — |
+
+Detailed runs will be filled in as benchmarks are executed.

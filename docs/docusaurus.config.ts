@@ -23,20 +23,44 @@ import { themes } from 'prism-react-renderer';
 
 const { github: lightCodeTheme, vsDark: darkCodeTheme } = themes;
 
+const LITESET_GITHUB = 'https://github.com/happykust/liteset';
+const UPSTREAM_GITHUB = 'https://github.com/apache/superset';
+const LITESET_VERSION = '6.0.0';
+
 const config: Config = {
-  title: 'Superset',
+  title: 'Liteset',
   tagline:
-    'Apache Superset is a modern data exploration and visualization platform',
-  url: 'https://superset.apache.org',
+    'Liteset — асинхронный порт Apache Superset на Litestar/ASGI с полной обратной совместимостью',
+  url: 'https://liteset.happykust.dev',
   baseUrl: '/',
-  onBrokenLinks: 'throw',
-  onBrokenMarkdownLinks: 'throw',
+  onBrokenLinks: 'warn',
   markdown: {
     mermaid: true,
+    hooks: {
+      onBrokenMarkdownLinks: 'warn',
+    },
   },
   favicon: '/img/favicon.ico',
-  organizationName: 'apache',
-  projectName: 'superset',
+  organizationName: 'happykust',
+  projectName: 'liteset',
+  i18n: {
+    defaultLocale: 'en',
+    locales: ['en', 'ru'],
+    localeConfigs: {
+      en: {
+        label: 'English',
+        direction: 'ltr',
+        htmlLang: 'en',
+        path: 'en',
+      },
+      ru: {
+        label: 'Русский',
+        direction: 'ltr',
+        htmlLang: 'ru',
+        path: 'ru',
+      },
+    },
+  },
   themes: ['@saucelabs/theme-github-codeblock', '@docusaurus/theme-mermaid'],
   plugins: [
     [
@@ -86,28 +110,8 @@ const config: Config = {
             from: '/druid.html',
           },
           {
-            to: '/docs/configuration/country-map-tools',
-            from: '/misc.html',
-          },
-          {
-            to: '/docs/configuration/country-map-tools',
-            from: '/visualization.html',
-          },
-          {
-            to: '/docs/faq',
-            from: '/videos.html',
-          },
-          {
             to: '/docs/faq',
             from: '/faq.html',
-          },
-          {
-            to: '/docs/using-superset/creating-your-first-dashboard',
-            from: '/tutorial.html',
-          },
-          {
-            to: '/docs/using-superset/creating-your-first-dashboard',
-            from: '/docs/creating-charts-dashboards/first-dashboard',
           },
           {
             to: '/docs/api',
@@ -130,10 +134,6 @@ const config: Config = {
             from: '/docs/contributing/contribution-guidelines',
           },
           {
-            to: '/docs/contributing/',
-            from: '/docs/contributing/contribution-page',
-          },
-          {
             to: '/docs/configuration/databases',
             from: '/docs/databases/yugabyte/',
           },
@@ -144,26 +144,6 @@ const config: Config = {
           {
             to: '/docs/installation/kubernetes',
             from: '/docs/installation/running-on-kubernetes/',
-          },
-          {
-            to: '/docs/contributing/howtos',
-            from: '/docs/contributing/testing-locally/',
-          },
-          {
-            to: '/docs/using-superset/creating-your-first-dashboard',
-            from: '/docs/creating-charts-dashboards/creating-your-first-dashboard/',
-          },
-          {
-            to: '/docs/using-superset/creating-your-first-dashboard',
-            from: '/docs/creating-charts-dashboards/exploring-data/',
-          },
-          {
-            to: '/docs/installation/docker-compose',
-            from: '/docs/installation/installing-superset-using-docker-compose/',
-          },
-          {
-            to: '/docs/contributing/howtos',
-            from: '/docs/contributing/creating-viz-plugins/',
           },
           {
             to: '/docs/installation/kubernetes',
@@ -190,8 +170,8 @@ const config: Config = {
             from: '/docs/installation/event-logging/',
           },
           {
-            to: '/docs/contributing/howtos',
-            from: '/docs/contributing/translations/',
+            to: '/docs/benchmarks/results',
+            from: '/benchmarks',
           },
         ],
       },
@@ -204,19 +184,15 @@ const config: Config = {
       {
         docs: {
           sidebarPath: require.resolve('./sidebars.js'),
-          editUrl: ({ versionDocsDirPath, docPath }) => {
+          editUrl: ({ versionDocsDirPath, docPath, locale }) => {
+            const localePath = locale === 'en' ? '' : `i18n/${locale}/docusaurus-plugin-content-docs/current/`;
             if (docPath === 'intro.md') {
-              return 'https://github.com/apache/superset/edit/master/README.md';
+              return `${LITESET_GITHUB}/edit/main/README.md`;
             }
-            return `https://github.com/apache/superset/edit/master/docs/${versionDocsDirPath}/${docPath}`;
+            return `${LITESET_GITHUB}/edit/main/docs/${localePath}${versionDocsDirPath}/${docPath}`;
           },
         },
-        blog: {
-          showReadingTime: true,
-          // Please change this to your repo.
-          editUrl:
-            'https://github.com/facebook/docusaurus/edit/main/website/blog/',
-        },
+        blog: false,
         theme: {
           customCss: require.resolve('./src/styles/custom.css'),
         },
@@ -230,14 +206,9 @@ const config: Config = {
       disableSwitch: false,
       respectPrefersColorScheme: true,
     },
-    algolia: {
-      appId: 'WR5FASX5ED',
-      apiKey: 'd0d22810f2e9b614ffac3a73b26891fe',
-      indexName: 'superset-apache',
-    },
     navbar: {
       logo: {
-        alt: 'Superset Logo',
+        alt: 'Liteset Logo',
         src: '/img/superset-logo-horiz.svg',
         srcDark: '/img/superset-logo-horiz-dark.svg',
       },
@@ -251,10 +222,22 @@ const config: Config = {
               to: '/docs/intro',
             },
             {
+              label: 'Quickstart',
+              to: '/docs/quickstart',
+            },
+            {
+              label: 'Benchmarks',
+              to: '/docs/benchmarks/results',
+            },
+            {
               label: 'FAQ',
               to: '/docs/faq',
             },
           ],
+        },
+        {
+          label: 'Benchmarks',
+          to: '/docs/benchmarks/results',
         },
         {
           label: 'Community',
@@ -266,21 +249,17 @@ const config: Config = {
             },
             {
               label: 'GitHub',
-              href: 'https://github.com/apache/superset',
+              href: LITESET_GITHUB,
             },
             {
-              label: 'Slack',
-              href: 'http://bit.ly/join-superset-slack',
-            },
-            {
-              label: 'Mailing List',
-              href: 'https://lists.apache.org/list.html?dev@superset.apache.org',
-            },
-            {
-              label: 'Stack Overflow',
-              href: 'https://stackoverflow.com/questions/tagged/apache-superset',
+              label: 'Upstream (Apache Superset)',
+              href: UPSTREAM_GITHUB,
             },
           ],
+        },
+        {
+          type: 'localeDropdown',
+          position: 'right',
         },
         {
           href: '/docs/intro',
@@ -289,36 +268,38 @@ const config: Config = {
           label: 'Get Started',
         },
         {
-          href: 'https://github.com/apache/superset',
+          href: LITESET_GITHUB,
           position: 'right',
           className: 'github-button',
+          'aria-label': 'GitHub repository',
         },
       ],
     },
     footer: {
       links: [],
       copyright: `
-          <div class="footer__applitools">
-            We use &nbsp;<a href="https://applitools.com/" target="_blank" rel="nofollow"><img src="/img/applitools.png" title="Applitools" /></a>
-          </div>
-          <p>Copyright © ${new Date().getFullYear()},
-          The <a href="https://www.apache.org/" target="_blank" rel="noreferrer">Apache Software Foundation</a>,
-          Licensed under the Apache <a href="https://apache.org/licenses/LICENSE-2.0" target="_blank" rel="noreferrer">License</a>.</p>
-          <p><small>Apache Superset, Apache, Superset, the Superset logo, and the Apache feather logo are either registered trademarks or trademarks of The Apache Software Foundation. All other products or name brands are trademarks of their respective holders, including The Apache Software Foundation.
-          <a href="https://www.apache.org/" target="_blank">Apache Software Foundation</a> resources</small></p>
+          <p>
+            <strong>Liteset ${LITESET_VERSION}</strong> — асинхронный порт Apache Superset 6.0.0
+          </p>
+          <p>
+            Copyright © ${new Date().getFullYear()} Liteset contributors.
+            Distributed under the <a href="https://apache.org/licenses/LICENSE-2.0" target="_blank" rel="noreferrer">Apache License 2.0</a>.
+          </p>
+          <p><small>
+            Liteset основан на <a href="${UPSTREAM_GITHUB}" target="_blank" rel="noreferrer">Apache Superset 6.0.0</a>.
+            Apache, Apache Superset, Superset and the Superset logo are trademarks of
+            <a href="https://www.apache.org/" target="_blank" rel="noreferrer">The Apache Software Foundation</a>.
+            All other product or company names are trademarks of their respective holders.
+          </small></p>
           <img class="footer__divider" src="/img/community/line.png" alt="Divider" />
           <p>
             <small>
-              <a href="/docs/security/" target="_blank" rel="noreferrer">Security</a>&nbsp;|&nbsp;
-              <a href="https://www.apache.org/foundation/sponsorship.html" target="_blank" rel="noreferrer">Donate</a>&nbsp;|&nbsp;
-              <a href="https://www.apache.org/foundation/thanks.html" target="_blank" rel="noreferrer">Thanks</a>&nbsp;|&nbsp;
-              <a href="https://apache.org/events/current-event" target="_blank" rel="noreferrer">Events</a>&nbsp;|&nbsp;
-              <a href="https://apache.org/licenses/" target="_blank" rel="noreferrer">License</a>&nbsp;|&nbsp;
-              <a href="https://privacy.apache.org/policies/privacy-policy-public.html" target="_blank" rel="noreferrer">Privacy</a>
+              <a href="/docs/security/" rel="noreferrer">Security</a>&nbsp;|&nbsp;
+              <a href="/docs/benchmarks/results">Benchmarks</a>&nbsp;|&nbsp;
+              <a href="${LITESET_GITHUB}" target="_blank" rel="noreferrer">GitHub</a>&nbsp;|&nbsp;
+              <a href="${UPSTREAM_GITHUB}" target="_blank" rel="noreferrer">Upstream</a>
             </small>
           </p>
-          <!-- telemetry/analytics pixel: -->
-          <img referrerPolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=39ae6855-95fc-4566-86e5-360d542b0a68" />
           `,
     },
     prism: {
@@ -331,39 +312,11 @@ const config: Config = {
       },
     },
   } satisfies ThemeConfig,
-  scripts: [
-    // {
-    //   src: 'https://www.bugherd.com/sidebarv2.js?apikey=enilpiu7bgexxsnoqfjtxa',
-    //   async: true,
-    // },
-    '/script/matomo.js',
-    {
-      src: 'https://widget.kapa.ai/kapa-widget.bundle.js',
-      async: true,
-      'data-website-id': 'c6a8a8b8-3127-48f9-97a7-51e9e10d20d0',
-      'data-project-name': 'Apache Superset',
-      'data-project-color': '#FFFFFF',
-      'data-project-logo':
-        'https://superset.apache.org/img/superset-logo-icon-only.png',
-      'data-modal-override-open-id': 'ask-ai-input',
-      'data-modal-override-open-class': 'search-input',
-      'data-modal-disclaimer':
-        'This is a custom LLM for Apache Superset with access to all [documentation](superset.apache.org/docs/intro/), [GitHub Open Issues, PRs and READMEs](github.com/apache/superset).&#10;&#10;Companies deploy assistants like this ([built by kapa.ai](https://kapa.ai)) on docs via [website widget](https://docs.kapa.ai/integrations/website-widget) (Docker, Reddit), in [support forms](https://docs.kapa.ai/integrations/support-form-deflector) for ticket deflection (Monday.com, Mapbox), or as [Slack bots](https://docs.kapa.ai/integrations/slack-bot) with private sources.',
-      'data-modal-example-questions':
-        'How do I install Superset?,How can I contribute to Superset?',
-      'data-button-text-color': 'rgb(81,166,197)',
-      'data-modal-header-bg-color': '#ffffff',
-      'data-modal-title-color': 'rgb(81,166,197)',
-      'data-modal-title': 'Apache Superset AI',
-      'data-modal-disclaimer-text-color': '#000000',
-      'data-consent-required': 'true',
-      'data-consent-screen-disclaimer':
-        "By clicking \"I agree, let's chat\", you consent to the use of the AI assistant in accordance with kapa.ai's [Privacy Policy](https://www.kapa.ai/content/privacy-policy). This service uses reCAPTCHA, which requires your consent to Google's [Privacy Policy](https://policies.google.com/privacy) and [Terms of Service](https://policies.google.com/terms). By proceeding, you explicitly agree to both kapa.ai's and Google's privacy policies.",
-    },
-  ],
   customFields: {
-    matomoUrl: 'https://analytics.apache.org',
-    matomoSiteId: '22',
+    litesetVersion: LITESET_VERSION,
+    upstreamVersion: '6.0.0',
+    litesetGithub: LITESET_GITHUB,
+    upstreamGithub: UPSTREAM_GITHUB,
   },
 };
 

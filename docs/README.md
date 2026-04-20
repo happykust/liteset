@@ -17,7 +17,29 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-This is the public documentation site for Superset, built using
-[Docusaurus 3](https://docusaurus.io/). See
-[CONTRIBUTING.md](../CONTRIBUTING.md#documentation) for documentation on
-contributing to documentation.
+# Liteset documentation
+
+Public documentation site for **Liteset**, the async Litestar/ASGI port of Apache Superset 6.0.0. Built with [Docusaurus 3](https://docusaurus.io/).
+
+## Local development
+
+```bash
+yarn install
+yarn start          # English (default)
+yarn start --locale ru   # Russian
+```
+
+The `_init` script bundles `src/intro_header.txt` together with the project root `README.md` into `docs/intro.md` before Docusaurus boots, so the home page always reflects the current README.
+
+## Build
+
+```bash
+yarn build          # builds en + ru
+yarn serve          # serve the built site locally
+```
+
+## Adding translations
+
+Translation files live under `i18n/<locale>/`. Run `yarn write-translations --locale ru` after touching `<Translate>` tags or `translate({...})` calls in `src/` to refresh the JSON catalogue.
+
+For docs content, mirror the `docs/` tree under `i18n/<locale>/docusaurus-plugin-content-docs/current/` and translate file by file.
