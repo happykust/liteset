@@ -2,6 +2,17 @@
 title: CVEs fixed by release
 sidebar_position: 2
 ---
+
+# CVEs fixed by release
+
+:::info Liteset inherits all upstream fixes
+The CVE list below is the **historical record of Apache Superset** security advisories. Liteset 6.0.0 is based on Apache Superset 6.0.0 and contains every fix listed for versions ≤ 6.0.0 — these CVEs do **not** affect Liteset.
+
+For Liteset-specific vulnerabilities (in the async runtime, AsyncSecurityManager, custom middleware), see the [project's GitHub Security Advisories](https://github.com/happykust/liteset/security/advisories) and the [reporting process](/docs/contributing/misc#reporting-a-security-vulnerability).
+
+If you find a vulnerability in upstream Apache Superset code that Liteset re-uses (frontend, chart engine, SQL parser, FAB-derived auth logic), please report it to Apache via [`private@superset.apache.org`](https://superset.apache.org/docs/security/security#reporting-security-vulnerabilities) — Liteset will pick up the fix on the next sync.
+:::
+
 #### Version 5.0.0
 
 | CVE            | Title                                                                              | Affected |

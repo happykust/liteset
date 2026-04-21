@@ -9,7 +9,11 @@ import useBaseUrl from "@docusaurus/useBaseUrl";
 
 # Installation Methods
 
-How should you install Superset? Here's a comparison of the different options. It will help if you've first read the [Architecture](/docs/installation/architecture.mdx) page to understand Superset's different components.
+How should you install Liteset? Here's a comparison of the different options. It will help if you've first read the [Architecture](/docs/installation/architecture.mdx) page to understand the components of a Liteset deployment.
+
+:::info
+Liteset is a drop-in async replacement for Apache Superset 6.0.0 and reuses the same metadata-DB schema, frontend bundle, and Celery worker. Most installation patterns documented here are inherited from upstream Apache Superset and apply unchanged.
+:::
 
 The fundamental trade-off is between you needing to do more of the detail work yourself vs. using a more complex deployment route that handles those details.
 

@@ -9,16 +9,20 @@ import useBaseUrl from "@docusaurus/useBaseUrl";
 
 # Architecture
 
-This page is meant to give new administrators an understanding of Superset's components.
+This page is meant to give new administrators an understanding of the components of a Liteset deployment.
+
+:::info
+Liteset is a drop-in async replacement for Apache Superset 6.0.0. The high-level component diagram below applies to both — only the web-server process changes (Litestar/Uvicorn instead of Flask/Gunicorn).
+:::
 
 ## Components
 
-A Superset installation is made up of these components:
+A Liteset installation is made up of these components:
 
-1. The Superset application itself
-2. A metadata database
+1. The Liteset application itself (Litestar/ASGI on Uvicorn)
+2. A metadata database (schema inherited 1:1 from Apache Superset 6.0.0)
 3. A caching layer (optional, but necessary for some features)
-4. A worker & beat (optional, but necessary for some features)
+4. A worker & beat (Celery, optional but necessary for some features)
 
 ### Optional components and associated features
 

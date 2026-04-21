@@ -4,7 +4,7 @@ hide_title: false
 sidebar_position: 2
 ---
 
-**Ready to try Apache Superset?** This quickstart guide will help you
+**Ready to try Liteset?** This quickstart guide will help you
 get up and running on your local machine in **3 simple steps**. Note that
 it assumes that you have [Docker](https://www.docker.com),
 [Docker Compose](https://docs.docker.com/compose/), and
@@ -19,22 +19,22 @@ refer to our
 page.
 :::
 
-### 1. Get Superset
+### 1. Get Liteset
 
 ```bash
-git clone https://github.com/apache/superset
+git clone https://github.com/happykust/liteset
 ```
 
-### 2. Start the latest official release of Superset
+### 2. Start the latest official release of Liteset
 
 ```bash
 # Enter the repository you just cloned
-$ cd superset
+$ cd liteset
 
 # Set the repo to the state associated with the latest official version
-$ git checkout tags/5.0.0
+$ git checkout tags/6.0.0
 
-# Fire up Superset using Docker Compose
+# Fire up Liteset using Docker Compose
 $ docker compose -f docker-compose-image-tag.yml up
 ```
 
@@ -45,7 +45,7 @@ are downloaded and the output settles, you're ready to log in.
 ⚠️ If you get an error message like `validating superset\docker-compose-image-tag.yml: services.superset-worker-beat.env_file.0 must be a string`, you need to update your version of `docker-compose`.
 Note that `docker-compose` is on the path to deprecation and you should now use `docker compose` instead.
 
-### 3. Log into Superset
+### 3. Log into Liteset
 
 Now head over to [http://localhost:8088](http://localhost:8088) and log in with the default created account:
 
@@ -54,18 +54,18 @@ username: admin
 password: admin
 ```
 
-#### 🎉 Congratulations! Superset is now up and running on your machine! 🎉
+#### 🎉 Congratulations! Liteset is now up and running on your machine! 🎉
 
 ### Wrapping Up
 
-Once you're done with Superset, you can stop and delete just like any other container environment:
+Once you're done with Liteset, you can stop and delete just like any other container environment:
 
 ```bash
 docker compose down
 ```
 
 :::tip
-You can use the same environment more than once, as Superset will persist data locally. However, make sure to properly stop all
+You can use the same environment more than once, as Liteset will persist data locally. However, make sure to properly stop all
 processes by running Docker Compose `stop` command. By doing so, you can avoid data corruption and/or loss of data.
 :::
 
@@ -76,7 +76,8 @@ From this point on, you can head on to:
 - [Create your first Dashboard](/docs/using-superset/creating-your-first-dashboard)
 - [Connect to a Database](/docs/configuration/databases)
 - [Using Docker Compose](/docs/installation/docker-compose)
-- [Configure Superset](/docs/configuration/configuring-superset/)
+- [Configure Liteset](/docs/configuration/configuring-superset/)
 - [Installing on Kubernetes](/docs/installation/kubernetes/)
+- [Read the testing report](/docs/benchmarks/results)
 
-Or just explore our [Documentation](https://superset.apache.org/docs/intro)!
+Or just explore our [Documentation](/docs/intro)!

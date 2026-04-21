@@ -5,11 +5,13 @@ version: 1
 
 # Miscellaneous
 
-## Reporting a Security Vulnerability
+## Reporting a security vulnerability
 
-Please report security vulnerabilities to private@superset.apache.org.
+If you think you have found a security vulnerability in **Liteset-specific code** (the async runtime, Litestar handlers, AsyncSecurityManager, middleware), please **do not** open a public GitHub issue. Instead, contact the project maintainer privately via [GitHub security advisories](https://github.com/happykust/liteset/security/advisories/new) on the repository.
 
-In the event a community member discovers a security flaw in Superset, it is important to follow the [Apache Security Guidelines](https://www.apache.org/security/committers.html) and release a fix as quickly as possible before public disclosure. Reporting security vulnerabilities through the usual GitHub Issues channel is not ideal as it will publicize the flaw before a fix can be applied.
+If the vulnerability is in **upstream Apache Superset code** that Liteset re-uses (the React frontend, the chart-rendering engine, the SQL parser, the dataset model, etc.), please report it upstream via the [Apache Superset security process](https://superset.apache.org/docs/security/security#reporting-security-vulnerabilities) (`private@superset.apache.org`). Liteset will then pick up the fix as part of its regular re-sync with upstream.
+
+In either case, follow responsible disclosure: do not publish the issue until a fix is available.
 
 ## SQL Lab Async
 
@@ -26,6 +28,7 @@ To do this, you'll need to:
   but perfect for testing (stores cache in `/tmp`)
 
   ```python
+  # The flask-caching cache config dict is read by Liteset's cache backend factory unchanged.
   from flask_caching.backends.filesystemcache import FileSystemCache
   RESULTS_BACKEND = FileSystemCache('/tmp/sqllab')
   ```

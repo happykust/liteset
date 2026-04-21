@@ -22,8 +22,8 @@ documentation.
 :::
 
 As mentioned in our [quickstart guide](/docs/quickstart), the fastest way to try
-Superset locally is using Docker Compose on a Linux or Mac OSX
-computer. Superset does not have official support for Windows. It's also the easiest
+Liteset locally is using Docker Compose on a Linux or Mac OSX
+computer. Liteset does not have official support for Windows. It's also the easiest
 way to launch a fully functioning **development environment** quickly.
 
 Note that there are 4 major ways we support to run `docker compose`:
@@ -39,11 +39,11 @@ Note that there are 4 major ways we support to run `docker compose`:
   at the time you fire this up will be reflected, but changes to the code
   while `up` won't be reflected in the app
 1. **docker-compose-image-tag.yml** where we fetch an image from docker-hub say for the
-  `5.0.0` release for instance, and fire it up so you can try it. Here what's in
+  `6.0.0` release for instance, and fire it up so you can try it. Here what's in
   the local branch has no effects on what's running, we just fetch and run
   pre-built images from docker-hub. For `docker compose` to work along with the
   Postgres image it boots up, you'll want to point to a `-dev`-suffixed TAG, as in
-  `export TAG=5.0.0-dev` or `export TAG=4.1.2-dev`, with `latest-dev` being the default.
+  `export TAG=6.0.0-dev` or `export TAG=5.0.0-dev`, with `latest-dev` being the default.
   The `dev` builds include the `psycopg2-binary` required to connect
   to the Postgres database launched as part of the `docker compose` builds.
 
@@ -55,19 +55,19 @@ Note that this documentation assumes that you have [Docker](https://www.docker.c
 [git](https://git-scm.com/) installed. Note also that we used to use `docker-compose` but that
 is on the path to deprecation so we now use `docker compose` instead.
 
-## 1. Clone Superset's GitHub repository
+## 1. Clone Liteset's GitHub repository
 
-[Clone Superset's repo](https://github.com/apache/superset) in your terminal with the
+[Clone the Liteset repo](https://github.com/happykust/liteset) (or [the upstream Apache Superset repo](https://github.com/apache/superset) if you want to run vanilla Superset) in your terminal with the
 following command:
 
 ```bash
-git clone --depth=1  https://github.com/apache/superset.git
+git clone --depth=1  https://github.com/happykust/liteset.git
 ```
 
-Once that command completes successfully, you should see a new `superset` folder in your
+Once that command completes successfully, you should see a new `liteset` folder in your
 current directory.
 
-## 2. Launch Superset Through Docker Compose
+## 2. Launch Liteset Through Docker Compose
 
 First let's assume you're familiar with `docker compose` mechanics. Here we'll refer generally
 to `docker compose up` even though in some cases you may want to force a check for newer remote
@@ -139,7 +139,7 @@ docker compose -f docker-compose-non-dev.yml up
 
 ```bash
 # Set the version you want to run
-export TAG=5.0.0
+export TAG=6.0.0
 # Fetch the tag you're about to check out (assuming you shallow-cloned the repo)
 git fetch --depth=1 origin tag $TAG
 # Could also fetch all tags too if you've got bandwidth to spare
@@ -156,7 +156,7 @@ from Docker Hub.
 
 :::note
 For option #2 and #3, we recommend checking out the release tag from the git repository
-(ie: `git checkout 5.0.0`) for more guaranteed results. This ensures that the `docker-compose.*.yml`
+(ie: `git checkout 6.0.0`) for more guaranteed results. This ensures that the `docker-compose.*.yml`
 configurations and that the mounted `docker/` scripts are in sync with the image you are
 looking to fire up.
 :::
@@ -183,7 +183,7 @@ The following is for users who want to configure how Superset runs in Docker Com
 can skip to the next section.
 
 You can install additional python packages and apply config overrides by following the steps
-mentioned in [docker/README.md](https://github.com/apache/superset/tree/master/docker#configuration)
+mentioned in [docker/README.md](https://github.com/happykust/liteset/tree/main/docker#configuration)
 
 Note that `docker/.env` sets the default environment variables for all the docker images
 used by `docker compose`, and that `docker/.env-local` can be used to override those defaults.

@@ -4,6 +4,26 @@ sidebar_position: 9
 
 # FAQ
 
+## How does Liteset differ from Apache Superset?
+
+Liteset is an **async port** of Apache Superset 6.0.0, rewritten from Flask/WSGI onto Litestar/ASGI. Business logic and user-visible behaviour are identical — only the web-layer implementation differs. See the [comparison page](/docs/benchmarks/comparison) for the full breakdown.
+
+## Can I drop in Liteset on top of an existing Apache Superset install?
+
+Yes. Liteset guarantees compatibility at the level of:
+
+- the metadata DB schema (same Alembic revisions),
+- the REST API (same routes, response shapes, field names),
+- Flask-signed session cookies and CSRF tokens,
+- the SPA frontend (frontend code is not modified),
+- Celery workers (used as-is).
+
+Stop Apache Superset, start Liteset against the same database — users keep working without re-login.
+
+## Where do I find the testing report?
+
+The full methodology, workloads and benchmark results live under [Benchmarks](/docs/benchmarks/results).
+
 ## How big of a dataset can Superset handle?
 
 Superset can work with even gigantic databases! Superset acts as a thin layer above your underlying

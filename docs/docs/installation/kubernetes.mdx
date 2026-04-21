@@ -12,8 +12,19 @@ import useBaseUrl from "@docusaurus/useBaseUrl";
 <img src={useBaseUrl("/img/k8s.png" )} width="150" />
 <br /><br />
 
-Running Superset on Kubernetes is supported with the provided [Helm](https://helm.sh/) chart
-found in the official [Superset helm repository](https://apache.github.io/superset/index.yaml).
+:::warning No first-party Liteset Helm chart yet
+This page describes the **Apache Superset** Helm chart workflow, which Liteset does not redistribute. To deploy Liteset on Kubernetes today you have two options:
+
+1. **Adapt the Apache Superset Helm chart manually.** Follow the steps below, then in your `values.yaml` override:
+   - `image.repository` → your Liteset image (e.g. a private build of `superset.app:create_app` running under Uvicorn).
+   - The container `command` → `uvicorn superset.app:create_app --factory --host 0.0.0.0 --port 8088 --proxy-headers --forwarded-allow-ips '*'` (instead of the default `gunicorn`).
+   - `supersetWebsockets.enabled: false` — Liteset serves WebSockets natively, no `superset-websocket` sidecar.
+2. **Build your own minimal manifests.** A Liteset deployment is a single Uvicorn pod (web), a Celery worker pod, Redis and Postgres. Apache Superset's Helm chart is a useful reference for liveness/readiness probes, init containers running `superset db upgrade` and a Job for `superset init`.
+
+A first-party Liteset Helm chart is on the roadmap; see [issues](https://github.com/happykust/liteset/issues) if you want to help.
+:::
+
+Running Apache Superset on Kubernetes is supported with the official [Helm](https://helm.sh/) chart found in the [Superset helm repository](https://apache.github.io/superset/index.yaml). Most of the chart structure (probes, init containers, RBAC, Celery beat, optional `node-exporter` sidecars) carries over to Liteset; only the **container command** and **WebSocket sidecar** need to change.
 
 ## Prerequisites
 
@@ -45,7 +56,7 @@ superset/superset       0.1.1           1.0             Apache Superset is a mod
 
 3. Configure your setting overrides
 
-Just like any typical Helm chart, you'll need to craft a `values.yaml` file that would define/override any of the values exposed into the default [values.yaml](https://github.com/apache/superset/tree/master/helm/superset/values.yaml), or from any of the dependent charts it depends on:
+Just like any typical Helm chart, you'll need to craft a `values.yaml` file that would define/override any of the values exposed into the default [values.yaml](https://github.com/happykust/liteset/tree/main/helm/superset/values.yaml), or from any of the dependent charts it depends on:
 
 - [bitnami/redis](https://artifacthub.io/packages/helm/bitnami/redis)
 - [bitnami/postgresql](https://artifacthub.io/packages/helm/bitnami/postgresql)
@@ -151,7 +162,7 @@ dialect to be installed for each datastore you want to connect to.
 
 See [Install Database Drivers](/docs/configuration/databases) for more information.
 It is recommended that you refer to versions listed in
-[pyproject.toml](https://github.com/apache/superset/blob/master/pyproject.toml)
+[pyproject.toml](https://github.com/happykust/liteset/blob/main/pyproject.toml)
 instead of hard-coding them in your bootstrap script, as seen below.
 
 :::

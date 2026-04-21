@@ -6,57 +6,52 @@ version: 1
 
 # Network and Security Settings
 
-## CORS
-
-
-:::note
-In Superset versions prior to `5.x` you have to install to install `flask-cors` with `pip install flask-cors` to enable CORS support.
+:::info Liteset implementation
+Liteset runs on Litestar/ASGI, so the **Flask-CORS / flask-talisman / flask-wtf** extensions are not active. Their configuration **keys** (`ENABLE_CORS`, `CORS_OPTIONS`, `TALISMAN_ENABLED`, `TALISMAN_CONFIG`, `WTF_CSRF_*`) are still read from `superset_config.py` and applied by Liteset's own middleware stack — built on Starlette's `CORSMiddleware`, `TrustedHostMiddleware` and a Litestar CSRF middleware. Configuration is identical; the underlying implementation is async.
 :::
 
+## CORS
 
-The following keys in `superset_config.py` can be specified to configure CORS:
+The following keys in `superset_config.py` configure CORS:
 
-- `ENABLE_CORS`: Must be set to `True` in order to enable CORS
-- `CORS_OPTIONS`: options passed to Flask-CORS
-  ([documentation](https://flask-cors.readthedocs.io/en/latest/api.html#extension))
+- `ENABLE_CORS`: must be `True` to enable CORS.
+- `CORS_OPTIONS`: a dict of CORS options. Liteset accepts the same dict shape as Flask-CORS — `origins`, `supports_credentials`, `allow_headers`, `methods`, `expose_headers`, `max_age` — and forwards them to Starlette's `CORSMiddleware`. See the [Flask-CORS docs](https://flask-cors.readthedocs.io/en/latest/api.html#extension) for option semantics.
 
 ## HTTP headers
 
-Note that Superset bundles [flask-talisman](https://pypi.org/project/talisman/)
-Self-described as a small Flask extension that handles setting HTTP headers that can help
-protect against a few common web application security issues.
+Apache Superset bundles [flask-talisman](https://pypi.org/project/talisman/) to set security headers (CSP, HSTS, X-Frame-Options, etc.). Liteset implements the same behaviour through a Litestar middleware that consumes the `TALISMAN_ENABLED` and `TALISMAN_CONFIG` keys from `superset_config.py` — the configuration surface is unchanged.
 
-## HTML Embedding of Dashboards and Charts
+## HTML embedding of dashboards and charts
 
-There are two ways to embed a dashboard: Using the [SDK](https://www.npmjs.com/package/@superset-ui/embedded-sdk) or embedding a direct link. Note that in the latter case everybody who knows the link is able to access the dashboard.
+There are two ways to embed a dashboard: using the [SDK](https://www.npmjs.com/package/@superset-ui/embedded-sdk) or embedding a direct link. Note that in the latter case anyone with the link can access the dashboard.
 
-### Embedding a Public Direct Link to a Dashboard
+### Embedding a public direct link to a dashboard
 
-This works by first changing the content security policy (CSP) of [flask-talisman](https://github.com/GoogleCloudPlatform/flask-talisman) to allow for certain domains to display Superset content. Then a dashboard can be made publicly accessible, i.e. **bypassing authentication**. Once made public, the dashboard's URL can be added to an iframe in another website's HTML code.
+This works by changing the content security policy (CSP) to allow specific domains to display Liteset content, then making a dashboard publicly accessible (i.e. **bypassing authentication**). The dashboard URL can then be added to an iframe in another website's HTML.
 
-#### Changing flask-talisman CSP
+#### Changing the CSP
 
-Add to `superset_config.py` the entire `TALISMAN_CONFIG` section from `config.py` and include a `frame-ancestors` section:
+Add the entire `TALISMAN_CONFIG` block from `superset/config.py` to your `superset_config.py` and include a `frame-ancestors` clause:
 
 ```python
 TALISMAN_ENABLED = True
 TALISMAN_CONFIG = {
     "content_security_policy": {
-    ...
- "frame-ancestors": ["*.my-domain.com", "*.another-domain.com"],
-    ...
+        # ...
+        "frame-ancestors": ["*.my-domain.com", "*.another-domain.com"],
+        # ...
+    },
+}
 ```
 
-Restart Superset for this configuration change to take effect.
+Restart Liteset for the change to take effect.
 
-#### Making a Dashboard Public
+#### Making a dashboard public
 
-1. Add the `'DASHBOARD_RBAC': True` [Feature Flag](https://github.com/apache/superset/blob/master/RESOURCES/FEATURE_FLAGS.md) to `superset_config.py`
-2. Add the `Public` role to your dashboard as described [here](https://superset.apache.org/docs/using-superset/creating-your-first-dashboard/#manage-access-to-dashboards)
+1. Add the `'DASHBOARD_RBAC': True` [feature flag](https://github.com/happykust/liteset/blob/main/RESOURCES/FEATURE_FLAGS.md) to `superset_config.py`.
+2. Add the `Public` role to your dashboard as described [here](/docs/using-superset/creating-your-first-dashboard/#manage-access-to-dashboards).
 
-#### Embedding a Public Dashboard
-
-Now anybody can directly access the dashboard's URL. You can embed it in an iframe like so:
+#### Embedding a public dashboard
 
 ```html
 <iframe
@@ -65,20 +60,20 @@ Now anybody can directly access the dashboard's URL. You can embed it in an ifra
   seamless
   frameBorder="0"
   scrolling="no"
-  src="https://superset.my-domain.com/superset/dashboard/10/?standalone=1&height=400"
+  src="https://liteset.my-domain.com/superset/dashboard/10/?standalone=1&height=400"
 >
 </iframe>
 ```
 
-#### Embedding a Chart
+#### Embedding a chart
 
-A chart's embed code can be generated by going to a chart's edit view and then clicking at the top right on `...` > `Share` > `Embed code`
+A chart's embed code can be generated from the chart's edit view: top-right `...` → `Share` → `Embed code`.
 
-### Enabling Embedding via the SDK
+### Enabling embedding via the SDK
 
-Clicking on `...` next to `EDIT DASHBOARD` on the top right of the dashboard's overview page should yield a drop-down menu including the entry "Embed dashboard".
+Click `...` next to `EDIT DASHBOARD` on the top-right of the dashboard's overview page; the menu should include **Embed dashboard**.
 
-To enable this entry, add the following line to the `.env` file:
+To enable this entry, add the following to your `.env`:
 
 ```text
 SUPERSET_FEATURE_EMBEDDED_SUPERSET=true
@@ -86,56 +81,51 @@ SUPERSET_FEATURE_EMBEDDED_SUPERSET=true
 
 ## CSRF settings
 
-Similarly, [flask-wtf](https://flask-wtf.readthedocs.io/en/0.15.x/config/) is used to manage
-some CSRF configurations. If you need to exempt endpoints from CSRF (e.g. if you are
-running a custom auth postback endpoint), you can add the endpoints to `WTF_CSRF_EXEMPT_LIST`:
+Apache Superset uses [flask-wtf](https://flask-wtf.readthedocs.io/en/0.15.x/config/) to manage CSRF; Liteset re-implements the same protection in an async middleware that reads the same `WTF_CSRF_*` keys.
 
-## SSH Tunneling
+To exempt endpoints from CSRF (for example, a custom auth postback endpoint), add them to `WTF_CSRF_EXEMPT_LIST`:
 
-1. Turn on feature flag
-    - Change [`SSH_TUNNELING`](https://github.com/apache/superset/blob/eb8386e3f0647df6d1bbde8b42073850796cc16f/superset/config.py#L489) to `True`
-    - If you want to add more security when establishing the tunnel we allow users to overwrite the `SSHTunnelManager` class [here](https://github.com/apache/superset/blob/eb8386e3f0647df6d1bbde8b42073850796cc16f/superset/config.py#L507)
-    - You can also set the [`SSH_TUNNEL_LOCAL_BIND_ADDRESS`](https://github.com/apache/superset/blob/eb8386e3f0647df6d1bbde8b42073850796cc16f/superset/config.py#L508) this the host address where the tunnel will be accessible on your VPC
+```python
+WTF_CSRF_EXEMPT_LIST = ["/auth/oauth-callback"]
+```
 
-2. Create database w/ ssh tunnel enabled
-    - With the feature flag enabled you should now see ssh tunnel toggle.
-    - Click the toggle to enable SSH tunneling and add your credentials accordingly.
-        - Superset allows for two different types of authentication (Basic + Private Key). These credentials should come from your service provider.
+The `X-CSRFToken` header used by the SPA frontend is identical to Apache Superset — no frontend changes required.
 
-3. Verify data is flowing
-    - Once SSH tunneling has been enabled, go to SQL Lab and write a query to verify data is properly flowing.
+## SSH tunneling
 
-## Domain Sharding
+1. Turn on the feature flag.
+    - Set [`SSH_TUNNELING`](https://github.com/happykust/liteset/blob/main/superset/config.py) to `True`.
+    - For extra security you can override the `SSHTunnelManager` class in `superset_config.py`.
+    - `SSH_TUNNEL_LOCAL_BIND_ADDRESS` controls the host address where the tunnel will be accessible inside your VPC.
 
-:::note
-Domain Sharding is deprecated as of Superset 5.0.0, and will be removed in Superset 6.0.0. Please Enable HTTP2 to keep more open connections per domain.
-:::
+2. Create a database with the SSH tunnel enabled.
+    - With the feature flag on, the SSH tunnel toggle appears in the database connection dialog.
+    - Liteset supports two authentication modes (basic + private key); credentials come from your service provider.
 
-Chrome allows up to 6 open connections per domain at a time. When there are more than 6 slices in
-dashboard, a lot of time fetch requests are queued up and wait for next available socket.
-[PR 5039](https://github.com/apache/superset/pull/5039) adds domain sharding to Superset,
-and this feature will be enabled by configuration only (by default Superset doesn’t allow
-cross-domain request).
+3. Verify data flows.
+    - Once SSH tunneling is enabled, go to SQL Lab and run a query to verify data is flowing through the tunnel.
 
-Add the following setting in your `superset_config.py` file:
+## HTTP/2
 
-- `SUPERSET_WEBSERVER_DOMAINS`: list of allowed hostnames for domain sharding feature.
-
-Please create your domain shards as subdomains of your main domain for authorization to
-work properly on new domains. For Example:
-
-- `SUPERSET_WEBSERVER_DOMAINS=['superset-1.mydomain.com','superset-2.mydomain.com','superset-3.mydomain.com','superset-4.mydomain.com']`
-
-or add the following setting in your `superset_config.py` file if domain shards are not subdomains of main domain.
-
-- `SESSION_COOKIE_DOMAIN = '.mydomain.com'`
+Liteset's recommended deployment puts Uvicorn behind a reverse proxy (nginx, Traefik, Caddy) that terminates TLS and speaks HTTP/2 upstream. With this setup HTTP/2 is available out of the box — no Liteset-side configuration needed. The `SUPERSET_WEBSERVER_DOMAINS` / domain-sharding workaround that existed in older Superset versions is not used.
 
 ## Middleware
 
-Superset allows you to add your own middleware. To add your own middleware, update the
-`ADDITIONAL_MIDDLEWARE` key in your `superset_config.py`. `ADDITIONAL_MIDDLEWARE` should be a list
-of your additional middleware classes.
+Liteset reads the `ADDITIONAL_MIDDLEWARE` key from `superset_config.py` to install custom middleware. Two formats are accepted:
 
-For example, to use `AUTH_REMOTE_USER` from behind a proxy server like nginx, you have to add a
-simple middleware class to add the value of `HTTP_X_PROXY_REMOTE_USER` (or any other custom header
-from the proxy) to Gunicorn’s `REMOTE_USER` environment variable.
+1. **Litestar / ASGI middleware** — the recommended form. A list of classes or factories conforming to the [Litestar middleware protocol](https://docs.litestar.dev/2/usage/middleware/). These are added to `Litestar(middleware=[...])` in app-factory order.
+2. **WSGI middleware (compatibility shim)** — a list of WSGI-style middlewares. They are wrapped in `WsgiToAsgi` and run before request reaches the Litestar router. Use this only when porting an existing Apache Superset middleware that you don't want to rewrite.
+
+For example, to map `HTTP_X_PROXY_REMOTE_USER` from a reverse proxy onto the request user (the equivalent of the Apache Superset Flask snippet that copied the header into Gunicorn's `REMOTE_USER`):
+
+```python
+# superset_config.py
+from litestar.middleware import DefineMiddleware
+from superset.middleware.remote_user import RemoteUserHeaderMiddleware
+
+ADDITIONAL_MIDDLEWARE = [
+    DefineMiddleware(RemoteUserHeaderMiddleware, header="x-proxy-remote-user"),
+]
+```
+
+If you're running behind nginx/HAProxy and only need correct scheme/host/IP, you don't need a custom middleware — pass `--proxy-headers --forwarded-allow-ips '*'` to Uvicorn instead.

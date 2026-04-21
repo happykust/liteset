@@ -1,49 +1,61 @@
 ---
-title: Upgrading Superset
+title: Upgrading Liteset
 hide_title: true
 sidebar_position: 6
 version: 1
 ---
 
-# Upgrading Superset
+# Upgrading Liteset
 
 ## Docker Compose
 
-First, make sure to shut down the running containers in Docker Compose:
+Shut down the running containers:
 
 ```bash
 docker compose down
 ```
 
-Next, update the folder that mirrors the `superset` repo through git:
+Update the folder that mirrors the `liteset` repo through git:
 
 ```bash
-git pull origin master
+git pull origin main
 ```
 
-Then, restart the containers and any changed Docker images will be automatically pulled down:
+Restart the containers — any changed Docker images will be pulled automatically:
 
 ```bash
 docker compose up
 ```
 
-## Updating Superset Manually
+## Updating Liteset manually
 
-To upgrade superset in a native installation, run the following commands:
+To upgrade Liteset in a native (PyPI) installation, run:
 
 ```bash
-pip install apache_superset --upgrade
+pip install liteset --upgrade
 ```
 
-## Upgrading the Metadata Database
+## Upgrading the metadata database
 
-Migrate the metadata database by running:
+Liteset's Alembic migrations are run with the **sync** psycopg2 driver. Migrate by running:
 
 ```bash
 superset db upgrade
 superset init
 ```
 
-While upgrading superset should not delete your charts and dashboards, we recommend following best
-practices and to backup your metadata database before upgrading. Before upgrading production, we
-recommend upgrading in a staging environment and upgrading production finally during off-peak usage.
+These commands are identical to Apache Superset and the Alembic revision graph is shared — an existing Apache Superset metadata DB upgrades cleanly under Liteset.
+
+While upgrading Liteset should not delete your charts and dashboards, we recommend following best practices and **backing up your metadata database before upgrading**. Test the upgrade in a staging environment before production, and prefer off-peak usage windows.
+
+## Migrating from Apache Superset to Liteset
+
+Because Liteset preserves the metadata DB schema, REST API, session-cookie format and SPA frontend of Apache Superset 6.0.0, migrating an existing installation is a backend swap:
+
+1. Stop Apache Superset (`docker compose down` / `systemctl stop superset` / etc.).
+2. Take a snapshot/backup of the metadata DB.
+3. Install Liteset (`pip install liteset` or pull the Liteset Docker image).
+4. Point Liteset at the **same** metadata DB and Redis.
+5. Start Liteset under Uvicorn — see [configuring-superset](/docs/configuration/configuring-superset#running-on-an-asgi-http-server).
+
+No `superset db upgrade` step is required if both versions are 6.0.0 — the schema is identical. If you are migrating from an older Apache Superset, run `superset db upgrade` once to bring the schema to 6.0.0, then start Liteset.

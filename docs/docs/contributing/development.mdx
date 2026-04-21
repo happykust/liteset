@@ -5,26 +5,19 @@ version: 1
 ---
 # Setting up a Development Environment
 
-The documentation in this section is a bit of a patchwork of knowledge representing the
-multitude of ways that exist to run Superset (`docker compose`, just "docker", on "metal", using
-a Makefile).
+This section covers the multiple ways to run Liteset locally for development (`docker compose`, plain `docker`, on "metal", using a Makefile).
 
 :::note
-Now we have evolved to recommend and support `docker compose` more actively as the main way
-to run Superset for development and preserve your sanity. **Most people should stick to
-the first few sections - ("Fork & Clone", "docker compose" and "Installing Dev Tools")**
+The recommended path for most contributors is **`docker compose`** — it provisions a Liteset (Litestar/ASGI) backend, a Celery worker, a Postgres metadata DB, Redis and the frontend dev server in one shot. **Most people should stick to the first few sections — "Fork & Clone", "docker compose" and "Installing Dev Tools".**
 :::
 
 ## Fork and Clone
 
-First, [fork the repository on GitHub](https://help.github.com/articles/about-forks/),
-then clone it.
-
-Second, you can clone the main repository directly, but you won't be able to send pull requests.
+First, [fork the repository on GitHub](https://help.github.com/articles/about-forks/), then clone your fork.
 
 ```bash
-git clone git@github.com:your-username/superset.git
-cd superset
+git clone git@github.com:your-username/liteset.git
+cd liteset
 ```
 
 ## docker compose (recommended!)
@@ -40,20 +33,17 @@ docker compose up --build
 Note that:
 
 - this will pull/build docker images and run a cluster of services, including:
-  - A Superset **Flask web server**, mounting the local python repo/code
-  - A Superset **Celery worker**, also mounting the local python repo/code
-  - A Superset **Node service**, mounting, compiling and bundling the JS/TS assets
-  - A Superset **Node websocket service** to power the async backend
-  - **Postgres** as the metadata database and to store example datasets, charts and dashboards which
-    should be populated upon startup
-  - **Redis** as the message queue for our async backend and caching backend
-- It'll load up examples into the database upon the first startup
-- all other details and pointers available in
-  [docker-compose.yml](https://github.com/apache/superset/blob/master/docker-compose.yml)
-- The local repository is mounted within the services, meaning updating
-  the code on the host will be reflected in the docker images
-- Superset is served at localhost:9000/
-- You can login with admin/admin
+  - A Liteset **Litestar/Uvicorn web server** (replaces the Flask + Gunicorn process from Apache Superset), mounting the local Python repo/code
+  - A **Celery worker**, also mounting the local Python repo/code (unchanged from upstream)
+  - A **frontend dev server (Node)**, compiling and bundling the JS/TS assets
+  - **Postgres** as the metadata database and to store example datasets, charts and dashboards which should be populated upon startup
+  - **Redis** as the message queue for Celery and the cache backend
+- WebSockets are served **by Litestar itself** — no separate Node-based `superset-websocket` container is needed.
+- Examples are loaded into the database on first startup.
+- All other details and pointers are in [docker-compose.yml](https://github.com/happykust/liteset/blob/main/docker-compose.yml).
+- The local repository is mounted within the services, so code edits on the host are reflected immediately (autoreload uses Uvicorn's `--reload`, not `flask run`).
+- Liteset is served at `http://localhost:9000/`.
+- Default login: `admin` / `admin`.
 
 :::note
 Installing and building Node modules for Apache Superset inside `superset-node` can take a
@@ -67,8 +57,7 @@ Since `docker compose` is primarily designed to run a set of containers on **a s
 and can't credibly support **high availability** as a result, we do not support nor recommend
 using our `docker compose` constructs to support production-type use-cases. For single host
 environments, we recommend using [minikube](https://minikube.sigs.k8s.io/docs/start/) along
-our [installing on k8s](https://superset.apache.org/docs/installation/running-on-kubernetes)
-documentation.
+our [installing on k8s](/docs/installation/kubernetes) documentation.
 configured to be secure.
 :::
 
@@ -86,7 +75,7 @@ Affecting the Docker build process:
   for more verbose logging
 
 For more env vars that affect your configuration, see this
-[superset_config.py](https://github.com/apache/superset/blob/master/docker/pythonpath_dev/superset_config.py)
+[superset_config.py](https://github.com/happykust/liteset/blob/main/docker/pythonpath_dev/superset_config.py)
 used in the `docker compose` context to assign env vars to the superset configuration.
 
 ### Accessing the postgres database
@@ -282,7 +271,7 @@ curl -f http://localhost:8088/health && echo "✅ Superset ready"
 ### LLM Session Best Practices
 - Always validate environment setup first using the health checks above
 - Use focused validation commands: `pre-commit run` (not `--all-files`)
-- **Read [LLMS.md](https://github.com/apache/superset/blob/master/LLMS.md) first** - Contains comprehensive development guidelines, coding standards, and critical refactor information
+- **Read [LLMS.md](https://github.com/happykust/liteset/blob/main/LLMS.md) first** - Contains comprehensive development guidelines, coding standards, and critical refactor information
 - **Check platform-specific files** when available:
   - `CLAUDE.md` - For Claude/Anthropic tools
   - `CURSOR.md` - For Cursor editor
@@ -306,7 +295,7 @@ pytest tests/unit_tests/specific_test.py  # Run single test file
 pytest tests/unit_tests/  # Run all tests in directory
 ```
 
-For detailed development context, environment setup, and coding guidelines, see [LLMS.md](https://github.com/apache/superset/blob/master/LLMS.md).
+For detailed development context, environment setup, and coding guidelines, see [LLMS.md](https://github.com/happykust/liteset/blob/main/LLMS.md).
 
 ## Alternatives to `docker compose`
 
@@ -587,7 +576,7 @@ FEATURE_FLAGS = {
 }
 ```
 
-If you want to use the same flag in the client code, also add it to the FeatureFlag TypeScript enum in [@superset-ui/core](https://github.com/apache/superset/blob/master/superset-frontend/packages/superset-ui-core/src/utils/featureFlags.ts). For example,
+If you want to use the same flag in the client code, also add it to the FeatureFlag TypeScript enum in [@superset-ui/core](https://github.com/happykust/liteset/blob/main/superset-frontend/packages/superset-ui-core/src/utils/featureFlags.ts). For example,
 
 ```typescript
 export enum FeatureFlag {
@@ -718,7 +707,7 @@ act --job test-python-38 --secret GITHUB_TOKEN=$GITHUB_TOKEN --event pull_reques
 
 #### Running locally using a test script
 
-There is also a utility script included in the Superset codebase to run Python integration tests. The [readme can be found here](https://github.com/apache/superset/tree/master/scripts/tests).
+There is also a utility script included in the Superset codebase to run Python integration tests. The [readme can be found here](https://github.com/happykust/liteset/tree/main/scripts/tests).
 
 To run all integration tests, for example, run this script from the root directory:
 

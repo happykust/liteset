@@ -3,9 +3,18 @@ title: Security Configurations
 sidebar_position: 1
 ---
 
-Authentication and authorization in Superset is handled by Flask AppBuilder (FAB), an application development framework
-built on top of Flask. FAB provides authentication, user management, permissions and roles.
-Please read its [Security documentation](https://flask-appbuilder.readthedocs.io/en/latest/security.html).
+Authentication and authorization in Apache Superset are handled by Flask AppBuilder (FAB), an application development framework built on top of Flask. FAB provides authentication, user management, permissions and roles. Please read its [Security documentation](https://flask-appbuilder.readthedocs.io/en/latest/security.html) — most concepts in this page reference FAB primitives.
+
+:::info Liteset implementation
+Liteset ports the FAB security surface to an `AsyncSecurityManager` running on Litestar/ASGI. The configuration surface is **identical** to Apache Superset:
+
+- The same `AUTH_TYPE`, `AUTH_USER_REGISTRATION`, `AUTH_ROLES_*`, `OAUTH_PROVIDERS`, `LDAP_*` keys in `superset_config.py`.
+- The same `ab_user`, `ab_role`, `ab_permission_view`, `ab_user_role` tables in the metadata DB (no schema changes).
+- The same Flask-signed session cookie format (decoded natively in Liteset) and the same `X-CSRFToken` header — sessions survive a migration.
+- `SupersetSecurityManager` subclasses you wrote against Apache Superset still work, **but methods that are async in Liteset (`oauth_user_info`, `add_user`, `update_user_auth_stat`, `find_user`, …) must be `async def` overrides** when you derive from Liteset's `AsyncSecurityManager`. If you need to use existing sync code from a third-party library, wrap it with `await asyncio.to_thread(...)`.
+
+When this page references `flask_appbuilder.security.manager.AUTH_OAUTH` or similar, the same constants are re-exported from `superset.security` for convenience and the Apache Superset documentation links remain authoritative for behavioural details.
+:::
 
 ### Provided Roles
 
@@ -17,7 +26,7 @@ permissions associated with each role (e.g. by removing or adding permissions to
 associated with each role will be re-synchronized to their original values when you run
 the **superset init** command (often done between Superset versions).
 
-A table with the permissions for these roles can be found at [/RESOURCES/STANDARD_ROLES.md](https://github.com/apache/superset/blob/master/RESOURCES/STANDARD_ROLES.md).
+A table with the permissions for these roles can be found at [/RESOURCES/STANDARD_ROLES.md](https://github.com/happykust/liteset/blob/main/RESOURCES/STANDARD_ROLES.md).
 
 ### Admin
 

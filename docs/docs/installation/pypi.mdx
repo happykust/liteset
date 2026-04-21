@@ -7,12 +7,19 @@ version: 1
 
 import useBaseUrl from "@docusaurus/useBaseUrl";
 
-# Installing Superset from PyPI
+# Installing Liteset from PyPI
 
 <img src={useBaseUrl("/img/pypi.png" )} width="150" />
 <br /><br />
 
-This page describes how to install Superset using the `apache_superset` package [published on PyPI](https://pypi.org/project/apache_superset/).
+This page describes how to install Liteset using the `liteset` package published on PyPI.
+
+:::info Picking the right package
+- `pip install liteset` — installs **Liteset 6.0.0**, the async port (Litestar/Uvicorn). This page.
+- `pip install apache_superset` — installs **upstream Apache Superset 6.0.0** (Flask/Gunicorn). See the [Apache Superset PyPI install guide](https://superset.apache.org/docs/installation/pypi).
+
+The OS-level dependencies on this page apply to both packages.
+:::
 
 ## OS Dependencies
 
@@ -79,8 +86,8 @@ brew install readline pkg-config libffi openssl mysql postgresql@14
 ```
 
 You should install a recent version of Python. Refer to the
-[pyproject.toml](https://github.com/apache/superset/blob/master/pyproject.toml) file for a list of Python
-versions officially supported by Superset. We'd recommend using a Python version manager
+[pyproject.toml](https://github.com/happykust/liteset/blob/main/pyproject.toml) file for a list of Python
+versions officially supported by Liteset (3.10–3.13). We'd recommend using a Python version manager
 like [pyenv](https://github.com/pyenv/pyenv)
 (and also [pyenv-virtualenv](https://github.com/pyenv/pyenv-virtualenv)).
 
@@ -124,12 +131,12 @@ Once you activated your virtual environment, all of the Python packages you inst
 will be confined to this environment. You can exit the environment by running `deactivate` on the
 command line.
 
-### Installing and Initializing Superset
+### Installing and Initializing Liteset
 
-First, start by installing `apache_superset`:
+First, start by installing `liteset`:
 
 ```bash
-pip install apache_superset
+pip install liteset
 ```
 
 Then, define mandatory configurations, SECRET_KEY and FLASK_APP:

@@ -31,7 +31,7 @@ Alerts and reports are disabled by default. To turn them on, you need to do some
 
 ##### Disable dry-run mode
 
-Screenshots will be taken but no messages actually sent as long as `ALERT_REPORTS_NOTIFICATION_DRY_RUN = True`, its default value in `docker/pythonpath_dev/superset_config.py`.  To disable dry-run mode and start receiving email/Slack notifications, set `ALERT_REPORTS_NOTIFICATION_DRY_RUN` to `False` in [superset config](https://github.com/apache/superset/blob/master/docker/pythonpath_dev/superset_config.py).
+Screenshots will be taken but no messages actually sent as long as `ALERT_REPORTS_NOTIFICATION_DRY_RUN = True`, its default value in `docker/pythonpath_dev/superset_config.py`.  To disable dry-run mode and start receiving email/Slack notifications, set `ALERT_REPORTS_NOTIFICATION_DRY_RUN` to `False` in [superset config](https://github.com/happykust/liteset/blob/main/docker/pythonpath_dev/superset_config.py).
 
 #### In your `Dockerfile`
 
@@ -85,7 +85,7 @@ SLACK_API_RATE_LIMIT_RETRY_COUNT = 5
 
 ### Kubernetes-specific
 
-- You must have a `celery beat` pod running. If you're using the chart included in the GitHub repository under [helm/superset](https://github.com/apache/superset/tree/master/helm/superset), you need to put `supersetCeleryBeat.enabled = true` in your values override.
+- You must have a `celery beat` pod running. If you're using the chart included in the GitHub repository under [helm/superset](https://github.com/happykust/liteset/tree/main/helm/superset), you need to put `supersetCeleryBeat.enabled = true` in your values override.
 - You can see the dedicated docs about [Kubernetes installation](/docs/installation/kubernetes) for more details.
 
 ### Docker Compose specific
@@ -103,7 +103,7 @@ This process also works in a Docker swarm environment, you would just need to ad
 
 The following configurations need to be added to the `superset_config.py` file. This file is loaded when the image runs, and any configurations in it will override the default configurations found in the `config.py`.
 
-You can find documentation about each field in the default `config.py` in the GitHub repository under [superset/config.py](https://github.com/apache/superset/blob/master/superset/config.py).
+You can find documentation about each field in the default `config.py` in the GitHub repository under [superset/config.py](https://github.com/happykust/liteset/blob/main/superset/config.py).
 
 You need to replace default values with your custom Redis, Slack and/or SMTP config.
 
@@ -317,7 +317,7 @@ If you are handling the installation of that software on your own, or wish to us
 
 One symptom of an invalid connection to an email server is receiving an error of `[Errno 110] Connection timed out` in your logs when the report tries to send.
 
-Confirm via testing that your outbound email configuration is correct.  Here is the simplest test, for an un-authenticated email SMTP email service running on port 25.  If you are sending over SSL, for instance, study how [Superset's codebase sends emails](https://github.com/apache/superset/blob/master/superset/utils/core.py#L818) and then test with those commands and arguments.
+Confirm via testing that your outbound email configuration is correct.  Here is the simplest test, for an un-authenticated email SMTP email service running on port 25.  If you are sending over SSL, for instance, study how [Superset's codebase sends emails](https://github.com/happykust/liteset/blob/main/superset/utils/core.py#L818) and then test with those commands and arguments.
 
 Start Python in your worker environment, replace all example values, and run:
 
