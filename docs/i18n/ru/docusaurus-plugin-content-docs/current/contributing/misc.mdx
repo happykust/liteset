@@ -1,0 +1,49 @@
+---
+sidebar_position: 6
+version: 1
+---
+
+# Разное
+
+## Сообщение об уязвимостях безопасности {#reporting-a-security-vulnerability}
+
+Если вы нашли уязвимость в **Liteset-специфичном коде** (async runtime, хендлеры Litestar, AsyncSecurityManager, middleware) — **не открывайте** публичный GitHub issue. Вместо этого свяжитесь с мейнтейнером приватно через [GitHub Security Advisories](https://github.com/happykust/liteset/security/advisories/new) репозитория.
+
+Если уязвимость в **коде upstream Apache Superset**, который Liteset переиспользует (React-фронтенд, движок чартов, SQL-парсер, модель датасетов и т. д.) — сообщите в upstream через [процесс безопасности Apache Superset](https://superset.apache.org/docs/security/security#reporting-security-vulnerabilities) (`private@superset.apache.org`). Liteset подтянет фикс при регулярном ресинке.
+
+В любом случае соблюдайте responsible disclosure: не публикуйте проблему до выпуска фикса.
+
+## SQL Lab Async
+
+Локальную БД можно настроить на работу в `async`-режиме — чтобы разрабатывать связанные с async фичи.
+
+Нужно:
+
+- Добавить ещё одну запись БД. Рекомендуется скопировать строку подключения из БД `main`, включить `SQL Lab` и нужные фичи. Не забудьте поставить галочку `Async`.
+- Настроить results backend. Пример с локальным `FileSystemCache` (для тестирования, не для прода — кладёт кэш в `/tmp`):
+
+  ```python
+  # Конфиг flask-caching читается фабрикой кэша Liteset без изменений.
+  from flask_caching.backends.filesystemcache import FileSystemCache
+  RESULTS_BACKEND = FileSystemCache('/tmp/sqllab')
+  ```
+
+- Запустить celery worker:
+
+  ```shell script
+  celery --app=superset.tasks.celery_app:app worker -O fair
+  ```
+
+Замечания:
+
+- При изменениях, влияющих на логику воркера, нужно перезапустить процесс `celery worker`.
+- Очередь сообщений использует `sqlite`-БД через экспериментальный SQLAlchemy-брокер. Для тестов нормально, для прода — нет.
+- Иногда стоит создать окружение, ближе к продакшену — с таким же брокером и results backend.
+
+## Async-запросы для чартов
+
+Запросы данных для чартов можно настроить на работу в `async`-режиме. Особенно полезно для дашбордов с большим числом чартов, где упираемся в лимиты подключений браузера. Для async-запросов в дашбордах и Explore нужно:
+
+- Redis 5.0+ (фича использует [Redis Streams](https://redis.io/topics/streams-intro)).
+- Включённые cache backends через `CACHE_CONFIG` и `DATA_CACHE_CONFIG`.
+- Запущенные Celery-воркеры, обрабатывающие async-задачи.

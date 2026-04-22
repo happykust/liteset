@@ -1,0 +1,305 @@
+---
+title: Коды ошибок (issue codes)
+sidebar_position: 5
+version: 1
+---
+
+# Справочник кодов ошибок
+
+На этой странице перечислены коды ошибок, которые может показывать Liteset, и пояснения к ним.
+
+## Issue 1000
+
+```
+The datasource is too large to query.
+```
+
+Скорее всего, ваш источник данных вырос настолько, что текущий запрос упирается в таймаут. Решение — уменьшить объём источника или модифицировать запрос так, чтобы он обрабатывал лишь часть данных.
+
+## Issue 1001
+
+```
+The database is under an unusual load.
+```
+
+Запрос мог упереться в таймаут из-за необычно высокой нагрузки на БД. Упростите запрос или попробуйте, когда нагрузка снизится.
+
+## Issue 1002
+
+```
+The database returned an unexpected error.
+```
+
+Запрос упал из-за ошибки, произошедшей на стороне БД. Это может быть синтаксическая ошибка, баг в запросе или внутренний сбой БД. Обычно это проблема не Liteset, а нижележащей БД.
+
+## Issue 1003
+
+```
+There is a syntax error in the SQL query. Perhaps there was a misspelling or a typo.
+```
+
+Запрос упал из-за синтаксической ошибки. Проверьте, что все колонки и таблицы существуют и написаны правильно.
+
+## Issue 1004
+
+```
+The column was deleted or renamed in the database.
+```
+
+Запрос ссылается на колонку, которой больше нет в источнике данных. Поправьте запрос — укажите новую колонку или уберите эту.
+
+## Issue 1005
+
+```
+The table was deleted or renamed in the database.
+```
+
+Запрос ссылается на таблицу, которой больше нет в БД. Поправьте запрос, указав корректную таблицу.
+
+## Issue 1006
+
+```
+One or more parameters specified in the query are missing.
+```
+
+Запрос не отправлен в БД, потому что отсутствуют один или несколько параметров. Опишите все параметры, на которые ссылается запрос, в валидном JSON. Проверьте имена параметров и синтаксис документа.
+
+## Issue 1007
+
+```
+The hostname provided can't be resolved.
+```
+
+Указанный при добавлении БД hostname некорректен и не резолвится. Проверьте опечатки.
+
+## Issue 1008
+
+```
+The port is closed.
+```
+
+Порт, указанный при добавлении БД, закрыт. Проверьте номер порта и убедитесь, что БД запущена и слушает на этом порту.
+
+## Issue 1009
+
+```
+The host might be down, and cannot be reached on the provided port.
+```
+
+Хост, указанный при добавлении БД, недоступен — а также недоступен на указанном порту. Проверьте firewall.
+
+## Issue 1010
+
+```
+Superset encountered an error while running a command.
+```
+
+Произошло что-то непредвиденное — Liteset столкнулся с ошибкой при выполнении команды. Обратитесь к администратору.
+
+## Issue 1011
+
+```
+Superset encountered an unexpected error.
+```
+
+Произошло что-то непредвиденное в бэкенде Liteset. Обратитесь к администратору.
+
+## Issue 1012
+
+```
+The username provided when connecting to a database is not valid.
+```
+
+Указанного пользователя в БД нет. Проверьте имя пользователя.
+
+## Issue 1013
+
+```
+The password provided when connecting to a database is not valid.
+```
+
+Указан неверный пароль. Проверьте, что пароль введён корректно.
+
+## Issue 1014
+
+```
+Either the username or the password used are incorrect.
+```
+
+Либо имя пользователя не существует, либо пароль неверный. Проверьте оба.
+
+## Issue 1015
+
+```
+Either the database is spelled incorrectly or does not exist.
+```
+
+База данных написана неправильно или не существует. Проверьте написание.
+
+## Issue 1016
+
+```
+The schema was deleted or renamed in the database.
+```
+
+Схема была удалена или переименована. Проверьте написание и существование.
+
+## Issue 1017
+
+```
+The user doesn't have the proper permissions to connect to the database
+```
+
+Не удалось подключиться к БД. Убедитесь, что у service account есть нужные роли (например, Viewer и Job User).
+
+## Issue 1018
+
+```
+One or more parameters needed to configure a database are missing.
+```
+
+Не все параметры, необходимые для теста/создания/редактирования БД, переданы. Проверьте, какие параметры нужны.
+
+## Issue 1019
+
+```
+The submitted payload has the incorrect format.
+```
+
+Проверьте формат payload (например, JSON).
+
+## Issue 1020
+
+```
+The submitted payload has the incorrect schema.
+```
+
+Проверьте, что payload соответствует ожидаемой схеме.
+
+## Issue 1021
+
+```
+Results backend needed for asynchronous queries is not configured.
+```
+
+В вашей инсталляции Liteset не настроен results backend, нужный для async-запросов. Обратитесь к администратору.
+
+## Issue 1022
+
+```
+Database does not allow data manipulation.
+```
+
+Для этой БД разрешены только `SELECT`. Если нужно DML — обратитесь к администратору.
+
+## Issue 1023
+
+```
+CTAS (create table as select) doesn't have a SELECT statement at the end.
+```
+
+Последний оператор в запросе CTAS должен быть `SELECT`. Убедитесь, что это так.
+
+## Issue 1024
+
+```
+CVAS (create view as select) query has more than one statement.
+```
+
+CVAS-запрос должен содержать один оператор. Уберите лишние операторы и точки с запятой (кроме одной в конце).
+
+## Issue 1025
+
+```
+CVAS (create view as select) query is not a SELECT statement.
+```
+
+CVAS-запрос должен быть `SELECT`. Убедитесь, что в запросе один `SELECT`.
+
+## Issue 1026
+
+```
+Query is too complex and takes too long to run.
+```
+
+Запрос может быть слишком сложным для лимита, заданного администратором. Проверьте, можно ли его оптимизировать. Альтернативно — попросите администратора увеличить таймаут.
+
+## Issue 1027
+
+```
+The database is currently running too many queries.
+```
+
+БД может быть перегружена. Попробуйте позже или обратитесь к администратору.
+
+## Issue 1028
+
+```
+One or more parameters specified in the query are malformed.
+```
+
+В запросе есть один или несколько неправильно оформленных шаблонных параметров. Убедитесь, что все параметры обёрнуты в двойные фигурные скобки, например `{{ ds }}`.
+
+## Issue 1029
+
+```
+The object does not exist in this database.
+```
+
+Схема, колонка или таблица не существуют в БД.
+
+## Issue 1030
+
+```
+The query potentially has a syntax error.
+```
+
+Возможная синтаксическая ошибка. Проверьте и попробуйте снова.
+
+## Issue 1031
+
+```
+The results backend no longer has the data from the query.
+```
+
+Результаты могли быть удалены из results backend по истечении срока. Перезапустите запрос.
+
+## Issue 1032
+
+```
+The query associated with the results was deleted.
+```
+
+Запрос, связанный с сохранёнными результатами, удалён. Перезапустите запрос.
+
+## Issue 1033
+
+```
+The results stored in the backend were stored in a different format, and no longer can be deserialized.
+```
+
+Результаты были сохранены в формате, который больше не поддерживается. Перезапустите запрос.
+
+## Issue 1034
+
+```
+The database port provided is invalid.
+```
+
+Проверьте, что указанный порт — целое число от 0 до 65535 включительно.
+
+## Issue 1035
+
+```
+Failed to start remote query on a worker.
+```
+
+Запрос не был запущен async-воркером. Обратитесь к администратору.
+
+## Issue 1036
+
+```
+The database was deleted.
+```
+
+Операция не удалась, потому что упомянутая БД больше не существует. Обратитесь к администратору.

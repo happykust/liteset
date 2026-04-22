@@ -1,0 +1,89 @@
+---
+title: Контрибьюция в Liteset
+sidebar_position: 1
+version: 1
+---
+
+# Контрибьюция в Liteset
+
+Liteset — академический асинхронный порт [Apache Superset 6.0.0](https://github.com/apache/superset). Контрибьюции приветствуются — но помните, что **продукт**, который реализует Liteset, это upstream Apache Superset. Если ваше изменение касается продуктового поведения Superset (UX, чарты, дашборды, SQL Lab, модель датасетов, семантика RBAC) — почти всегда оно должно сначала пойти в upstream; Liteset подхватит это при ресинке.
+
+## Где обсуждать
+
+- [GitHub issues](https://github.com/happykust/liteset/issues) — баги, регрессии относительно upstream, async-специфичные дефекты.
+- [GitHub discussions](https://github.com/happykust/liteset/discussions) — вопросы, опыт миграции, обмен результатами бенчмарков.
+- [Pull requests](https://github.com/happykust/liteset/pulls) — код, документация, тесты.
+
+Для широкого сообщества Superset (Slack, dev mailing list, ежемесячные митапы, тег на Stack Overflow) — см. [страницу комьюнити upstream](https://superset.apache.org/community). Liteset переиспользует продукт Superset, поэтому продуктовые вопросы лучше задавать там.
+
+## Ориентация
+
+Liteset живёт в одном репозитории:
+
+- **[happykust/liteset](https://github.com/happykust/liteset)** — async-бэкенд (`superset/`), React-фронтенд (`superset-frontend/`, идентичен Apache Superset), тесты и инфраструктура. Python-пакет публикуется на PyPI как `liteset`.
+
+Upstream-референс:
+
+- **[apache/superset](https://github.com/apache/superset)** — Liteset отслеживает Apache Superset 6.0.0. Большая часть документации, FAB-isms и конфигурационной семантики идёт оттуда.
+
+## Виды контрибьюций
+
+### Сообщить о баге
+
+Создайте [GitHub issue](https://github.com/happykust/liteset/issues) с:
+
+- ОС и версия.
+- Версия Liteset (`liteset --version` или git SHA).
+- Подробные шаги воспроизведения.
+- Особенности вашего сетапа (reverse proxy, кастомный `superset_config.py`, оверрайды RBAC).
+
+Если баг — это **регрессия по сравнению с Apache Superset 6.0.0**, явно укажите это и сошлитесь на эквивалентное поведение Apache Superset — такие баги имеют наивысший приоритет в Liteset.
+
+При публикации stack trace'ов оборачивайте их в [Markdown code blocks](https://help.github.com/articles/creating-and-highlighting-code-blocks/).
+
+Feature request'ы, открытые как issues, будут перенесены в Discussions.
+
+### Предложить фичу
+
+Откройте [Ideas discussion](https://github.com/happykust/liteset/discussions/categories/ideas):
+
+- Объясните, как должна работать фича.
+- Держите scope узким.
+- Отметьте, существует ли такая фича / запрос в upstream Apache Superset (приложите ссылку).
+
+Если фича — это поведение продукта Superset, **сначала предложите её в upstream** — Liteset не будет расходиться с upstream по продуктовой семантике.
+
+### Исправить баг или собрать фичу
+
+Базовый workflow:
+
+1. **Fork** [happykust/liteset](https://github.com/happykust/liteset) на GitHub.
+2. **Создайте ветку** от `main` (`git checkout -b fix/some-description`).
+3. **Поднимите dev-окружение** как описано в [Setting up a Development Environment](/docs/contributing/development).
+4. **Напишите код + тесты.** Liteset — асинхронный: хендлеры `async def`, DAO возвращают awaitable, тесты используют `pytest-asyncio`.
+5. **Запустите pre-commit и тесты** локально.
+6. **Откройте pull request** против `main`. Сошлитесь на issue/discussion. Опишите, что изменилось и почему.
+7. **Реагируйте на ревью** (новыми коммитами; не делайте force-push, если ревьюер не просит).
+
+Формального SIP / governance-процесса нет. Для нетривиальных архитектурных изменений (новый слой, новая зависимость, ломающая совместимость конфигурация) — сначала откройте discussion, чтобы согласовать направление до написания кода.
+
+### Улучшить документацию
+
+Сайт, который вы читаете, лежит в [`docs/`](https://github.com/happykust/liteset/tree/main/docs). Используется [Docusaurus 3](https://docusaurus.io/), поддерживаются английский и русский. Локальная сборка:
+
+```bash
+cd docs
+yarn install
+yarn build
+yarn serve --port 3000
+```
+
+У каждой страницы документации есть кнопка **«Edit this page»** — открывает исходный MDX в GitHub-редакторе. Переводы — в `docs/i18n/<locale>/`.
+
+## Code of conduct
+
+Будьте уважительны и готовы к сотрудничеству. Неуважение, харассмент и дискриминация в любом виде нетерпимы. Как академический проект Liteset не имеет отдельного CoC-комитета — мейнтейнер проекта оставляет за собой право закрывать issues, блокировать дискуссии и банить нарушителей.
+
+## Лицензирование
+
+Liteset распространяется под [Apache License 2.0](https://apache.org/licenses/LICENSE-2.0), унаследованной от Apache Superset 6.0.0. Открывая pull request, вы соглашаетесь с тем, что ваш вклад лицензируется под теми же условиями. Отдельной ICLA нет — достаточно GitHub PR + DCO-style [«sign-off»](https://developercertificate.org/) на каждом коммите (`git commit -s`).

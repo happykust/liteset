@@ -1,0 +1,9 @@
+{
+  "label": "Тестирование",
+  "position": 7,
+  "link": {
+    "type": "generated-index",
+    "title": "Тестирование Liteset",
+    "description": "Сравнительное тестирование производительности Liteset (асинхронный, Litestar) и upstream Apache Superset 6.0.0 (синхронный, Flask)."
+  }
+}

@@ -1,0 +1,70 @@
+---
+title: Быстрый старт
+hide_title: false
+sidebar_position: 2
+---
+
+**Готовы попробовать Liteset?** Этот гайд поможет поднять Liteset на локальной машине в **три простых шага**. Подразумевается, что у вас установлены [Docker](https://www.docker.com), [Docker Compose](https://docs.docker.com/compose/) и [Git](https://git-scm.com/).
+
+:::caution
+Несмотря на то что `Docker Compose` отлично подходит для быстрого старта в sandbox-окружении и для разработки, **этот сетап не предназначен для продакшена**. Для продакшена используйте установку на [Kubernetes](/docs/installation/kubernetes/).
+:::
+
+### 1. Получить Liteset
+
+```bash
+git clone https://github.com/happykust/liteset
+```
+
+### 2. Запустить последний релиз
+
+```bash
+# Перейдите в склонированный репозиторий
+$ cd liteset
+
+# Переключитесь на тег нужной версии
+$ git checkout tags/6.0.0
+
+# Поднимите Liteset через Docker Compose
+$ docker compose -f docker-compose-image-tag.yml up
+```
+
+Это может занять некоторое время — Docker Compose скачает образы и подгрузит примеры. После того как все контейнеры будут скачаны и логи стабилизируются, можно входить.
+
+⚠️ Если вы получаете ошибку вроде `validating superset\docker-compose-image-tag.yml: services.superset-worker-beat.env_file.0 must be a string`, обновите версию `docker-compose`. Обратите внимание: `docker-compose` устаревает, теперь следует использовать `docker compose`.
+
+### 3. Войти в Liteset
+
+Откройте [http://localhost:8088](http://localhost:8088) и войдите со стандартными данными:
+
+```bash
+username: admin
+password: admin
+```
+
+#### 🎉 Готово! Liteset запущен на вашей машине! 🎉
+
+### Завершение
+
+Когда закончите, остановите окружение как любой другой docker-стек:
+
+```bash
+docker compose down
+```
+
+:::tip
+Окружение можно использовать многократно — Liteset сохраняет данные локально. Останавливайте процессы корректной командой Docker Compose `stop`, чтобы избежать повреждения и потери данных.
+:::
+
+## Что дальше?
+
+Дальше можно перейти к:
+
+- [Создать первый дашборд](/docs/using-superset/creating-your-first-dashboard)
+- [Подключить базу данных](/docs/configuration/databases)
+- [Использовать Docker Compose](/docs/installation/docker-compose)
+- [Сконфигурировать Liteset](/docs/configuration/configuring-superset/)
+- [Установить на Kubernetes](/docs/installation/kubernetes/)
+- [Прочитать отчёт о тестировании](/docs/benchmarks/results)
+
+Или просто изучить [полную документацию](/docs/intro).

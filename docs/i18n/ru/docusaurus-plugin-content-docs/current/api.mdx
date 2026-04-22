@@ -1,0 +1,34 @@
+---
+title: API
+hide_title: true
+sidebar_position: 10
+---
+
+import SwaggerUI from 'swagger-ui-react';
+import openapi from '/resources/openapi.json';
+import 'swagger-ui-react/swagger-ui.css';
+import { Alert } from 'antd';
+
+## API
+
+Liteset воспроизводит **REST API** Apache Superset 6.0.0 один-к-одному, следуя
+[спецификации OpenAPI](https://swagger.io/specification/). Документация ниже сгенерирована через
+[Swagger React UI](https://www.npmjs.com/package/swagger-ui-react).
+
+<Alert
+  type="info"
+  message={
+    <div>
+      <strong>Примечание. </strong>
+      Интерактивную версию этой документации Liteset отдаёт сам по адресу
+      <strong> /swagger/v1</strong> (авто-генерация из хендлеров Litestar).
+    </div>
+  }
+/>
+
+<br />
+<br />
+<hr />
+<div className="swagger-container">
+  <SwaggerUI spec={openapi} />
+</div>

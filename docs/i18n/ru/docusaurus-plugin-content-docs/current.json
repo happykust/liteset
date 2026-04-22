@@ -1,0 +1,46 @@
+{
+  "version.label": {
+    "message": "6.0.0",
+    "description": "The label for version current"
+  },
+  "sidebar.CustomSidebar.doc.Introduction": {
+    "message": "Введение",
+    "description": "The label for the doc item Introduction in sidebar CustomSidebar"
+  },
+  "sidebar.CustomSidebar.doc.Quickstart": {
+    "message": "Быстрый старт",
+    "description": "The label for the doc item Quickstart in sidebar CustomSidebar"
+  },
+  "sidebar.CustomSidebar.category.Installation": {
+    "message": "Установка",
+    "description": "The label for category Installation in sidebar CustomSidebar"
+  },
+  "sidebar.CustomSidebar.category.Configuration": {
+    "message": "Конфигурация",
+    "description": "The label for category Configuration in sidebar CustomSidebar"
+  },
+  "sidebar.CustomSidebar.category.Using Liteset": {
+    "message": "Работа с Liteset",
+    "description": "The label for category Using Liteset in sidebar CustomSidebar"
+  },
+  "sidebar.CustomSidebar.category.Benchmarks": {
+    "message": "Тестирование",
+    "description": "The label for category Benchmarks in sidebar CustomSidebar"
+  },
+  "sidebar.CustomSidebar.category.Contributing": {
+    "message": "Контрибьюция",
+    "description": "The label for category Contributing in sidebar CustomSidebar"
+  },
+  "sidebar.CustomSidebar.category.Security": {
+    "message": "Безопасность",
+    "description": "The label for category Security in sidebar CustomSidebar"
+  },
+  "sidebar.CustomSidebar.doc.FAQ": {
+    "message": "FAQ",
+    "description": "The label for the doc item FAQ in sidebar CustomSidebar"
+  },
+  "sidebar.CustomSidebar.doc.API": {
+    "message": "API",
+    "description": "The label for the doc item API in sidebar CustomSidebar"
+  }
+}

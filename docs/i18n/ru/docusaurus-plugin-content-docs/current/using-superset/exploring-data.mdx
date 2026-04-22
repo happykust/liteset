@@ -1,0 +1,231 @@
+---
+title: Исследование данных в Liteset
+hide_title: true
+sidebar_position: 2
+version: 1
+---
+
+import useBaseUrl from "@docusaurus/useBaseUrl";
+
+## Исследование данных в Liteset
+
+В этом туториале мы познакомимся с ключевыми концепциями Liteset на примере реального датасета — перелётов сотрудников британской организации в 2011 году. По каждому перелёту известно:
+
+- Подразделение путешественника. Для целей туториала подразделения переименованы в Orange, Yellow и Purple.
+- Стоимость билета.
+- Класс обслуживания (Economy, Premium Economy, Business, First Class).
+- Тип билета (туда / туда-обратно).
+- Дата перелёта.
+- Информация о точке отправления и прилёта.
+- Расстояние между ними в км.
+
+### Включение загрузки данных
+
+Возможно, вам нужно включить функцию загрузки CSV/Excel в БД. Ниже описано, как это сделать для базы `examples`.
+
+В верхнем меню выберите **Settings ‣ Data ‣ Database Connections**. Найдите БД **examples** и нажмите **Edit**.
+
+<img src={useBaseUrl("/img/tutorial/edit-record.png" )} />
+
+В открывшемся модальном окне переключитесь на вкладку **Advanced**, откройте секцию **Security** и поставьте галочку **Allow file uploads to database**. Нажмите **Finish**.
+
+<img src={useBaseUrl("/img/tutorial/allow-file-uploads.png" )} />
+
+### Загрузка CSV-данных
+
+Скачайте датасет с [GitHub](https://raw.githubusercontent.com/apache-superset/examples-data/master/tutorial_flights.csv). В верхнем меню выберите **Settings ‣ Data ‣ Database Connections**, далее **Upload file to database ‣ Upload CSV**.
+
+<img src={useBaseUrl("/img/tutorial/upload_a_csv.png" )} />
+
+Выберите CSV с компьютера, укажите **Database** и **Schema**, в **Table Name** введите _tutorial_flights_.
+
+<img src={useBaseUrl("/img/tutorial/csv_to_database_configuration.png" )} />
+
+Введите _Travel Date_ в поле **File settings ‣ Columns to be parsed as dates**.
+
+<img src={useBaseUrl("/img/tutorial/parse_dates_column.png" )} />
+
+Оставьте остальные настройки по умолчанию и нажмите **Upload** внизу страницы.
+
+### Визуализация-таблица
+
+Теперь _tutorial_flights_ должен появиться в **Datasets**. Кликните по нему — откроется Explore этого датасета.
+
+В этой секции мы создадим таблицу с количеством перелётов и стоимостью по классам.
+
+По умолчанию Liteset показывает данные только за последнюю неделю. Нам нужно увидеть весь датасет — кликните в **Time ‣ Time Range** и поставьте **Range Type** в **No Filter**.
+
+<img src={useBaseUrl("/img/tutorial/no_filter_on_time_filter.png" )} />
+
+Нажмите **Apply**.
+
+Зададим строки таблицы через **Group by**. Так как нас интересуют классы — выбираем **Travel Class**.
+
+В **Metrics** добавляем:
+
+- `COUNT(*)` — число строк (количество перелётов в каждом классе).
+- `SUM(Cost)` — сумма стоимости по классам.
+
+<img src={useBaseUrl("/img/tutorial/sum_cost_column.png" )} />
+
+Нажимаем **Run Query** и видим таблицу.
+
+<img src={useBaseUrl("/img/tutorial/tutorial_table.png" )} />
+
+Чтобы сохранить визуализацию, кликните **Save** в левом верхнем углу. В модальном окне:
+
+- Выберите **Save as**, имя — Tutorial Table (потом можно найти через **Charts** в верхнем меню).
+- Выберите **Add To Dashboard** и введите Tutorial Dashboard. Нажмите **Save & Go To Dashboard**.
+
+<img src={useBaseUrl("/img/tutorial/save_tutorial_table.png" )} />
+
+### Основы дашборда
+
+Дальше — интерфейс дашборда. Если вы прошли предыдущую секцию, дашборд уже открыт. Иначе зайдите в Dashboards в верхнем меню и выберите Tutorial dashboard.
+
+На дашборде должна быть таблица из предыдущей секции. Нажмите **Edit dashboard**, наведите курсор на таблицу. Нижний правый угол позволяет менять размер drag-and-drop'ом.
+
+<img src={useBaseUrl("/img/tutorial/resize_tutorial_table_on_dashboard.png" )} />
+
+Сохраните изменения через **Save changes** в правом верхнем углу.
+
+### Сводная таблица (Pivot Table)
+
+Расширим анализ более сложной визуализацией — Pivot Table. В итоге получим таблицу с тратами на перелёты по месяцам (первые шесть месяцев), по подразделению и по классу.
+
+Создаём новый чарт через **+ ‣ Chart** в правом верхнем. Снова выбираем _tutorial_flights_, кликаем по типу визуализации, выбираем **Pivot Table** (можно искать в строке поиска), нажимаем **Create New Chart**.
+
+<img src={useBaseUrl("/img/tutorial/create_pivot.png" )} />
+
+В секции **Time** оставляем Travel Date. В Time Grain выбираем month (день — слишком гранулярно). Time Range — первые шесть месяцев 2011 (через Custom: 1 января 2011 — 30 июня 2011).
+
+<img src={useBaseUrl("/img/tutorial/select_dates_pivot_table.png" )} />
+
+В **Query** удаляем дефолтный COUNT(\*) и добавляем Cost с агрегатом SUM (по умолчанию). Liteset показывает тип метрики иконкой слева (ABC — строка, # — число, часы — время и т. д.).
+
+В **Group by** выбираем **Time** — будут использоваться Time Column и Time Grain из секции Time.
+
+В **Columns** сначала Department, потом Travel Class. **Run Query**!
+
+<img src={useBaseUrl("/img/tutorial/tutorial_pivot_table.png" )} />
+
+Видим месяцы в строках, Department и Travel Class — в столбцах. Опубликуйте этот чарт в Tutorial Dashboard.
+
+### Линейный график
+
+Создадим линейный график для среднего по месяцам по всему датасету.
+
+В Time оставляем Travel Date и month, но Time Range — No filter (нужен весь датасет).
+
+В Metrics убираем `COUNT(*)` и добавляем `AVG(Cost)`.
+
+<img src={useBaseUrl("/img/tutorial/average_aggregate_for_cost.png" )} />
+
+**Run Query**.
+
+Видно, что средняя стоимость растёт в декабре. Но смешивать билеты в одну сторону и обратные — может, не лучшая идея; покажем их разными линиями.
+
+Выберите Ticket Single or Return в Group by и **Run Query**. Видно, что односторонние билеты в среднем дешевле, а декабрьский всплеск создаётся обратными билетами.
+
+Кастомизируем дальше — переключитесь на вкладку Customize. Поменяйте Color Scheme, отключите range filter (Show Range Filter → No), добавьте подписи через X Axis Label и Y Axis Label.
+
+<img src={useBaseUrl("/img/tutorial/tutorial_line_chart.png" )} />
+
+Опубликуйте чарт в Tutorial Dashboard.
+
+### Markdown
+
+Добавим текст на дашборд. Если ещё не там — в верхнем меню Dashboards → Tutorial dashboard. **Edit dashboard**.
+
+В панели Insert components перетащите Markdown box на дашборд. Синие линии показывают, куда он встанет.
+
+<img src={useBaseUrl("/img/tutorial/blue_bar_insert_component.png" )} />
+
+Чтобы редактировать текст — кликните по блоку. Можно вводить markdown ([шпаргалка](https://github.com/adam-p/markdown-here/wiki/Markdown-Cheatsheet)). Между Edit и Preview переключение через меню сверху блока.
+
+<img src={useBaseUrl("/img/tutorial/markdown.png" )} />
+
+Чтобы выйти — кликните в любое другое место. Сохраните **Save changes**.
+
+### Публикация дашборда
+
+Если вы прошли все шаги, у вас должен быть готовый дашборд. Перестроить элементы — **Edit dashboard** + drag-and-drop.
+
+Чтобы открыть дашборд другим пользователям — слева вверху рядом с заголовком вместо Draft нажмите Published. Звёздочка — добавить в избранное.
+
+<img src={useBaseUrl("/img/tutorial/publish_dashboard.png" )} />
+
+### Аннотации
+
+Аннотации добавляют дополнительный контекст к чарту. В этой секции мы добавим аннотацию к Tutorial Line Chart — даты, когда часть рейсов отменили британские авиавласти из-за извержения вулкана Гримсвётн в Исландии (23–25 мая 2011).
+
+Сначала создадим слой аннотаций — Manage ‣ Annotation Layers, новый через зелёный плюс. Имя — Volcanic Eruptions, save. Этот слой можно использовать для нескольких аннотаций.
+
+Теперь сама аннотация — Manage ‣ Annotations, зелёный плюс. Слой Volcanic Eruptions, краткое описание Grímsvötn, даты (23–25 мая 2011), save.
+
+<img src={useBaseUrl("/img/tutorial/edit_annotation.png" )} />
+
+Откройте Tutorial Line Chart (Charts → выбираем чарт). В секции Annotations and Layers — Add Annotation Layer. Параметры:
+
+- Name — Volcanic Eruptions
+- Annotation Layer Type — Event
+- Annotation Source — Superset annotation
+- Annotation Layer — Volcanic Eruptions
+
+<img src={useBaseUrl("/img/tutorial/annotation_settings.png" )} />
+
+**Apply** — увидите аннотацию на графике.
+
+<img src={useBaseUrl("/img/tutorial/annotation.png" )} />
+
+Внешний вид аннотации настраивается в Display configuration. **OK**, **Save** (по умолчанию overwrite — аннотация сохранится в чарте и появится в Tutorial Dashboard).
+
+### Advanced Analytics
+
+В этой секции — про Advanced Analytics: дополнительные трансформации данных.
+
+**Базовый чарт**
+
+Сначала создадим базовый чарт, к которому будем применять разные Advanced Analytics. Новый чарт на _tutorial_flights_, тип Line Chart. Time Range — 1–31 октября 2011.
+
+В Query меняем Metrics на сумму Cost. **Run Query** — видим суточные траты по дням октября.
+
+<img src={useBaseUrl("/img/tutorial/advanced_analytics_base.png" )} />
+
+Сохраняем как Tutorial Advanced Analytics Base, добавляем в Tutorial Dashboard.
+
+### Скользящее среднее (Rolling Mean)
+
+В данных большая дисперсия, тренд незаметен. Покажем скользящее среднее. В подсекции **Moving Average** в Advanced Analytics: **Rolling** = mean, Periods = 7, Min Periods = 7. Период — это длина окна в Time Grain'ах. Time Grain = день, значит окно — 7 дней: 7 октября 2011 значение будет средним за первые 7 дней. Min Periods = 7 гарантирует, что среднее всегда считается по 7 дням — без «разогревочного» периода.
+
+**Run Query** — данные стали глаже, серия начинается позже из-за исключения ramp-up.
+
+<img src={useBaseUrl("/img/tutorial/rolling_mean.png" )} />
+
+Сохраните как Tutorial Rolling Mean в Tutorial Dashboard.
+
+### Сравнение во времени (Time Comparison)
+
+Сравним значения временного ряда со значениями неделю назад. Откройте Tutorial Advanced Analytics Base (Charts → выбираем чарт; либо в Tutorial Dashboard через Explore chart).
+
+В подсекции Time Comparison Advanced Analytics в Time Shift введите «minus 1 week» (поле принимает естественный язык). **Run Query** — появилась дополнительная серия с теми же значениями, сдвинутыми на неделю назад.
+
+<img src={useBaseUrl("/img/tutorial/time_comparison_two_series.png" )} />
+
+Поменяйте Calculation type на Absolute difference, **Run Query**. Теперь одна серия — разность между двумя предыдущими.
+
+<img src={useBaseUrl("/img/tutorial/time_comparison_absolute_difference.png" )} />
+
+Сохраните как Tutorial Time Comparison в Tutorial Dashboard.
+
+### Ресэмплинг данных
+
+Перейдём с дневных данных на недельные. Откройте Tutorial Advanced Analytics Base.
+
+В подсекции Python Functions Advanced Analytics: Rule = 7D (7 дней), Method = median. **Run Query**.
+
+<img src={useBaseUrl("/img/tutorial/resample.png" )} />
+
+Теперь точка раз в 7 дней — медиана за окно. Подробнее про методы — в [документации Pandas](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.resample.html).
+
+Сохраните как Tutorial Resample в Tutorial Dashboard. Откройте дашборд — четыре чарта рядом, удобно сравнивать.

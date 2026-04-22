@@ -1,0 +1,212 @@
+---
+title: Гайды по разработке
+hide_title: true
+sidebar_position: 4
+version: 1
+---
+
+# Гайды по разработке
+
+:::info
+Эта страница покрывает основные процедуры разработки. Для длинных листингов команд и развёрнутых пошаговых сценариев см. [англоязычную версию страницы](/docs/contributing/howtos).
+:::
+
+## Контрибьюция в документацию
+
+Сайт документации построен на [Docusaurus 3](https://docusaurus.io/), исходники — в `./docs`.
+
+### Локальная разработка
+
+```shell
+cd docs
+yarn install   # Установить зависимости
+yarn start     # Dev-сервер: http://localhost:3000
+```
+
+Для просмотра русской локали — `yarn start --locale ru`. Для одновременного просмотра обеих локалей — `yarn build && yarn serve --port 3000`.
+
+### Сборка
+
+```shell
+yarn build
+yarn serve
+```
+
+### Деплой
+
+Коммиты в `main` (или `master`) триггерят пересборку и redeploy сайта документации. PR'ы с правками документации помечайте префиксом `docs:`.
+
+## Создание визуализационных плагинов {#creating-visualization-plugins}
+
+Визуализации Liteset реализованы на JavaScript/TypeScript. Liteset идёт с десятками встроенных типов визуализаций (далее — viz plugins) — они лежат в `superset-frontend/plugins`. Плагины подключаются в приложение через `superset-frontend/src/visualizations/presets/MainPreset.js`. Проект всегда рад рассмотреть предложения по новым качественным viz-плагинам. Для сильно кастомных типов рекомендуется поддерживать форк Liteset и добавлять плагины вручную.
+
+**Note:** Дополнительные community-ресурсы по созданию/деплою кастомных визуализаций — на [Wiki Apache Superset](https://github.com/apache/superset/wiki/Community-Resource-Library#creating-custom-data-visualizations) (применимо к Liteset, поскольку фронтенд идентичен).
+
+### Требования
+
+- MacOS или Linux (Windows официально не поддерживается).
+- Node.js 16.
+- npm 7 или 8.
+- Базовая знакомство с [React](https://reactjs.org/) и npm/Node.
+
+### Создание простого Hello World viz-плагина {#creating-a-simple-hello-world-viz-plugin}
+
+Используется Superset Yeoman Generator. Установка:
+
+```bash
+npm i -g yo
+cd superset-frontend/packages/generator-superset
+npm i
+npm link
+```
+
+Создайте директорию для плагина с префиксом `superset-plugin-chart` и запустите генератор:
+
+```bash
+mkdir /tmp/superset-plugin-chart-hello-world
+cd /tmp/superset-plugin-chart-hello-world
+yo @superset-ui/superset
+```
+
+Генератор задаст несколько вопросов (значения по умолчанию подходят). После генерации:
+
+```bash
+npm i --force
+npm run build
+```
+
+Полный список генерируемых файлов и пошаговый интерактивный диалог генератора, а также подключение плагина к Liteset через `MainPreset.js` и npm-ссылку — см. [англоязычную версию](/docs/contributing/howtos#creating-a-simple-hello-world-viz-plugin).
+
+## Тестирование {#testing}
+
+### Python-тесты
+
+```bash
+# Все тесты:
+pytest
+
+# Конкретный файл:
+pytest tests/unit_tests/specific_test.py
+
+# Конкретный тест:
+pytest tests/unit_tests/specific_test.py::TestClass::test_function
+```
+
+Liteset использует `pytest-asyncio` для async-тестов. Покрытие — `pytest --cov=superset --cov-report=term-missing`.
+
+### Frontend-тесты
+
+```bash
+cd superset-frontend
+npm run test                    # Все тесты
+npm run test -- filename.test.tsx   # Конкретный файл
+```
+
+Используется Jest + React Testing Library (Enzyme удалён, не использовать).
+
+### E2E-интеграционные тесты {#e2e-integration-testing}
+
+E2E запускаются на Cypress. Подробности про настройку Selenium, headless-Chrome и стенд для интеграционных тестов — см. [англоязычную версию](/docs/contributing/howtos#e2e-integration-testing).
+
+### Отладка серверного приложения {#debugging-server-app}
+
+Liteset работает на Litestar/Uvicorn. Для отладки в IDE (PyCharm, VS Code):
+
+- Создайте Run Configuration с интерпретатором проекта.
+- Module: `uvicorn` (или path к `uvicorn`).
+- Parameters: `superset.app:create_app --factory --reload --host 0.0.0.0 --port 8088`.
+- Working directory: корень проекта.
+- Поставьте брейкпоинт в нужном async-хендлере и запустите в Debug-режиме.
+
+Развёрнутые конфиги для PyCharm и VS Code (с launch.json) — см. [англоязычную версию](/docs/contributing/howtos#debugging-server-app).
+
+### Отладка в Kubernetes {#debugging-server-app-in-kubernetes-environment}
+
+Подключение `debugpy` к поду, экспонирование порта через `kubectl port-forward` и attach из IDE — см. [англоязычную версию](/docs/contributing/howtos#debugging-server-app-in-kubernetes-environment).
+
+### Storybook
+
+```bash
+cd superset-frontend
+npm run storybook
+```
+
+Storybook доступен на `http://localhost:6006/`. Используется для разработки и документирования компонентов.
+
+## Контрибьюция переводов
+
+Liteset поддерживает локализацию (как и Apache Superset). Переводы UI хранятся в `superset/translations/<locale>/LC_MESSAGES/messages.po`.
+
+### Включение выбора языка
+
+В `superset_config.py`:
+
+```python
+LANGUAGES = {
+    "en": {"flag": "us", "name": "English"},
+    "ru": {"flag": "ru", "name": "Русский"},
+    # ... другие
+}
+```
+
+### Создание словаря для нового языка
+
+```bash
+pybabel init -i superset/translations/messages.pot -d superset/translations -l ru
+```
+
+### Извлечение новых строк
+
+```bash
+pybabel extract -F superset/translations/babel.cfg -k _l -k _ -k __ -o superset/translations/messages.pot superset
+```
+
+### Обновление файлов локализации
+
+```bash
+pybabel update -i superset/translations/messages.pot -d superset/translations
+```
+
+Затем отредактируйте `messages.po` для нужного языка.
+
+### Применение переводов
+
+```bash
+pybabel compile -d superset/translations
+```
+
+После компиляции `.mo`-файлов рестарт Liteset подхватит новые переводы.
+
+## Линтинг {#linting}
+
+### Python
+
+```bash
+pre-commit install
+pre-commit run --all-files     # Полный прогон
+pre-commit run                 # Только staged файлы
+pre-commit run mypy            # Только mypy
+pre-commit run ruff            # Только ruff
+```
+
+Pre-commit хуки запускают `ruff` (форматтер + линтер), `mypy` (статическая типизация) и `pytest` для затронутых тестов.
+
+### TypeScript
+
+```bash
+cd superset-frontend
+npm run lint
+npm run lint:fix    # Автоматически починить
+```
+
+Используются ESLint + Prettier.
+
+## GitHub эфемерные окружения
+
+Члены org могут поднять временное тестовое окружение прямо из PR — комментарием:
+
+```
+/testenv up
+```
+
+Подробнее — в [Pull Request Guidelines](/docs/contributing/guidelines#test-environments).

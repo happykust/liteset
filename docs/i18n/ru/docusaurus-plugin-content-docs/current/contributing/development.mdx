@@ -1,0 +1,280 @@
+---
+title: Настройка окружения разработки
+sidebar_position: 3
+version: 1
+---
+# Настройка окружения разработки
+
+В этой секции описаны несколько способов запустить Liteset локально для разработки (`docker compose`, обычный `docker`, «на голом железе», через Makefile).
+
+:::note
+Рекомендуемый путь для большинства контрибьюторов — **`docker compose`**: он одной командой поднимает Liteset (Litestar/ASGI), Celery worker, Postgres-метаданные, Redis и фронтенд dev-сервер. **Большинству хватит первых нескольких разделов — «Fork & Clone», «docker compose» и «Installing Dev Tools».**
+:::
+
+:::info
+Для длинных листингов (полные `launch.json` для VS Code, кастомные PyCharm Run Configurations, расширенные процедуры миграций) — см. [англоязычную версию страницы](/docs/contributing/development).
+:::
+
+## Fork и Clone
+
+Сначала [сделайте fork](https://help.github.com/articles/about-forks/) на GitHub, затем склонируйте свой fork:
+
+```bash
+git clone git@github.com:your-username/liteset.git
+cd liteset
+```
+
+## docker compose (рекомендуется)
+
+Запуск:
+
+```bash
+# --build гарантирует свежие слои
+docker compose up --build
+```
+
+Что произойдёт:
+
+- Поднимется кластер сервисов:
+  - **Litestar/Uvicorn** веб-сервер Liteset (заменяет Flask + Gunicorn у Apache Superset), монтирующий локальный Python-репо.
+  - **Celery worker** (без изменений по сравнению с upstream).
+  - **Frontend dev-сервер (Node)** — собирает и бандлит JS/TS.
+  - **Postgres** — БД метаданных и хранилище примеров датасетов/чартов/дашбордов.
+  - **Redis** — очередь Celery и кэш-бэкенд.
+- WebSockets обслуживает **Litestar сам** — отдельный Node-контейнер `superset-websocket` не нужен.
+- При первом старте загрузятся примеры данных.
+- Все детали и настройки — в [docker-compose.yml](https://github.com/happykust/liteset/blob/main/docker-compose.yml).
+- Локальный код примонтирован в сервисы — изменения отражаются в работающих контейнерах (autoreload через Uvicorn `--reload`, не `flask run`).
+- Liteset доступен на `http://localhost:9000/`.
+- Логин по умолчанию: `admin` / `admin`.
+
+:::note
+Установка/сборка Node-модулей внутри `superset-node` может занимать ощутимое время — это нормально из-за объёма зависимостей. Если задержки кажутся чрезмерными, проверьте интернет и системные ресурсы.
+:::
+
+:::caution
+`docker compose` рассчитан на запуск контейнеров на одном хосте и не обеспечивает high availability — мы не рекомендуем его для прод-сценариев. Для одно-хостовых окружений — [minikube](https://minikube.sigs.k8s.io/docs/start/) + наша [инструкция по k8s](/docs/installation/kubernetes).
+:::
+
+### Поддерживаемые переменные окружения
+
+Влияющие на сборку Docker:
+
+- **SUPERSET_BUILD_TARGET (default=dev):** target сборки — `lean` или `dev`.
+- **INCLUDE_FIREFOX (default=false):** включать ли Firefox headless в образ.
+- **INCLUDE_CHROMIUM (default=false):** включать ли Chromium headless в образ.
+- **BUILD_TRANSLATIONS (default=false):** компилировать ли переводы из `.po`-файлов.
+- **SUPERSET_LOAD_EXAMPLES (default=yes):** загружать ли примеры в БД при старте; `SUPERSET_LOAD_EXAMPLES=no docker compose up` ускоряет старт.
+- **SUPERSET_LOG_LEVEL (default=info):** debug/info/warning/error/critical.
+
+Конфигурация конкретного superset-окружения — в [superset_config.py для docker](https://github.com/happykust/liteset/blob/main/docker/pythonpath_dev/superset_config.py), который монтируется в контейнер и присваивает env-переменные настройкам Liteset.
+
+### Доступ к Postgres
+
+```bash
+docker compose exec db psql -U superset
+```
+
+Postgres также проброшен на 5432 — можно подключаться из любимого клиента или из самого Liteset (создав connection на `localhost:5432`).
+
+### Сброс Postgres
+
+При переключении между ветками с разными миграциями БД может «застрять». Самое простое — занулить:
+
+```bash
+docker compose down
+docker volume rm superset_db_home
+docker compose up
+```
+
+## GitHub Codespaces (облачная разработка) {#github-codespaces-cloud-development}
+
+Codespaces — pre-configured cloud-окружение в GitHub. Удобно для:
+
+- Быстрых контрибьюций без локальной установки.
+- Согласованных окружений в команде.
+- Работы с устройств без Docker.
+- Безопасных экспериментов в изолированном окружении.
+
+Поднимается из репо в один клик; рекомендуется машина минимум **4 CPU / 16GB RAM**. Доступ к Liteset — через PORTS-таб VS Code на порту `9001`. Логин `admin` / `admin`. Подробности — в [англоязычной версии](/docs/contributing/development#github-codespaces-cloud-development).
+
+## Установка dev-инструментов
+
+### Python-окружение
+
+```bash
+python3.11 -m venv venv
+. venv/bin/activate
+pip install -e ".[dev]"
+```
+
+### Git Hooks
+
+```bash
+pre-commit install
+```
+
+Хуки прогоняют `ruff`, `mypy` и базовые проверки на staged-файлы перед коммитом.
+
+## Работа с LLM
+
+Liteset активно использует LLM-ассистентов (Claude Code, Cursor) для разработки. Project memory и LLM-инструкции — в `CLAUDE.md` и `LLMS.md` корня репо.
+
+### Базовая настройка
+
+Активируйте Python virtualenv, поднимите docker compose, проверьте что `curl http://localhost:8088/health` возвращает 200. Подробные инструкции LLM-сессий — в [LLMS.md](https://github.com/happykust/liteset/blob/main/LLMS.md).
+
+### Best practices
+
+- Перед изменением читайте `CLAUDE.md` для контекста проекта.
+- Используйте `pre-commit run` для валидации.
+- Запускайте тесты на staged-файлах часто.
+
+### Ключевые команды
+
+```bash
+# Лента-форматтеры/линтеры
+pre-commit run
+
+# Backend-тесты
+pytest tests/unit_tests/
+
+# Frontend-тесты
+npm run test
+
+# Type checking
+pre-commit run mypy
+```
+
+## Альтернативы `docker compose`
+
+### Litestar dev-сервер (нативно)
+
+Если нужно запускать backend локально без Docker:
+
+```bash
+. venv/bin/activate
+export SUPERSET_CONFIG_PATH=/path/to/superset_config.py
+uvicorn superset.app:create_app --factory --reload --host 0.0.0.0 --port 8088
+```
+
+Postgres и Redis в этом случае нужно поднимать отдельно.
+
+### Frontend (отдельно)
+
+```bash
+cd superset-frontend
+npm install
+npm run dev   # Dev-сервер с hot reload
+```
+
+Webpack будет пересобирать ассеты при изменениях.
+
+## Git Hooks
+
+После `pre-commit install` хуки запускаются автоматически на `git commit`. Полный прогон — `pre-commit run --all-files`.
+
+## Линтинг
+
+См. секцию [Линтинг в Гайдах](/docs/contributing/howtos#linting).
+
+## GitHub Actions и `act` {#github-actions-and-act}
+
+`act` запускает GitHub Actions локально через Docker. Установка:
+
+```bash
+# macOS
+brew install act
+# Linux
+curl https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash
+```
+
+### Использование
+
+```bash
+act -l                    # Список workflows
+act -j frontend-build     # Запуск конкретного job
+act push                  # Симулировать push-event
+```
+
+Подробные сценарии CI/job-ов — в [англоязычной версии](/docs/contributing/development#github-actions-and-act).
+
+## Тестирование
+
+### Python-тесты
+
+```bash
+pytest tests/unit_tests/                       # Unit-тесты
+pytest tests/integration_tests/                # Интеграционные
+pytest tests/unit_tests/specific_test.py::TestClass::test_method   # Конкретный
+pytest --cov=superset --cov-report=term-missing                    # С coverage
+```
+
+Liteset использует `pytest-asyncio` — async-тесты помечаются `@pytest.mark.asyncio` или живут в файлах с `asyncio_mode = "auto"`.
+
+### Запуск тестов через `act` {#running-tests-with-act}
+
+См. [англоязычную версию](/docs/contributing/development#running-tests-with-act).
+
+### Frontend-тесты
+
+```bash
+cd superset-frontend
+npm run test                          # Все
+npm run test -- ChartName.test.tsx    # Один файл
+npm run test -- --updateSnapshot      # Обновить snapshot'ы
+```
+
+### Отладка серверного приложения {#debugging-server-app}
+
+В IDE — конфигурация Run/Debug:
+
+- Module: `uvicorn`.
+- Parameters: `superset.app:create_app --factory --reload --host 0.0.0.0 --port 8088`.
+- Working directory: корень репо.
+- Environment: `SUPERSET_CONFIG_PATH=...`.
+
+Поставьте брейкпоинты в async-хендлерах и запустите в Debug.
+
+Полные примеры (PyCharm Run Configurations XML, VS Code `launch.json`) — в [англоязычной версии](/docs/contributing/development#debugging-server-app).
+
+### Отладка в Kubernetes {#debugging-server-app-in-kubernetes-environment}
+
+Через `debugpy` + `kubectl port-forward`. Подробности — в [англоязычной версии](/docs/contributing/development#debugging-server-app-in-kubernetes-environment).
+
+### Storybook
+
+```bash
+cd superset-frontend
+npm run storybook  # http://localhost:6006/
+```
+
+## Полезные советы
+
+### Добавление нового источника данных {#adding-a-new-datasource}
+
+Все источники данных, которые Liteset подключает, находятся в `superset/db_engine_specs/`. Новый source — отдельный класс, наследующий `BaseEngineSpec`. См. [англоязычную версию](/docs/contributing/development#adding-a-new-datasource) для шаблона.
+
+### Visualization Plugins
+
+См. [Создание визуализационных плагинов](/docs/contributing/howtos#creating-visualization-plugins).
+
+### Добавление миграции БД
+
+```bash
+# Миграции остаются sync — psycopg2
+superset db migrate -m "Описание изменения"
+# Это создаст файл в superset/migrations/versions/
+```
+
+После генерации **проверьте сгенерированный файл** — Alembic не всегда корректно определяет операции. Тестируйте на чистой БД через `superset db upgrade` и `superset db downgrade`.
+
+### Слияние миграций БД {#merging-db-migrations}
+
+Если в master попало несколько migrations — нужен merge revision:
+
+```bash
+superset db merge -m "merge revisions <rev1> <rev2>" <rev1> <rev2>
+```
+
+Это создаст новую ревизию, объединяющую обе. Подробнее — в [англоязычной версии](/docs/contributing/development#merging-db-migrations).
