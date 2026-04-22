@@ -1,0 +1,194 @@
+---
+title: Темизация
+hide_title: true
+sidebar_position: 12
+version: 1
+---
+# Темизация Liteset
+
+:::note
+Liteset 6.0.0 (на основе apache-superset >= 6.0)
+:::
+
+Liteset (как и Apache Superset 6.x) использует **token-based темизацию Ant Design v5**. Все Antd-токены работают, плюс несколько Superset-специфичных — для чартов и интерфейса дашбордов.
+
+## Управление темами через UI
+
+В Liteset встроен **интерфейс Theme Management** — доступен из меню админа: **Settings > Themes**.
+
+### Создание новой темы
+
+1. Перейдите в **Settings > Themes**.
+2. **+ Theme** для создания.
+3. Используйте [Ant Design Theme Editor](https://ant.design/theme-editor) для дизайна:
+   - Подберите палитру, типографику, оверрайды компонентов.
+   - Откройте `CONFIG`-модал и скопируйте JSON-конфигурацию.
+4. Вставьте JSON в поле определения темы в Liteset.
+5. Дайте теме описательное имя и сохраните.
+
+Тема может расширяться Superset-специфичными токенами (документированы в объекте default-темы) перед импортом.
+
+### Системные темы (администрирование)
+
+Когда задано `ENABLE_UI_THEME_ADMINISTRATION = True`, админы управляют system-wide темами прямо из UI:
+
+#### Установка системных тем
+
+- **Системная тема по умолчанию**: иконка солнца на теме делает её системной.
+- **Системная тёмная тема**: иконка луны делает её системной dark-темой.
+- **Авто-определение OS**: если заданы и default, и dark — Liteset автоматически выбирает тему по предпочтениям ОС.
+
+#### Управление системными темами
+
+- Системные темы помечены специальными бейджами в списке.
+- Только админы с правом write могут менять system theme settings.
+- Снятие пометки «системная» возвращает к default'ам из конфигурации.
+
+### Применение тем к дашбордам
+
+Созданные темы применяются к отдельным дашбордам:
+
+- Откройте редактирование дашборда и выберите свою тему из dropdown.
+- У каждого дашборда может быть своя тема — для брендирования или контекстной стилизации.
+
+## Опции конфигурации
+
+### Python-конфигурация
+
+Через `superset_config.py`:
+
+```python
+# Включить администрирование тем через UI
+ENABLE_UI_THEME_ADMINISTRATION = True
+
+# Опционально: дефолтные темы в конфиге
+# При ENABLE_UI_THEME_ADMINISTRATION = True их можно переопределить из UI
+THEME_DEFAULT = {
+    "token": {
+        "colorPrimary": "#2893B3",
+        "colorSuccess": "#5ac189",
+        # ... ваш JSON темы
+    }
+}
+
+# Опционально: тёмная тема
+THEME_DARK = {
+    "algorithm": "dark",
+    "token": {
+        "colorPrimary": "#2893B3",
+        # ... оверрайды для dark
+    }
+}
+
+# Чтобы принудить одну тему на всех — THEME_DARK = None
+# Когда обе темы определены (через UI или конфиг):
+# - Пользователь может вручную переключиться
+# - Авто-детект предпочтения ОС включается
+```
+
+### Миграция из конфига в UI
+
+При `ENABLE_UI_THEME_ADMINISTRATION = True`:
+
+1. Системные темы из UI имеют приоритет над настройками конфигурации.
+2. UI показывает, какие темы — системные.
+3. Админы меняют системные темы без перезапуска Liteset.
+4. Темы из конфига работают как fallback, если UI-темы не заданы.
+
+### Копирование тем между инстансами
+
+Чтобы экспортировать тему для использования в конфиге или на другом инстансе:
+
+1. **Settings > Themes**, иконка экспорта на нужной теме.
+2. Извлеките JSON из экспортированного YAML.
+3. Используйте этот JSON в `superset_config.py` или импортируйте на другой Liteset.
+
+## Workflow разработки темы
+
+1. **Дизайн**: [Ant Design Theme Editor](https://ant.design/theme-editor).
+2. **Тест**: создайте темы в CRUD-интерфейсе Liteset.
+3. **Применение**: к конкретным дашбордам или системно.
+4. **Итерация**: меняйте JSON прямо в CRUD-интерфейсе или импортируйте заново из theme-editor.
+
+## Кастомные шрифты
+
+Liteset поддерживает кастомные шрифты через runtime-конфигурацию — без пересборки приложения.
+
+### Конфигурация шрифтов
+
+Добавьте URL'ы шрифтов в `superset_config.py`:
+
+```python
+# Подгрузка шрифтов из Google Fonts, Adobe Fonts или своих источников
+CUSTOM_FONT_URLS = [
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap",
+    "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap",
+]
+
+# Разрешите источники шрифтов в CSP
+TALISMAN_CONFIG = {
+    "content_security_policy": {
+        "font-src": ["'self'", "https://fonts.googleapis.com", "https://fonts.gstatic.com"],
+        "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+    }
+}
+```
+
+### Использование шрифтов в темах
+
+После настройки сошлитесь на шрифты в теме:
+
+```python
+THEME_DEFAULT = {
+    "token": {
+        "fontFamily": "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+        "fontFamilyCode": "JetBrains Mono, Monaco, monospace",
+        # ... другие токены
+    }
+}
+```
+
+Или в JSON темы CRUD-интерфейса:
+
+```json
+{
+  "token": {
+    "fontFamily": "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+    "fontFamilyCode": "JetBrains Mono, Monaco, monospace"
+  }
+}
+```
+
+### Источники шрифтов
+
+- **Google Fonts**: бесплатно, CDN, широкий выбор.
+- **Adobe Fonts**: премиум (требует подписку и kit ID).
+- **Self-hosted**: положите файлы шрифтов в `/static/assets/fonts/` и сошлитесь через CSS.
+
+Работает с stock Docker-образом — кастомная сборка не нужна!
+
+## Расширенные возможности
+
+- **System Themes**: системные default и dark темы через UI или конфигурацию.
+- **Per-Dashboard Theming**: у каждого дашборда — своя визуальная идентичность.
+- **JSON Editor**: редактирование конфигурации темы прямо в интерфейсе Liteset.
+- **Custom Fonts**: подгрузка внешних шрифтов через конфиг без пересборки.
+- **OS Dark Mode Detection**: автоматическое переключение по ОС-настройкам.
+- **Theme Import/Export**: обмен темами между инстансами через YAML.
+
+## Доступ через API
+
+Для программного управления темами Liteset предоставляет REST-эндпоинты:
+
+- `GET /api/v1/theme/` — список тем.
+- `POST /api/v1/theme/` — создать тему.
+- `PUT /api/v1/theme/{id}` — обновить тему.
+- `DELETE /api/v1/theme/{id}` — удалить тему.
+- `PUT /api/v1/theme/{id}/set_system_default` — установить системной default (только admin).
+- `PUT /api/v1/theme/{id}/set_system_dark` — установить системной dark (только admin).
+- `DELETE /api/v1/theme/unset_system_default` — снять статус системной default.
+- `DELETE /api/v1/theme/unset_system_dark` — снять статус системной dark.
+- `GET /api/v1/theme/export/` — экспорт тем в YAML.
+- `POST /api/v1/theme/import/` — импорт тем из YAML.
+
+Эти эндпоинты требуют соответствующих прав и подчиняются RBAC.

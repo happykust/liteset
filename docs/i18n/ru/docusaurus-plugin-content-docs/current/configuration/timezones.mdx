@@ -1,0 +1,50 @@
+---
+title: Часовые пояса
+hide_title: true
+sidebar_position: 6
+version: 1
+---
+
+# Часовые пояса
+
+В Liteset (и Apache Superset) есть четыре различные временные зоны:
+
+1. Зона, в которой закодированы исходные данные.
+2. Зона движка БД.
+3. Зона бэкенда Liteset.
+4. Зона клиента Liteset.
+
+Если временное поле (`DATETIME`, `TIME`, `TIMESTAMP` и т. д.) не задаёт зону явно — оно по умолчанию использует зону соответствующего компонента.
+
+Чтобы сделать задачу управляемой — Liteset не контролирует ни как загружают данные (1), ни зону клиента (4) — для консистентности **настоятельно рекомендуется** конфигурировать (2) и (3) на одну и ту же зону, с сильным предпочтением [UTC](https://en.wikipedia.org/wiki/Coordinated_Universal_Time). Это гарантирует, что временные поля без явного timestamp не будут случайно приведены к неправильной зоне. У Liteset есть имплицитные допущения о том, что timestamp'ы в UTC — и конфигурация (3) на не-UTC может быть проблематичной.
+
+Для консистентности данных (независимо от зоны клиента) бэкенд Liteset старается отдавать клиенту timestamp'ы с явной (или полу-явной — как [Epoch time](https://en.wikipedia.org/wiki/Unix_time), всегда относительно UTC) зоной.
+
+Сложность — в множестве [движков БД](/docs/configuration/databases#installing-drivers-in-docker-images), которые поддерживает Liteset, и расхождениях между их реализациями [Python Database API (DB-API)](https://www.python.org/dev/peps/pep-0249/), плюс мы используем [Pandas](https://pandas.pydata.org/) для чтения SQL в DataFrame перед сериализацией в JSON. К сожалению, Pandas игнорирует DB-API [type_code](https://www.python.org/dev/peps/pep-0249/#type-objects), полагаясь по умолчанию на Python-тип, возвращённый DB-API. Сейчас только часть движков работает с Pandas корректно — то есть timestamp'ы без явной зоны сериализуются в JSON с зоной сервера, что гарантирует консистентное отображение на клиенте.
+
+Например, сравнение MySQL и Presto:
+
+```python
+import pandas as pd
+from sqlalchemy import create_engine
+
+pd.read_sql_query(
+    sql="SELECT TIMESTAMP('2022-01-01 00:00:00') AS ts",
+    con=create_engine("mysql://root@localhost:3360"),
+).to_json()
+
+pd.read_sql_query(
+    sql="SELECT TIMESTAMP '2022-01-01 00:00:00' AS ts",
+    con=create_engine("presto://localhost:8080"),
+).to_json()
+```
+
+Выдаёт `{"ts":{"0":1640995200000}}` (UTC по определению Epoch time) и `{"ts":{"0":"2022-01-01 00:00:00.000"}}` (без явной зоны). В JavaScript они интерпретируются по-разному:
+
+```js
+new Date(1640995200000)
+> Sat Jan 01 2022 13:00:00 GMT+1300 (New Zealand Daylight Time)
+
+new Date("2022-01-01 00:00:00.000")
+> Sat Jan 01 2022 00:00:00 GMT+1300 (New Zealand Daylight Time)
+```

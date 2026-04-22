@@ -1,0 +1,139 @@
+---
+title: Кэширование
+hide_title: true
+sidebar_position: 3
+version: 1
+---
+
+# Кэширование
+
+Liteset использует [Flask-Caching](https://flask-caching.readthedocs.io/) для кэширования. Flask-Caching поддерживает разные backend'ы — Redis (рекомендуется), Memcached, SimpleCache (in-memory), локальная ФС. [Кастомные backend'ы](https://flask-caching.readthedocs.io/en/latest/#custom-cache-backends) тоже поддерживаются.
+
+:::info Liteset
+Конфигурационные dict'ы Flask-Caching читаются Liteset'овской фабрикой кэшей **без изменений** — те же ключи `CACHE_TYPE`, `CACHE_REDIS_URL` и т. д. работают как в Apache Superset.
+:::
+
+Конфигурация — словари в `superset_config.py`, соответствующие [спецификации Flask-Caching](https://flask-caching.readthedocs.io/en/latest/#configuring-flask-caching).
+
+Конфигурируемые кэши:
+
+- Filter state дашбордов (обязательно): `FILTER_STATE_CACHE_CONFIG`.
+- Explore chart form data (обязательно): `EXPLORE_FORM_DATA_CACHE_CONFIG`.
+- Кэш метаданных (опционально): `CACHE_CONFIG`.
+- Кэш данных чартов (опционально): `DATA_CACHE_CONFIG`.
+
+Пример конфигурации filter state на Redis:
+
+```python
+FILTER_STATE_CACHE_CONFIG = {
+    'CACHE_TYPE': 'RedisCache',
+    'CACHE_DEFAULT_TIMEOUT': 86400,
+    'CACHE_KEY_PREFIX': 'superset_filter_cache',
+    'CACHE_REDIS_URL': 'redis://localhost:6379/0'
+}
+```
+
+## Зависимости
+
+Для выделенного кэш-хранилища нужно установить дополнительные библиотеки:
+
+- Для Redis — пакет [redis](https://pypi.python.org/pypi/redis).
+- Для Memcached — клиент [pylibmc](https://pypi.org/project/pylibmc/) (`python-memcached` не обрабатывает бинарные данные корректно).
+
+Устанавливаются через pip.
+
+## Fallback Metastore Cache
+
+Filter State и Explore-кэш — обязательны. Если они не определены, Liteset падает в встроенный кэш, хранящий данные в БД метаданных. Рекомендуется использовать выделенный кэш, но встроенный тоже подходит.
+
+Например, чтобы использовать встроенный кэш для данных чартов:
+
+```python
+DATA_CACHE_CONFIG = {
+    "CACHE_TYPE": "SupersetMetastoreCache",
+    "CACHE_KEY_PREFIX": "superset_results",  # сделайте уникальным, чтобы избежать коллизий
+    "CACHE_DEFAULT_TIMEOUT": 86400,  # 60 * 60 * 24 = сутки
+}
+```
+
+## Cache timeout у чартов
+
+Таймаут кэша чарта может быть переопределён настройками отдельного чарта, датасета или БД. Они проверяются в этом порядке, прежде чем используется значение из `DATA_CACHE_CONFIG`.
+
+Установка таймаута в `-1` отключает кэш — для конкретного чарта, датасета, БД, либо в целом по умолчанию через `DATA_CACHE_CONFIG`.
+
+## Кэш результатов SQL Lab
+
+Кэш результатов SQL Lab используется при включённых async-запросах и настраивается через `RESULTS_BACKEND`.
+
+Заметьте: для этой настройки используется не flask-caching dict, а `cachelib`-объект.
+
+См. [Async-запросы через Celery](/docs/configuration/async-queries-celery).
+
+## Кэширование thumbnails {#caching-thumbnails}
+
+Опциональная фича. Включается через [feature flag](/docs/configuration/configuring-superset#feature-flags):
+
+```
+FEATURE_FLAGS = {
+    "THUMBNAILS": True,
+    "THUMBNAILS_SQLA_LISTENERS": True,
+}
+```
+
+По умолчанию thumbnails рендерятся per-user; для анонимных — fallback на Selenium-пользователя. Чтобы рендерить всегда от фиксированного пользователя (например, `admin`):
+
+```python
+from superset.tasks.types import FixedExecutor
+
+THUMBNAIL_EXECUTORS = [FixedExecutor("admin")]
+```
+
+Для этой фичи нужны кэш и Celery-воркеры. Все thumbnails хранятся в кэше и обрабатываются асинхронно.
+
+Пример конфигурации с хранилищем картинок на S3:
+
+```python
+from flask import Flask
+from s3cache.s3cache import S3Cache
+
+...
+
+class CeleryConfig(object):
+    broker_url = "redis://localhost:6379/0"
+    imports = (
+        "superset.sql_lab",
+        "superset.tasks.thumbnails",
+    )
+    result_backend = "redis://localhost:6379/0"
+    worker_prefetch_multiplier = 10
+    task_acks_late = True
+
+
+CELERY_CONFIG = CeleryConfig
+
+def init_thumbnail_cache(app: Flask) -> S3Cache:
+    return S3Cache("bucket_name", 'thumbs_cache/')
+
+
+THUMBNAIL_CACHE_CONFIG = init_thumbnail_cache
+```
+
+С такой настройкой ключи кэша дашбордов будут `superset_thumb__dashboard__{ID}`. Базовый URL для Selenium можно переопределить:
+
+```
+WEBDRIVER_BASEURL = "https://superset.company.com"
+```
+
+Дополнительные настройки selenium webdriver — `WEBDRIVER_CONFIGURATION`. Можно реализовать кастомную функцию аутентификации Selenium. По умолчанию используется `flask-login`-cookie. Сигнатура:
+
+```python
+def auth_driver(driver: WebDriver, user: "User") -> WebDriver:
+    pass
+```
+
+В конфиге:
+
+```
+WEBDRIVER_AUTH_FUNC = auth_driver
+```

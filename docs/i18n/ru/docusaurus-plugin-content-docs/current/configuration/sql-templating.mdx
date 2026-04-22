@@ -1,0 +1,176 @@
+---
+title: SQL Templating
+hide_title: true
+sidebar_position: 5
+version: 1
+---
+
+# SQL Templating
+
+:::info
+Эта страница описывает основные концепции и паттерны SQL Templating в Liteset. Для полного списка макросов, фильтров и расширенных примеров (в исходнике 535 строк) см. [англоязычную версию](/docs/configuration/sql-templating).
+:::
+
+## Jinja-шаблоны
+
+SQL Lab и Explore поддерживают [Jinja templating](https://jinja.palletsprojects.com/en/2.11.x/) в запросах. Чтобы включить — поставьте feature flag `ENABLE_TEMPLATE_PROCESSING` ([feature flags](/docs/configuration/configuring-superset#feature-flags)) в `superset_config.py`. При включении Python-код можно встраивать в виртуальные датасеты и в Custom SQL фильтров и метрик в Explore. По умолчанию в Jinja-контексте доступно:
+
+- `columns`: колонки группировки в запросе.
+- `filter`: применённые фильтры.
+- `from_dttm`: начало временного диапазона (`None`, если не задан). С 5.0 deprecated в пользу `get_time_filter`.
+- `to_dttm`: конец временного диапазона (`None`, если не задан). С 5.0 deprecated в пользу `get_time_filter`.
+- `groupby`: колонки группировки (deprecated).
+- `metrics`: агрегатные выражения.
+- `row_limit`: лимит строк.
+- `row_offset`: оффсет.
+- `table_columns`: колонки в датасете.
+- `time_column`: temporal-колонка.
+- `time_grain`: выбранный time grain.
+
+Например, добавление временного диапазона в виртуальный датасет:
+
+```sql
+SELECT *
+FROM tbl
+WHERE dttm_col > '{{ from_dttm }}' and dttm_col < '{{ to_dttm }}'
+```
+
+Для устойчивости к снятию timerange-фильтра используйте [Jinja-логику](https://jinja.palletsprojects.com/en/2.11.x/templates/#tests):
+
+```sql
+SELECT *
+FROM tbl
+WHERE (
+    {% if from_dttm is not none %}
+        dttm_col > '{{ from_dttm }}' AND
+    {% endif %}
+    {% if to_dttm is not none %}
+        dttm_col < '{{ to_dttm }}' AND
+    {% endif %}
+    1 = 1
+)
+```
+
+`1 = 1` в конце гарантирует валидный `WHERE` даже без time-фильтра. В большинстве движков можно заменить на `true`.
+
+Jinja-параметры используются в _двойных_ скобках в SQL и в _одинарных_ — в логических блоках.
+
+Для добавления своих переменных в Jinja-контекст определите `JINJA_CONTEXT_ADDONS` в `superset_config.py`:
+
+```python
+JINJA_CONTEXT_ADDONS = {
+    'my_crazy_macro': lambda x: x*2,
+}
+```
+
+Дефолтные значения Jinja-параметров можно задать в меню **Parameters** в SQL Lab — JSON:
+
+```json
+{
+  "my_table": "foo"
+}
+```
+
+Параметры становятся доступны в SQL (`SELECT * FROM {{ my_table }}`). Параметры SQL Lab сохраняются с датасетом как `TEMPLATE PARAMETERS`.
+
+Специальный параметр `_filters` тестирует фильтры в jinja-шаблоне:
+
+```json
+{
+  "_filters": [
+    {
+      "col": "action_type",
+      "op": "IN",
+      "val": ["sell", "buy"]
+    }
+  ]
+}
+```
+
+```sql
+SELECT action, count(*) as times
+FROM logs
+WHERE action in {{ filter_values('action_type')|where_in }}
+GROUP BY action
+```
+
+`_filters` не сохраняется с датасетом — это только для тестов в SQL Lab UI.
+
+Кроме дефолтного Jinja-шаблонизатора SQL Lab поддерживает кастомные через `CUSTOM_TEMPLATE_PROCESSORS`. Значения в этом словаре переопределяют дефолтный Jinja-процессор для указанного движка БД. Пример с кастомным presto-процессором (использует `$`-стиль макросов вместо `{{ }}`):
+
+```python
+def DATE(
+    ts: datetime, day_offset: SupportsInt = 0, hour_offset: SupportsInt = 0
+) -> str:
+    """Текущий день как строка."""
+    day_offset, hour_offset = int(day_offset), int(hour_offset)
+    offset_day = (ts + timedelta(days=day_offset, hours=hour_offset)).date()
+    return str(offset_day)
+
+class CustomPrestoTemplateProcessor(PrestoTemplateProcessor):
+    """Кастомный presto-процессор."""
+
+    engine = "presto"
+
+    def process_template(self, sql: str, **kwargs) -> str:
+        # Кастомные макросы
+        macros = {
+            "DATE": partial(DATE, datetime.utcnow())
+        }
+        macros.update(self.context)
+        macros.update(kwargs)
+
+        def replacer(match):
+            macro_name, args_str = match.groups()
+            args = [a.strip() for a in args_str.split(",")]
+            if args == [""]:
+                args = []
+            f = macros[macro_name[1:]]
+            return f(*args)
+
+        macro_names = ["$" + name for name in macros.keys()]
+        pattern = r"(%s)\s*\(([^()]*)\)" % "|".join(map(re.escape, macro_names))
+        return re.sub(pattern, replacer, sql)
+
+CUSTOM_TEMPLATE_PROCESSORS = {
+    CustomPrestoTemplateProcessor.engine: CustomPrestoTemplateProcessor
+}
+```
+
+SQL Lab также включает live query-валидацию с pluggable-бэкендами. Конфигурация — в `superset_config.py`:
+
+```python
+FEATURE_FLAGS = {
+    'SQL_VALIDATORS_BY_ENGINE': {
+        'presto': 'PrestoDBSQLValidator',
+    }
+}
+```
+
+Доступные валидаторы и их имена — в [sql_validators](https://github.com/happykust/liteset/tree/main/superset/sql_validators).
+
+## Доступные макросы {#available-macros}
+
+Liteset поддерживает богатый набор Jinja-макросов: `cache_key_wrapper`, `current_user_id`, `current_username`, `current_user_email`, `filter_values`, `get_filters`, `get_time_filter`, `previous_period`, `latest_partition`, `latest_sub_partition` и другие. Полный список с примерами — в [англоязычной версии](/docs/configuration/sql-templating#available-macros).
+
+Кратко самые востребованные:
+
+- `{{ current_username() }}` — username аутентифицированного пользователя.
+- `{{ current_user_id() }}` — id аутентифицированного пользователя.
+- `{{ current_user_email() }}` — email.
+- `{{ filter_values('column_name') }}` — текущие значения фильтра по колонке.
+- `{{ get_filters('column_name') }}` — список фильтров (с операциями) по колонке.
+- `{{ get_time_filter('column_name') }}` — стандартный объект time-фильтра.
+- `{{ url_param('param_name') }}` — значение query-параметра из URL дашборда.
+- `{{ cache_key_wrapper(value) }}` — учитывает значение в cache-ключе SQL-результатов.
+
+## Доступные фильтры {#available-filters}
+
+Jinja-фильтры (типа `|where_in`) дополняют макросы для удобной интерполяции. Полный список — в [англоязычной версии](/docs/configuration/sql-templating#available-filters).
+
+Самые востребованные:
+
+- `{{ filter_values('action_type')|where_in }}` — приводит список к SQL `IN (...)`.
+- `{{ value|escape }}` — экранирует значение для безопасного включения в SQL.
+
+В Liteset templating-логика идентична Apache Superset 6.0.0; вся ваша Jinja-логика, кастомные процессоры и addons продолжают работать без изменений.

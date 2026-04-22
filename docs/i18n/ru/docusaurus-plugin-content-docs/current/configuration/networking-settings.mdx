@@ -1,0 +1,131 @@
+---
+title: Сеть и безопасность
+sidebar_position: 7
+version: 1
+---
+
+# Настройки сети и безопасности
+
+:::info Реализация в Liteset
+Liteset работает на Litestar/ASGI, поэтому расширения **Flask-CORS / flask-talisman / flask-wtf** не активны. Их **ключи конфигурации** (`ENABLE_CORS`, `CORS_OPTIONS`, `TALISMAN_ENABLED`, `TALISMAN_CONFIG`, `WTF_CSRF_*`) по-прежнему читаются из `superset_config.py` и применяются Liteset'овским middleware-стеком — построенным на `CORSMiddleware` и `TrustedHostMiddleware` Starlette и Litestar CSRF middleware. Конфигурация идентична; реализация под капотом — async.
+:::
+
+## CORS
+
+Ключи в `superset_config.py`:
+
+- `ENABLE_CORS`: должен быть `True` для включения CORS.
+- `CORS_OPTIONS`: dict CORS-опций. Liteset принимает тот же формат, что и Flask-CORS — `origins`, `supports_credentials`, `allow_headers`, `methods`, `expose_headers`, `max_age` — и пробрасывает в `CORSMiddleware` Starlette. Семантика опций — в [документации Flask-CORS](https://flask-cors.readthedocs.io/en/latest/api.html#extension).
+
+## HTTP-заголовки
+
+Apache Superset использует [flask-talisman](https://pypi.org/project/talisman/) для security-заголовков (CSP, HSTS, X-Frame-Options и т. д.). Liteset реализует то же поведение через Litestar middleware, читающий `TALISMAN_ENABLED` и `TALISMAN_CONFIG` из `superset_config.py` — поверхность конфигурации не меняется.
+
+## HTML-эмбеддинг дашбордов и чартов
+
+Два способа: через [SDK](https://www.npmjs.com/package/@superset-ui/embedded-sdk) или прямой ссылкой. Во втором случае любой человек со ссылкой получит доступ к дашборду.
+
+### Эмбеддинг публичной прямой ссылки
+
+Меняете CSP, чтобы разрешить отображение Liteset-контента на конкретных доменах, делаете дашборд публичным (т. е. **обходите аутентификацию**). Затем добавляете URL дашборда в iframe на другом сайте.
+
+#### Изменение CSP
+
+Скопируйте весь блок `TALISMAN_CONFIG` из `superset/config.py` в свой `superset_config.py` и добавьте `frame-ancestors`:
+
+```python
+TALISMAN_ENABLED = True
+TALISMAN_CONFIG = {
+    "content_security_policy": {
+        # ...
+        "frame-ancestors": ["*.my-domain.com", "*.another-domain.com"],
+        # ...
+    },
+}
+```
+
+Перезапустите Liteset.
+
+#### Сделать дашборд публичным
+
+1. Добавьте feature flag `'DASHBOARD_RBAC': True` ([список флагов](https://github.com/happykust/liteset/blob/main/RESOURCES/FEATURE_FLAGS.md)) в `superset_config.py`.
+2. Добавьте роль `Public` к дашборду — см. [инструкцию](/docs/using-superset/creating-your-first-dashboard/#manage-access-to-dashboards).
+
+#### Встраивание публичного дашборда
+
+```html
+<iframe
+  width="600"
+  height="400"
+  seamless
+  frameBorder="0"
+  scrolling="no"
+  src="https://liteset.my-domain.com/superset/dashboard/10/?standalone=1&height=400"
+>
+</iframe>
+```
+
+#### Встраивание чарта
+
+Embed-код чарта генерируется из его edit-view: правый верхний угол `...` → `Share` → `Embed code`.
+
+### Включение эмбеддинга через SDK
+
+В правом верхнем углу страницы дашборда нажмите `...` рядом с `EDIT DASHBOARD` — должен появиться пункт **Embed dashboard**.
+
+Чтобы включить, добавьте в `.env`:
+
+```text
+SUPERSET_FEATURE_EMBEDDED_SUPERSET=true
+```
+
+## CSRF
+
+Apache Superset использует [flask-wtf](https://flask-wtf.readthedocs.io/en/0.15.x/config/) для CSRF; Liteset переопределяет ту же защиту в async middleware, читающем те же ключи `WTF_CSRF_*`.
+
+Чтобы исключить endpoint'ы из CSRF (например, кастомный auth postback) — добавьте их в `WTF_CSRF_EXEMPT_LIST`:
+
+```python
+WTF_CSRF_EXEMPT_LIST = ["/auth/oauth-callback"]
+```
+
+Заголовок `X-CSRFToken`, который использует SPA-фронтенд, идентичен Apache Superset — изменений во фронтенде не нужно.
+
+## SSH-туннелирование
+
+1. Включите feature flag.
+   - Установите [`SSH_TUNNELING`](https://github.com/happykust/liteset/blob/main/superset/config.py) в `True`.
+   - Для дополнительной безопасности можно переопределить класс `SSHTunnelManager` в `superset_config.py`.
+   - `SSH_TUNNEL_LOCAL_BIND_ADDRESS` управляет адресом хоста, на котором туннель будет доступен внутри вашего VPC.
+
+2. Создайте БД с включённым SSH-туннелем.
+   - При включённом feature flag в диалоге подключения БД появится переключатель SSH-туннеля.
+   - Liteset поддерживает два режима аутентификации (basic + private key); credentials берутся у провайдера.
+
+3. Проверьте, что данные идут.
+   - После включения SSH-туннелирования откройте SQL Lab и запустите запрос — убедитесь, что данные идут через туннель.
+
+## HTTP/2
+
+Рекомендуемый деплой Liteset — Uvicorn за reverse proxy (nginx, Traefik, Caddy), который терминирует TLS и говорит по HTTP/2 upstream. С таким setup'ом HTTP/2 работает «из коробки» — Liteset-конфигурация не нужна. Старый workaround `SUPERSET_WEBSERVER_DOMAINS` / domain-sharding из старых версий Superset не используется.
+
+## Middleware
+
+Liteset читает `ADDITIONAL_MIDDLEWARE` из `superset_config.py` и поддерживает два формата:
+
+1. **Litestar / ASGI middleware** — рекомендуемая форма. Список классов или factory, соответствующих [протоколу middleware Litestar](https://docs.litestar.dev/2/usage/middleware/). Они добавляются в `Litestar(middleware=[...])` в порядке app-factory.
+2. **WSGI middleware (shim для совместимости)** — список middleware в WSGI-стиле. Они оборачиваются в `WsgiToAsgi` и запускаются до того, как запрос дойдёт до Litestar-роутера. Используйте только при портировании middleware из Apache Superset, который не хочется переписывать.
+
+Например, для маппинга `HTTP_X_PROXY_REMOTE_USER` из reverse-proxy в request user (эквивалент Flask-сниппета в Apache Superset, копировавшего заголовок в `REMOTE_USER` Gunicorn):
+
+```python
+# superset_config.py
+from litestar.middleware import DefineMiddleware
+from superset.middleware.remote_user import RemoteUserHeaderMiddleware
+
+ADDITIONAL_MIDDLEWARE = [
+    DefineMiddleware(RemoteUserHeaderMiddleware, header="x-proxy-remote-user"),
+]
+```
+
+Если вы за nginx/HAProxy и нужны только корректные scheme/host/IP — кастомный middleware не нужен, передайте `--proxy-headers --forwarded-allow-ips '*'` Uvicorn.

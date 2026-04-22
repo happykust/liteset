@@ -1,0 +1,375 @@
+---
+title: Конфигурация Liteset
+hide_title: true
+sidebar_position: 1
+version: 1
+---
+
+# Конфигурация Liteset
+
+## superset_config.py
+
+Liteset выставляет сотни настраиваемых параметров через [config.py module](https://github.com/happykust/liteset/blob/main/superset/config.py). Переменные и объекты этого модуля — публичный интерфейс того, что вы можете настраивать. В этом Python-модуле найдёте параметры, разумные дефолты и подробные комментарии.
+
+Чтобы конфигурировать приложение, создайте свой модуль конфигурации, в котором переопределите часть параметров. Не меняйте core-модуль — определите свой (обычно файл `superset_config.py`). Поместите его в `PYTHONPATH` либо задайте переменную окружения `SUPERSET_CONFIG_PATH` с полным путём:
+
+```bash
+export SUPERSET_CONFIG_PATH=/app/superset_config.py
+```
+
+Если используете свой Dockerfile с официальным образом Liteset как базой:
+
+```bash
+COPY --chown=superset superset_config.py /app/
+ENV SUPERSET_CONFIG_PATH /app/superset_config.py
+```
+
+В Docker Compose-сборках конфигурация управляется по-другому — см. [docker compose tips & configuration](/docs/installation/docker-compose#docker-compose-tips--configuration).
+
+Минимальный пример параметров `superset_config.py`:
+
+```
+# Liteset-конкретный конфиг
+ROW_LIMIT = 5000
+
+# Конфиг Flask App Builder
+# Секретный ключ для подписи session-cookie и шифрования чувствительных данных в БД.
+# Обязательно меняйте под свой деплой на сильный ключ.
+# Альтернативно — через ENV `SUPERSET_SECRET_KEY`.
+# В продакшене обязательно — иначе сервер откажется стартовать с ошибкой в логах.
+SECRET_KEY = 'YOUR_OWN_RANDOM_GENERATED_SECRET_KEY'
+
+# SQLAlchemy connection string к БД метаданных
+# Это БД, которая хранит метаданные Liteset (чарты, подключения, таблицы, дашборды).
+# Подключения к источникам данных управляются через web UI.
+SQLALCHEMY_DATABASE_URI = 'sqlite:////path/to/superset.db?check_same_thread=false'
+
+# Flask-WTF: CSRF
+WTF_CSRF_ENABLED = True
+# Endpoint'ы, исключённые из CSRF
+WTF_CSRF_EXEMPT_LIST = []
+# CSRF-токен живёт 1 год
+WTF_CSRF_TIME_LIMIT = 60 * 60 * 24 * 365
+
+# API-ключ Mapbox для геокарт
+MAPBOX_API_KEY = ''
+```
+
+:::tip
+Обычная практика — копировать в `superset_config.py` только те части core [superset/config.py](https://github.com/happykust/liteset/blob/main/superset/config.py), которые хотите изменить, вместе с комментариями.
+:::
+
+Все параметры и значения по умолчанию из [superset/config.py](https://github.com/happykust/liteset/blob/main/superset/config.py) могут быть переопределены в вашем `superset_config.py`. Прочитайте этот файл, чтобы понять, что можно настраивать локально и какие там дефолты.
+
+В Liteset `superset_config.py` загружается через `pydantic-settings` и обратно совместим с оригинальным Flask-стилем модуля Apache Superset 6.0.0. Те же `UPPERCASE = value` константы, что вы использовали с Flask, читаются в типизированную модель `SupersetSettings`.
+
+:::info Liteset vs Apache Superset
+Liteset асинхронный (Litestar/ASGI) и не запускает Flask, но портирует поверхность конфигурации 1:1:
+- `SECRET_KEY`, `SQLALCHEMY_DATABASE_URI`, `CACHE_CONFIG`, `FEATURE_FLAGS`, `WTF_CSRF_*`, `AUTH_*`, `CELERY_CONFIG` — всё сохранено.
+- Конфигурационные dict'ы `flask-wtf` / `flask-caching` / `flask-appbuilder` читаются собственными подсистемами Liteset (CSRF middleware, фабрика кэш-бэкенда, `AsyncSecurityManager`).
+- `flask-migrate` **не используется** в runtime — Alembic вызывается напрямую через sync-драйвер psycopg2 во время миграций.
+
+[`superset/config.py`](https://github.com/happykust/liteset/blob/main/superset/config.py) Apache Superset и [Flask App Builder Documentation](https://flask-appbuilder.readthedocs.org/en/latest/config.html) остаются полезными референсами — каждый ключ конфигурации Superset, упомянутый там, поддерживается Liteset.
+:::
+
+Минимум, что вам нужно — поменять `SECRET_KEY` и `SQLALCHEMY_DATABASE_URI`. Подробнее — ниже.
+
+## Установка SECRET_KEY {#specifying-a-secret_key}
+
+### Начальный SECRET_KEY
+
+Liteset требует пользовательский `SECRET_KEY` при старте. Это требование было [добавлено в 2.1.0 для безопасности](https://preset.io/blog/superset-security-update-default-secret_key-vulnerability/). Добавьте в `superset_config.py`:
+
+```python
+SECRET_KEY = 'YOUR_OWN_RANDOM_GENERATED_SECRET_KEY'
+```
+
+Сгенерировать сильный ключ: `openssl rand -base64 42`.
+
+:::caution Используйте сильный секретный ключ
+Этот ключ используется для подписи session-cookie и шифрования чувствительных данных в БД. Он должен быть сложным, уникальным и случайным.
+:::
+
+### Ротация SECRET_KEY
+
+Чтобы поменять существующий `SECRET_KEY`, добавьте старый как `PREVIOUS_SECRET_KEY` и новый — как `SECRET_KEY` в `superset_config.py`. Узнать текущий ключ:
+
+```python
+superset shell
+from flask import current_app; print(current_app.config["SECRET_KEY"])
+```
+
+Сохраните `superset_config.py` с обоими значениями и запустите `superset re-encrypt-secrets`.
+
+## Настройка production БД метаданных
+
+Liteset нужна БД для хранения определений чартов, дашбордов и многого другого.
+
+По умолчанию настроена [SQLite](https://www.sqlite.org/) — самосодержащая single-file БД, простой и быстрый старт без установки. Однако для продакшена SQLite **категорически не рекомендуется** из-за безопасности, масштабируемости и целостности данных. Используйте только поддерживаемые движки и желательно — на отдельном хосте/контейнере.
+
+Liteset поддерживает движки/версии:
+
+| Движок                                    | Поддерживаемые версии                    |
+| ----------------------------------------- | ---------------------------------------- |
+| [PostgreSQL](https://www.postgresql.org/) | 10.X, 11.X, 12.X, 13.X, 14.X, 15.X, 16.X |
+| [MySQL](https://www.mysql.com/)           | 5.7, 8.X                                 |
+
+Драйверы и connection strings:
+
+| БД                                        | PyPI пакет               | Connection String                                                       |
+| ----------------------------------------- | ------------------------ | ----------------------------------------------------------------------- |
+| [PostgreSQL](https://www.postgresql.org/) | `pip install psycopg2`   | `postgresql://<UserName>:<DBPassword>@<Database Host>/<Database Name>`  |
+| [MySQL](https://www.mysql.com/)           | `pip install mysqlclient`| `mysql://<UserName>:<DBPassword>@<Database Host>/<Database Name>`       |
+
+:::tip
+Правильная настройка хранилища метаданных — за пределами этой документации. Рекомендуем managed-сервисы — [Amazon RDS](https://aws.amazon.com/rds/) или [Google Cloud Databases](https://cloud.google.com/products/databases?hl=en).
+:::
+
+Установите connection string в `SQLALCHEMY_DATABASE_URI` в `superset_config`.
+
+## Запуск на ASGI HTTP-сервере {#running-on-an-asgi-http-server}
+
+Liteset поставляется как ASGI-приложение и проектируется для запуска под [Uvicorn](https://www.uvicorn.org/) с [`uvloop`](https://github.com/MagicStack/uvloop). Pre-forked модель `Gunicorn + gevent`, которую использует Apache Superset 6.0.0, **не** рекомендуется для Liteset — один Uvicorn-процесс заменяет N forked Flask-воркеров и использует один event loop.
+
+Готовый production-сетап на одном хосте:
+
+```bash
+uvicorn superset.app:create_app \
+  --factory \
+  --host 0.0.0.0 \
+  --port 6666 \
+  --workers 1 \
+  --loop uvloop \
+  --http httptools \
+  --proxy-headers \
+  --forwarded-allow-ips '*' \
+  --log-config logging.json
+```
+
+Замечания:
+
+- `--workers 1` — намеренно. Параллелизм в Liteset обеспечивается event loop'ом, не форками. Если нужно использовать больше CPU — запустите несколько Uvicorn-инстансов за reverse proxy (или используйте `gunicorn -k uvicorn.workers.UvicornWorker` с несколькими воркерами — Liteset безопасен под этим воркер-классом).
+- `--proxy-headers` вместе с `--forwarded-allow-ips` нужны, когда Liteset за nginx / L7-балансировщиком; без них ломается определение схемы/хоста для редиректов и CSRF.
+- Dev-сервер (`uvicorn ... --reload` или `superset run`) **не** для продакшена.
+- `flask-compress` больше не используется — компрессия ответа делается на reverse-proxy или через встроенный Litestar `CompressionMiddleware`.
+
+Замечание про BigQuery + gevent в Apache Superset под Gunicorn **не применимо** к Liteset — нет monkey-patching'а Python core library на горячем пути.
+
+## HTTPS
+
+Настройте HTTPS upstream через reverse-proxy (nginx, Traefik, Caddy) и делайте TLS-терминирование до того, как трафик дойдёт до Liteset — это рекомендуемый сетап. Локальный трафик от Celery-воркера, делающего скриншот для Alerts & Reports, может ходить по внутреннему `http://`-URL.
+
+Если действительно нужно терминировать TLS внутри процесса — Uvicorn поддерживает это:
+
+```bash
+uvicorn superset.app:create_app --factory \
+  --ssl-certfile /etc/ssl/liteset.crt \
+  --ssl-keyfile  /etc/ssl/liteset.key
+```
+
+## Конфигурация за балансировщиком
+
+Если вы за балансировщиком, вам может понадобиться передавать `X-Forwarded-Proto`. Для Apache:
+
+```
+RequestHeader set X-Forwarded-Proto "https"
+```
+
+## Application root
+
+*Beta-фича.*
+
+Liteset поддерживает запуск под нерутовым URL-префиксом. Префикс задаётся одним из двух способов:
+
+- Через ENV `SUPERSET_APP_ROOT`.
+- Через [Litestar app factory entrypoint](https://github.com/happykust/liteset/blob/main/superset/app.py), передав `superset_app_root`.
+
+Префикс должен начинаться с `/`.
+
+### Кастомизация app factory
+
+Чтобы задать префикс `/analytics`, передайте `superset_app_root` в `create_app`. С Uvicorn (и Litestar `--factory`):
+
+```sh
+uvicorn "superset.app:create_app" --factory \
+  --host 0.0.0.0 --port 6666 \
+  --factory-arg superset_app_root=/analytics
+```
+
+Или через ENV:
+
+```sh
+export SUPERSET_APP_ROOT=/analytics
+uvicorn superset.app:create_app --factory --host 0.0.0.0 --port 6666
+```
+
+### Docker-сборки
+
+Конфигурация [docker compose](/docs/installation/docker-compose#configuring-further) для разработки включает дополнительную ENV [`SUPERSET_APP_ROOT`](https://github.com/happykust/liteset/blob/main/docker/.env), упрощающую non-default префикс для всех сервисов.
+
+В `docker/.env-local` установите `SUPERSET_APP_ROOT` на нужный префикс и поднимайте сервисы `docker compose up --detach`.
+
+## Кастомная OAuth2-конфигурация
+
+Apache Superset построен на Flask-AppBuilder (FAB), который из коробки поддерживает множество провайдеров (GitHub, Twitter, LinkedIn, Google, Azure и т. д.). Liteset портирует FAB security-поверхность в `AsyncSecurityManager` и читает **те же ключи конфигурации** (`AUTH_TYPE`, `OAUTH_PROVIDERS`, `AUTH_USER_REGISTRATION` и т. д.). Сниппеты `superset_config.py` ниже работают без изменений.
+
+:::info Liteset-детали
+- Liteset использует [Authlib](https://authlib.org/) под капотом для OAuth — как и Apache Superset.
+- Если вы переопределяете `oauth_user_info`, ваш subclass должен наследовать от `superset.security.AsyncSecurityManager`, и переопределение **должно быть `async def`**. См. пример `CustomSsoSecurityManager` ниже.
+:::
+
+Установите [`Authlib`](https://authlib.org/).
+
+Конфигурируйте авторизацию в `superset_config.py`:
+
+```python
+from flask_appbuilder.security.manager import AUTH_OAUTH
+
+AUTH_TYPE = AUTH_OAUTH
+
+OAUTH_PROVIDERS = [
+    {   'name':'egaSSO',
+        'token_key':'access_token',
+        'icon':'fa-address-card',
+        'remote_app': {
+            'client_id':'myClientId',
+            'client_secret':'MySecret',
+            'client_kwargs':{'scope': 'read'},
+            'access_token_method':'POST',
+            'access_token_params':{'client_id':'myClientId'},
+            'jwks_uri':'https://myAuthorizationServe/adfs/discovery/keys',
+            'access_token_headers':{'Authorization': 'Basic Base64EncodedClientIdAndSecret'},
+            'api_base_url':'https://myAuthorizationServer/oauth2AuthorizationServer/',
+            'access_token_url':'https://myAuthorizationServer/oauth2AuthorizationServer/token',
+            'authorize_url':'https://myAuthorizationServer/oauth2AuthorizationServer/authorize'
+        }
+    }
+]
+
+AUTH_USER_REGISTRATION = True
+AUTH_USER_REGISTRATION_ROLE = "Public"
+```
+
+Чтобы новые пользователи получали роль `Admin`:
+
+```python
+AUTH_USER_REGISTRATION_ROLE = "Admin"
+```
+
+Создайте `CustomSsoSecurityManager`, наследующий `AsyncSecurityManager` (в Liteset переопределение должно быть **`async def`**):
+
+```python
+import logging
+from superset.security import AsyncSecurityManager
+
+class CustomSsoSecurityManager(AsyncSecurityManager):
+
+    async def oauth_user_info(self, provider, response=None):
+        logging.debug("Oauth2 provider: %s.", provider)
+        if provider == 'egaSSO':
+            me = await self.appbuilder.sm.oauth_remotes[provider].get('userDetails').data
+            return {
+                'name': me['name'],
+                'email': me['email'],
+                'id': me['user_name'],
+                'username': me['user_name'],
+                'first_name': '',
+                'last_name': '',
+            }
+```
+
+Положите этот файл рядом с `superset_config.py` под именем `custom_sso_security_manager.py`. В `superset_config.py`:
+
+```
+from custom_sso_security_manager import CustomSsoSecurityManager
+CUSTOM_SECURITY_MANAGER = CustomSsoSecurityManager
+```
+
+**Заметки**
+
+- Redirect URL — `https://<liteset-webserver>/oauth-authorized/<provider-name>` — например, `https://liteset.example.com/oauth-authorized/egaSSO` для конфига выше.
+- Если OAuth2-сервер поддерживает OpenID Connect 1.0, можно настроить только URL discovery-документа без `api_base_url`, `access_token_url`, `authorize_url` и т. д.:
+
+  ```python
+  OAUTH_PROVIDERS = [
+    {   'name':'egaSSO',
+        'token_key':'access_token',
+        'icon':'fa-address-card',
+        'remote_app': {
+            'client_id':'myClientId',
+            'client_secret':'MySecret',
+            'server_metadata_url': 'https://myAuthorizationServer/.well-known/openid-configuration'
+        }
+    }
+  ]
+  ```
+
+## LDAP-аутентификация
+
+FAB поддерживает аутентификацию против LDAP-сервера. Установите [python-ldap](https://www.python-ldap.org/en/latest/installing.html). См. [FAB LDAP-документацию](https://flask-appbuilder.readthedocs.io/en/latest/security.html#authentication-ldap).
+
+## Маппинг LDAP/OAUTH-групп на роли
+
+`AUTH_ROLES_MAPPING` в Flask-AppBuilder — словарь, отображающий имена групп LDAP/OAUTH в роли FAB. Используется при аутентификации через LDAP/OAuth.
+
+### OAUTH-группы → роли
+
+```python
+AUTH_ROLES_MAPPING = {
+    "superset_users": ["Gamma", "Alpha"],
+    "superset_admins": ["Admin"],
+}
+```
+
+### LDAP-группы → роли
+
+```python
+AUTH_ROLES_MAPPING = {
+    "cn=superset_users,ou=groups,dc=example,dc=com": ["Gamma", "Alpha"],
+    "cn=superset_admins,ou=groups,dc=example,dc=com": ["Admin"],
+}
+```
+
+Требует `AUTH_LDAP_SEARCH`. Подробнее — в [FAB Security](https://flask-appbuilder.readthedocs.io/en/latest/security.html).
+
+### Синхронизация ролей при логине
+
+`AUTH_ROLES_SYNC_AT_LOGIN` управляет частотой синка. `True` — каждый логин, `False` — только при первой регистрации.
+
+## Хук конфигурации Flask-приложения
+
+`FLASK_APP_MUTATOR` — функция, получающая объект приложения и способная его модифицировать. Например, для срока жизни session-cookie 24 часа:
+
+```python
+from flask import session
+from flask import Flask
+
+
+def make_session_permanent():
+    '''
+    Включить maxAge для cookie 'session'
+    '''
+    session.permanent = True
+
+PERMANENT_SESSION_LIFETIME = timedelta(hours=24)
+def FLASK_APP_MUTATOR(app: Flask) -> None:
+    app.before_request_funcs.setdefault(None, []).append(make_session_permanent)
+```
+
+В Liteset `FLASK_APP_MUTATOR` сохраняется как hook, который вызывается после создания Litestar-приложения; его аргумент — Litestar-приложение, не Flask. Большинство сценариев (cookie expiration, перерегистрация error handlers) проще делать через Litestar `lifespan` callbacks или через `additional_middleware`.
+
+## Feature Flags {#feature-flags}
+
+Чтобы поддерживать разнообразных пользователей, у Liteset есть фичи, которые не включены по умолчанию. Например, у части пользователей более строгие требования к безопасности. Liteset позволяет включать/выключать такие фичи через конфиг.
+
+Включение/выключение фич в `superset_config.py`:
+
+```python
+FEATURE_FLAGS = {
+    "ALERT_REPORTS": True,
+    "DASHBOARD_RBAC": True,
+    "EMBEDDABLE_CHARTS": True,
+}
+```
+
+Полный список feature flags — в [superset/config.py](https://github.com/happykust/liteset/blob/main/superset/config.py) (раздел `DEFAULT_FEATURE_FLAGS`) и [RESOURCES/FEATURE_FLAGS.md](https://github.com/happykust/liteset/blob/main/RESOURCES/FEATURE_FLAGS.md).

@@ -1,0 +1,46 @@
+{
+  "logo.alt": {
+    "message": "Логотип Liteset",
+    "description": "The alt text of navbar logo"
+  },
+  "item.label.Documentation": {
+    "message": "Документация",
+    "description": "Navbar item with label Documentation"
+  },
+  "item.label.Community": {
+    "message": "Сообщество",
+    "description": "Navbar item with label Community"
+  },
+  "item.label.Get Started": {
+    "message": "Начать",
+    "description": "Navbar item with label Get Started"
+  },
+  "item.label.Getting Started": {
+    "message": "С чего начать",
+    "description": "Navbar item with label Getting Started"
+  },
+  "item.label.FAQ": {
+    "message": "FAQ",
+    "description": "Navbar item with label FAQ"
+  },
+  "item.label.Quickstart": {
+    "message": "Быстрый старт",
+    "description": "Navbar item with label Quickstart"
+  },
+  "item.label.Benchmarks": {
+    "message": "Тестирование",
+    "description": "Navbar item with label Benchmarks"
+  },
+  "item.label.Resources": {
+    "message": "Ресурсы",
+    "description": "Navbar item with label Resources"
+  },
+  "item.label.GitHub": {
+    "message": "GitHub",
+    "description": "Navbar item with label GitHub"
+  },
+  "item.label.Upstream (Apache Superset)": {
+    "message": "Upstream — Apache Superset",
+    "description": "Navbar item with label Upstream"
+  }
+}

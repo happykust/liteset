@@ -1,0 +1,205 @@
+---
+title:  Kubernetes
+hide_title: true
+sidebar_position: 3
+version: 1
+---
+
+import useBaseUrl from "@docusaurus/useBaseUrl";
+
+# Установка на Kubernetes
+
+<img src={useBaseUrl("/img/k8s.png" )} width="150" />
+<br /><br />
+
+:::warning У Liteset пока нет первичного Helm-чарта
+Эта страница описывает workflow Helm-чарта **Apache Superset**, который Liteset не редистрибутирует. Развернуть Liteset в Kubernetes сегодня можно двумя путями:
+
+1. **Адаптировать Helm-чарт Apache Superset вручную.** Следуйте шагам ниже, в `values.yaml` переопределите:
+   - `image.repository` → ваш образ Liteset (приватная сборка `superset.app:create_app` под Uvicorn).
+   - `command` контейнера → `uvicorn superset.app:create_app --factory --host 0.0.0.0 --port 8088 --proxy-headers --forwarded-allow-ips '*'` (вместо стандартного `gunicorn`).
+   - `supersetWebsockets.enabled: false` — Liteset обслуживает WebSocket нативно, sidecar `superset-websocket` не нужен.
+2. **Собрать свои минимальные манифесты.** Развёртывание Liteset — это один Uvicorn-под (web), один под Celery worker, Redis и Postgres. Helm-чарт Apache Superset — полезный референс для liveness/readiness probe, init-контейнеров, выполняющих `superset db upgrade`, и Job для `superset init`.
+
+Первичный Helm-чарт Liteset — в roadmap; см. [issues](https://github.com/happykust/liteset/issues), если хотите помочь.
+:::
+
+Запуск Apache Superset на Kubernetes поддерживается официальным [Helm](https://helm.sh/)-чартом из [Superset helm repository](https://apache.github.io/superset/index.yaml). Большая часть структуры чарта (probes, init-контейнеры, RBAC, Celery beat, опциональные `node-exporter` сайдкары) переносится на Liteset; меняются только **`command` контейнера** и **WebSocket-сайдкар**.
+
+## Требования
+
+- Kubernetes-кластер.
+- Установленный Helm.
+
+:::note
+Для упрощённых одно-хостовых окружений рекомендуем [minikube](https://minikube.sigs.k8s.io/docs/start/) — его легко поставить на разных платформах, и он отлично работает с этим Helm-чартом.
+:::
+
+## Запуск
+
+1. Добавьте репозиторий Helm
+
+```sh
+helm repo add superset https://apache.github.io/superset
+"superset" has been added to your repositories
+```
+
+2. Посмотрите доступные чарты
+
+```sh
+helm search repo superset
+NAME                    CHART VERSION   APP VERSION     DESCRIPTION
+superset/superset       0.1.1           1.0             Apache Superset is a modern, enterprise-ready b...
+```
+
+3. Подготовьте оверрайды настроек
+
+Как и любой Helm-чарт, вам нужен `values.yaml`, в котором вы переопределяете значения, заданные в дефолтном [values.yaml](https://github.com/happykust/liteset/tree/main/helm/superset/values.yaml), либо в дочерних чартах:
+
+- [bitnami/redis](https://artifacthub.io/packages/helm/bitnami/redis)
+- [bitnami/postgresql](https://artifacthub.io/packages/helm/bitnami/postgresql)
+
+Подробнее о важных оверрайдах — ниже.
+
+4. Установите и запустите
+
+```sh
+helm upgrade --install --values my-values.yaml superset superset/superset
+```
+
+5. Доступ извне
+
+Чарт публикует Service'ы для UI Superset внутри кластера. Чтобы открыть их извне, нужно одно из:
+
+- Настроить Service как `LoadBalancer` или `NodePort`.
+- Поднять Ingress (определение в чарте есть, но потребуется настройка hostname, TLS, аннотаций).
+- Использовать `kubectl port-forward superset-xxxx-yyyy :8088` для проброса порта в localhost.
+
+URL зависит от выбранного способа. Логин по умолчанию:
+
+- user: `admin`
+- password: `admin`
+
+## Важные настройки
+
+### Безопасность
+
+Стандартные настройки безопасности и пароли включены, но в `prod` их **обязательно** надо обновить:
+
+```yaml
+postgresql:
+  postgresqlPassword: superset
+```
+
+Установите уникальный сложный буквенно-цифровой `SECRET_KEY`. Сгенерировать можно через `openssl rand -base64 42`:
+
+```yaml
+configOverrides:
+  secret: |
+    SECRET_KEY = 'YOUR_OWN_RANDOM_GENERATED_SECRET_KEY'
+```
+
+### Зависимости {#dependencies}
+
+Дополнительные пакеты и bootstrap-конфигурацию ставьте в bootstrap-скрипте. Для продакшен-кластеров рекомендуется собрать собственный образ с этим шагом, сделанным в CI.
+
+:::note
+Liteset требует установленного Python DB-API драйвера и SQLAlchemy-диалекта для каждого источника данных, к которому вы планируете подключаться.
+
+См. [Установка драйверов БД](/docs/configuration/databases). Рекомендуется использовать версии, перечисленные в [pyproject.toml](https://github.com/happykust/liteset/blob/main/pyproject.toml), а не хардкодить их в bootstrap-скрипте.
+:::
+
+### superset_config.py
+
+Дефолтный `superset_config.py` минимален — почти наверняка вам нужно его расширить. Это делается через `configOverrides`, например:
+
+```yaml
+configOverrides:
+  my_override: |
+    # Корректный redirect_uri даже за SSL-offloading
+    ENABLE_PROXY_FIX = True
+    FEATURE_FLAGS = {
+        "DYNAMIC_PLUGINS": True
+    }
+```
+
+Они вычисляются как Helm-шаблоны и могут ссылаться на другие переменные `values.yaml`, например `{{ .Values.ingress.hosts[0] }}` развернётся в ваш ingress-домен.
+
+`superset_config.py` ставится как Secret, поэтому в нём безопасно передавать чувствительные параметры — но иногда читабельнее использовать env-переменные с секретами.
+
+### Переменные окружения
+
+Передаются в `extraEnv` или `extraSecretEnv` (для секретов). В `superset_config.py` к ним обращаются через `os.environ.get("VAR")`.
+
+```yaml
+extraEnv:
+  SMTP_HOST: smtp.gmail.com
+  SMTP_USER: user@gmail.com
+  SMTP_PORT: "587"
+  SMTP_MAIL_FROM: user@gmail.com
+
+extraSecretEnv:
+  SMTP_PASSWORD: xxxx
+```
+
+### Системные пакеты
+
+Если нужны системные пакеты, поставьте их перед стартом приложения, переопределив `command`:
+
+```yaml
+supersetWorker:
+  command:
+    - /bin/sh
+    - -c
+    - |
+      apt update
+      apt install -y somepackage
+      apt autoremove -yqq --purge
+      apt clean
+      . {{ .Values.configMountPath }}/superset_bootstrap.sh; celery --app=superset.tasks.celery_app:app worker
+```
+
+### Источники данных
+
+Декларации источников данных описываются в `extraConfigs`:
+
+```yaml
+extraConfigs:
+  import_datasources.yaml: |
+    databases:
+    - allow_file_upload: true
+      allow_ctas: true
+      allow_cvas: true
+      database_name: example-db
+      sqlalchemy_uri: example://example-db.local
+      tables: []
+```
+
+## Примеры конфигурации
+
+### Настройка OAuth {#setting-up-oauth}
+
+:::note
+Для OAuth требуется библиотека [authlib](https://authlib.org/). Поставьте её через `pip` в `bootstrapScript`. См. секцию **Зависимости**.
+:::
+
+Полный пример Google OAuth — в [англоязычной версии страницы](/docs/installation/kubernetes#setting-up-oauth). Ключевые элементы (`AUTH_TYPE`, `OAUTH_PROVIDERS`, `AUTH_USER_REGISTRATION`, `AUTH_ROLE_ADMIN`) задаются в `configOverrides` и читаются `AsyncSecurityManager` Liteset 1:1 с Apache Superset.
+
+### Включение Alerts and Reports {#enable-alerts-and-reports}
+
+Согласно [странице Alerts and Reports](/docs/configuration/alerts-reports), вам понадобится:
+
+- Установить поддерживаемый webdriver (Chrome / Firefox / Playwright) в Celery worker — через кастомный образ или переопределение `command` в стартапе.
+- Запустить Celery beat (`supersetCeleryBeat.enabled: true`).
+- Настроить SMTP / Slack / Celery jobs в `configOverrides` через `FEATURE_FLAGS = {"ALERT_REPORTS": True}` и стандартные ключи `SMTP_*`, `WEBDRIVER_*`, `CELERY_CONFIG`.
+
+Полные YAML-примеры — в [англоязычной версии страницы](/docs/installation/kubernetes#enable-alerts-and-reports).
+
+### Загрузка примеров данных и дашбордов
+
+Если вы пробуете Liteset и хотите получить готовые данные/дашборды, добавьте в `my_values.yaml`:
+
+```yaml
+init:
+  loadExamples: true
+```

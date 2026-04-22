@@ -1,0 +1,316 @@
+{
+  "theme.ErrorPageContent.title": {
+    "message": "Эта страница упала.",
+    "description": "The title of the fallback page when the page crashed"
+  },
+  "theme.BackToTopButton.buttonAriaLabel": {
+    "message": "Прокрутить наверх",
+    "description": "The ARIA label for the back to top button"
+  },
+  "theme.NotFound.title": {
+    "message": "Страница не найдена",
+    "description": "The title of the 404 page"
+  },
+  "theme.NotFound.p1": {
+    "message": "Мы не смогли найти то, что вы искали.",
+    "description": "The first paragraph of the 404 page"
+  },
+  "theme.NotFound.p2": {
+    "message": "Свяжитесь с владельцем сайта, давшего вам ссылку, и сообщите ему, что ссылка не работает.",
+    "description": "The 2nd paragraph of the 404 page"
+  },
+  "theme.docs.versionBadge.label": {
+    "message": "Версия: {versionLabel}"
+  },
+  "theme.tags.tagsListLabel": {
+    "message": "Теги:",
+    "description": "The label alongside a tag list"
+  },
+  "theme.tags.tagsPageTitle": {
+    "message": "Теги",
+    "description": "The title of the tag list page"
+  },
+  "theme.docs.breadcrumbs.home": {
+    "message": "На главную",
+    "description": "The ARIA label for the home page in the breadcrumbs"
+  },
+  "theme.docs.sidebar.collapseButtonTitle": {
+    "message": "Свернуть боковую панель",
+    "description": "The title attribute for collapse button of doc sidebar"
+  },
+  "theme.docs.sidebar.collapseButtonAriaLabel": {
+    "message": "Свернуть боковую панель",
+    "description": "The title attribute for collapse button of doc sidebar"
+  },
+  "theme.docs.sidebar.expandButtonTitle": {
+    "message": "Развернуть боковую панель",
+    "description": "The ARIA label and title attribute for expand button of doc sidebar"
+  },
+  "theme.docs.sidebar.expandButtonAriaLabel": {
+    "message": "Развернуть боковую панель",
+    "description": "The ARIA label and title attribute for expand button of doc sidebar"
+  },
+  "theme.docs.sidebar.navAriaLabel": {
+    "message": "Навигация по разделу документации",
+    "description": "The ARIA label for the sidebar navigation"
+  },
+  "theme.docs.tagDocListPageTitle.nDocsTagged": {
+    "message": "Один документ с тегом|{count} документов с тегом",
+    "description": "Pluralized label for \"{count} docs tagged\". Use as much plural forms (separated by \"|\") as your language support (see https://www.unicode.org/cldr/cldr-aux/charts/34/supplemental/language_plural_rules.html)"
+  },
+  "theme.docs.tagDocListPageTitle": {
+    "message": "{nDocsTagged} с тегом «{tagName}»",
+    "description": "The title of the page for a docs tag"
+  },
+  "theme.docs.versions.unreleasedVersionLabel": {
+    "message": "Это незавершённая документация для следующей версии {versionLabel} {siteTitle}.",
+    "description": "The label used to tell the user that he's browsing an unreleased doc version"
+  },
+  "theme.docs.versions.unmaintainedVersionLabel": {
+    "message": "Это документация для устаревшей версии {versionLabel} {siteTitle}.",
+    "description": "The label used to tell the user that he's browsing an unmaintained doc version"
+  },
+  "theme.docs.versions.latestVersionSuggestionLabel": {
+    "message": "Актуальная документация: {latestVersionLink} ({versionLabel}).",
+    "description": "The label used to tell the user to check the latest version"
+  },
+  "theme.docs.versions.latestVersionLinkLabel": {
+    "message": "последняя версия",
+    "description": "The label used for the latest version suggestion link label"
+  },
+  "theme.colorToggle.ariaLabel": {
+    "message": "Переключить тёмный/светлый режим (текущая: {mode})",
+    "description": "The ARIA label for the navbar color mode toggle"
+  },
+  "theme.colorToggle.ariaLabel.mode.dark": {
+    "message": "тёмная",
+    "description": "The name for the dark color mode"
+  },
+  "theme.colorToggle.ariaLabel.mode.light": {
+    "message": "светлая",
+    "description": "The name for the light color mode"
+  },
+  "theme.docs.paginator.navAriaLabel": {
+    "message": "Навигация по страницам документа",
+    "description": "The ARIA label for the docs pagination"
+  },
+  "theme.docs.paginator.previous": {
+    "message": "Назад",
+    "description": "The label used to navigate to the previous doc"
+  },
+  "theme.docs.paginator.next": {
+    "message": "Далее",
+    "description": "The label used to navigate to the next doc"
+  },
+  "theme.common.editThisPage": {
+    "message": "Редактировать эту страницу",
+    "description": "The link label to edit the current page"
+  },
+  "theme.common.headingLinkTitle": {
+    "message": "Прямая ссылка на «{heading}»",
+    "description": "Title for link to heading"
+  },
+  "theme.lastUpdated.atDate": {
+    "message": " {date}",
+    "description": "The words used to describe on which date a page has been last updated"
+  },
+  "theme.lastUpdated.byUser": {
+    "message": " автор {user}",
+    "description": "The words used to describe by who the page has been last updated"
+  },
+  "theme.lastUpdated.lastUpdatedAtBy": {
+    "message": "Последнее обновление{atDate}{byUser}",
+    "description": "The sentence used to display when a page has been last updated, and by who"
+  },
+  "theme.navbar.mobileSidebarSecondaryMenu.backButtonLabel": {
+    "message": "← Назад в главное меню",
+    "description": "The label of the back button to return to main menu, inside the mobile navbar sidebar secondary menu (notably used to display the docs sidebar)"
+  },
+  "theme.tags.tagsPageLink": {
+    "message": "Все теги",
+    "description": "The label of the link targeting the tag list page"
+  },
+  "theme.AnnouncementBar.closeButtonAriaLabel": {
+    "message": "Закрыть",
+    "description": "The ARIA label for close button of announcement bar"
+  },
+  "theme.docs.DocCard.categoryDescription": {
+    "message": "{count} элементов",
+    "description": "The default description for a category card in the generated index about how many items this category includes"
+  },
+  "theme.docs.DocCard.categoryDescription.plurals": {
+    "message": "Один элемент|{count} элементов",
+    "description": "The default description for a category card in the generated index about how many items this category includes"
+  },
+  "theme.unlistedContent.title": {
+    "message": "Скрытая страница",
+    "description": "The unlisted content banner title"
+  },
+  "theme.unlistedContent.message": {
+    "message": "Эта страница скрыта и не доступна через поиск или прямую ссылку.",
+    "description": "The unlisted content banner message"
+  },
+  "Home.meta.title": {
+    "message": "Liteset",
+    "description": "Welcome page title"
+  },
+  "home.meta.title": {
+    "message": "Главная"
+  },
+  "home.meta.description": {
+    "message": "Liteset — асинхронный порт Apache Superset на Litestar/ASGI с полной обратной совместимостью"
+  },
+  "home.hero.tagline": {
+    "message": "Liteset — асинхронный порт Apache Superset на Litestar/ASGI: те же дашборды, датасеты, пользователи и роли — полностью переписанный веб-слой."
+  },
+  "home.hero.versionPill": {
+    "message": "Liteset {version} · на основе Apache Superset 6.0.0"
+  },
+  "home.hero.cta": {
+    "message": "Начать"
+  },
+  "home.overview.title": {
+    "message": "Обзор"
+  },
+  "home.overview.subtitle": {
+    "message": "Liteset сохраняет все возможности Apache Superset и заменяет синхронный Flask-бэкенд одним ASGI-процессом с event loop. Меньше памяти, выше параллелизм, тот же UX."
+  },
+  "home.features.powerful.title": {
+    "message": "Мощно — и асинхронно"
+  },
+  "home.features.powerful.description": {
+    "message": "Liteset сохраняет no-code конструктор графиков и SQL Lab из Apache Superset, но весь веб-слой работает на одном ASGI event loop вместо пула pre-forked Flask-воркеров."
+  },
+  "home.features.databases.title": {
+    "message": "Современные БД через нативные async-драйверы"
+  },
+  "home.features.databases.description": {
+    "message": "Postgres, MySQL, ClickHouse и Trino используют нативные async-драйверы (asyncpg, asyncmy, aiochclient, aiotrino). Остальные БД продолжают работать через sync-fallback обёртку."
+  },
+  "home.features.architecture.title": {
+    "message": "Чистая асинхронная архитектура"
+  },
+  "home.features.architecture.description": {
+    "message": "Четыре слоя — Controllers, Commands, DAO, AsyncSession — построенные на Litestar, SQLAlchemy 2.0 и msgspec. Без Flask, без синхронных I/O на горячем пути."
+  },
+  "home.features.compat.title": {
+    "message": "Drop-in совместимость"
+  },
+  "home.features.compat.description": {
+    "message": "Схема БД метаданных, REST API, контракт WebSocket и SPA-фронтенд унаследованы 1:1 у Apache Superset 6.0.0. Останавливаешь Superset, запускаешь Liteset на той же базе."
+  },
+  "home.selfServe.title": {
+    "message": "Self-service аналитика — для всех"
+  },
+  "home.selfServe.tab.dashboards": {
+    "message": "Дашборды"
+  },
+  "home.selfServe.tab.chartBuilder": {
+    "message": "Конструктор графиков"
+  },
+  "home.selfServe.tab.sqlLab": {
+    "message": "SQL Lab"
+  },
+  "home.selfServe.tab.datasets": {
+    "message": "Датасеты"
+  },
+  "home.selfServe.text.dashboards": {
+    "message": "Изучайте данные и находите инсайты в интерактивных дашбордах."
+  },
+  "home.selfServe.text.chartBuilder": {
+    "message": "Создавайте графики и таблицы перетаскиванием полей."
+  },
+  "home.selfServe.text.sqlLab": {
+    "message": "Пишите свои SQL-запросы, изучайте метаданные БД, используйте Jinja-шаблоны и многое другое."
+  },
+  "home.selfServe.text.datasets": {
+    "message": "Создавайте физические и виртуальные датасеты, чтобы масштабировать создание графиков с едиными определениями метрик."
+  },
+  "home.keyFeatures.title": {
+    "message": "Ключевые возможности"
+  },
+  "home.keyFeatures.f1": {
+    "message": "40+ предустановленных визуализаций, унаследованных у Apache Superset"
+  },
+  "home.keyFeatures.f2": {
+    "message": "Полностью асинхронный стек: Litestar + Uvicorn + uvloop + SQLAlchemy 2.0"
+  },
+  "home.keyFeatures.f3": {
+    "message": "Нативные async-драйверы для Postgres, MySQL, ClickHouse, Trino"
+  },
+  "home.keyFeatures.f4": {
+    "message": "Сериализация на msgspec (вместо Marshmallow и Pydantic v1)"
+  },
+  "home.keyFeatures.f5": {
+    "message": "Drop-in совместимость: та же схема БД, тот же REST API, тот же SPA"
+  },
+  "home.keyFeatures.f6": {
+    "message": "Нативный Litestar WebSocket — без отдельного Node.js-сервиса superset-websocket"
+  },
+  "home.keyFeatures.f7": {
+    "message": "Совместимость с Flask session cookie / CSRF token — сессии переживают миграцию"
+  },
+  "home.keyFeatures.f8": {
+    "message": "Авто-генерируемая OpenAPI-документация на /swagger/v1"
+  },
+  "home.keyFeatures.f9": {
+    "message": "Структурное JSON-логирование на structlog «из коробки»"
+  },
+  "home.benchmarks.title": {
+    "message": "Производительность и тестирование"
+  },
+  "home.benchmarks.subtitle": {
+    "message": "Liteset проходит сравнительное тестирование с Apache Superset 6.0.0 на идентичных нагрузках. Ниже — превью метрик; полная методика и результаты — в отчёте о тестировании."
+  },
+  "home.benchmarks.cta": {
+    "message": "Читать полный отчёт о тестировании →"
+  },
+  "home.databases.title": {
+    "message": "Поддерживаемые базы данных"
+  },
+  "home.databases.more": {
+    "message": "...и многие другие"
+  },
+  "home.databases.compatibleLink": {
+    "message": "совместимые БД"
+  },
+  "community.meta.title": {
+    "message": "Сообщество"
+  },
+  "community.meta.description": {
+    "message": "Сообщество Liteset — асинхронного порта Apache Superset 6.0.0. GitHub, issues, обсуждения и upstream-проект."
+  },
+  "community.header.title": {
+    "message": "Сообщество"
+  },
+  "community.header.subtitle": {
+    "message": "Liteset — академический порт. Сообщество небольшое, но upstream-сообщество Apache Superset большое и дружелюбное."
+  },
+  "community.link.github.title": {
+    "message": "Репозиторий на GitHub"
+  },
+  "community.link.github.description": {
+    "message": "Исходный код, релизы, инструкции для контрибьюторов и дипломный отчёт о тестировании."
+  },
+  "community.link.issues.title": {
+    "message": "Issues и запросы фич"
+  },
+  "community.link.issues.description": {
+    "message": "Сообщайте о регрессиях по сравнению с Apache Superset 6.0.0, запрашивайте новые возможности или берите задачу с тегом «good first issue»."
+  },
+  "community.link.discussions.title": {
+    "message": "Discussions"
+  },
+  "community.link.discussions.description": {
+    "message": "Задавайте вопросы, делитесь опытом миграции и результатами бенчмарков."
+  },
+  "community.link.upstream.title": {
+    "message": "Upstream — Apache Superset"
+  },
+  "community.link.upstream.description": {
+    "message": "Liteset основан на Apache Superset 6.0.0 — большинство продуктовых вопросов и баг-репортов следует адресовать в upstream."
+  },
+  "community.upstreamNote": {
+    "message": "Ищете большое сообщество Superset — Slack, dev mailing list, ежемесячные митапы, тег на Stack Overflow? Они живут в upstream-проекте Apache Superset. Liteset переиспользует тот же продукт; продуктовые вопросы лучше задавать там."
+  }
+}

@@ -1,0 +1,55 @@
+---
+title: Event Logging
+sidebar_position: 9
+version: 1
+---
+
+# Логирование
+
+## Event Logging
+
+Liteset (как и Apache Superset) по умолчанию пишет специальные action-события во внутреннюю БД (DBEventLogger). Логи доступны в UI: **Security → Action Log**. Логи можно кастомизировать, реализовав свой event-log класс.
+
+**Когда включён кастомный класс — DBEventLogger отключается, и логи перестают наполняться в UI.** Чтобы и то и другое работало одновременно — кастомный класс должен наследовать встроенный DBEventLogger.
+
+Пример простого JSON-в-stdout класса:
+
+```python
+    def log(self, user_id, action, *args, **kwargs):
+        records = kwargs.get('records', list())
+        dashboard_id = kwargs.get('dashboard_id')
+        slice_id = kwargs.get('slice_id')
+        duration_ms = kwargs.get('duration_ms')
+        referrer = kwargs.get('referrer')
+
+        for record in records:
+            log = dict(
+                action=action,
+                json=record,
+                dashboard_id=dashboard_id,
+                slice_id=slice_id,
+                duration_ms=duration_ms,
+                referrer=referrer,
+                user_id=user_id
+            )
+            print(json.dumps(log))
+```
+
+В конфиге передайте инстанс логгера:
+
+```
+EVENT_LOGGER = JSONStdOutEventLogger()
+```
+
+## StatsD Logging
+
+Liteset можно настроить на отправку событий в [StatsD](https://github.com/statsd/statsd). Большинство hit'ов endpoint'ов логируется, как и ключевые события — start/end запроса в SQL Lab.
+
+Для настройки StatsD добавьте конфиг в `superset_config.py`. Убедитесь, что пакет `statsd` установлен в Python-окружении Liteset.
+
+```python
+from superset.stats_logger import StatsdStatsLogger
+STATS_LOGGER = StatsdStatsLogger(host='localhost', port=8125, prefix='superset')
+```
+
+Можно реализовать свой logger, унаследовав `superset.stats_logger.BaseStatsLogger`.

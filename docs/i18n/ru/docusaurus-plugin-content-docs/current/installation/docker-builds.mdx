@@ -1,0 +1,131 @@
+---
+title: Docker-сборки
+hide_title: true
+sidebar_position: 7
+version: 1
+---
+
+# Docker-сборки, образы и теги
+
+:::info Образы Liteset
+Эта страница описывает матрицу сборки и соглашение о тегах **Apache Superset**, поскольку Liteset переиспользует ту же структуру `Dockerfile` (цели lean / dev / py311 / ci, ARG'и `BUILD_TRANSLATIONS`/`DEV_MODE`/`INCLUDE_CHROMIUM`, multi-arch сборки). Образы Liteset собираются тем же workflow и публикуются в отдельный реестр — `ghcr.io/happykust/liteset` (или ваша приватная сборка). Для большинства пользователей практическая разница:
+
+- **Образ Apache Superset** (`apache/superset:6.0.0`): запускает Flask под Gunicorn.
+- **Образ Liteset** (`ghcr.io/happykust/liteset:6.0.0`): запускает Litestar под Uvicorn (`uvicorn superset.app:create_app --factory ...` как CMD контейнера).
+
+Если вы собираете собственный production-образ (рекомендуется — см. ниже), скопируйте пример Dockerfile и замените строку `FROM` на базовый образ Liteset.
+:::
+
+Сообщество Apache Superset активно использует Docker для разработки, релизов и продакшена. На этой странице описаны Docker-сборки и соглашение о тегах, которые наследует Liteset.
+
+Образы Apache Superset собираются и публикуются в [Superset Docker Hub repository](https://hub.docker.com/r/apache/superset) через GitHub Actions. Разные наборы образов собираются и/или публикуются в разное время:
+
+- **Опубликованные релизы** (`release`): теги вида `6.0.0` и `latest`.
+- **Итерации pull request'ов** (`pull_request`): для каждого PR мы собираем docker, чтобы валидировать билд, но не публикуем эти образы из соображений безопасности — просто `docker build --load`.
+- **Мерджи в основную ветку** (`push`): новые SHA, теги с префиксом `master` для последней версии `master`.
+
+## Build presets
+
+Набор пресетов, каждый из которых — комбинация параметров сборки (target-слой, базовый образ).
+
+Пресеты, доступные через утилиту `supersetbot docker`:
+
+- `lean`: дефолтный Docker-образ, включает фронтенд и бэкенд. Теги без `build_preset` — это lean-сборки (например, `latest`, `6.0.0`, `4.1.2`...). `lean`-сборки **не содержат драйверов БД** — нужно ставить свои. Это касается и аналитических БД, и БД метаданных. Скорее всего, нужно слой `mysqlclient` или `psycopg2-binary` в зависимости от выбранной БД метаданных, плюс драйверы для аналитических источников.
+- `dev`: для разработки, с headless-браузером, dev-утилитами и root-доступом. Включает популярные драйверы (`mysqlclient`, `psycopg2-binary` и др.) для разработки и CI.
+- `py311` (например `Py311`): то же что lean, но с другой версией Python (в примере — 3.11).
+- `ci`: для определённых CI-нагрузок.
+- `websocket`: для кластеров Apache Superset с продвинутыми фичами. **Не используется в Liteset** — WebSocket обслуживается Litestar в основном контейнере.
+- `dockerize`: используется Helm в init-контейнерах для ожидания доступности зависимостей БД.
+
+## Примеры ключевых тегов
+
+- `latest`: последняя официальная релизная сборка.
+- `latest-dev`: `-dev`-образ последней официальной релизной сборки, с headless-браузером и root-доступом.
+- `master`: последняя сборка из ветки `master`, неявно lean-пресет.
+- `master-dev`: то же что `master`, но с headless-браузером и root-доступом.
+- `pr-5252`: последний коммит в PR 5252.
+- `30948dc401b40982cb7c0dbf6ebbe443b2748c1b-dev`: сборка под конкретный SHA (может быть из мерджа в `master` или релиза).
+- `websocket-latest`: образ WebSocket для использования в кластере Apache Superset.
+
+Чтобы заглянуть глубже или модифицировать матрицу сборки и соглашение о тегах — см. подкоманду [supersetbot docker](https://github.com/apache-superset/supersetbot) и GitHub Action [docker.yml](https://github.com/happykust/liteset/blob/main/.github/workflows/docker.yml).
+
+## Сборка собственного production-образа {#building-your-own-production-docker-image}
+
+Каждое развёртывание Superset/Liteset требует свой набор драйверов в зависимости от хранилищ данных, поэтому рекомендуется собирать свой Docker-образ, расширяющий `lean`-образ.
+
+Ниже — пример Dockerfile. Комментарии помогут адаптировать его под нужную версию Superset и драйверы БД. Также отмечен feature flag, который должен быть включён в config-файле.
+
+Сборка: `docker build -t mysuperset:latest .` или `docker build -t ourcompanysuperset:6.0.0 .`.
+
+```Dockerfile
+# Замените на apache/superset:6.0.0 или нужную версию;
+# по умолчанию — последний коммит ветки master на GitHub
+FROM apache/superset:master
+
+USER root
+
+# ENV для Playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/share/playwright-browsers
+
+# Установка пакетов через uv в виртуальное окружение
+# Superset перешёл на uv после ветки 4.1; если собираете из apache/superset:4.1.x или старее,
+# замените первые две строки на RUN pip install \
+RUN . /app/.venv/bin/activate && \
+    uv pip install \
+    # psycopg2 для PostgreSQL-метаданных — или MySQL-пакет, если используете MySQL:
+    psycopg2-binary \
+    # драйвер(ы) для вашей аналитической БД, в примере — Microsoft SQL Server:
+    pymssql \
+    # пакет для single-sign-on:
+    Authlib \
+    # openpyxl для загрузки Excel-файлов
+    openpyxl \
+    # Pillow для Alerts & Reports (генерация PDF дашбордов)
+    Pillow \
+    # Playwright для скриншотов в Alerts & Reports (требует включённого feature flag PLAYWRIGHT_REPORTS_AND_THUMBNAILS)
+    # Этот feature flag по умолчанию True начиная с 6.0.0
+    # Playwright работает только с Chrome.
+    # Если по-прежнему используете Selenium вместо Playwright — ставьте здесь selenium и headless-браузер с webdriver
+    playwright \
+    && playwright install-deps \
+    && PLAYWRIGHT_BROWSERS_PATH=/usr/local/share/playwright-browsers playwright install chromium
+
+# Возвращаемся к пользователю superset
+USER superset
+
+CMD ["/app/docker/entrypoints/run-server.sh"]
+```
+
+## Ключевые ARG'и в Dockerfile
+
+- `BUILD_TRANSLATIONS`: собирать ли переводы в образ. Для фронтенда говорит webpack'у удалить все локали кроме `en` из `moment-timezone`. Для бэкенда — пропустить компиляцию `*.po`-файлов.
+- `DEV_MODE`: пропустить сборку фронтенда — используется в `docker-compose` для разработки, где локальная папка монтируется и webpack пересобирает фронт в `--watch`-режиме. ARG позволяет первичной `docker-compose`-сборке быть быстрее и легче.
+- `INCLUDE_CHROMIUM`: включить ли chromium в backend-сборку для работы headless-браузера (Alerts & Reports, превью).
+- `INCLUDE_FIREFOX`: то же, но для firefox.
+- `PY_VER`: базовый образ Python для бэкенда. Не рекомендуется менять, если только не работаете над прямой/обратной совместимостью.
+
+## Кэширование
+
+Для ускорения сборок мы следуем best practices Docker и используем `apache/superset-cache`.
+
+## О драйверах БД
+
+Наши docker-образы содержат минимум поддержки драйверов, потому что у каждого окружения свой набор требований. Поддерживать build с широкой поддержкой БД было бы и сложно (десятки БД, python-драйверов и os-зависимостей), и неэффективно (длиннее сборка, тяжелее образ, ниже cache hit rate).
+
+Для продакшена рекомендуется расширять `lean`-образы, добавляя поддержку нужной БД.
+
+## Поддержка разных платформ (arm64 и amd64)
+
+Все автоматические сборки сейчас multi-platform — поддерживают `linux/arm64` и `linux/amd64`. Это позволяет высокоуровневым штукам вроде `helm` и `docker compose` ссылаться на эти образы и тоже быть multi-platform.
+
+Сборки PR и `master` — по одному образу на платформу для параллелизма; матрица сборки для них более разрежённая, не нужны все пресеты под все платформы. Тегам этих сборок добавляется суффикс `-arm`, где это применимо.
+
+### Работа на Apple Silicon
+
+Apple-машины текущего поколения используют ARM CPU, и Docker на Mac, кажется, требует `linux/arm64/v8` (как минимум на M2 одного из пользователей было так). Установка `DOCKER_DEFAULT_PLATFORM` в `linux/amd64` работает для использования и расширения сборок Apache Superset.
+
+```bash
+export DOCKER_DEFAULT_PLATFORM=linux/amd64
+```
+
+`linux/arm64/v8`, видимо, более оптимизирован для этого поколения чипов, но менее совместим с ARM-экосистемой.

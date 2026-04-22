@@ -1,0 +1,86 @@
+---
+title: Async-запросы через Celery
+hide_title: true
+sidebar_position: 4
+version: 1
+---
+
+# Async-запросы через Celery
+
+## Celery
+
+В больших аналитических БД часто бывают запросы, которые выполняются минутами или часами. Чтобы поддерживать долгие запросы, превышающие типичный таймаут веб-запроса (30–60 секунд), нужно настроить асинхронный backend для Liteset:
+
+- один или несколько Liteset-воркеров (реализованы как Celery worker), запускаются командой `celery worker`. Для опций — `celery worker --help`.
+- celery-брокер (очередь сообщений) — рекомендуется Redis или RabbitMQ.
+- results backend, в котором воркер сохраняет результаты запросов.
+
+Для конфигурации Celery нужно задать `CELERY_CONFIG` в `superset_config.py`. Воркер и веб-сервер должны использовать одинаковую конфигурацию.
+
+```python
+class CeleryConfig(object):
+    broker_url = "redis://localhost:6379/0"
+    imports = (
+        "superset.sql_lab",
+        "superset.tasks.scheduler",
+    )
+    result_backend = "redis://localhost:6379/0"
+    worker_prefetch_multiplier = 10
+    task_acks_late = True
+    task_annotations = {
+        "sql_lab.get_sql_results": {
+            "rate_limit": "100/s",
+        },
+    }
+
+CELERY_CONFIG = CeleryConfig
+```
+
+Запуск Celery worker:
+
+```bash
+celery --app=superset.tasks.celery_app:app worker --pool=prefork -O fair -c 4
+```
+
+Запуск beat (планировщик периодических задач):
+
+```bash
+celery --app=superset.tasks.celery_app:app beat
+```
+
+Для results backend нужно передать инстанс класса, унаследованного от `flask_caching.backends.base.BaseCache`, в `RESULTS_BACKEND` в `superset_config.py`. Можно использовать Memcached, Redis, S3 (https://pypi.python.org/pypi/s3werkzeugcache), in-memory или файловую систему (для одиночного сервера или тестов), либо написать свой интерфейс кэша:
+
+```python
+# На S3
+from s3cache.s3cache import S3Cache
+S3_CACHE_BUCKET = 'foobar-superset'
+S3_CACHE_KEY_PREFIX = 'sql_lab_result'
+RESULTS_BACKEND = S3Cache(S3_CACHE_BUCKET, S3_CACHE_KEY_PREFIX)
+
+# На Redis
+from flask_caching.backends.rediscache import RedisCache
+RESULTS_BACKEND = RedisCache(
+    host='localhost', port=6379, key_prefix='superset_results')
+```
+
+Для производительности теперь используется [MessagePack](https://github.com/msgpack/msgpack-python) и [PyArrow](https://arrow.apache.org/docs/python/) для сериализации результатов. При проблемах можно отключить через `RESULTS_BACKEND_USE_MSGPACK = False` в `superset_config.py`. При обновлении окружения очистите существующий кэш результатов.
+
+**Важное**
+
+- Все worker-ноды и веб-серверы в кластере Liteset должны _использовать общую БД метаданных_. SQLite в этом контексте не работает: у него ограниченная поддержка конкурентности и он обычно лежит на локальной ФС.
+- В установке должен быть _только один инстанс celery beat_. Иначе фоновые задачи будут запланированы несколько раз — двойная доставка отчётов, лишний трафик и т. д.
+- SQL Lab выполнит запрос асинхронно _только если_ вы включите **Asynchronous Query Execution** в настройках БД (Sources → Databases → Edit record).
+
+## Celery Flower
+
+Flower — веб-инструмент мониторинга Celery-кластера. Установка:
+
+```bash
+pip install flower
+```
+
+Запуск:
+
+```bash
+celery --app=superset.tasks.celery_app:app flower
+```

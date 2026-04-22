@@ -1,0 +1,61 @@
+---
+title: Обновление Liteset
+hide_title: true
+sidebar_position: 6
+version: 1
+---
+
+# Обновление Liteset
+
+## Docker Compose
+
+Остановите запущенные контейнеры:
+
+```bash
+docker compose down
+```
+
+Обновите папку, синхронизированную с репозиторием `liteset`:
+
+```bash
+git pull origin main
+```
+
+Запустите контейнеры заново — изменённые образы будут подтянуты автоматически:
+
+```bash
+docker compose up
+```
+
+## Обновление Liteset вручную
+
+Для нативной (PyPI) установки:
+
+```bash
+pip install liteset --upgrade
+```
+
+## Обновление БД метаданных
+
+Миграции Alembic в Liteset выполняются **синхронным** psycopg2-драйвером. Запустите:
+
+```bash
+superset db upgrade
+superset init
+```
+
+Эти команды идентичны Apache Superset, и граф ревизий Alembic общий — существующая БД метаданных Apache Superset обновится без проблем под Liteset.
+
+Хотя обновление Liteset не должно удалять ваши графики и дашборды, лучше **сделать резервную копию БД метаданных перед обновлением**. Тестируйте обновление в стейджинге перед продом и выбирайте окна меньшей нагрузки.
+
+## Миграция с Apache Superset на Liteset
+
+Поскольку Liteset сохраняет схему БД метаданных, REST API, формат session-cookie и SPA-фронтенд Apache Superset 6.0.0, миграция существующей инсталляции — это просто замена бэкенда:
+
+1. Остановите Apache Superset (`docker compose down` / `systemctl stop superset` / и т. д.).
+2. Сделайте снапшот / бэкап БД метаданных.
+3. Установите Liteset (`pip install liteset` или подтяните Docker-образ Liteset).
+4. Подключите Liteset к **той же** БД метаданных и Redis.
+5. Запустите Liteset под Uvicorn — см. [configuring-superset](/docs/configuration/configuring-superset#running-on-an-asgi-http-server).
+
+Шаг `superset db upgrade` не требуется, если обе версии — 6.0.0 (схема идентична). Если вы мигрируете с более старого Apache Superset, выполните `superset db upgrade` один раз, чтобы привести схему к 6.0.0, и затем запускайте Liteset.

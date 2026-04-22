@@ -1,0 +1,162 @@
+---
+title: Подключение к базам данных
+hide_title: true
+sidebar_position: 1
+version: 1
+---
+# Подключение к базам данных
+
+Liteset не идёт с предустановленными драйверами БД. Главный шаг подключения Liteset к БД — **установить нужные драйверы** в окружение.
+
+:::note
+Вам понадобятся пакеты для БД метаданных и для всех источников данных, к которым вы будете подключаться через Liteset. Про настройку БД метаданных — см. [Docker Compose](/docs/installation/docker-compose), [Kubernetes](/docs/installation/kubernetes).
+:::
+
+:::info
+Полный список БД-специфичных инструкций (около 40 движков с примерами connection-string'ов и нюансами) — в [англоязычной версии страницы](/docs/configuration/databases). Эта русская версия содержит обзорные таблицы и общие инструкции.
+:::
+
+Эта страница ссылается на драйверы для часто используемых движков.
+
+## Установка драйверов БД
+
+Liteset требует установленного Python [DB-API драйвера](https://peps.python.org/pep-0249/) и [SQLAlchemy-диалекта](https://docs.sqlalchemy.org/en/20/dialects/) для каждого движка, к которому вы подключаетесь.
+
+Подробнее об установке новых драйверов в Liteset — см. [Установка драйверов в Docker-образах](#installing-drivers-in-docker-images).
+
+### Поддерживаемые БД и зависимости {#supported-databases-and-dependencies}
+
+Рекомендуемые пакеты ниже. Версии, совместимые с Liteset — см. [pyproject.toml](https://github.com/happykust/liteset/blob/main/pyproject.toml).
+
+| <div style={{width: '150px'}}>База данных</div> | PyPI пакет                                                | Connection String (пример)                                                                |
+| ----------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| AWS Athena                                      | `pip install pyathena[pandas]`                            | `awsathena+rest://{access_key_id}:{access_key}@athena.{region}.amazonaws.com/{schema}?...`|
+| AWS DynamoDB                                    | `pip install pydynamodb`                                  | `dynamodb://{access_key_id}:{secret_access_key}@dynamodb.{region}.amazonaws.com?...`      |
+| AWS Redshift                                    | `pip install sqlalchemy-redshift`                         | `redshift+psycopg2://<userName>:<DBPassword>@<End Point>:5439/<Database Name>`            |
+| Apache Doris                                    | `pip install pydoris`                                     | `doris://<User>:<Password>@<Host>:<Port>/<Catalog>.<Database>`                            |
+| Apache Drill                                    | `pip install sqlalchemy-drill`                            | `drill+sadrill://<username>:<password>@<host>:<port>/<storage_plugin>`                    |
+| Apache Druid                                    | `pip install pydruid`                                     | `druid://<User>:<password>@<Host>:<Port>/druid/v2/sql`                                    |
+| Apache Hive                                     | `pip install pyhive`                                      | `hive://hive@{hostname}:{port}/{database}`                                                |
+| Apache Impala                                   | `pip install impyla`                                      | `impala://{hostname}:{port}/{database}`                                                   |
+| Apache Kylin                                    | `pip install kylinpy`                                     | `kylin://<username>:<password>@<hostname>:<port>/<project>`                               |
+| Apache Pinot                                    | `pip install pinotdb`                                     | `pinot://BROKER:5436/query?server=http://CONTROLLER:5983/`                                |
+| Apache Solr                                     | `pip install sqlalchemy-solr`                             | `solr://{username}:{password}@{hostname}:{port}/{server_path}/{collection}`               |
+| Apache Spark SQL                                | `pip install pyhive`                                      | `hive://hive@{hostname}:{port}/{database}`                                                |
+| Ascend.io                                       | `pip install impyla`                                      | `ascend://{username}:{password}@{hostname}:{port}/{database}`                             |
+| Azure MS SQL                                    | `pip install pymssql`                                     | `mssql+pymssql://...`                                                                     |
+| ClickHouse                                      | `pip install clickhouse-connect`                          | `clickhousedb://{username}:{password}@{hostname}:{port}/{database}`                       |
+| CockroachDB                                     | `pip install cockroachdb`                                 | `cockroachdb://root@{hostname}:{port}/{database}?sslmode=disable`                         |
+| Couchbase                                       | `pip install couchbase-sqlalchemy`                        | `couchbase://{username}:{password}@{hostname}:{port}`                                     |
+| CrateDB                                         | `pip install sqlalchemy-cratedb`                          | `crate://{username}:{password}@{hostname}:{port}`                                         |
+| Denodo                                          | `pip install denodo-sqlalchemy`                           | `denodo://{username}:{password}@{hostname}:{port}/{database}`                             |
+| Dremio                                          | `pip install sqlalchemy_dremio`                           | `dremio+flight://{username}:{password}@{host}:32010`                                      |
+| Elasticsearch                                   | `pip install elasticsearch-dbapi`                         | `elasticsearch+http://{user}:{password}@{host}:9200/`                                     |
+| Exasol                                          | `pip install sqlalchemy-exasol`                           | `exa+pyodbc://{username}:{password}@{hostname}:{port}/my_schema`                          |
+| Google BigQuery                                 | `pip install sqlalchemy-bigquery`                         | `bigquery://{project_id}`                                                                 |
+| Google Sheets                                   | `pip install shillelagh[gsheetsapi]`                      | `gsheets://`                                                                              |
+| Firebolt                                        | `pip install firebolt-sqlalchemy`                         | `firebolt://{client_id}:{client_secret}@{database}/{engine_name}`                         |
+| Hologres                                        | `pip install psycopg2`                                    | `postgresql+psycopg2://...`                                                               |
+| IBM Db2                                         | `pip install ibm_db_sa`                                   | `db2+ibm_db://`                                                                           |
+| IBM Netezza Performance Server                  | `pip install nzalchemy`                                   | `netezza+nzpy://<UserName>:<DBPassword>@<Database Host>/<Database Name>`                  |
+| MySQL                                           | `pip install mysqlclient`                                 | `mysql://<UserName>:<DBPassword>@<Database Host>/<Database Name>`                         |
+| OceanBase                                       | `pip install oceanbase_py`                                | `oceanbase://<UserName>:<DBPassword>@<Database Host>/<Database Name>`                     |
+| Oracle                                          | `pip install cx_Oracle`                                   | `oracle://<username>:<password>@<hostname>:<port>`                                        |
+| Parseable                                       | `pip install sqlalchemy-parseable`                        | `parseable://<UserName>:<DBPassword>@<Database Host>/<Stream Name>`                       |
+| PostgreSQL                                      | `pip install psycopg2`                                    | `postgresql://<UserName>:<DBPassword>@<Database Host>/<Database Name>`                    |
+| Presto                                          | `pip install pyhive`                                      | `presto://{username}:{password}@{hostname}:{port}/{database}`                             |
+| SAP Hana                                        | `pip install hdbcli sqlalchemy-hana`                      | `hana://{username}:{password}@{host}:{port}`                                              |
+| SingleStore                                     | `pip install sqlalchemy-singlestoredb`                    | `singlestoredb://{username}:{password}@{host}:{port}/{database}`                          |
+| StarRocks                                       | `pip install starrocks`                                   | `starrocks://<User>:<Password>@<Host>:<Port>/<Catalog>.<Database>`                        |
+| Snowflake                                       | `pip install snowflake-sqlalchemy`                        | `snowflake://{user}:{password}@{account}.{region}/{database}?role={role}&warehouse={...}` |
+| SQLite                                          | дополнительная библиотека не требуется                    | `sqlite://path/to/file.db?check_same_thread=false`                                        |
+| SQL Server                                      | `pip install pymssql`                                     | `mssql+pymssql://<Username>:<Password>@<Host>:<Port>/<Database Name>`                     |
+| TDengine                                        | `pip install taospy` `pip install taos-ws-py`             | `taosws://<user>:<password>@<host>:<port>`                                                |
+| Teradata                                        | `pip install teradatasqlalchemy`                          | `teradatasql://{user}:{password}@{host}`                                                  |
+| TimescaleDB                                     | `pip install psycopg2`                                    | `postgresql://<UserName>:<DBPassword>@<Database Host>:<Port>/<Database Name>`             |
+| Trino                                           | `pip install trino`                                       | `trino://{username}:{password}@{hostname}:{port}/{catalog}`                               |
+| Vertica                                         | `pip install sqlalchemy-vertica-python`                   | `vertica+vertica_python://<UserName>:<DBPassword>@<Database Host>/<Database Name>`        |
+| YDB                                             | `pip install ydb-sqlalchemy`                              | `ydb://{host}:{port}/{database_name}`                                                     |
+| YugabyteDB                                      | `pip install psycopg2`                                    | `postgresql://<UserName>:<DBPassword>@<Database Host>/<Database Name>`                    |
+
+---
+
+Поддерживаются и другие БД — главный критерий — наличие функционального SQLAlchemy-диалекта и Python-драйвера. Поиск по ключевому слову `sqlalchemy + (имя бд)` обычно приводит к нужному.
+
+Если вашей БД нет в списке, но у неё есть SQL-интерфейс — заведите [issue](https://github.com/happykust/liteset/issues), будем работать над поддержкой.
+
+Чтобы написать собственный database connector для Liteset — см. [этот туториал](https://preset.io/blog/building-database-connector/).
+
+### Установка драйверов в Docker-образах {#installing-drivers-in-docker-images}
+
+Liteset требует Python-драйвер для каждого типа БД. Пример с MySQL — процесс одинаков для всех:
+
+#### 1. Определите нужный драйвер
+
+В [таблице выше](#supported-databases-and-dependencies) найдите PyPI-пакет (для MySQL — `mysqlclient`).
+
+#### 2. Расширьте Docker-образ
+
+Создайте `requirements-local.txt` рядом с docker-compose-файлом:
+
+```bash
+touch ./docker/requirements-local.txt
+```
+
+Добавьте в него драйвер:
+
+```
+mysqlclient
+```
+
+#### 3. Перезапустите Liteset
+
+```bash
+docker compose down
+docker compose up
+```
+
+Драйверы установятся при следующей сборке образа.
+
+#### 4. Подключите БД через UI
+
+См. [Подключение через UI](#connecting-through-the-ui) ниже.
+
+### Инструкции для конкретных БД {#database-specific-instructions}
+
+Для каждой из ~40 поддерживаемых БД в Liteset есть индивидуальные особенности (генерация service-credentials в BigQuery, токены для Snowflake, sslmode для Postgres / Redshift, kerberos для Hive и т. д.). Полные пошаговые инструкции для каждой — см. [англоязычную версию](/docs/configuration/databases#database-specific-instructions). Базовая «формула» одинакова:
+
+1. Установить драйвер из таблицы.
+2. Получить credentials у владельца БД.
+3. Сформировать connection string по примеру выше.
+4. В Liteset UI: Settings → Database Connections → + Database, ввести URI, проверить Test Connection.
+
+## Подключение через UI {#connecting-through-the-ui}
+
+Краткий путь:
+
+1. Settings → Database Connections.
+2. **+ Database** в правом верхнем углу.
+3. Выберите тип БД из списка.
+4. В простом режиме введите host, port, database, username, password — Liteset сам соберёт URI.
+5. В режиме SQLAlchemy URI введите готовую строку (см. примеры в таблице выше).
+6. **Test Connection** — Liteset проверит подключение.
+7. **Connect** — сохранит подключение.
+
+После подключения база появится в **Sources → Databases**, и вы можете регистрировать таблицы как датасеты.
+
+### Дополнительные настройки БД {#extra-database-settings}
+
+В диалоге edit-БД на вкладке **Advanced** доступны параметры:
+
+- **SQL Lab settings** — Expose in SQL Lab, Allow CREATE TABLE AS, Allow CREATE VIEW AS, Allow DML, Allow this database to be explored, Allow file uploads.
+- **Performance** — Chart cache timeout, Schemas allowed for CSV upload, Asynchronous query execution.
+- **Security** — Enable secure extra (encrypted JSON для credentials), Root certificate (для self-signed TLS), Impersonate logged in user, Allow dataset/file uploads.
+- **Other** — Metadata cache timeout, Version, Engine Parameters.
+
+Подробное описание каждого поля — в [англоязычной версии](/docs/configuration/databases#extra-database-settings).
+
+## Misc
+
+### Запросы между БД {#querying-across-databases}
+
+Liteset поддерживает datasource-аналог cross-database queries через [shillelagh](https://github.com/betodealmeida/shillelagh) — драйвер, который умеет читать данные из других БД, REST API, CSV и Google Sheets через виртуальные таблицы. Используйте connection string `gsheets://`, `csv://` и т. п. См. [англоязычную версию](/docs/configuration/databases#querying-across-databases) для рецептов.

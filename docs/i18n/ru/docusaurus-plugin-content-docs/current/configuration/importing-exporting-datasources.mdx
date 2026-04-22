@@ -1,0 +1,115 @@
+---
+title: Импорт и экспорт источников данных
+hide_title: true
+sidebar_position: 11
+version: 1
+---
+
+# Импорт и экспорт источников данных
+
+CLI Liteset (`superset`) позволяет импортировать и экспортировать источники данных в YAML. К источникам данных относятся БД. Структура данных:
+
+```text
+├──databases
+|  ├──database_1
+|  |  ├──table_1
+|  |  |  ├──columns
+|  |  |  |  ├──column_1
+|  |  |  |  ├──column_2
+|  |  |  |  └──... (другие колонки)
+|  |  |  └──metrics
+|  |  |     ├──metric_1
+|  |  |     ├──metric_2
+|  |  |     └──... (другие метрики)
+|  |  └── ... (другие таблицы)
+|  └── ... (другие БД)
+```
+
+## Экспорт источников данных в YAML
+
+Распечатать текущие источники в stdout:
+
+```bash
+superset export_datasources
+```
+
+Сохранить в ZIP:
+
+```bash
+superset export_datasources -f <filename>
+```
+
+По умолчанию `null`-значения опускаются. Флаг `-d` включает их. Флаг `-b` включает обратные ссылки (например, в колонке указывается id таблицы, к которой она принадлежит).
+
+Также экспорт доступен из UI:
+
+1. **Sources → Databases** для экспорта всех таблиц одной/нескольких БД (**Tables** — для одной или нескольких таблиц).
+2. Выберите нужные элементы.
+3. **Actions → Export** в YAML.
+4. Чтобы импортировать что-то, экспортированное из UI, нужно вложить его в родительский элемент: БД должна быть вложена в `databases`, таблица — в БД.
+
+Полный список доступных в YAML-импорте полей:
+
+```bash
+superset export_datasource_schema
+```
+
+Флаг `-b` также включает обратные ссылки.
+
+## Импорт источников данных
+
+Из ZIP:
+
+```bash
+superset import_datasources -p <path / filename>
+```
+
+Опциональный флаг `-u` задаёт пользователя, от имени которого выполняется импорт. По умолчанию — `admin`:
+
+```bash
+superset import_datasources -p <path / filename> -u 'admin'
+```
+
+## Legacy-импорт
+
+### Из старых версий Superset в текущую
+
+При использовании Liteset / Superset 4.x.x для импорта из старых версий (2.x.x или 3.x.x) поддерживается команда `legacy_import_datasources`. Ожидает JSON или директорию JSON'ов. Опции: `-r` для рекурсивного обхода, `-u` для пользователя. Пример без опций:
+
+```bash
+superset legacy_import_datasources -p <path or filename>
+```
+
+### Из старых версий в старые версии
+
+В старых версиях Superset (2.x.x и 3.x.x) команда называется `import_datasources`. ZIP и YAML поддерживаются, переключение — через feature flag `VERSIONED_EXPORT`. Если `VERSIONED_EXPORT = True` — `import_datasources` ждёт ZIP, иначе — YAML:
+
+```bash
+superset import_datasources -p <path or filename>
+```
+
+При `VERSIONED_EXPORT = False`, если передаёте путь, парсятся все файлы с расширением `yaml` или `yml`. Можно добавлять флаги (например, для рекурсивного поиска):
+
+```bash
+superset import_datasources -p <path> -r
+```
+
+Флаг `-s` (sync) синхронизирует выбранные сущности с файлом. **Осторожно** — может удалить содержимое БД метаданных. Пример:
+
+```bash
+superset import_datasources -p <path / filename> -s columns,metrics
+```
+
+Это синхронизирует все метрики и колонки для всех источников, найденных в `<path / filename>`, с БД метаданных Liteset. Колонки и метрики, не указанные в YAML, **будут удалены**. Если добавить `tables` — они тоже синхронизируются.
+
+Без флага `-s` импорт только добавляет и обновляет (override) поля. Например, можно добавить `verbose_name` к колонке `ds` в таблице `random_time_series` из примеров, сохранив следующий YAML и запустив `import_datasources`:
+
+```yaml
+databases:
+- database_name: main
+  tables:
+  - table_name: random_time_series
+    columns:
+    - column_name: ds
+      verbose_name: datetime
+```
