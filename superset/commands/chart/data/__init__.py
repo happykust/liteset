@@ -14,22 +14,3 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Backwards-compatible re-export shim.
-
-The chart-data commands now live in
-``superset.commands.chart.data.get_data_command`` mirroring the
-original ``superset_old/commands/chart/data/`` package layout.
-
-This module re-exports the canonical names so existing call sites keep
-working until they're migrated.  New code should import from
-``superset.commands.chart.data.get_data_command`` directly.
-"""
-
-from __future__ import annotations
-
-from superset.commands.chart.data.get_data_command import (
-    ChartDataCommand,
-    GetCachedChartDataCommand,
-)
-
-__all__ = ("ChartDataCommand", "GetCachedChartDataCommand")

@@ -34,16 +34,16 @@ from litestar.enums import RequestEncodingType
 from litestar.params import Body, Parameter
 from litestar.response import Response, Stream
 
-from superset.commands.chart import (
-    BulkDeleteChartsCommand,
-    CreateChartCommand,
-    DeleteChartCommand,
-    ExportChartsCommand,
-    ImportChartsCommand,
-    UpdateChartCommand,
-    WarmUpChartCacheCommand,
+from superset.commands.chart.create import CreateChartCommand
+from superset.commands.chart.data.get_data_command import (
+    ChartDataCommand,
+    GetCachedChartDataCommand,
 )
-from superset.commands.chart_data import ChartDataCommand, GetCachedChartDataCommand
+from superset.commands.chart.delete import BulkDeleteChartsCommand, DeleteChartCommand
+from superset.commands.chart.export import ExportChartsCommand
+from superset.commands.chart.importers.v1 import ImportChartsCommand
+from superset.commands.chart.update import UpdateChartCommand
+from superset.commands.chart.warm_up_cache import WarmUpChartCacheCommand
 from superset.common.query_context import AsyncQueryContext
 from superset.common.query_context_processor import AsyncQueryContextProcessor
 from superset.common.query_object import AsyncQueryObject
@@ -126,8 +126,7 @@ def _chart_custom_filters(current_user: Any) -> dict[str, Any]:
         """
         if not value:
             return None
-        from sqlalchemy import or_
-        from sqlalchemy import select as sa_select
+        from sqlalchemy import or_, select as sa_select
 
         from superset.models.connectors import SqlaTable
 
@@ -255,7 +254,7 @@ class ChartController(Controller):
             ],
         )
         total = await dao.count(filters=all_filters or None)
-        event_logger.log("chart.list")
+        await event_logger.alog_with_context("chart.list")
         # Column list matches Flask-AppBuilder ChartRestApi.list_columns
         # (superset_old/charts/api.py:137-184). The first block are simple
         # model columns / relationships; the second block are computed
@@ -508,7 +507,9 @@ class ChartController(Controller):
         if not results:
             raise ObjectNotFoundError("Chart", id_or_uuid)
         chart = results[0]
-        event_logger.log("chart.get", object_ref=f"chart:{id_or_uuid}")
+        await event_logger.alog_with_context(
+            "chart.get", object_ref=f"chart:{id_or_uuid}"
+        )
         return ChartGetResponse(
             id=chart.id,
             result=ChartDetailResult.from_model(chart),
@@ -555,7 +556,7 @@ class ChartController(Controller):
         )
         chart = await cmd.execute()
         chart_id = int(chart.id)
-        event_logger.log(
+        await event_logger.alog_with_context(
             "chart.create",
             object_ref=f"chart:{chart_id}",
             user_id=current_user.id,
@@ -605,7 +606,7 @@ class ChartController(Controller):
             security_manager=security_manager,
         )
         chart = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "chart.update",
             object_ref=f"chart:{pk}",
             user_id=current_user.id,
@@ -634,7 +635,7 @@ class ChartController(Controller):
             user_id=current_user.id,
         )
         await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "chart.delete",
             object_ref=f"chart:{pk}",
             user_id=current_user.id,
@@ -661,7 +662,7 @@ class ChartController(Controller):
             user_id=current_user.id,
         )
         await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "chart.bulk_delete",
             user_id=current_user.id,
             extra={"count": len(ids)},
@@ -719,15 +720,18 @@ class ChartController(Controller):
         """
         import asyncio
 
+        # Gate on the feature flag *before* importing screenshots — that
+        # module pulls in webdriver/playwright/selenium which can raise
+        # at import time in deployments without the optional deps.
+        feature_flags = getattr(state.settings, "feature_flags", {})
+        if not feature_flags.get("THUMBNAILS", False):
+            return Response(content=b"", status_code=404, media_type="image/png")
+
         from superset.utils.screenshots import (
             ChartScreenshot,
             ScreenshotImageNotAvailableException,
             StatusValues,
         )
-
-        feature_flags = getattr(state.settings, "feature_flags", {})
-        if not feature_flags.get("THUMBNAILS", False):
-            return Response(content=b"", status_code=404, media_type="image/png")
 
         chart = await dao.find_by_id(pk)
         if not chart:
@@ -772,15 +776,18 @@ class ChartController(Controller):
 
         from litestar.response import Redirect
 
+        # Gate on the feature flag *before* importing screenshots —
+        # screenshots imports webdriver which depends on optional
+        # extensions (machine_auth_provider_factory).
+        feature_flags = getattr(state.settings, "feature_flags", {})
+        if not feature_flags.get("THUMBNAILS", False):
+            return Response(content=b"", status_code=404, media_type="image/png")
+
         from superset.utils.screenshots import (
             ChartScreenshot,
             ScreenshotCachePayload,
             ScreenshotImageNotAvailableException,
         )
-
-        feature_flags = getattr(state.settings, "feature_flags", {})
-        if not feature_flags.get("THUMBNAILS", False):
-            return Response(content=b"", status_code=404, media_type="image/png")
 
         chart = await dao.find_by_id(pk)
         if not chart:
@@ -849,7 +856,7 @@ class ChartController(Controller):
             raise CommandInvalidError("At least one ID is required for export")
         cmd = ExportChartsCommand(model_ids=ids, dao=cast("AsyncChartDAO", dao))
         buf = await cmd.execute()
-        event_logger.log("chart.export", extra={"count": len(ids)})
+        await event_logger.alog_with_context("chart.export", extra={"count": len(ids)})
         return Stream(
             stream_zip(buf),
             status_code=200,
@@ -887,7 +894,7 @@ class ChartController(Controller):
         if not chart:
             raise ObjectNotFoundError("Chart", pk)
         await dao.add_favorite(pk, current_user.id)
-        event_logger.log(
+        await event_logger.alog_with_context(
             "chart.add_favorite",
             object_ref=f"chart:{pk}",
             user_id=current_user.id,
@@ -906,7 +913,7 @@ class ChartController(Controller):
         if not chart:
             raise ObjectNotFoundError("Chart", pk)
         await dao.remove_favorite(pk, current_user.id)
-        event_logger.log(
+        await event_logger.alog_with_context(
             "chart.remove_favorite",
             object_ref=f"chart:{pk}",
             user_id=current_user.id,
@@ -927,7 +934,9 @@ class ChartController(Controller):
             extra_filters=data.extra_filters,
         )
         result = await cmd.execute()
-        event_logger.log("chart.warm_up_cache", object_ref=f"chart:{data.chart_id}")
+        await event_logger.alog_with_context(
+            "chart.warm_up_cache", object_ref=f"chart:{data.chart_id}"
+        )
         return {"result": [result]}
 
     @post(
@@ -987,7 +996,7 @@ class ChartController(Controller):
             ssh_tunnel_private_key_passwords=ssh_private_key_passwords_dict,
         )
         await cmd.execute()
-        event_logger.log("chart.import")
+        await event_logger.alog_with_context("chart.import")
         return {"message": "OK"}
 
     # ------------------------------------------------------------------
@@ -1202,7 +1211,7 @@ class ChartController(Controller):
                 if isinstance(q, dict):
                     q.pop("query", None)
 
-        event_logger.log(
+        await event_logger.alog_with_context(
             "chart.data",
             object_ref=f"chart:{pk}",
             user_id=current_user.id,
@@ -1300,13 +1309,38 @@ class ChartController(Controller):
 
         ds_ref = {"type": data.datasource.type, "id": data.datasource.id}
 
+        # RLS clauses for SQL preview / samples — both reveal generated
+        # SQL or table contents to the user, so they must respect Row
+        # Level Security to avoid leaking forbidden rows. Original
+        # Superset applies RLS inside ``BaseDatasource.get_query_str_extended``
+        # (preview) and ``get_samples_payload`` (samples).
+        #
+        # ``compose_rls_where_clauses`` returns ``list[ClauseElement]``
+        # (``TextClause`` / ``BooleanClauseList``); we hand those to
+        # ``_build_sql`` (which dialect-compiles them) for the ``query``
+        # path, and dialect-compile them inline below for the ``samples``
+        # raw SELECT — both produce SQL with proper quoting/translation.
+        from sqlalchemy.sql.elements import ClauseElement
+
+        from superset.utils.rls import compose_rls_where_clauses
+
+        rls_clauses_for_preview: list[ClauseElement] = []
+        if result_type in ("query", "samples"):
+            rls_clauses_for_preview = await compose_rls_where_clauses(
+                datasource,
+                user=current_user,
+                security_manager=security_manager,
+            )
+
         if result_type == "query":
             # Return generated SQL without executing the query
             query_results: list[dict[str, Any]] = []
             for q_schema in data.queries:
                 qobj = AsyncQueryObject.from_request(q_schema, ds_ref)
                 query_dict = qobj.to_dict()
-                sql, _from_dttm, _to_dttm = datasource._build_sql(query_dict)
+                sql, _from_dttm, _to_dttm = datasource._build_sql(
+                    query_dict, rls_filters=rls_clauses_for_preview
+                )
                 query_results.append(
                     {
                         "query": sql,
@@ -1314,20 +1348,65 @@ class ChartController(Controller):
                         "language": "sql",
                     }
                 )
-            event_logger.log("chart.data_post")
+            await event_logger.alog_with_context("chart.data_post")
             return Response(
                 content={"result": query_results},
                 media_type="application/json",
             )
 
         if result_type == "samples":
-            # Execute a simple SELECT * without metrics/filters
-            row_limit = (
+            # Build a samples query as a full SQLAlchemy AST: ``SELECT *
+            # FROM <tbl> [WHERE <rls>] LIMIT <n>``.  Mirrors the
+            # ``_build_sql`` AST pipeline so RLS clauses
+            # (``ClauseElement`` — ``TextClause`` / ``BooleanClauseList``)
+            # are integrated as native AST nodes and the dialect renders
+            # the entire tree with engine-correct identifier quoting.
+            import sqlalchemy as sa
+            from sqlalchemy import and_
+            from sqlalchemy.sql import literal_column, text as sa_text
+            from sqlalchemy.sql.elements import (
+                ClauseElement as _ClauseElement,
+            )
+
+            row_limit: int = (
                 data.queries[0].row_limit
                 if data.queries and getattr(data.queries[0], "row_limit", None)
                 else 1000
+            ) or 1000
+
+            # FROM clause uses the dataset's native AST node so the
+            # dialect handles quoting (``schema.table`` /
+            # ``"schema"."table"`` / virtual-dataset subquery) — same
+            # shape as ``_build_sql``.
+            from_clause, sample_cte = datasource._build_from_ast()  # noqa: SLF001
+            sample_qry: Any = sa.select(literal_column("*")).select_from(from_clause)
+
+            if rls_clauses_for_preview:
+                rls_elements: list[Any] = []
+                for clause in rls_clauses_for_preview:
+                    if isinstance(clause, str):
+                        stripped = clause.strip()
+                        if not stripped:
+                            continue
+                        clause = sa_text(stripped)
+                    if isinstance(clause, _ClauseElement):
+                        rls_elements.append(clause)
+                if rls_elements:
+                    sample_qry = sample_qry.where(and_(*rls_elements))
+
+            sample_qry = sample_qry.limit(row_limit)
+
+            dialect = datasource.database.get_dialect()
+            sql = str(
+                sample_qry.compile(
+                    dialect=dialect,
+                    compile_kwargs={"literal_binds": True},
+                )
             )
-            sql = f"SELECT * FROM {datasource.table_name} LIMIT {row_limit}"  # noqa: S608
+            # Hoist any virtual-dataset CTE above the SELECT (matches
+            # ``_build_sql`` behaviour for engines that disallow CTEs in
+            # subqueries).
+            sql = datasource._apply_cte(sql, sample_cte)  # noqa: SLF001
 
             try:
                 df = await datasource._execute_sql(sql)
@@ -1349,7 +1428,7 @@ class ChartController(Controller):
                     }
                 ],
             }
-            event_logger.log("chart.data_post")
+            await event_logger.alog_with_context("chart.data_post")
             return Response(
                 content=sample_result,
                 media_type="application/json",
@@ -1463,8 +1542,7 @@ class ChartController(Controller):
                     q.pop("query", None)
 
         # Convert DataFrames to JSON-serializable dicts before response
-        from datetime import date as _date_t
-        from datetime import datetime as _datetime_t
+        from datetime import date as _date_t, datetime as _datetime_t
         from decimal import Decimal as _Decimal_t
 
         from superset.typing import GenericDataType
@@ -1523,13 +1601,12 @@ class ChartController(Controller):
         # Frontend chart components (Table, TimeSeries, …) expect
         # numeric timestamps so they can apply ``smart_date`` formatting
         # driven by ``time_grain_sqla`` — ISO strings break this flow.
-        from datetime import date as _date_t
-        from datetime import datetime as _datetime_t
+        from datetime import date as _date_t, datetime as _datetime_t
         from decimal import Decimal
 
         from superset.utils.json import datetime_to_epoch
 
-        _EPOCH_DATE = _datetime_t(1970, 1, 1).date()
+        epoch_date = _datetime_t(1970, 1, 1).date()
 
         for q in result.get("queries", []):
             if isinstance(q, dict) and "data" in q:
@@ -1563,14 +1640,14 @@ class ChartController(Controller):
                             row[key] = datetime_to_epoch(val)
                         elif isinstance(val, _date_t):
                             # plain ``date`` (no time component)
-                            row[key] = (val - _EPOCH_DATE).total_seconds() * 1000
+                            row[key] = (val - epoch_date).total_seconds() * 1000
 
         # Ensure indexnames is present in each query result
         for q in result.get("queries", []):
             if isinstance(q, dict):
                 q["indexnames"] = list(range(len(q.get("data", []))))
 
-        event_logger.log("chart.data_post")
+        await event_logger.alog_with_context("chart.data_post")
         # Frontend expects {"result": [...]} not {"queries": [...]}
         response_payload = {"result": result.get("queries", [])}
 
@@ -1629,7 +1706,12 @@ class ChartController(Controller):
             user=current_user,
         )
         result = await cmd.execute()
-        event_logger.log("chart.cached_data", object_ref=f"cache:{cache_key}")
+        await event_logger.alog_with_context(
+            "chart.cached_data", object_ref=f"cache:{cache_key}"
+        )
         if result is None:
-            return {"result": [], "message": "Cache miss"}
+            # Original Superset surfaces a cache miss as 404 (the cached
+            # entry doesn't exist), not as an empty 200 — see
+            # superset_old/charts/api.py::ChartRestApi.get_data.
+            raise ObjectNotFoundError("ChartCachedData", cache_key)
         return result
