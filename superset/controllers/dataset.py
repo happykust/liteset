@@ -30,20 +30,22 @@ from litestar.enums import RequestEncodingType
 from litestar.params import Body, Parameter
 from litestar.response import Stream
 
-from superset.commands.dataset import (
-    BulkDeleteDatasetsCommand,
+from superset.commands.dataset.columns.delete import DeleteDatasetColumnCommand
+from superset.commands.dataset.create import (
     CreateDatasetCommand,
-    DeleteDatasetColumnCommand,
-    DeleteDatasetCommand,
-    DeleteDatasetMetricCommand,
-    DuplicateDatasetCommand,
-    ExportDatasetsCommand,
     GetOrCreateDatasetCommand,
-    ImportDatasetsCommand,
-    RefreshDatasetCommand,
-    UpdateDatasetCommand,
-    WarmUpDatasetCacheCommand,
 )
+from superset.commands.dataset.delete import (
+    BulkDeleteDatasetsCommand,
+    DeleteDatasetCommand,
+)
+from superset.commands.dataset.duplicate import DuplicateDatasetCommand
+from superset.commands.dataset.export import ExportDatasetsCommand
+from superset.commands.dataset.importers.v1 import ImportDatasetsCommand
+from superset.commands.dataset.metrics.delete import DeleteDatasetMetricCommand
+from superset.commands.dataset.refresh import RefreshDatasetCommand
+from superset.commands.dataset.update import UpdateDatasetCommand
+from superset.commands.dataset.warm_up_cache import WarmUpDatasetCacheCommand
 
 # DAO imports moved to provider functions
 from superset.controllers.base import (
@@ -182,7 +184,7 @@ class DatasetController(Controller):
             ],
         )
         total = await dao.count(filters=all_filters or None)
-        event_logger.log("dataset.list")
+        await event_logger.alog_with_context("dataset.list")
         payload = serialize_list_response(
             datasets,
             total,
@@ -404,7 +406,7 @@ class DatasetController(Controller):
             user_id=current_user.id,
         )
         dataset = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dataset.create",
             object_ref=f"dataset:{dataset.id}",
             user_id=current_user.id,
@@ -424,6 +426,8 @@ class DatasetController(Controller):
                 selectinload(SqlaTable.columns),
                 selectinload(SqlaTable.metrics),
                 selectinload(SqlaTable.owners),
+                selectinload(SqlaTable.created_by),
+                selectinload(SqlaTable.changed_by),
             ],
         )
         return DatasetGetResponse(
@@ -528,7 +532,7 @@ class DatasetController(Controller):
             )
             dataset = await cmd_refresh.execute()
 
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dataset.update",
             object_ref=f"dataset:{pk}",
             user_id=current_user.id,
@@ -554,6 +558,8 @@ class DatasetController(Controller):
                 selectinload(SqlaTable.columns),
                 selectinload(SqlaTable.metrics),
                 selectinload(SqlaTable.owners),
+                selectinload(SqlaTable.created_by),
+                selectinload(SqlaTable.changed_by),
             ],
         )
         return DatasetGetResponse(
@@ -584,7 +590,7 @@ class DatasetController(Controller):
             user_id=current_user.id,
         )
         await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dataset.delete",
             object_ref=f"dataset:{pk}",
             user_id=current_user.id,
@@ -611,7 +617,7 @@ class DatasetController(Controller):
             user_id=current_user.id,
         )
         await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dataset.bulk_delete",
             user_id=current_user.id,
             extra={"count": len(ids)},
@@ -636,7 +642,7 @@ class DatasetController(Controller):
             user_id=current_user.id,
         )
         dataset = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dataset.duplicate",
             object_ref=f"dataset:{dataset.id}",
             user_id=current_user.id,
@@ -653,7 +659,9 @@ class DatasetController(Controller):
     async def refresh(self, pk: int, dao: DatasetDAOProtocol) -> dict[str, str]:
         cmd = RefreshDatasetCommand(dao=cast("AsyncDatasetDAO", dao), dataset_id=pk)
         await cmd.execute()
-        event_logger.log("dataset.refresh", object_ref=f"dataset:{pk}")
+        await event_logger.alog_with_context(
+            "dataset.refresh", object_ref=f"dataset:{pk}"
+        )
         return {"message": "OK"}
 
     @post(
@@ -681,7 +689,7 @@ class DatasetController(Controller):
             user_id=current_user.id,
         )
         dataset = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dataset.get_or_create",
             object_ref=f"dataset:{dataset.id}",
             user_id=current_user.id,
@@ -708,7 +716,9 @@ class DatasetController(Controller):
             raise CommandInvalidError("At least one ID is required for export")
         cmd = ExportDatasetsCommand(model_ids=ids, dao=cast("AsyncDatasetDAO", dao))
         buf = await cmd.execute()
-        event_logger.log("dataset.export", extra={"count": len(ids)})
+        await event_logger.alog_with_context(
+            "dataset.export", extra={"count": len(ids)}
+        )
         return Stream(
             stream_zip(buf),
             status_code=200,
@@ -779,7 +789,7 @@ class DatasetController(Controller):
             sync_metrics=sync_metrics,
         )
         await cmd.execute()
-        event_logger.log("dataset.import")
+        await event_logger.alog_with_context("dataset.import")
         return {"message": "OK"}
 
     @put(
@@ -797,7 +807,7 @@ class DatasetController(Controller):
             extra_filters=data.extra_filters,
         )
         result = await cmd.execute()
-        event_logger.log("dataset.warm_up_cache")
+        await event_logger.alog_with_context("dataset.warm_up_cache")
         return {"result": result}
 
     @get(
@@ -880,7 +890,16 @@ class DatasetController(Controller):
             except (ValueError, _json.JSONDecodeError, TypeError):
                 pass
 
-        dataset = await dao.find_by_id(pk)
+        # Eager-load ``columns`` to avoid MissingGreenlet on async lazy
+        # access while building the drill_info response below.
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.connectors import SqlaTable
+
+        dataset = await dao.find_by_id_with_options(
+            pk,
+            options=[selectinload(SqlaTable.columns)],
+        )
         if not dataset:
             raise ObjectNotFoundError("Dataset", pk)
 
@@ -934,7 +953,7 @@ class DatasetController(Controller):
             column_id=column_id,
         )
         await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dataset.delete_column",
             object_ref=f"dataset:{pk}/column:{column_id}",
         )
@@ -959,7 +978,7 @@ class DatasetController(Controller):
             metric_id=metric_id,
         )
         await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dataset.delete_metric",
             object_ref=f"dataset:{pk}/metric:{metric_id}",
         )
