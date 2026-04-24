@@ -21,12 +21,10 @@ from __future__ import annotations
 from litestar import Controller, delete, get, post, put
 from litestar.di import Provide
 
-from superset.commands.dashboard_filter_state import (
-    CreateFilterStateCommand,
-    DeleteFilterStateCommand,
-    GetFilterStateCommand,
-    UpdateFilterStateCommand,
-)
+from superset.commands.dashboard.filter_state.create import CreateFilterStateCommand
+from superset.commands.dashboard.filter_state.delete import DeleteFilterStateCommand
+from superset.commands.dashboard.filter_state.get import GetFilterStateCommand
+from superset.commands.dashboard.filter_state.update import UpdateFilterStateCommand
 from superset.events import event_logger
 from superset.guards.rbac import require_permission
 from superset.providers import provide_kv_dao
@@ -61,7 +59,7 @@ class DashboardFilterStateController(Controller):
             security_manager=security_manager,
         )
         key = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "filter_state.create",
             object_ref=f"dashboard:{pk}",
             user_id=current_user.id,
@@ -90,7 +88,7 @@ class DashboardFilterStateController(Controller):
             security_manager=security_manager,
         )
         result_key = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "filter_state.update",
             object_ref=f"dashboard:{pk}/key:{key}",
             user_id=current_user.id,
@@ -117,7 +115,9 @@ class DashboardFilterStateController(Controller):
             user_id=current_user.id,
         )
         value = await cmd.execute()
-        event_logger.log("filter_state.get", object_ref=f"dashboard:{pk}/key:{key}")
+        await event_logger.alog_with_context(
+            "filter_state.get", object_ref=f"dashboard:{pk}/key:{key}"
+        )
         return {"value": value}
 
     @delete(
@@ -141,7 +141,7 @@ class DashboardFilterStateController(Controller):
             security_manager=security_manager,
         )
         await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "filter_state.delete",
             object_ref=f"dashboard:{pk}/key:{key}",
             user_id=current_user.id,

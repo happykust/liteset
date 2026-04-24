@@ -30,22 +30,24 @@ from litestar.enums import RequestEncodingType
 from litestar.params import Body, Parameter
 from litestar.response import Response, Stream
 
-from superset.commands.dashboard import (
+from superset.commands.dashboard.copy import CopyDashboardCommand
+from superset.commands.dashboard.create import CreateDashboardCommand
+from superset.commands.dashboard.delete import (
     BulkDeleteDashboardsCommand,
-    CopyDashboardCommand,
-    CreateDashboardCommand,
     DeleteDashboardCommand,
     DeleteEmbeddedDashboardCommand,
-    ExportDashboardsCommand,
-    ImportDashboardsCommand,
+)
+from superset.commands.dashboard.embedded.upsert import UpsertEmbeddedDashboardCommand
+from superset.commands.dashboard.export import ExportDashboardsCommand
+from superset.commands.dashboard.importers.v1 import ImportDashboardsCommand
+from superset.commands.dashboard.permalink.create import (
+    CreateDashboardPermalinkCommand,
+)
+from superset.commands.dashboard.permalink.get import GetDashboardPermalinkCommand
+from superset.commands.dashboard.update import (
     UpdateDashboardColorsCommand,
     UpdateDashboardCommand,
     UpdateDashboardFiltersCommand,
-    UpsertEmbeddedDashboardCommand,
-)
-from superset.commands.dashboard_permalink import (
-    CreateDashboardPermalinkCommand,
-    GetDashboardPermalinkCommand,
 )
 
 # DAO imports moved to provider functions (avoid Flask import chain)
@@ -62,7 +64,10 @@ from superset.controllers.base import (
 )
 from superset.events import event_logger
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
-from superset.guards.rbac import require_permission
+from superset.guards.rbac import (
+    deny_anon_with_404,
+    require_permission,
+)
 from superset.params.rison import provide_rison_query
 from superset.providers import (
     provide_dashboard_dao,
@@ -184,7 +189,7 @@ class DashboardController(Controller):
             ],
         )
         total = await dao.count(filters=all_filters or None)
-        event_logger.log("dashboard.list")
+        await event_logger.alog_with_context("dashboard.list")
         return serialize_list_response(
             dashboards,
             total,
@@ -352,7 +357,9 @@ class DashboardController(Controller):
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
 
-        event_logger.log("dashboard.get", object_ref=f"dashboard:{id_or_slug}")
+        await event_logger.alog_with_context(
+            "dashboard.get", object_ref=f"dashboard:{id_or_slug}"
+        )
         return DashboardGetResponse(
             id=dashboard.id,
             result=DashboardDetailResult.from_model(dashboard),
@@ -365,7 +372,7 @@ class DashboardController(Controller):
         "/{id_or_slug:str}/datasets",
         guards=[require_permission("can_read", "Dashboard")],
     )
-    async def get_datasets(
+    async def get_datasets(  # noqa: C901  # complex business logic
         self,
         id_or_slug: str,
         dao: DashboardDAOProtocol,
@@ -377,10 +384,10 @@ class DashboardController(Controller):
 
         def _resolve_generic_type(sqla_type: Any, is_dttm: bool) -> int | None:
             """Map SQLAlchemy column type → utils.GenericDataType int.
-               0=NUMERIC, 1=STRING, 2=TEMPORAL, 3=BOOLEAN.  Matches
-               ``TableColumn.type_generic`` in superset_old without
-               requiring a live db_engine_spec lookup (which needs a
-               database connection in async context).
+            0=NUMERIC, 1=STRING, 2=TEMPORAL, 3=BOOLEAN.  Matches
+            ``TableColumn.type_generic`` in superset_old without
+            requiring a live db_engine_spec lookup (which needs a
+            database connection in async context).
             """
             if is_dttm:
                 return 2  # TEMPORAL
@@ -396,8 +403,14 @@ class DashboardController(Controller):
             if any(
                 k in t
                 for k in (
-                    "INT", "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE",
-                    "REAL", "BIGINT", "SMALLINT",
+                    "INT",
+                    "NUMERIC",
+                    "DECIMAL",
+                    "FLOAT",
+                    "DOUBLE",
+                    "REAL",
+                    "BIGINT",
+                    "SMALLINT",
                 )
             ):
                 return 0
@@ -646,9 +659,7 @@ class DashboardController(Controller):
                         else None
                     ),
                     "description": desc or None,
-                    "description_markeddown": (
-                        f"<p>{desc}</p>" if desc else ""
-                    ),
+                    "description_markeddown": (f"<p>{desc}</p>" if desc else ""),
                     "form_data": fd,
                     "slice_url": getattr(chart, "slice_url", None),
                     "certified_by": getattr(chart, "certified_by", None),
@@ -700,7 +711,7 @@ class DashboardController(Controller):
         )
         dashboard = await cmd.execute()
         dashboard_id = int(dashboard.id)
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dashboard.create",
             object_ref=f"dashboard:{dashboard_id}",
             user_id=current_user.id,
@@ -773,7 +784,7 @@ class DashboardController(Controller):
         assert refreshed is not None  # just updated, must exist
         dashboard = refreshed
 
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dashboard.update",
             object_ref=f"dashboard:{pk}",
             user_id=current_user.id,
@@ -815,7 +826,7 @@ class DashboardController(Controller):
             user_id=current_user.id,
         )
         updated_configuration = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dashboard.update_filters",
             object_ref=f"dashboard:{pk}",
             user_id=current_user.id,
@@ -854,7 +865,7 @@ class DashboardController(Controller):
             mark_updated=mark_updated,
         )
         await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dashboard.update_colors",
             object_ref=f"dashboard:{pk}",
             user_id=current_user.id,
@@ -883,7 +894,7 @@ class DashboardController(Controller):
             user_id=current_user.id,
         )
         await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dashboard.delete",
             object_ref=f"dashboard:{pk}",
             user_id=current_user.id,
@@ -913,15 +924,13 @@ class DashboardController(Controller):
             user_id=current_user.id,
         )
         await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dashboard.bulk_delete",
             user_id=current_user.id,
             extra={"count": len(ids)},
         )
         num = len(ids)
-        msg = (
-            f"Deleted {num} dashboard" if num == 1 else f"Deleted {num} dashboards"
-        )
+        msg = f"Deleted {num} dashboard" if num == 1 else f"Deleted {num} dashboards"
         return {"message": msg}
 
     # ------------------------------------------------------------------
@@ -943,7 +952,9 @@ class DashboardController(Controller):
             raise CommandInvalidError("At least one ID is required for export")
         cmd = ExportDashboardsCommand(model_ids=ids, dao=cast("AsyncDashboardDAO", dao))
         buf = await cmd.execute()
-        event_logger.log("dashboard.export", extra={"count": len(ids)})
+        await event_logger.alog_with_context(
+            "dashboard.export", extra={"count": len(ids)}
+        )
         return Stream(
             stream_zip(buf),
             status_code=200,
@@ -1013,17 +1024,22 @@ class DashboardController(Controller):
         """
         import asyncio
 
-        from superset.utils.screenshots import (
-            DashboardScreenshot,
-            ScreenshotImageNotAvailableException,
-        )
-
+        # Check feature flag BEFORE importing screenshots — that module's
+        # import chain pulls in webdriver/playwright/selenium which can
+        # blow up in deployments where the dependencies are not present.
+        # When THUMBNAILS is disabled we should respond 404 without ever
+        # touching the optional code path.
         settings = getattr(state, "settings", None)
         flags = getattr(settings, "feature_flags", {}) or {}
         if not flags.get("THUMBNAILS", False) or not flags.get(
             "ENABLE_DASHBOARD_SCREENSHOT_ENDPOINTS", False
         ):
             raise ObjectNotFoundError("Dashboard screenshot", pk)
+
+        from superset.utils.screenshots import (
+            DashboardScreenshot,
+            ScreenshotImageNotAvailableException,
+        )
 
         dashboard = await dao.find_by_id(pk)
         if not dashboard:
@@ -1087,16 +1103,19 @@ class DashboardController(Controller):
 
         from litestar.response import Redirect
 
+        # Gate on the feature flag *before* importing screenshots so the
+        # optional webdriver dependency chain is never touched when
+        # thumbnails are disabled (see screenshot endpoint above).
+        settings = getattr(state, "settings", None)
+        flags = getattr(settings, "feature_flags", {}) or {}
+        if not flags.get("THUMBNAILS", False):
+            raise ObjectNotFoundError("Dashboard thumbnail", pk)
+
         from superset.utils.screenshots import (
             DashboardScreenshot,
             ScreenshotCachePayload,
             ScreenshotImageNotAvailableException,
         )
-
-        settings = getattr(state, "settings", None)
-        flags = getattr(settings, "feature_flags", {}) or {}
-        if not flags.get("THUMBNAILS", False):
-            raise ObjectNotFoundError("Dashboard thumbnail", pk)
 
         dashboard = await dao.find_by_id(pk)
         if not dashboard:
@@ -1192,7 +1211,7 @@ class DashboardController(Controller):
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", pk)
         await dao.add_favorite(pk, current_user.id)
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dashboard.add_favorite",
             object_ref=f"dashboard:{pk}",
             user_id=current_user.id,
@@ -1214,7 +1233,7 @@ class DashboardController(Controller):
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", pk)
         await dao.remove_favorite(pk, current_user.id)
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dashboard.remove_favorite",
             object_ref=f"dashboard:{pk}",
             user_id=current_user.id,
@@ -1283,7 +1302,7 @@ class DashboardController(Controller):
             ssh_tunnel_private_key_passwords=ssh_private_key_passwords_dict,
         )
         await cmd.execute()
-        event_logger.log("dashboard.import")
+        await event_logger.alog_with_context("dashboard.import")
         return {"message": "OK"}
 
     # ------------------------------------------------------------------
@@ -1291,7 +1310,10 @@ class DashboardController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/{id_or_slug:str}/embedded",
-        guards=[require_permission("can_read", "Dashboard")],
+        guards=[
+            deny_anon_with_404,
+            require_permission("can_read", "Dashboard"),
+        ],
     )
     async def get_embedded(
         self,
@@ -1339,7 +1361,7 @@ class DashboardController(Controller):
             allowed_domains=data.allowed_domains,
         )
         embedded = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dashboard.create_embedded",
             object_ref=f"dashboard:{id_or_slug}",
         )
@@ -1378,7 +1400,7 @@ class DashboardController(Controller):
             allowed_domains=data.allowed_domains,
         )
         embedded = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dashboard.update_embedded",
             object_ref=f"dashboard:{id_or_slug}",
         )
@@ -1415,7 +1437,7 @@ class DashboardController(Controller):
             dashboard_id=dashboard.id,
         )
         await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dashboard.delete_embedded",
             object_ref=f"dashboard:{id_or_slug}",
         )
@@ -1453,7 +1475,7 @@ class DashboardController(Controller):
             current_user=current_user,
         )
         new_dash = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "dashboard.copy",
             object_ref=f"dashboard:{id_or_slug}",
             user_id=current_user.id,
@@ -1476,7 +1498,10 @@ class DashboardController(Controller):
 
     @post(
         "/{pk:int}/permalink",
-        guards=[require_permission("can_write", "DashboardPermalinkRestApi")],
+        guards=[
+            deny_anon_with_404,
+            require_permission("can_write", "DashboardPermalinkRestApi"),
+        ],
         status_code=201,
     )
     async def create_permalink(
@@ -1485,6 +1510,7 @@ class DashboardController(Controller):
         data: DashboardPermalinkSchema,
         dao: DashboardDAOProtocol,
         kv_dao: KeyValueDAOProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, str]:
         dashboard = await dao.find_by_id(pk)
         if not dashboard:
@@ -1501,9 +1527,12 @@ class DashboardController(Controller):
             dashboard_id=pk,
             state=state,
             dashboard_uuid=dashboard_uuid,
+            user_id=current_user.id,
         )
         key = await cmd.execute()
-        event_logger.log("dashboard.create_permalink", object_ref=f"dashboard:{pk}")
+        await event_logger.alog_with_context(
+            "dashboard.create_permalink", object_ref=f"dashboard:{pk}"
+        )
         return {"key": key, "url": f"/api/v1/dashboard/permalink/{key}"}
 
     @get(
@@ -1517,5 +1546,7 @@ class DashboardController(Controller):
             dao=cast("AsyncKeyValueDAO", kv_dao), key=key
         )
         state = await cmd.execute()
-        event_logger.log("dashboard.get_permalink", object_ref=f"permalink:{key}")
+        await event_logger.alog_with_context(
+            "dashboard.get_permalink", object_ref=f"permalink:{key}"
+        )
         return state
