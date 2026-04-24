@@ -27,35 +27,31 @@ import re
 from typing import Any, cast, TYPE_CHECKING
 
 import msgspec
-from litestar import Controller, Request, delete, get, post, put
-from litestar.datastructures import State, UploadFile
+from litestar import Controller, delete, get, post, put
+from litestar.datastructures import UploadFile
 from litestar.di import Provide
 from litestar.enums import RequestEncodingType
 from litestar.params import Body, Parameter
-from litestar.response import Response, Stream
+from litestar.response import Response, Stream, Template
 
+from superset.commands.database.create import CreateDatabaseCommand
+from superset.commands.database.delete import DeleteDatabaseCommand
+from superset.commands.database.export import ExportDatabasesCommand
+from superset.commands.database.importers.v1 import ImportDatabasesCommand
+from superset.commands.database.ssh_tunnel.delete import DeleteSSHTunnelCommand
+from superset.commands.database.sync_permissions import SyncPermissionsCommand
+from superset.commands.database.test_connection import DatabaseTestConnectionCommand
+from superset.commands.database.update import UpdateDatabaseCommand
+from superset.commands.database.uploaders.base import UploadCommand
+from superset.commands.database.validate import ValidateParametersCommand
+from superset.commands.database.validate_sql import ValidateSQLCommand
 from superset.config import SupersetSettings
-
-from superset.commands.database import (
-    CreateDatabaseCommand,
-    DatabaseTestConnectionCommand,
-    DeleteDatabaseCommand,
-    DeleteSSHTunnelCommand,
-    ExportDatabasesCommand,
-    ImportDatabasesCommand,
-    SyncPermissionsCommand,
-    UpdateDatabaseCommand,
-    UploadCommand,
-    ValidateParametersCommand,
-    ValidateSQLCommand,
-)
 
 # DAO imports moved to provider functions
 from superset.controllers.base import (
     build_export_headers,
     build_rison_query_params,
     extract_ids,
-    get_distinct_payload,
     get_info_payload,
     get_related_payload,
     serialize_list_response,
@@ -70,7 +66,10 @@ from superset.exceptions import (
 )
 from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
-from superset.providers import provide_database_dao
+from superset.providers import (
+    provide_database_dao,
+    provide_database_user_oauth2_tokens_dao,
+)
 from superset.schemas.database import (
     CatalogsResponse,
     DatabaseConnectionResponse,
@@ -273,10 +272,28 @@ class DatabaseController(Controller):
         self,
         dao: DatabaseDAOProtocol,
         rison_params: dict[str, Any] | None,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
         from sqlalchemy.orm import selectinload
 
         from superset.models.core import Database
+
+        # Anonymous and database_access-less callers see an empty list —
+        # mirrors original ``DatabaseFilter`` (databases/filters.py) which
+        # restricts the query to databases the caller is allowed to read.
+        # ``can_read`` on the menu is satisfied by Public role permissions
+        # but data-level access (``database_access`` / ``all_database_access``)
+        # is required to see actual rows.
+        if not getattr(current_user, "is_authenticated", False):
+            return {
+                "count": 0,
+                "ids": [],
+                "result": [],
+                "label_columns": {},
+                "list_columns": [],
+                "list_title": "",
+                "description_columns": {},
+            }
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
             Database,
@@ -296,7 +313,7 @@ class DatabaseController(Controller):
             ],
         )
         total = await dao.count(filters=rison_filters or None)
-        event_logger.log("database.list")
+        await event_logger.alog_with_context("database.list")
         payload = serialize_list_response(
             databases,
             total,
@@ -378,24 +395,6 @@ class DatabaseController(Controller):
             column_name=column_name,
             rison_params=rison_params,
             allowed_fields=frozenset({"changed_by", "created_by"}),
-        )
-
-    # ------------------------------------------------------------------
-    # GET /distinct/{column_name} — distinct values for filters
-    # ------------------------------------------------------------------
-    @get(
-        "/distinct/{column_name:str}",
-        guards=[require_permission("can_read", "Database")],
-    )
-    async def distinct(
-        self,
-        column_name: str,
-        dao: DatabaseDAOProtocol,
-        rison_params: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        """GET /api/v1/database/distinct/{column_name}"""
-        return await get_distinct_payload(
-            dao=dao, column_name=column_name, rison_params=rison_params
         )
 
     # ------------------------------------------------------------------
@@ -513,7 +512,7 @@ class DatabaseController(Controller):
         )
         db = await cmd.execute()
         db_id = int(db.id)
-        event_logger.log(
+        await event_logger.alog_with_context(
             "database.create",
             object_ref=f"database:{db_id}",
             user_id=current_user.id,
@@ -574,7 +573,7 @@ class DatabaseController(Controller):
             user_id=current_user.id,
         )
         db = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "database.update",
             object_ref=f"database:{pk}",
             user_id=current_user.id,
@@ -597,7 +596,9 @@ class DatabaseController(Controller):
     ) -> dict[str, str]:
         cmd = DeleteDatabaseCommand(dao=cast("AsyncDatabaseDAO", dao), database_id=pk)
         await cmd.execute()
-        event_logger.log("database.delete", object_ref=f"database:{pk}")
+        await event_logger.alog_with_context(
+            "database.delete", object_ref=f"database:{pk}"
+        )
         return {"message": "OK"}
 
     # ------------------------------------------------------------------
@@ -606,13 +607,14 @@ class DatabaseController(Controller):
     @post(
         "/{pk:int}/sync_permissions/",
         guards=[require_permission("can_write", "Database")],
+        status_code=200,
     )
     async def sync_permissions(
         self, pk: int, dao: DatabaseDAOProtocol
     ) -> dict[str, Any]:
         cmd = SyncPermissionsCommand(dao=cast("AsyncDatabaseDAO", dao), database_id=pk)
         result = await cmd.execute()
-        event_logger.log("database.sync_permissions")
+        await event_logger.alog_with_context("database.sync_permissions")
         return result
 
     # ------------------------------------------------------------------
@@ -737,6 +739,16 @@ class DatabaseController(Controller):
         effective_schema = rison.get("schema_name", schema_name) or None
         _effective_catalog = rison.get("catalog_name", catalog)
         _ = effective_force  # async path always fetches live
+        # Original API requires ``schema_name`` (passed via Rison ``q``).
+        # Without it the request can't be served — return 400 to mirror
+        # Marshmallow validation behaviour.
+        if not effective_schema:
+            from litestar.exceptions import ClientException
+
+            raise ClientException(
+                detail="schema_name is required in the Rison query parameter",
+                status_code=400,
+            )
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
@@ -805,7 +817,7 @@ class DatabaseController(Controller):
         ``security_manager.raise_for_access(database=database, table=table)``
         for TABLE-level permission checks.
         """
-        event_logger.log(
+        await event_logger.alog_with_context(
             "database.table_metadata.init",
             object_ref=f"database:{pk}",
         )
@@ -919,7 +931,7 @@ class DatabaseController(Controller):
         Mirrors the original ``DatabaseRestApi.table_extra_metadata``
         which delegates to ``database.db_engine_spec.get_extra_table_metadata()``.
         """
-        event_logger.log(
+        await event_logger.alog_with_context(
             "database.table_extra_metadata.init",
             object_ref=f"database:{pk}",
         )
@@ -988,7 +1000,7 @@ class DatabaseController(Controller):
 
         from sqlalchemy.exc import SQLAlchemyError
 
-        event_logger.log(
+        await event_logger.alog_with_context(
             "database.table_metadata_deprecated.init",
             object_ref=f"database:{pk}",
         )
@@ -1009,7 +1021,7 @@ class DatabaseController(Controller):
 
         database = await dao.find_by_id(pk)
         if not database:
-            event_logger.log(
+            await event_logger.alog_with_context(
                 "database.table_metadata_deprecated.error",
                 object_ref=f"database:{pk}",
             )
@@ -1024,7 +1036,7 @@ class DatabaseController(Controller):
                 user=current_user,
             )
         except SupersetSecurityException as exc:
-            event_logger.log(
+            await event_logger.alog_with_context(
                 "database.table_metadata_deprecated.error",
                 object_ref=f"database:{pk}",
             )
@@ -1044,7 +1056,7 @@ class DatabaseController(Controller):
                     parsed_schema,
                 )
         except SQLAlchemyError as exc:
-            event_logger.log(
+            await event_logger.alog_with_context(
                 "database.table_metadata_deprecated.error",
                 object_ref=f"database:{pk}",
             )
@@ -1053,7 +1065,7 @@ class DatabaseController(Controller):
                 status_code=422,
             )
         except SupersetException as exc:
-            event_logger.log(
+            await event_logger.alog_with_context(
                 "database.table_metadata_deprecated.error",
                 object_ref=f"database:{pk}",
             )
@@ -1099,7 +1111,7 @@ class DatabaseController(Controller):
             for idx in raw.get("indexes", [])
         ]
 
-        event_logger.log(
+        await event_logger.alog_with_context(
             "database.table_metadata_deprecated.success",
             object_ref=f"database:{pk}",
         )
@@ -1141,7 +1153,7 @@ class DatabaseController(Controller):
         """
         from urllib.parse import unquote_plus
 
-        event_logger.log(
+        await event_logger.alog_with_context(
             "database.table_extra_metadata_deprecated.init",
             object_ref=f"database:{pk}",
         )
@@ -1158,7 +1170,7 @@ class DatabaseController(Controller):
 
         database = await dao.find_by_id(pk)
         if not database:
-            event_logger.log(
+            await event_logger.alog_with_context(
                 "database.table_extra_metadata_deprecated.error",
                 object_ref=f"database:{pk}",
             )
@@ -1173,7 +1185,7 @@ class DatabaseController(Controller):
                 user=current_user,
             )
         except SupersetSecurityException as exc:
-            event_logger.log(
+            await event_logger.alog_with_context(
                 "database.table_extra_metadata_deprecated.error",
                 object_ref=f"database:{pk}",
             )
@@ -1199,7 +1211,7 @@ class DatabaseController(Controller):
         else:
             payload = {}
 
-        event_logger.log(
+        await event_logger.alog_with_context(
             "database.table_extra_metadata_deprecated.success",
             object_ref=f"database:{pk}",
         )
@@ -1291,6 +1303,7 @@ class DatabaseController(Controller):
     @post(
         "/test_connection/",
         guards=[require_permission("can_write", "Database")],
+        status_code=200,
     )
     async def test_connection(
         self,
@@ -1393,7 +1406,9 @@ class DatabaseController(Controller):
             schema=data.schema,
         )
         result = await cmd.execute()
-        event_logger.log("database.validate_sql", object_ref=f"database:{pk}")
+        await event_logger.alog_with_context(
+            "database.validate_sql", object_ref=f"database:{pk}"
+        )
         return result
 
     # ------------------------------------------------------------------
@@ -1415,7 +1430,9 @@ class DatabaseController(Controller):
             raise CommandInvalidError("At least one ID is required for export")
         cmd = ExportDatabasesCommand(model_ids=ids, dao=cast("AsyncDatabaseDAO", dao))
         buf = await cmd.execute()
-        event_logger.log("database.export", extra={"count": len(ids)})
+        await event_logger.alog_with_context(
+            "database.export", extra={"count": len(ids)}
+        )
         return Stream(
             stream_zip(buf),
             status_code=200,
@@ -1461,7 +1478,7 @@ class DatabaseController(Controller):
             ssh_tunnel_passwords=ssh_dict,
         )
         await cmd.execute()
-        event_logger.log("database.import")
+        await event_logger.alog_with_context("database.import")
         return {"message": "OK"}
 
     # ------------------------------------------------------------------
@@ -1608,7 +1625,7 @@ class DatabaseController(Controller):
             },
         )
         result = await cmd.execute()
-        event_logger.log("database.validate_parameters")
+        await event_logger.alog_with_context("database.validate_parameters")
         return result
 
     # ------------------------------------------------------------------
@@ -1671,7 +1688,9 @@ class DatabaseController(Controller):
             file_contents=file_contents,
         )
         result = await cmd.execute()
-        event_logger.log("database.upload", object_ref=f"database:{pk}")
+        await event_logger.alog_with_context(
+            "database.upload", object_ref=f"database:{pk}"
+        )
         return result
 
     # ------------------------------------------------------------------
@@ -1794,21 +1813,39 @@ class DatabaseController(Controller):
 
     @get(
         "/oauth2/",
-        guards=[require_permission("can_read", "Database")],
+        dependencies={
+            "oauth2_dao": Provide(
+                provide_database_user_oauth2_tokens_dao, sync_to_thread=False
+            ),
+        },
+        # No auth guard: the OAuth2 provider redirects the user's browser
+        # back here with no Superset session cookie attached.  Identity is
+        # carried inside the signed ``state`` parameter (validated by
+        # :func:`decode_oauth2_state`).  Mirrors original ``oauth2()`` in
+        # ``superset_old/databases/api.py`` which is registered without any
+        # ``@protect()`` decorator.
     )
     async def oauth2(
         self,
-        dao: DatabaseDAOProtocol,
+        oauth2_dao: Any,
         oauth_state: str = Parameter(query="state", default=""),
         code: str = Parameter(query="code", default=""),
+        oauth_scope: str = Parameter(query="scope", default=""),  # noqa: ARG002
+        error: str = Parameter(query="error", default=""),
     ) -> "Response[Any]":
         """GET /api/v1/database/oauth2/ — OAuth2 provider redirect.
 
-        Decodes the ``state`` parameter to recover the originating
-        ``database_id`` and ``tab_id``, looks up the database, and
-        returns a self-closing HTML page that posts a message back to
-        the opener window with the authorization code.
+        Exchanges the authorization ``code`` for access/refresh tokens via
+        :class:`OAuth2StoreTokenCommand`, persists them in
+        ``database_user_oauth2_tokens``, and renders a self-closing HTML
+        page that notifies the opener tab.
+
+        Mirrors ``superset_old/databases/api.py:oauth2`` (lines 1413-1469).
         """
+        from superset.commands.database.oauth2 import OAuth2StoreTokenCommand
+        from superset.exceptions import OAuth2Error
+        from superset.utils.oauth2 import decode_oauth2_state
+
         if not oauth_state:
             return Response(
                 content={
@@ -1819,47 +1856,42 @@ class DatabaseController(Controller):
                 status_code=200,
             )
 
-        from superset.utils.oauth2 import decode_oauth2_state
-
+        # Run the store-token command — exchanges the code for tokens and
+        # writes them to ``database_user_oauth2_tokens``.
+        parameters = {"state": oauth_state, "code": code, "error": error}
         try:
-            decoded = decode_oauth2_state(oauth_state)
-        except ValueError:
+            command = OAuth2StoreTokenCommand(oauth2_dao, parameters)
+            await command.execute()
+        except OAuth2Error as ex:
+            _log.warning("OAuth2 token exchange failed: %s", ex)
             return Response(
-                content="<html><body>Invalid OAuth2 state</body></html>",
+                content=f"<html><body>OAuth2 error: {ex.message}</body></html>",
                 status_code=400,
                 media_type="text/html",
             )
+        except ObjectNotFoundError:
+            return Response(
+                content="<html><body>Database not found</body></html>",
+                status_code=404,
+                media_type="text/html",
+            )
 
-        database_id: Any = decoded.get("database_id")
+        # Decode the state again so we can render the close-the-window
+        # template with the originating tab_id.  At this point the state
+        # has already been validated by the command above, so this cannot
+        # fail in practice.
+        decoded = decode_oauth2_state(oauth_state)
         tab_id = decoded.get("tab_id", "")
 
-        if database_id is not None:
-            database = await dao.find_by_id(int(str(database_id)))
-            if database is None:
-                return Response(
-                    content="<html><body>Database not found</body></html>",
-                    status_code=404,
-                    media_type="text/html",
-                )
-
-        html = (
-            "<html><body><script>"
-            "if (window.opener) {"
-            "  window.opener.postMessage("
-            f'    {{"type": "oauth2_redirect", '
-            f'"database_id": {json.dumps(database_id)}, '
-            f'"tab_id": {json.dumps(tab_id)}, '
-            f'"code": {json.dumps(code)}}}, '
-            "    window.location.origin"
-            "  );"
-            "}"
-            "window.close();"
-            "</script></body></html>"
-        )
-        return Response(
-            content=html,
-            status_code=200,
-            media_type="text/html",
+        # Render the self-closing HTML page that notifies the opener tab,
+        # then closes itself.  1:1 with
+        # ``superset_old/templates/superset/oauth2.html`` — the frontend
+        # listens for the ``{ tabId }`` ``postMessage`` payload to re-run
+        # the original query, so the byte shape of the script must match
+        # the original exactly.
+        return Template(
+            template_name="superset/oauth2.html",
+            context={"tab_id": tab_id},
         )
 
     # ------------------------------------------------------------------
@@ -1898,5 +1930,7 @@ class DatabaseController(Controller):
     ) -> dict[str, str]:
         cmd = DeleteSSHTunnelCommand(dao=cast("AsyncDatabaseDAO", dao), database_id=pk)
         await cmd.execute()
-        event_logger.log("database.delete_ssh_tunnel", object_ref=f"database:{pk}")
+        await event_logger.alog_with_context(
+            "database.delete_ssh_tunnel", object_ref=f"database:{pk}"
+        )
         return {"message": "OK"}
