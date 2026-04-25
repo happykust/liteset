@@ -23,16 +23,19 @@ from typing import Any
 from litestar import Controller, delete, get, post, put
 from litestar.di import Provide
 
-from superset.commands.annotation import (
-    BulkDeleteAnnotationCommand,
+from superset.commands.annotation_layer.annotation.create import (
     CreateAnnotationCommand,
+)
+from superset.commands.annotation_layer.annotation.delete import (
+    BulkDeleteAnnotationCommand,
     DeleteAnnotationCommand,
+)
+from superset.commands.annotation_layer.annotation.update import (
     UpdateAnnotationCommand,
 )
 from superset.controllers.base import (
     extract_ids_required,
     extract_pagination,
-    get_info_payload,
 )
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError
@@ -80,7 +83,7 @@ class AnnotationController(Controller):
             filters=layer_filter, page=page, page_size=page_size
         )
         total = await ann_dao.count(filters=layer_filter)
-        event_logger.log("annotation.list", extra={"layer_id": pk})
+        await event_logger.alog_with_context("annotation.list", extra={"layer_id": pk})
         return {
             "result": [
                 {
@@ -127,7 +130,9 @@ class AnnotationController(Controller):
             raise ObjectNotFoundError("Annotation", annotation_id)
         changed_on = getattr(annotation, "changed_on", None)
         created_on = getattr(annotation, "created_on", None)
-        event_logger.log("annotation.get", object_ref=f"annotation:{annotation_id}")
+        await event_logger.alog_with_context(
+            "annotation.get", object_ref=f"annotation:{annotation_id}"
+        )
         return {
             "id": annotation.id,
             "result": {
@@ -179,7 +184,7 @@ class AnnotationController(Controller):
             },
         )
         annotation = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "annotation.create",
             object_ref=f"annotation:{annotation.id}",
             extra={"layer_id": pk},
@@ -237,7 +242,9 @@ class AnnotationController(Controller):
         annotation = await cmd.execute()
         changed_on = getattr(annotation, "changed_on", None)
         created_on = getattr(annotation, "created_on", None)
-        event_logger.log("annotation.update", object_ref=f"annotation:{annotation_id}")
+        await event_logger.alog_with_context(
+            "annotation.update", object_ref=f"annotation:{annotation_id}"
+        )
         return {
             "id": annotation.id,
             "result": {
@@ -281,7 +288,7 @@ class AnnotationController(Controller):
             raise ObjectNotFoundError("AnnotationLayer", pk)
         cmd = DeleteAnnotationCommand(dao=ann_dao, pk=annotation_id)
         await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "annotation.delete",
             object_ref=f"annotation:{annotation_id}",
             extra={"layer_id": pk},
@@ -310,20 +317,8 @@ class AnnotationController(Controller):
         ids = extract_ids_required(rison_params)
         cmd = BulkDeleteAnnotationCommand(dao=ann_dao, ids=ids)
         await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "annotation.bulk_delete",
             extra={"layer_id": pk, "count": len(ids)},
         )
         return {"message": "OK"}
-
-    @get(
-        "/_info",
-        guards=[require_permission("can_read", "Annotation")],
-    )
-    async def info(self, ann_dao: Any) -> dict[str, Any]:
-        """GET /api/v1/annotation_layer/{pk}/annotation/_info."""
-        return await get_info_payload(
-            dao=ann_dao,
-            model_name="Annotation",
-            permissions=["can_read", "can_write"],
-        )
