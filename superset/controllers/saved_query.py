@@ -28,14 +28,14 @@ from litestar.enums import RequestEncodingType
 from litestar.params import Body, Parameter
 from litestar.response import Stream
 
-from superset.commands.query import (
+from superset.commands.query.create import CreateSavedQueryCommand
+from superset.commands.query.delete import (
     BulkDeleteSavedQueriesCommand,
-    CreateSavedQueryCommand,
     DeleteSavedQueryCommand,
-    ExportSavedQueriesCommand,
-    ImportSavedQueriesCommand,
-    UpdateSavedQueryCommand,
 )
+from superset.commands.query.export import ExportSavedQueriesCommand
+from superset.commands.query.importers.v1 import ImportSavedQueriesCommand
+from superset.commands.query.update import UpdateSavedQueryCommand
 from superset.controllers.base import (
     build_export_headers,
     build_rison_query_params,
@@ -139,7 +139,9 @@ class SavedQueryController(Controller):
             ],
         )
         total = await dao.count(filters=all_filters or None)
-        event_logger.log("saved_query.list", user_id=current_user.id)
+        await event_logger.alog_with_context(
+            "saved_query.list", user_id=current_user.id
+        )
         payload = serialize_list_response(
             queries,
             total,
@@ -202,7 +204,7 @@ class SavedQueryController(Controller):
         return await get_info_payload(
             dao=dao,
             model_name="SavedQuery",
-            permissions=["can_read", "can_write"],
+            permissions=["can_read", "can_write", "can_export"],
         )
 
     @get(
@@ -324,7 +326,7 @@ class SavedQueryController(Controller):
             user_id=current_user.id,
         )
         query = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "saved_query.create",
             object_ref=f"saved_query:{query.id}",
             user_id=current_user.id,
@@ -365,7 +367,7 @@ class SavedQueryController(Controller):
             user_id=current_user.id,
         )
         query = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "saved_query.update",
             object_ref=f"saved_query:{pk}",
             user_id=current_user.id,
@@ -384,7 +386,9 @@ class SavedQueryController(Controller):
         """DELETE /api/v1/saved_query/<pk> — delete a single saved query."""
         cmd = DeleteSavedQueryCommand(dao=cast("AsyncSavedQueryDAO", dao), query_id=pk)
         await cmd.execute()
-        event_logger.log("saved_query.delete", object_ref=f"saved_query:{pk}")
+        await event_logger.alog_with_context(
+            "saved_query.delete", object_ref=f"saved_query:{pk}"
+        )
         return {"message": "OK"}
 
     @delete(
@@ -407,7 +411,9 @@ class SavedQueryController(Controller):
             user_id=current_user.id,
         )
         await cmd.execute()
-        event_logger.log("saved_query.bulk_delete", extra={"count": len(ids)})
+        await event_logger.alog_with_context(
+            "saved_query.bulk_delete", extra={"count": len(ids)}
+        )
         return {"message": "OK"}
 
     @get(
@@ -426,7 +432,9 @@ class SavedQueryController(Controller):
             raise CommandInvalidError("At least one ID is required for export")
         cmd = ExportSavedQueriesCommand(model_ids=ids, dao=dao)
         buf = await cmd.execute()
-        event_logger.log("saved_query.export", extra={"count": len(ids)})
+        await event_logger.alog_with_context(
+            "saved_query.export", extra={"count": len(ids)}
+        )
         return Stream(
             stream_zip(buf),
             status_code=200,
@@ -492,5 +500,5 @@ class SavedQueryController(Controller):
             ssh_tunnel_private_key_passwords=ssh_private_key_passwords_dict,
         )
         await cmd.execute()
-        event_logger.log("saved_query.import")
+        await event_logger.alog_with_context("saved_query.import")
         return {"message": "OK"}

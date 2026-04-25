@@ -23,7 +23,7 @@ from typing import Any
 from litestar import Controller, get, post
 from litestar.di import Provide
 
-from superset.commands.query import StopQueryCommand
+from superset.commands.query.stop import StopQueryCommand
 from superset.controllers.base import (
     extract_pagination,
     get_distinct_payload,
@@ -58,9 +58,17 @@ class QueryController(Controller):
         current_user: UserProtocol,
     ) -> dict[str, Any]:
         """GET /api/v1/query/{pk} — get a single query by ID."""
-        from superset.exceptions import ObjectNotFoundError
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
 
-        query = await dao.find_by_id(pk)
+        from superset.exceptions import ObjectNotFoundError
+        from superset.models.sql_lab import Query
+
+        # Eager-load ``database`` so the response build below doesn't
+        # trigger a sync lazy-load (MissingGreenlet under asyncpg).
+        stmt = select(Query).where(Query.id == pk).options(selectinload(Query.database))
+        query_result = await dao.session.execute(stmt)
+        query = query_result.scalars().one_or_none()
         if query is None:
             raise ObjectNotFoundError("Query", pk)
 
@@ -107,7 +115,7 @@ class QueryController(Controller):
                 "database_name": getattr(db_obj, "database_name", ""),
             }
 
-        event_logger.log("query.get", user_id=current_user.id)
+        await event_logger.alog_with_context("query.get", user_id=current_user.id)
         return {"id": pk, "result": result}
 
     @get(
@@ -130,9 +138,12 @@ class QueryController(Controller):
             filters=base_filters or None, page=page, page_size=page_size
         )
         total = await dao.count(filters=base_filters or None)
-        event_logger.log("query.list", user_id=current_user.id)
+        await event_logger.alog_with_context("query.list", user_id=current_user.id)
         return serialize_list_response(
-            queries, total, ["id", "status", "sql"], list_title="List Query",
+            queries,
+            total,
+            ["id", "status", "sql"],
+            list_title="List Query",
         )
 
     @get(
@@ -205,7 +216,9 @@ class QueryController(Controller):
         queries = await dao.get_queries_changed_after(
             user_id=user_id, last_updated_ms=last_updated_ms
         )
-        event_logger.log("query.updated_since", user_id=current_user.id)
+        await event_logger.alog_with_context(
+            "query.updated_since", user_id=current_user.id
+        )
         return {
             "result": [
                 q.to_dict()
@@ -248,5 +261,7 @@ class QueryController(Controller):
     ) -> dict[str, str]:
         cmd = StopQueryCommand(dao=dao, client_id=data.client_id)  # type: ignore[arg-type]
         await cmd.execute()
-        event_logger.log("query.stop", extra={"client_id": data.client_id})
+        await event_logger.alog_with_context(
+            "query.stop", extra={"client_id": data.client_id}
+        )
         return {"result": "OK"}
