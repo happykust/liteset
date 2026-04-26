@@ -1,0 +1,59 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+"""Temporary-cache command exceptions.
+
+1:1 port of ``superset_old/commands/temporary_cache/exceptions.py``.
+
+The original file uses ``flask_babel.lazy_gettext`` for the human-readable
+messages — Liteset has dropped Flask-Babel so the strings are emitted
+verbatim.  Class hierarchy and message text are otherwise identical so
+controllers / clients see the same SIP-40 error envelopes.
+"""
+
+from __future__ import annotations
+
+from superset.exceptions import (
+    CommandException,
+    CreateFailedError,
+    DeleteFailedError,
+    ForbiddenError,
+    UpdateFailedError,
+)
+
+
+class TemporaryCacheCreateFailedError(CreateFailedError):
+    message = "An error occurred while creating the value."
+
+
+class TemporaryCacheGetFailedError(CommandException):
+    message = "An error occurred while accessing the value."
+
+
+class TemporaryCacheDeleteFailedError(DeleteFailedError):
+    message = "An error occurred while deleting the value."
+
+
+class TemporaryCacheUpdateFailedError(UpdateFailedError):
+    message = "An error occurred while updating the value."
+
+
+class TemporaryCacheAccessDeniedError(ForbiddenError):
+    message = "You don't have permission to modify the value."
+
+
+class TemporaryCacheResourceNotFoundError(ForbiddenError):
+    message = "Resource was not found."

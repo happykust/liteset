@@ -18,7 +18,36 @@ from __future__ import annotations
 
 from typing import Any
 
-from superset.exceptions import OwnersNotFoundValidationError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from superset.exceptions import (
+    OwnersNotFoundValidationError,
+    RolesNotFoundValidationError,
+)
+
+
+async def populate_roles(
+    session: AsyncSession,
+    role_ids: list[int] | None,
+) -> list[Any]:
+    """Resolve role ids to ``Role`` objects.
+
+    Async port of ``superset_old/commands/utils.py:populate_roles``.
+    Returns ``[]`` for an empty/None list. Raises
+    :class:`RolesNotFoundValidationError` if any id can't be resolved.
+    """
+    from superset.models.security import Role
+
+    role_ids = role_ids or []
+    if not role_ids:
+        return []
+    stmt = select(Role).where(Role.id.in_(role_ids))
+    result = await session.execute(stmt)
+    roles = list(result.scalars().all())
+    if len(roles) != len(role_ids):
+        raise RolesNotFoundValidationError()
+    return roles
 
 
 async def populate_owner_list(
@@ -49,11 +78,7 @@ async def populate_owner_list(
     if not owner_ids and default_to_user:
         return [current_user] if current_user else []
     is_admin = security_manager.is_admin(current_user) if current_user else True
-    if (
-        current_user is not None
-        and not is_admin
-        and current_user.id not in owner_ids
-    ):
+    if current_user is not None and not is_admin and current_user.id not in owner_ids:
         owners.append(current_user)
     for owner_id in owner_ids:
         owner = await security_manager.find_user_by_id(owner_id)
