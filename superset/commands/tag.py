@@ -88,16 +88,35 @@ class DeleteTagCommand(AsyncBaseCommand[None]):
 
 
 class BulkDeleteTagCommand(AsyncBaseCommand[int]):
-    def __init__(self, dao: AsyncTagDAO, ids: list[int]) -> None:
+    """Bulk delete tags by name.
+
+    Matches original Superset's ``DeleteTagsCommand`` at
+    superset_old/commands/tag/delete.py:89-96 — receives a list of tag
+    *names*, validates each exists, then delegates to
+    ``TagDAO.delete_tags`` which removes both the tag rows and the
+    associated ``tagged_object`` entries.
+    """
+
+    def __init__(self, dao: AsyncTagDAO, tag_names: list[str]) -> None:
         self._dao = dao
-        self._ids = ids
+        self._tag_names = tag_names
 
     async def validate(self) -> None:
-        if not self._ids:
-            raise CommandInvalidError("No IDs provided for bulk delete")
+        if not self._tag_names:
+            raise CommandInvalidError("No tag names provided for bulk delete")
+        # Validate every requested tag exists; mirrors original
+        # DeleteTagsCommand.validate() which raises TagNotFoundError
+        # (translates to 404) if any tag is missing.
+        for name in self._tag_names:
+            if not await self._dao.find_by_name(name):
+                from superset.exceptions import ObjectNotFoundError
+
+                raise ObjectNotFoundError("Tag", name)
 
     async def run(self) -> int:
-        return await self._dao.bulk_delete(self._ids)  # type: ignore[arg-type]
+        await self._dao.delete_tags(self._tag_names)
+        await self._dao.session.flush()
+        return len(self._tag_names)
 
 
 class BulkCreateTagCommand(AsyncBaseCommand[list[Any]]):

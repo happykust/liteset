@@ -64,6 +64,17 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             except (ValueError, KeyError) as e:
                 raise CommandInvalidError(f"Invalid crontab expression: {e}") from e
 
+        # Validate chart/dashboard relation — mirrors original
+        # ``BaseReportScheduleCommand.validate_chart_dashboard`` at
+        # superset_old/commands/report/base.py:50-81. A new schedule must
+        # reference exactly one of chart/dashboard (not both, not neither).
+        chart_id = self._data.get("chart")
+        dashboard_id = self._data.get("dashboard")
+        if chart_id and dashboard_id:
+            raise CommandInvalidError("Choose a chart or dashboard, not both")
+        if not chart_id and not dashboard_id:
+            raise CommandInvalidError("Must choose either a chart or a dashboard")
+
         # Validate name + type uniqueness
         is_unique = await self._dao.validate_update_uniqueness(
             name=name, report_type=report_type

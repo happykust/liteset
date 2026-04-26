@@ -48,6 +48,20 @@ class CreateThemeCommand(AsyncBaseCommand[Any]):
         theme_name = self._data.get("theme_name")
         if not theme_name or not theme_name.strip():
             raise CommandInvalidError("theme_name is required")
+        # ``json_data`` is required and must be a parseable JSON string —
+        # mirrors original ThemeBaseSchema.validate_json_data at
+        # superset_old/themes/schemas.py:70-80. We accept either a string
+        # (raw JSON) or already-parsed dict.
+        json_data = self._data.get("json_data")
+        if json_data in (None, ""):
+            raise CommandInvalidError("json_data is required")
+        if isinstance(json_data, str):
+            import json as _json
+
+            try:
+                _json.loads(json_data)
+            except (TypeError, ValueError) as ex:
+                raise CommandInvalidError("Invalid JSON configuration") from ex
 
     async def run(self) -> Any:
         item = await self._dao.create(self._data)

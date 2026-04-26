@@ -83,7 +83,8 @@ def _get_settings() -> Any:
 class AlertCommand:
     """Evaluate an alert SQL query and check whether it triggers.
 
-    Ported 1:1 from ``superset_old/commands/report/alert.py::AlertCommand``.
+    Ported 1:1 from ``:AlertCommand`` in
+    ``superset_old/commands/report/alert.py``.
     """
 
     def __init__(
