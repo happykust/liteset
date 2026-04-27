@@ -36,12 +36,12 @@ from superset.controllers.base import (
     _serialize_item,
     build_rison_query_params,
     extract_ids,
-    extract_ids_required,
     get_info_payload,
     get_related_payload,
     serialize_list_response,
 )
 from superset.events import event_logger
+from superset.exceptions import SupersetValidationException
 from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_tag_dao
@@ -141,7 +141,9 @@ class TagController(Controller):
         raw = msgspec.structs.asdict(data)
         cmd = CreateTagCommand(dao=dao, data=raw)
         item = await cmd.execute()
-        event_logger.log("tag.create", object_ref=str(item.id), user_id=current_user.id)
+        await event_logger.alog_with_context(
+            "tag.create", object_ref=str(item.id), user_id=current_user.id
+        )
         return {"id": item.id, "result": {"name": item.name}}
 
     @put("/{pk:int}", guards=[require_permission("can_write", "Tag")])
@@ -155,7 +157,9 @@ class TagController(Controller):
         raw = filter_unset(msgspec.structs.asdict(data))
         cmd = UpdateTagCommand(dao=dao, pk=pk, data=raw)
         item = await cmd.execute()
-        event_logger.log("tag.update", object_ref=str(pk), user_id=current_user.id)
+        await event_logger.alog_with_context(
+            "tag.update", object_ref=str(pk), user_id=current_user.id
+        )
         return {"result": {"name": getattr(item, "name", "")}}
 
     @delete(
@@ -171,20 +175,43 @@ class TagController(Controller):
     ) -> dict[str, str]:
         cmd = DeleteTagCommand(dao=dao, pk=pk)
         await cmd.execute()
-        event_logger.log("tag.delete", object_ref=str(pk), user_id=current_user.id)
+        await event_logger.alog_with_context(
+            "tag.delete", object_ref=str(pk), user_id=current_user.id
+        )
         return {"message": "Deleted"}
 
     @delete("/", guards=[require_permission("can_write", "Tag")], status_code=200)
     async def bulk_delete(
         self,
         dao: Any,
-        rison_params: list[int] | dict[str, Any] | None,
+        rison_params: list[Any] | dict[str, Any] | None,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        ids = extract_ids_required(rison_params)
-        cmd = BulkDeleteTagCommand(dao=dao, ids=ids)
+        """DELETE /api/v1/tag?q=!(name1,name2) -- bulk delete tags by name.
+
+        Matches original Superset where ``delete_tags_schema`` is
+        ``{"type": "array", "items": {"type": "string"}}`` — the rison
+        payload is a list of *tag names*, not integer ids. See
+        superset_old/tags/api.py:486 / tags/schemas.py:22.
+        """
+        if rison_params is None:
+            raise SupersetValidationException(
+                "tag names parameter is required and cannot be empty"
+            )
+        if isinstance(rison_params, list):
+            tag_names_raw: list[Any] = rison_params
+        elif isinstance(rison_params, dict):
+            tag_names_raw = rison_params.get("ids") or rison_params.get("tags") or []
+        else:
+            tag_names_raw = []
+        tag_names = [str(t) for t in tag_names_raw if t]
+        if not tag_names:
+            raise SupersetValidationException(
+                "tag names parameter is required and cannot be empty"
+            )
+        cmd = BulkDeleteTagCommand(dao=dao, tag_names=tag_names)
         count = await cmd.execute()
-        event_logger.log("tag.bulk_delete", user_id=current_user.id)
+        await event_logger.alog_with_context("tag.bulk_delete", user_id=current_user.id)
         return {"message": f"Deleted {count} tags"}
 
     @post(
@@ -201,7 +228,7 @@ class TagController(Controller):
         tags_raw = [msgspec.structs.asdict(t) for t in data.tags]
         cmd = BulkCreateTagCommand(dao=dao, tags_data=tags_raw)
         results = await cmd.execute()
-        event_logger.log("tag.bulk_create", user_id=current_user.id)
+        await event_logger.alog_with_context("tag.bulk_create", user_id=current_user.id)
         return {
             "result": [
                 {"id": getattr(t, "id", None), "name": getattr(t, "name", "")}
@@ -270,7 +297,7 @@ class TagController(Controller):
         fav_ids = await dao.favorited_ids([pk], current_user.id)
         return {"result": {"id": pk, "value": pk in fav_ids}}
 
-    @post("/{pk:int}/favorites/", status_code=201)
+    @post("/{pk:int}/favorites/", status_code=200)
     async def add_favorite(
         self,
         pk: int,
@@ -279,7 +306,7 @@ class TagController(Controller):
     ) -> dict[str, str]:
         """Add tag to favorites."""
         await dao.favorite_tag_by_id_for_current_user(pk, current_user.id)
-        event_logger.log(
+        await event_logger.alog_with_context(
             "tag.add_favorite", object_ref=str(pk), user_id=current_user.id
         )
         return {"result": "OK"}
@@ -293,7 +320,7 @@ class TagController(Controller):
     ) -> dict[str, str]:
         """Remove tag from favorites."""
         await dao.remove_user_favorite_tag(pk, current_user.id)
-        event_logger.log(
+        await event_logger.alog_with_context(
             "tag.remove_favorite", object_ref=str(pk), user_id=current_user.id
         )
         return {"result": "OK"}
@@ -335,7 +362,7 @@ class TagController(Controller):
             object_id=object_id,
             tag_names=data.properties.tags,
         )
-        event_logger.log(
+        await event_logger.alog_with_context(
             "tag.add_objects",
             extra={"object_type": object_type, "object_id": object_id},
             user_id=current_user.id,
@@ -375,7 +402,7 @@ class TagController(Controller):
             object_id=object_id,
             tag_name=tag,
         )
-        event_logger.log(
+        await event_logger.alog_with_context(
             "tag.delete_object",
             extra={
                 "object_type": object_type,

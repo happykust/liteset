@@ -34,7 +34,11 @@ from litestar.params import Parameter
 
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError
-from superset.guards.rbac import require_authentication
+from superset.guards.rbac import (
+    deny_anon_with_403,
+    require_authentication,
+    require_permission,
+)
 from superset.providers import provide_kv_dao
 from superset.typing import KeyValueDAOProtocol, UserProtocol
 
@@ -91,7 +95,14 @@ class ExploreFormDataController(Controller):
             pass
         return {"form_data": raw}
 
-    @post("/", status_code=201, guards=[require_authentication])
+    @post(
+        "/",
+        status_code=201,
+        guards=[
+            deny_anon_with_403,
+            require_permission("can_write", "ExploreFormDataRestApi"),
+        ],
+    )
     async def create_value(
         self,
         data: FormDataPostSchema,
@@ -117,7 +128,7 @@ class ExploreFormDataController(Controller):
             key=key,
             value=envelope,
         )
-        event_logger.log(
+        await event_logger.alog_with_context(
             "explore_form_data.create",
             user_id=current_user.id,
         )
@@ -157,7 +168,7 @@ class ExploreFormDataController(Controller):
             key=key,
             value=envelope,
         )
-        event_logger.log(
+        await event_logger.alog_with_context(
             "explore_form_data.update",
             user_id=current_user.id,
         )
@@ -178,7 +189,7 @@ class ExploreFormDataController(Controller):
         )
         if not deleted:
             raise ObjectNotFoundError(self.resource, key)
-        event_logger.log(
+        await event_logger.alog_with_context(
             "explore_form_data.delete",
             user_id=current_user.id,
         )

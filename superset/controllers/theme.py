@@ -81,7 +81,7 @@ class ThemeController(Controller):
         page, page_size = extract_pagination(rison_params)
         themes = await dao.find_all(page=page, page_size=page_size)
         total = await dao.count()
-        event_logger.log("theme.list", user_id=current_user.id)
+        await event_logger.alog_with_context("theme.list", user_id=current_user.id)
         return serialize_list_response(
             themes,
             total,
@@ -109,20 +109,31 @@ class ThemeController(Controller):
         dao: CRUDDAOProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        """GET /api/v1/theme/{pk} — get a single theme."""
+        """GET /api/v1/theme/{pk} — get a single theme.
+
+        Returns the actual ``Theme`` columns (``theme_name`` +
+        ``json_data`` + the system flags). The legacy ``css`` /
+        ``json_metadata`` / ``description`` keys are kept for frontend
+        backwards-compat but read empty.
+        """
         theme = await dao.find_by_id(pk)
         if not theme:
             raise ObjectNotFoundError("Theme", pk)
-        event_logger.log("theme.get", object_ref=str(pk), user_id=current_user.id)
+        await event_logger.alog_with_context(
+            "theme.get", object_ref=str(pk), user_id=current_user.id
+        )
         return {
             "id": theme.id,
             "result": {
                 "id": theme.id,
                 "theme_name": theme.theme_name,
+                "json_data": getattr(theme, "json_data", "") or "",
                 "css": getattr(theme, "css", ""),
                 "json_metadata": getattr(theme, "json_metadata", ""),
                 "description": getattr(theme, "description", ""),
+                "is_system": getattr(theme, "is_system", False),
                 "is_system_default": getattr(theme, "is_system_default", False),
+                "is_system_dark": getattr(theme, "is_system_dark", False),
             },
         }
 
@@ -145,7 +156,7 @@ class ThemeController(Controller):
         payload = _structs.asdict(data)
         cmd = CreateThemeCommand(dao=dao, data=payload)  # type: ignore[arg-type]
         theme = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "theme.create", object_ref=str(theme.id), user_id=current_user.id
         )
         return {"id": theme.id, "result": {"id": theme.id}}
@@ -170,7 +181,9 @@ class ThemeController(Controller):
         payload = filter_unset(_structs.asdict(data))
         cmd = UpdateThemeCommand(dao=dao, pk=pk, data=payload)  # type: ignore[arg-type]
         theme = await cmd.execute()
-        event_logger.log("theme.update", object_ref=str(pk), user_id=current_user.id)
+        await event_logger.alog_with_context(
+            "theme.update", object_ref=str(pk), user_id=current_user.id
+        )
         return {"id": theme.id, "result": {"id": theme.id}}
 
     # ------------------------------------------------------------------
@@ -190,37 +203,10 @@ class ThemeController(Controller):
         """DELETE /api/v1/theme/{pk} — delete a theme."""
         cmd = DeleteThemeCommand(dao=dao, pk=pk)  # type: ignore[arg-type]
         await cmd.execute()
-        event_logger.log("theme.delete", object_ref=str(pk), user_id=current_user.id)
+        await event_logger.alog_with_context(
+            "theme.delete", object_ref=str(pk), user_id=current_user.id
+        )
         return {"message": "OK"}
-
-    # ------------------------------------------------------------------
-    # GET — system default theme
-    # ------------------------------------------------------------------
-    @get(
-        "/system_default/",
-        guards=[require_permission("can_read", "Theme")],
-    )
-    async def get_system_default(
-        self,
-        dao: Any,
-        current_user: UserProtocol,
-    ) -> dict[str, Any]:
-        """GET /api/v1/theme/system_default/ — get the system default theme."""
-        theme = await dao.find_system_default()
-        if not theme:
-            raise ObjectNotFoundError("Theme", "system_default")
-        event_logger.log("theme.get_system_default", user_id=current_user.id)
-        return {
-            "id": theme.id,
-            "result": {
-                "id": theme.id,
-                "theme_name": theme.theme_name,
-                "css": getattr(theme, "css", ""),
-                "json_metadata": getattr(theme, "json_metadata", ""),
-                "description": getattr(theme, "description", ""),
-                "is_system_default": getattr(theme, "is_system_default", False),
-            },
-        }
 
     # ------------------------------------------------------------------
     # PUT — set system default
@@ -238,7 +224,7 @@ class ThemeController(Controller):
         """PUT /api/v1/theme/{pk}/set_system_default — set as system default."""
         cmd = SetSystemDefaultCommand(dao=dao, pk=pk)
         theme = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "theme.set_system_default", object_ref=str(pk), user_id=current_user.id
         )
         return {"id": theme.id, "result": {"id": theme.id}}
@@ -259,7 +245,9 @@ class ThemeController(Controller):
         """DELETE /api/v1/theme/unset_system_default — remove system default."""
         cmd = UnsetSystemDefaultCommand(dao=dao)
         await cmd.execute()
-        event_logger.log("theme.unset_system_default", user_id=current_user.id)
+        await event_logger.alog_with_context(
+            "theme.unset_system_default", user_id=current_user.id
+        )
         return {"message": "OK"}
 
     @delete(
@@ -277,7 +265,7 @@ class ThemeController(Controller):
         ids = extract_ids_required(rison_params)
         cmd = BulkDeleteThemeCommand(dao=dao, ids=ids)  # type: ignore[arg-type]
         count = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "theme.bulk_delete",
             extra={"count": count},
             user_id=current_user.id,
@@ -297,7 +285,7 @@ class ThemeController(Controller):
         """PUT /api/v1/theme/{pk}/set_system_dark -- set as system dark theme."""
         cmd = SetSystemDarkCommand(dao=dao, pk=pk)
         theme = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "theme.set_system_dark",
             object_ref=str(pk),
             user_id=current_user.id,
@@ -317,7 +305,9 @@ class ThemeController(Controller):
         """DELETE /api/v1/theme/unset_system_dark -- clear system dark theme."""
         cmd = UnsetSystemDarkCommand(dao=dao)
         await cmd.execute()
-        event_logger.log("theme.unset_system_dark", user_id=current_user.id)
+        await event_logger.alog_with_context(
+            "theme.unset_system_dark", user_id=current_user.id
+        )
         return {"message": "OK"}
 
     @get(
@@ -344,7 +334,7 @@ class ThemeController(Controller):
 
         cmd = ExportThemesCommand(dao=dao)
         files = await cmd.execute()
-        event_logger.log("theme.export", user_id=current_user.id)
+        await event_logger.alog_with_context("theme.export", user_id=current_user.id)
 
         timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         root = f"theme_export_{timestamp}"
@@ -428,7 +418,7 @@ class ThemeController(Controller):
 
         cmd = ImportThemesCommand(dao=dao, contents=contents, overwrite=True)
         count = await cmd.execute()
-        event_logger.log("theme.import", user_id=current_user.id)
+        await event_logger.alog_with_context("theme.import", user_id=current_user.id)
         return {"message": f"Imported {count} themes"}
 
     @get(
@@ -440,7 +430,7 @@ class ThemeController(Controller):
         return await get_info_payload(
             dao=dao,
             model_name="Theme",
-            permissions=["can_read", "can_write"],
+            permissions=["can_read", "can_write", "can_export"],
         )
 
     # ------------------------------------------------------------------

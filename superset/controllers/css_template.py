@@ -87,7 +87,7 @@ class CssTemplateController(Controller):
             ],
         )
         total = await dao.count(filters=rison_filters or None)
-        event_logger.log("css_template.list")
+        await event_logger.alog_with_context("css_template.list")
         return serialize_list_response(
             templates,
             total,
@@ -169,7 +169,7 @@ class CssTemplateController(Controller):
             },
         )
         template = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "css_template.create",
             object_ref=f"css_template:{template.id}",
             user_id=current_user.id,
@@ -202,7 +202,7 @@ class CssTemplateController(Controller):
         )
         cmd = UpdateCssTemplateCommand(dao=dao, pk=pk, data=update_data)
         template = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "css_template.update",
             object_ref=f"css_template:{pk}",
             user_id=current_user.id,
@@ -228,7 +228,9 @@ class CssTemplateController(Controller):
         """DELETE /api/v1/css_template/<pk> — delete a single CSS template."""
         cmd = DeleteCssTemplateCommand(dao=dao, pk=pk)
         await cmd.execute()
-        event_logger.log("css_template.delete", object_ref=f"css_template:{pk}")
+        await event_logger.alog_with_context(
+            "css_template.delete", object_ref=f"css_template:{pk}"
+        )
         return {"message": "OK"}
 
     @delete(
@@ -245,7 +247,9 @@ class CssTemplateController(Controller):
         ids = extract_ids_required(rison_params)
         cmd = BulkDeleteCssTemplateCommand(dao=dao, ids=ids)
         await cmd.execute()
-        event_logger.log("css_template.bulk_delete", extra={"count": len(ids)})
+        await event_logger.alog_with_context(
+            "css_template.bulk_delete", extra={"count": len(ids)}
+        )
         return {"message": "OK"}
 
     @get(

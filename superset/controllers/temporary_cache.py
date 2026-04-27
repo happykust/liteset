@@ -96,7 +96,7 @@ class TemporaryCacheController(Controller):
             key=key,
             value=envelope,
         )
-        event_logger.log(
+        await event_logger.alog_with_context(
             f"{self.resource}.create",
             user_id=current_user.id,
         )
@@ -133,7 +133,7 @@ class TemporaryCacheController(Controller):
             key=key,
             value=envelope,
         )
-        event_logger.log(
+        await event_logger.alog_with_context(
             f"{self.resource}.update",
             user_id=current_user.id,
         )
@@ -154,7 +154,7 @@ class TemporaryCacheController(Controller):
         )
         if not deleted:
             raise ObjectNotFoundError(self.resource, key)
-        event_logger.log(
+        await event_logger.alog_with_context(
             f"{self.resource}.delete",
             user_id=current_user.id,
         )

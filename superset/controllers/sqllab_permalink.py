@@ -31,7 +31,7 @@ from superset.events import event_logger
 from superset.guards.rbac import require_permission
 from superset.providers import provide_kv_dao
 from superset.schemas.sqllab import SqlLabPermalinkSchema
-from superset.typing import KeyValueDAOProtocol
+from superset.typing import KeyValueDAOProtocol, UserProtocol
 
 
 class SqlLabPermalinkController(Controller):
@@ -45,11 +45,18 @@ class SqlLabPermalinkController(Controller):
         status_code=201,
     )
     async def create_permalink(
-        self, data: SqlLabPermalinkSchema, kv_dao: KeyValueDAOProtocol
+        self,
+        data: SqlLabPermalinkSchema,
+        kv_dao: KeyValueDAOProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, str]:
-        cmd = CreateSqlLabPermalinkCommand(dao=kv_dao, state=data.state)  # type: ignore[arg-type]
+        cmd = CreateSqlLabPermalinkCommand(
+            dao=kv_dao,  # type: ignore[arg-type]
+            state=data.state,
+            user_id=current_user.id,
+        )
         key = await cmd.execute()
-        event_logger.log("sqllab_permalink.create")
+        await event_logger.alog_with_context("sqllab_permalink.create")
         return {"key": key, "url": f"/api/v1/sqllab/permalink/{key}"}
 
     @get(
@@ -61,5 +68,7 @@ class SqlLabPermalinkController(Controller):
     ) -> dict[str, Any]:
         cmd = GetSqlLabPermalinkCommand(dao=kv_dao, key=key)  # type: ignore[arg-type]
         state = await cmd.execute()
-        event_logger.log("sqllab_permalink.get", object_ref=f"permalink:{key}")
+        await event_logger.alog_with_context(
+            "sqllab_permalink.get", object_ref=f"permalink:{key}"
+        )
         return state

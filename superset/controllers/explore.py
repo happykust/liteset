@@ -29,7 +29,6 @@ from superset.guards.rbac import require_permission
 from superset.providers import provide_chart_dao, provide_dataset_dao, provide_kv_dao
 from superset.typing import ChartDAOProtocol, DatasetDAOProtocol, KeyValueDAOProtocol
 
-
 # Matches original ``superset_old/db_engine_specs/base.py:builtin_time_grains``
 # — the label shown in the ``Time grain`` dropdown for each ISO-8601 duration
 # returned by the engine spec's ``get_time_grain_expressions()``.
@@ -71,12 +70,7 @@ def _column_type_generic(sql_type: str) -> int:
     t = (sql_type or "").upper()
     if "BOOL" in t:
         return 3
-    if (
-        "TIMESTAMP" in t
-        or "DATETIME" in t
-        or "DATE" in t
-        or "TIME" in t
-    ):
+    if "TIMESTAMP" in t or "DATETIME" in t or "DATE" in t or "TIME" in t:
         return 2
     if (
         "INT" in t
@@ -213,8 +207,8 @@ class ExploreController(Controller):
 
                 _eager_opts: list[Any] = [
                     selectinload(Slice.owners),
-                    selectinload(Slice.created_by),  # type: ignore[attr-defined]
-                    selectinload(Slice.changed_by),  # type: ignore[attr-defined]
+                    selectinload(Slice.created_by),
+                    selectinload(Slice.changed_by),
                 ]
                 # ``Slice.dashboards`` is created via ``backref`` from
                 # ``Dashboard.slices`` so it's only resolvable at
@@ -244,9 +238,7 @@ class ExploreController(Controller):
                     changed_on_humanized = ""
                     if changed_on_dt:
                         try:
-                            now = datetime.now(
-                                changed_on_dt.tzinfo or timezone.utc
-                            )
+                            now = datetime.now(changed_on_dt.tzinfo or timezone.utc)
                             if changed_on_dt.tzinfo is None:
                                 now = datetime.now()
                             changed_on_humanized = humanize.naturaltime(
@@ -268,9 +260,7 @@ class ExploreController(Controller):
                         "changed_on_humanized": changed_on_humanized,
                         "datasource": getattr(chart, "datasource_name", None),
                         "description": desc or None,
-                        "description_markeddown": (
-                            f"<p>{desc}</p>" if desc else ""
-                        ),
+                        "description_markeddown": (f"<p>{desc}</p>" if desc else ""),
                         "edit_url": f"/chart/edit/{chart.id}",
                         "form_data": defaults,
                         # ``Slice.query_context`` is stored as a raw JSON
@@ -380,9 +370,7 @@ class ExploreController(Controller):
                         "database": {
                             "id": db_obj.id if db_obj else 0,
                             "name": (
-                                getattr(db_obj, "database_name", "")
-                                if db_obj
-                                else ""
+                                getattr(db_obj, "database_name", "") if db_obj else ""
                             ),
                             "backend": (
                                 getattr(db_obj, "backend", "") if db_obj else ""
@@ -406,21 +394,15 @@ class ExploreController(Controller):
                         "schema": getattr(dataset, "schema", None),
                         "catalog": getattr(dataset, "catalog", None),
                         "sql": getattr(dataset, "sql", None),
-                        "is_sqllab_view": getattr(
-                            dataset, "is_sqllab_view", False
-                        ),
+                        "is_sqllab_view": getattr(dataset, "is_sqllab_view", False),
                         "description": getattr(dataset, "description", None),
-                        "default_endpoint": getattr(
-                            dataset, "default_endpoint", None
-                        ),
+                        "default_endpoint": getattr(dataset, "default_endpoint", None),
                         "cache_timeout": getattr(dataset, "cache_timeout", None),
                         "offset": getattr(dataset, "offset", 0),
                         "fetch_values_predicate": getattr(
                             dataset, "fetch_values_predicate", None
                         ),
-                        "template_params": getattr(
-                            dataset, "template_params", None
-                        ),
+                        "template_params": getattr(dataset, "template_params", None),
                         "normalize_columns": getattr(
                             dataset, "normalize_columns", False
                         ),
@@ -502,9 +484,7 @@ class ExploreController(Controller):
                                 "certification_details": getattr(
                                     c, "certification_details", None
                                 ),
-                                "is_certified": bool(
-                                    getattr(c, "certified_by", None)
-                                ),
+                                "is_certified": bool(getattr(c, "certified_by", None)),
                                 "warning_markdown": getattr(
                                     c, "warning_markdown", None
                                 ),
@@ -529,9 +509,7 @@ class ExploreController(Controller):
                                 "certification_details": getattr(
                                     m, "certification_details", None
                                 ),
-                                "is_certified": bool(
-                                    getattr(m, "certified_by", None)
-                                ),
+                                "is_certified": bool(getattr(m, "certified_by", None)),
                             }
                             for m in (getattr(dataset, "metrics", None) or [])
                         ],
@@ -613,8 +591,7 @@ class ExploreController(Controller):
                 if obj is None:
                     return ""
                 return (
-                    f"{getattr(obj, 'first_name', '')} "
-                    f"{getattr(obj, 'last_name', '')}"
+                    f"{getattr(obj, 'first_name', '')} {getattr(obj, 'last_name', '')}"
                 ).strip()
 
             dashboards_rel = getattr(chart, "dashboards", None) or []
@@ -643,12 +620,37 @@ class ExploreController(Controller):
             if changed_by:
                 metadata["changed_by"] = _full_name(changed_by)
 
+        # Mirror original Superset response shape (commands/explore/get.py):
+        # when no slice/datasource is supplied, ``dataset`` becomes a
+        # ``[Missing Dataset]`` placeholder and ``form_data`` is filled
+        # with the explore form defaults — the frontend depends on these
+        # keys being present even on the empty-state path.
+        if dataset_data is None:
+            dataset_data = {
+                "name": "[Missing Dataset]",
+                "type": str(datasource_type or "table"),
+                "columns": [],
+                "metrics": [],
+                "database": {"backend": "", "parameters": {}},
+            }
+        if not form_data:
+            datasource_token = (
+                f"{datasource_id_raw}__{datasource_type or 'table'}"
+                if datasource_id_raw is not None
+                else f"None__{datasource_type or 'table'}"
+            )
+            form_data = {
+                "datasource": datasource_token,
+                "adhoc_filters": [],
+                "applied_time_extras": {},
+                "url_params": {},
+            }
         return {
             "result": {
                 "dataset": dataset_data,
                 "form_data": form_data,
                 "slice": slice_data,
-                "message": message,
+                "message": message or None,
                 "metadata": metadata,
             }
         }

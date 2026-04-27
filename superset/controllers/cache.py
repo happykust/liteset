@@ -150,7 +150,7 @@ class CacheController(Controller):
                 status_code=500,
             )
 
-        event_logger.log(
+        await event_logger.alog_with_context(
             "cache.invalidate",
             extra={
                 "datasource_uids": list(datasource_uids),

@@ -51,7 +51,7 @@ class ImportExportController(Controller):
         manager = AsyncFullAssetManager(session)
         content = await manager.export_assets()
 
-        event_logger.log("assets.export", user_id=current_user.id)
+        await event_logger.alog_with_context("assets.export", user_id=current_user.id)
 
         return Response(
             content=content,
@@ -115,7 +115,7 @@ class ImportExportController(Controller):
             sparse=bool(sparse),
         )
 
-        event_logger.log(
+        await event_logger.alog_with_context(
             "assets.import",
             user_id=current_user.id if current_user else None,
         )

@@ -34,7 +34,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from superset.db.daos.key_value import AsyncKeyValueDAO
 from superset.events import event_logger
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
-from superset.guards.rbac import require_authentication
+from superset.guards.rbac import (
+    deny_anon_with_403,
+    require_authentication,
+)
 from superset.key_value.shared_entries import get_permalink_salt
 from superset.key_value.types import KeyValueResource, SharedKey
 from superset.key_value.utils import decode_permalink_id, encode_permalink_key
@@ -62,7 +65,7 @@ class ExplorePermalinkController(Controller):
         "kv_dao": Provide(provide_kv_dao, sync_to_thread=False),
     }
 
-    @post("/", status_code=201, guards=[require_authentication])
+    @post("/", status_code=201, guards=[deny_anon_with_403])
     async def create_permalink(
         self,
         data: ExplorePermalinkCreateSchema,
@@ -117,9 +120,11 @@ class ExplorePermalinkController(Controller):
         # Encode the int id into a short hashids string using a
         # per-install salt (persisted in the app resource).
         salt = await get_permalink_salt(session, SharedKey.EXPLORE_PERMALINK_SALT)
-        key = encode_permalink_key(key=entry_id, salt=salt)
+        key = encode_permalink_key(key=int(entry_id), salt=salt)
 
-        event_logger.log("explore_permalink.create", user_id=current_user.id)
+        await event_logger.alog_with_context(
+            "explore_permalink.create", user_id=current_user.id
+        )
         return {"key": key, "url": f"/explore/p/{key}/"}
 
     @get("/{key:str}", guards=[require_authentication])

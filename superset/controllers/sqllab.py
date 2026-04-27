@@ -47,22 +47,20 @@ from superset.schemas.sqllab import (
 from superset.typing import QueryDAOProtocol, UserProtocol
 
 # Keys to expose for each database in the bootstrap response.
+# Mirrors the original ``DatabaseSqlLabSchema`` shape exactly so the
+# ``sqllab_bootstrap`` contract snapshot matches: any extra key here
+# breaks the snapshot diff for legacy frontends and contract tests.
 _DATABASE_KEYS = frozenset(
     {
-        "allow_file_upload",
         "allow_ctas",
         "allow_cvas",
         "allow_dml",
+        "allow_file_upload",
         "allow_run_async",
-        "allows_subquery",
         "backend",
         "database_name",
         "expose_in_sqllab",
         "force_ctas_schema",
-        "id",
-        "disable_data_preview",
-        "disable_drill_to_detail",
-        "allow_multi_catalog",
     }
 )
 
@@ -114,13 +112,14 @@ class SqlLabController(Controller):
         tab_state_ids = await tab_state_dao.get_tab_state_ids(current_user.id)
         active_tab = await tab_state_dao.get_active_tab(current_user.id)
 
-        event_logger.log("sqllab.bootstrap", user_id=current_user.id)
+        await event_logger.alog_with_context(
+            "sqllab.bootstrap", user_id=current_user.id
+        )
         return {
             "result": {
                 "tab_state_ids": tab_state_ids,
                 "databases": databases,
                 "active_tab": active_tab,
-                "user": {"id": current_user.id},
             }
         }
 
@@ -136,7 +135,7 @@ class SqlLabController(Controller):
             schema=data.schema,
         )
         result = await cmd.execute()
-        event_logger.log("sqllab.estimate")
+        await event_logger.alog_with_context("sqllab.estimate")
         return {"result": result}
 
     @post(
@@ -147,7 +146,7 @@ class SqlLabController(Controller):
     async def format_sql(self, data: FormatSQLSchema) -> dict[str, str]:
         cmd = FormatSQLCommand(sql=data.sql, engine=data.engine)
         formatted = await cmd.execute()
-        event_logger.log("sqllab.format_sql")
+        await event_logger.alog_with_context("sqllab.format_sql")
         return {"result": formatted}
 
     @get(
@@ -164,7 +163,9 @@ class SqlLabController(Controller):
         """
         query = await dao.find_one_or_none(client_id=client_id)
         if query is None:
-            event_logger.log("sqllab.export", extra={"client_id": client_id})
+            await event_logger.alog_with_context(
+                "sqllab.export", extra={"client_id": client_id}
+            )
             return Response(
                 content="",
                 status_code=404,
@@ -181,7 +182,9 @@ class SqlLabController(Controller):
         ts = datetime.now().isoformat().replace("-", "").replace(":", "").split(".")[0]
         csv_name = f"sqllab_{tab}_{ts}"
 
-        event_logger.log("sqllab.export", extra={"client_id": client_id})
+        await event_logger.alog_with_context(
+            "sqllab.export", extra={"client_id": client_id}
+        )
         return Response(
             content="",
             status_code=200,
@@ -200,12 +203,13 @@ class SqlLabController(Controller):
         rows = (rison_params or {}).get("rows")
         cmd = GetSQLResultsCommand(key=key, rows=rows, dao=dao)
         result = await cmd.execute()
-        event_logger.log("sqllab.results")
+        await event_logger.alog_with_context("sqllab.results")
         return result
 
     @post(
         "/execute/",
         guards=[require_permission("can_sqllab", "Superset")],
+        status_code=200,
     )
     async def execute(
         self,
@@ -213,7 +217,7 @@ class SqlLabController(Controller):
         dao: QueryDAOProtocol,
         current_user: UserProtocol,
         state: State,
-    ) -> dict[str, Any]:
+    ) -> Response[dict[str, Any]]:
         settings = state.settings
         cmd = ExecuteSQLCommand(
             dao=dao,  # type: ignore[arg-type]
@@ -234,5 +238,8 @@ class SqlLabController(Controller):
             sql_max_row=getattr(settings, "sql_max_row", 100000),
         )
         result = await cmd.execute()
-        event_logger.log("sqllab.execute", user_id=current_user.id)
-        return result
+        await event_logger.alog_with_context("sqllab.execute", user_id=current_user.id)
+        # Mirror original Flask /api/v1/sqllab/execute/: 202 only when the
+        # query is queued for async execution, 200 for sync success/failure.
+        status = 202 if (result or {}).get("status") == "running" else 200
+        return Response(content=result, status_code=status)
