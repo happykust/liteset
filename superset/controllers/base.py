@@ -361,11 +361,7 @@ def _prettify_column(name: str) -> str:
     ``cache_timeout`` → ``Cache Timeout``,
     ``changed_by.first_name`` → ``Changed By First Name``.
     """
-    return (
-        name.replace(".", " ")
-        .replace("_", " ")
-        .title()
-    )
+    return name.replace(".", " ").replace("_", " ").title()
 
 
 def serialize_list_response(
@@ -390,13 +386,17 @@ def serialize_list_response(
       processing or JSON serialization
     """
     result = [_serialize_item(item, columns) for item in (items or [])]
-    ids: list[Any] = []
+    ids: list[str] = []
     for row in result:
         # uuid → string
         if "uuid" in row and row["uuid"] is not None:
             row["uuid"] = str(row["uuid"])
-        if "id" in row:
-            ids.append(row["id"])
+        # ``ids`` is declared as array of strings in the original
+        # Superset OpenAPI spec (FAB ApiListResponse); cast pks to str
+        # so contract validators don't reject integer entries.
+        row_id = row.get("id") if "id" in row else getattr(row, "id", None)
+        if row_id is not None:
+            ids.append(str(row_id))
 
     # Auto-generate label_columns if not provided
     if label_columns is None:
@@ -421,12 +421,28 @@ async def get_info_payload(
     model_name: str,
     permissions: list[str],
 ) -> dict[str, Any]:
-    """Build _info response with permissions, column list, and filter metadata.
+    """Build the ``GET /<resource>/_info`` response.
 
-    This matches Flask's GET /_info response used by the frontend to build
-    filter UIs, permission checks, and form field lists.
+    Resources registered in :mod:`superset.info_builder.specs` get a
+    dynamically-assembled Marshmallow-style payload byte-equivalent to
+    the original Apache Superset response (``add_title``,
+    ``add_columns`` / ``edit_columns`` with ``type: 'String'`` and
+    validators, full filter operator catalogue). Filter operators are
+    derived live from the SA model; Marshmallow-specific bits live in
+    :mod:`superset.info_builder.specs`.
+
+    Resources without a descriptor fall back to a minimal
+    SA-introspected payload — useful for rarely-used legacy endpoints.
     """
-    # Introspect model columns from DAO
+    from superset.info_builder.builder import build_info_payload
+
+    payload = build_info_payload(model_name, permissions=permissions)
+    if payload is not None:
+        return payload
+
+    # Fallback — SA introspection. Used by resources we haven't shipped
+    # a static fixture for; keeps the endpoint usable while the
+    # frontend keys off the fixture for the major models.
     model_cls = getattr(dao, "model_cls", None)
     columns: list[dict[str, Any]] = []
     if model_cls is not None:
@@ -470,9 +486,11 @@ async def get_info_payload(
 
 
 _EXTRA_FIELDS_REL: dict[str, list[str]] = {
+    # Only ``owners`` carries extra fields in original Superset —
+    # see ``BaseSupersetModelRestApi.extra_fields_rel_fields`` at
+    # superset_old/views/base_api.py:327. ``created_by``/``changed_by``
+    # responses keep ``extra: {}`` for contract parity.
     "owners": ["email", "active"],
-    "created_by": ["email", "active"],
-    "changed_by": ["email", "active"],
 }
 
 
@@ -582,14 +600,17 @@ async def get_related_payload(  # noqa: C901
         extra_fields = _EXTRA_FIELDS_REL.get(column_name, [])
 
         def _build_item(item: Any) -> dict[str, Any]:
+            # Always emit an ``extra`` key (empty dict when the related
+            # column has no extra fields) — original Superset's
+            # RelatedResultResponseSchema declares ``extra`` as a
+            # required object, and contract tests rely on its presence.
             entry: dict[str, Any] = {
                 "value": item.id,
                 "text": str(item),
+                "extra": {field: getattr(item, field, None) for field in extra_fields}
+                if extra_fields
+                else {},
             }
-            if extra_fields:
-                entry["extra"] = {
-                    field: getattr(item, field, None) for field in extra_fields
-                }
             return entry
 
         return {
@@ -636,7 +657,10 @@ async def get_distinct_payload(
         from sqlalchemy import func, select as sa_select
 
         col = getattr(model_cls, column_name)
-        base_stmt = sa_select(func.distinct(col))
+        # Match original ``DistinctFilter`` behaviour — drop NULL values
+        # so ``{"text": "None", "value": null}`` doesn't pollute the
+        # filter dropdown (and contract snapshots).
+        base_stmt = sa_select(func.distinct(col)).where(col.is_not(None))
 
         # Apply base_filters if provided
         if base_filters:
@@ -651,7 +675,7 @@ async def get_distinct_payload(
         )
         stmt = base_stmt.offset(page * page_size).limit(page_size)
         result = await dao.session.execute(stmt)
-        values = result.scalars().all()
+        values = [v for v in result.scalars().all() if v is not None]
 
         return {
             "count": total or 0,

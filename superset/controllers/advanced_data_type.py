@@ -24,12 +24,50 @@ from litestar import Controller, get, post
 from litestar.datastructures import State
 from litestar.di import Provide
 
+from superset.advanced_data_type.types import AdvancedDataType
 from superset.exceptions import SupersetValidationException
 from superset.guards.rbac import require_authentication
 from superset.params.rison import provide_rison_query
 from superset.schemas.advanced_data_type import (
     AdvancedDataTypeConvertRequest,
 )
+
+
+def _get_registry(state: State) -> dict[str, Any]:
+    """Return the merged advanced_data_types registry with defaults.
+
+    Mirrors original Superset's ``ADVANCED_DATA_TYPES`` config which
+    ships ``port`` and ``internet_address`` plugins out of the box (see
+    superset_old/config.py:2053-2056).
+    """
+    from superset.advanced_data_type.plugins.internet_port import internet_port
+
+    user_registry: dict[str, Any] = (
+        getattr(state.settings, "advanced_data_types", {}) or {}
+    )
+    return {"port": internet_port, **user_registry}
+
+
+def _invoke_handler(handler: Any, adv_type: str, values: list[Any]) -> Any:
+    """Invoke an advanced-data-type handler.
+
+    Supports three handler shapes:
+    - ``AdvancedDataType`` dataclass with ``translate_type`` callable
+      (the canonical plugin shape — matches original)
+    - bare callable accepting the values list
+    - object exposing ``fetch_data(values)``
+    """
+    if isinstance(handler, AdvancedDataType):
+        return handler.translate_type(
+            {"advanced_data_type": adv_type, "values": values}
+        )
+    if callable(handler):
+        return handler(values)
+    if hasattr(handler, "fetch_data"):
+        return handler.fetch_data(values)
+    raise SupersetValidationException(
+        f"Advanced data type handler for '{adv_type}' is not callable"
+    )
 
 
 class AdvancedDataTypeController(Controller):
@@ -41,10 +79,8 @@ class AdvancedDataTypeController(Controller):
 
     @get("/types", guards=[require_authentication])
     async def get_types(self, state: State) -> dict[str, list[str]]:
-        """GET /api/v1/advanced_data_type/types
-        -- list registered advanced data types.
-        """
-        registry: dict[str, Any] = getattr(state.settings, "advanced_data_types", {})
+        """GET /api/v1/advanced_data_type/types -- list registered types."""
+        registry = _get_registry(state)
         return {"result": list(registry.keys())}
 
     @post("/convert", guards=[require_authentication])
@@ -52,24 +88,15 @@ class AdvancedDataTypeController(Controller):
         self,
         data: AdvancedDataTypeConvertRequest,
         state: State,
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> dict[str, Any]:
         """POST /api/v1/advanced_data_type/convert -- convert values."""
-        registry: dict[str, Any] = getattr(state.settings, "advanced_data_types", {})
+        registry = _get_registry(state)
         handler = registry.get(data.type)
         if handler is None:
             raise SupersetValidationException(
                 f"Unknown advanced data type: {data.type}"
             )
-
-        if callable(handler):
-            result = handler(data.values)
-        elif hasattr(handler, "fetch_data"):
-            result = handler.fetch_data(data.values)
-        else:
-            raise SupersetValidationException(
-                f"Advanced data type handler for '{data.type}' is not callable"
-            )
-
+        result = _invoke_handler(handler, data.type, data.values)
         return {"result": result}
 
     @get("/convert", guards=[require_authentication])
@@ -77,7 +104,7 @@ class AdvancedDataTypeController(Controller):
         self,
         rison_params: dict[str, Any] | None,
         state: State,
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> dict[str, Any]:
         """GET /api/v1/advanced_data_type/convert -- convert via RISON params.
 
         Accepts ``type`` and ``values`` from the Rison query parameter,
@@ -92,18 +119,9 @@ class AdvancedDataTypeController(Controller):
                 "'type' is required in the RISON query parameter"
             )
 
-        registry: dict[str, Any] = getattr(state.settings, "advanced_data_types", {})
+        registry = _get_registry(state)
         handler = registry.get(adv_type)
         if handler is None:
             raise SupersetValidationException(f"Unknown advanced data type: {adv_type}")
-
-        if callable(handler):
-            result = handler(values)
-        elif hasattr(handler, "fetch_data"):
-            result = handler.fetch_data(values)
-        else:
-            raise SupersetValidationException(
-                f"Advanced data type handler for '{adv_type}' is not callable"
-            )
-
+        result = _invoke_handler(handler, adv_type, values)
         return {"result": result}

@@ -26,7 +26,7 @@ from litestar.di import Provide
 
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError, SupersetValidationException
-from superset.guards.rbac import require_authentication
+from superset.guards.rbac import require_authenticated_user, require_authentication
 from superset.providers import provide_datasource_dao
 from superset.typing import (
     DatasourceDAOProtocol,
@@ -116,7 +116,7 @@ class DatasourceController(Controller):
                 for col in columns
             ]
 
-        event_logger.log(
+        await event_logger.alog_with_context(
             "datasource.get",
             extra={"datasource_type": datasource_type, "datasource_id": datasource_id},
         )
@@ -127,35 +127,29 @@ class DatasourceController(Controller):
         security_manager: SecurityManagerProtocol,
         datasource: Any,
         current_user: UserProtocol,
-    ) -> list[str]:
+    ) -> list[Any]:
         """Return active RLS filter clauses for ``datasource``.
 
-        Mirrors the pattern used by
-        ``query_context_processor._get_query_result`` — fetches filters
-        via ``security_manager.get_rls_filters`` and extracts the raw
-        SQL clause strings.  Admin users receive an empty list because
-        the security manager bypasses RLS for them.
+        Delegates to :func:`superset.utils.rls.compose_rls_where_clauses`
+        which preserves the original ``group_key`` OR/AND grouping and
+        Jinja templating semantics, returning a list of SQLAlchemy
+        ``ClauseElement`` objects (``TextClause`` / ``BooleanClauseList``).
+        Downstream callers (e.g. ``async_values_for_column``) compile
+        these against the database dialect for proper quoting.
         """
+        from superset.utils.rls import compose_rls_where_clauses
+
         if not hasattr(security_manager, "get_rls_filters"):
             return []
-        try:
-            rls_filters = await security_manager.get_rls_filters(
-                datasource, user=current_user
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "Failed to retrieve RLS filters for datasource %s",
-                getattr(datasource, "id", None),
-                exc_info=True,
-            )
-            return []
-        return [
-            f.clause for f in rls_filters if getattr(f, "clause", None)
-        ]
+        return await compose_rls_where_clauses(
+            datasource,
+            user=current_user,
+            security_manager=security_manager,
+        )
 
     @get(
         "/{datasource_type:str}/{datasource_id:int}/column/{column_name:str}/values/",
-        guards=[require_authentication],
+        guards=[require_authenticated_user],
     )
     async def get_column_values(
         self,
@@ -213,7 +207,7 @@ class DatasourceController(Controller):
                     limit=1000,
                     rls_filters=rls_clauses or None,
                 )
-                event_logger.log(
+                await event_logger.alog_with_context(
                     "datasource.column_values",
                     extra={
                         "datasource_type": datasource_type,
@@ -241,7 +235,7 @@ class DatasourceController(Controller):
                     f"Column name '{column_name}' does not exist"
                 )
 
-        event_logger.log(
+        await event_logger.alog_with_context(
             "datasource.column_values",
             extra={
                 "datasource_type": datasource_type,
