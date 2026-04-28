@@ -110,7 +110,7 @@ class PermissionController(Controller):
 
         result = [PermissionResponse(id=p.id, name=p.name) for p in perms]
 
-        event_logger.log("permission.list")
+        await event_logger.alog_with_context("permission.list")
 
         return msgspec.to_builtins(
             PermissionsSearchResponse(
@@ -142,7 +142,7 @@ class PermissionController(Controller):
             raise ObjectNotFoundError("Permission", pk)
 
         result = PermissionResponse(id=perm.id, name=perm.name)
-        event_logger.log("permission.show", object_ref=str(pk))
+        await event_logger.alog_with_context("permission.show", object_ref=str(pk))
         return {"id": pk, "result": msgspec.to_builtins(result)}
 
     # ------------------------------------------------------------------

@@ -173,7 +173,7 @@ class GroupController(Controller):
         )
 
         result = [_group_to_response(g) for g in groups]
-        event_logger.log("group.list")
+        await event_logger.alog_with_context("group.list")
         return msgspec.to_builtins(GroupsSearchResponse(result=result, count=total))
 
     # ------------------------------------------------------------------
@@ -194,7 +194,7 @@ class GroupController(Controller):
             raise ObjectNotFoundError("Group", pk)
 
         result = _group_to_response(group)
-        event_logger.log("group.show", object_ref=str(pk))
+        await event_logger.alog_with_context("group.show", object_ref=str(pk))
         return {"id": pk, "result": msgspec.to_builtins(result)}
 
     # ------------------------------------------------------------------
@@ -225,7 +225,9 @@ class GroupController(Controller):
             attrs["description"] = data.description.strip()
 
         group = await group_dao.create(attrs)
-        event_logger.log("group.create", extra={"group_name": data.name})
+        await event_logger.alog_with_context(
+            "group.create", extra={"group_name": data.name}
+        )
         return {
             "id": group.id,
             "result": msgspec.to_builtins(_group_to_response(group)),
@@ -264,7 +266,7 @@ class GroupController(Controller):
             attrs["user_ids"] = data.users
 
         updated = await group_dao.update(group, attrs)
-        event_logger.log("group.update", object_ref=str(pk))
+        await event_logger.alog_with_context("group.update", object_ref=str(pk))
         return {
             "id": pk,
             "result": msgspec.to_builtins(_group_to_response(updated)),
@@ -289,7 +291,7 @@ class GroupController(Controller):
             raise ObjectNotFoundError("Group", pk)
 
         await group_dao.delete(group)
-        event_logger.log("group.delete", object_ref=str(pk))
+        await event_logger.alog_with_context("group.delete", object_ref=str(pk))
         return {"message": "OK"}
 
     # ------------------------------------------------------------------

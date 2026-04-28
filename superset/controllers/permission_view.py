@@ -148,7 +148,7 @@ class PermissionViewController(Controller):
         )
 
         result = [_pv_to_response(pv) for pv in pvs]
-        event_logger.log("permission_view.list")
+        await event_logger.alog_with_context("permission_view.list")
         return msgspec.to_builtins(
             PermissionViewsSearchResponse(
                 result=result,
@@ -175,7 +175,7 @@ class PermissionViewController(Controller):
             raise ObjectNotFoundError("PermissionView", pk)
 
         result = _pv_to_response(pv)
-        event_logger.log("permission_view.show", object_ref=str(pk))
+        await event_logger.alog_with_context("permission_view.show", object_ref=str(pk))
         return {"id": pk, "result": msgspec.to_builtins(result)}
 
     # ------------------------------------------------------------------
@@ -227,7 +227,7 @@ class PermissionViewController(Controller):
                 f"Database exception occurred: {exc}"
             ) from exc
 
-        event_logger.log("permission_view.create")
+        await event_logger.alog_with_context("permission_view.create")
         return {
             "id": pv.id,
             "result": {
@@ -275,7 +275,9 @@ class PermissionViewController(Controller):
                 f"Database exception occurred: {exc}"
             ) from exc
 
-        event_logger.log("permission_view.update", object_ref=str(pk))
+        await event_logger.alog_with_context(
+            "permission_view.update", object_ref=str(pk)
+        )
         return {
             "result": {
                 "permission_id": updated.permission_id,
@@ -315,5 +317,7 @@ class PermissionViewController(Controller):
                 f"Database exception occurred: {exc}"
             ) from exc
 
-        event_logger.log("permission_view.delete", object_ref=str(pk))
+        await event_logger.alog_with_context(
+            "permission_view.delete", object_ref=str(pk)
+        )
         return {"message": "OK"}

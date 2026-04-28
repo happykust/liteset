@@ -20,16 +20,13 @@ from __future__ import annotations
 
 from typing import Any
 
-import msgspec
 from litestar import Controller, get, put
 from litestar.di import Provide
 
 from superset.events import event_logger
-from superset.guards.rbac import require_authentication
+from superset.guards.rbac import require_authenticated_user as require_authentication
 from superset.schemas.user import (
-    CurrentUserResponse,
     CurrentUserUpdateRequest,
-    RoleResponseSchema,
 )
 from superset.typing import UserProtocol
 
@@ -50,28 +47,25 @@ class CurrentUserController(Controller):
 
     @get("/", guards=[require_authentication])
     async def get_me(self, current_user: UserProtocol) -> dict[str, Any]:
-        """GET /api/v1/me/ — get current user info."""
-        roles = []
-        user_roles = getattr(current_user, "roles", [])
-        for role in user_roles:
-            roles.append(
-                RoleResponseSchema(
-                    id=getattr(role, "id", 0),
-                    name=getattr(role, "name", ""),
-                )
-            )
+        """GET /api/v1/me/ — get current user info.
 
-        resp = CurrentUserResponse(
-            id=current_user.id,
-            username=current_user.username,
-            first_name=getattr(current_user, "first_name", ""),
-            last_name=getattr(current_user, "last_name", ""),
-            email=getattr(current_user, "email", ""),
-            is_active=getattr(current_user, "is_active", True),
-            is_anonymous=not current_user.is_authenticated,
-            roles=roles,
-        )
-        return {"result": msgspec.to_builtins(resp)}
+        Mirrors original ``UserResponseSchema`` at
+        superset_old/views/users/schemas.py:30 — returns only
+        ``email``/``first_name``/``last_name``/``is_active``/
+        ``is_anonymous``/``username``/``login_count``. ``id``/``roles``
+        are intentionally absent (use ``/me/roles/`` for the latter).
+        """
+        return {
+            "result": {
+                "username": current_user.username,
+                "first_name": getattr(current_user, "first_name", ""),
+                "last_name": getattr(current_user, "last_name", ""),
+                "email": getattr(current_user, "email", ""),
+                "is_active": getattr(current_user, "is_active", True),
+                "is_anonymous": not current_user.is_authenticated,
+                "login_count": int(getattr(current_user, "login_count", 0) or 0),
+            }
+        }
 
     @get("/roles/", guards=[require_authentication])
     async def get_my_roles(self, current_user: UserProtocol) -> dict[str, Any]:
@@ -172,5 +166,5 @@ class CurrentUserController(Controller):
                 hashed_password=hashed_password,
             )
 
-        event_logger.log("user.update_me", user_id=current_user.id)
+        await event_logger.alog_with_context("user.update_me", user_id=current_user.id)
         return {"result": updates}

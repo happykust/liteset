@@ -31,7 +31,7 @@ import logging
 from typing import Any
 
 import pandas as pd
-from litestar import Controller, Request, post
+from litestar import Controller, post, Request
 from litestar.di import Provide
 from litestar.response import Response
 
@@ -235,9 +235,7 @@ class LegacyDatasourceController(Controller):
         )
         user = current_user
         is_guest = (
-            sec_mgr.is_guest_user(user)
-            if hasattr(sec_mgr, "is_guest_user")
-            else False
+            sec_mgr.is_guest_user(user) if hasattr(sec_mgr, "is_guest_user") else False
         )
 
         datasource = await ds_dao.get_datasource(
@@ -256,9 +254,7 @@ class LegacyDatasourceController(Controller):
                             "extra": {},
                         }
                     ],
-                    "message": (
-                        f'Datasource "{params["datasource_id"]}" not found.'
-                    ),
+                    "message": (f'Datasource "{params["datasource_id"]}" not found.'),
                 },
                 status_code=404,
             )
@@ -273,20 +269,14 @@ class LegacyDatasourceController(Controller):
                     datasource, dashboard_id, user=user
                 )
                 if not allowed:
-                    return Response(
-                        content={"message": "Forbidden"}, status_code=403
-                    )
+                    return Response(content={"message": "Forbidden"}, status_code=403)
         else:
             # Regular datasource-access check (mirrors raise_for_access).
             if hasattr(sec_mgr, "raise_for_access"):
                 try:
-                    await sec_mgr.raise_for_access(
-                        datasource=datasource, user=user
-                    )
+                    await sec_mgr.raise_for_access(datasource=datasource, user=user)
                 except Exception as exc:  # noqa: BLE001
-                    return Response(
-                        content={"message": str(exc)}, status_code=403
-                    )
+                    return Response(content={"message": str(exc)}, status_code=403)
 
         # Replace verbose column names in filters with physical ones,
         # matching the original ``replace_verbose_with_column`` helper.
@@ -326,9 +316,7 @@ class LegacyDatasourceController(Controller):
             force=force,
             result_format="json",
             result_type=(
-                "drill_detail"
-                if payload and payload.get("filters")
-                else "samples"
+                "drill_detail" if payload and payload.get("filters") else "samples"
             ),
         )
 

@@ -202,7 +202,7 @@ class SecurityController(Controller):
         session_id = request.cookies.get(cookie_name, "")
 
         token = generate_csrf_token(secret, session_id=session_id)
-        event_logger.log("security.csrf_token")
+        await event_logger.alog_with_context("security.csrf_token")
         return {"result": token}
 
     @post(
@@ -318,7 +318,9 @@ class SecurityController(Controller):
             exp_seconds=exp_seconds,
             audience=audience,
         )
-        event_logger.log("security.guest_token", extra={"username": data.user.username})
+        await event_logger.alog_with_context(
+            "security.guest_token", extra={"username": data.user.username}
+        )
         return {"token": token}
 
     @get(
@@ -373,7 +375,7 @@ class SecurityController(Controller):
             for role in roles
         ]
 
-        event_logger.log("security.search_roles")
+        await event_logger.alog_with_context("security.search_roles")
 
         return msgspec.to_builtins(
             RolesSearchResponse(
@@ -399,9 +401,12 @@ class SecurityController(Controller):
     ) -> LoginResponse | dict[str, str]:
         """POST /api/v1/security/login -- authenticate and return JWT tokens.
 
-        Supports ``provider=db`` (database auth) currently.
+        Supports ``provider=db`` (database auth) and ``provider=ldap``
+        (LDAP-bind auth via :class:`AsyncSecurityManager`).
         Returns access_token and optionally refresh_token.
         """
+        from superset.i18n import gettext
+
         settings = state.settings
         secret_key = _get_jwt_secret(settings)
 
@@ -420,28 +425,53 @@ class SecurityController(Controller):
         if not data.username:
             raise ValidationException(detail="Username is required")
 
-        # Only DB auth is implemented
-        if data.provider == "ldap":
-            raise ValidationException(detail="LDAP provider not yet implemented")
-
-        # Authenticate via DAO
+        # Authenticate via DAO/Security manager
         from superset.security.dao import AsyncSecurityDAO
+        from superset.security.manager import AsyncSecurityManager
 
         session_factory = state.session_factory
         async with session_factory() as session:
             dao = AsyncSecurityDAO(session)
-            user = await dao.get_user_by_username(data.username)
+            user: Any | None
 
-            if user is None:
-                raise NotAuthorizedException(detail="Invalid credentials")
+            if data.provider == "ldap":
+                # Build a request-local SecurityManager bound to this
+                # session so registration / role-sync writes commit through
+                # the same transaction.
+                feature_flags = getattr(settings, "feature_flags", {}) or {}
+                embedded_enabled = bool(
+                    getattr(settings, "embedded_superset", False)
+                ) or bool(feature_flags.get("EMBEDDED_SUPERSET", False))
+                sm = AsyncSecurityManager(
+                    dao=dao,
+                    admin_role_name=getattr(settings, "auth_role_admin", "Admin"),
+                    public_role_name=getattr(settings, "auth_role_public", "Public"),
+                    guest_role_name=getattr(settings, "guest_role_name", "Guest"),
+                    dashboard_rbac_enabled=getattr(settings, "dashboard_rbac", False),
+                    embedded_superset_enabled=embedded_enabled,
+                )
+                user = await sm.auth_user_ldap(
+                    data.username,
+                    data.password,
+                    settings=settings,
+                )
+                if user is None:
+                    raise NotAuthorizedException(
+                        detail=gettext("Invalid login. Please try again.")
+                    )
+            else:
+                user = await dao.get_user_by_username(data.username)
 
-            # Check active status
-            if not getattr(user, "active", 1):
-                raise NotAuthorizedException(detail="User is inactive")
+                if user is None:
+                    raise NotAuthorizedException(detail="Invalid credentials")
 
-            # Verify password
-            if not self._check_password(user.password, data.password):
-                raise NotAuthorizedException(detail="Invalid credentials")
+                # Check active status
+                if not getattr(user, "active", 1):
+                    raise NotAuthorizedException(detail="User is inactive")
+
+                # Verify password
+                if not self._check_password(user.password, data.password):
+                    raise NotAuthorizedException(detail="Invalid credentials")
 
             # Create tokens
             access_expires = getattr(settings, "jwt_access_token_expires", 900)
@@ -465,7 +495,7 @@ class SecurityController(Controller):
                 )
                 result["refresh_token"] = refresh_token
 
-            event_logger.log(
+            await event_logger.alog_with_context(
                 "security.login",
                 extra={"username": data.username, "provider": data.provider},
             )
@@ -526,7 +556,9 @@ class SecurityController(Controller):
             fresh=False,
         )
 
-        event_logger.log("security.refresh", extra={"user_id": user_id})
+        await event_logger.alog_with_context(
+            "security.refresh", extra={"user_id": user_id}
+        )
         return {"access_token": access_token}
 
     @staticmethod

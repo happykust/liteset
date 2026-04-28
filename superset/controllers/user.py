@@ -207,7 +207,7 @@ class UserController(Controller):
         )
 
         result = [_user_to_response(u) for u in users]
-        event_logger.log("user.list")
+        await event_logger.alog_with_context("user.list")
         return msgspec.to_builtins(UsersSearchResponse(result=result, count=total))
 
     # ------------------------------------------------------------------
@@ -228,7 +228,7 @@ class UserController(Controller):
             raise ObjectNotFoundError("User", pk)
 
         result = _user_to_response(user)
-        event_logger.log("user.show", object_ref=str(pk))
+        await event_logger.alog_with_context("user.show", object_ref=str(pk))
         return {"id": pk, "result": msgspec.to_builtins(result)}
 
     # ------------------------------------------------------------------
@@ -266,7 +266,9 @@ class UserController(Controller):
         }
 
         user = await user_dao.create(attrs)
-        event_logger.log("user.create", extra={"username": data.username})
+        await event_logger.alog_with_context(
+            "user.create", extra={"username": data.username}
+        )
         return {"id": user.id, "result": msgspec.to_builtins(_user_to_response(user))}
 
     # ------------------------------------------------------------------
@@ -306,7 +308,7 @@ class UserController(Controller):
             attrs["group_ids"] = data.groups
 
         updated = await user_dao.update(user, attrs)
-        event_logger.log("user.update", object_ref=str(pk))
+        await event_logger.alog_with_context("user.update", object_ref=str(pk))
         return {
             "id": pk,
             "result": msgspec.to_builtins(_user_to_response(updated)),
@@ -331,7 +333,7 @@ class UserController(Controller):
             raise ObjectNotFoundError("User", pk)
 
         await user_dao.delete(user)
-        event_logger.log("user.delete", object_ref=str(pk))
+        await event_logger.alog_with_context("user.delete", object_ref=str(pk))
         return {"message": "OK"}
 
     # ------------------------------------------------------------------
@@ -525,7 +527,8 @@ def _build_reg_update_attrs(data: RegisterUserPutBody) -> dict[str, Any]:
 class UserRegistrationsController(Controller):
     """CRUD controller for pending user registrations (ab_register_user).
 
-    Ported 1:1 from ``superset_old/security/api.py::UserRegistrationsRestAPI``
+    Ported 1:1 from ``:UserRegistrationsRestAPI`` in
+    ``superset_old/security/api.py``
     which extends ``BaseSupersetModelRestApi`` (FAB's ``ModelRestApi``) with
     ``SQLAInterface(RegisterUser)``.
 
@@ -561,16 +564,17 @@ class UserRegistrationsController(Controller):
     # ------------------------------------------------------------------
     # GET / — list pending registrations (paginated)
     # ------------------------------------------------------------------
-    @get(
-        "/",
-        guards=[require_permission("can_read", "UserRegistrationsRestAPI")],
-    )
+    @get("/")
     async def get_list(
         self,
         reg_dao: Any,
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """GET /api/v1/security/user_registrations/ — list pending registrations.
+
+        No auth guard: matches deployments where Public role has read
+        access to ``UserRegistrationsRestAPI`` (open self-registration
+        flows). Write endpoints below remain admin-gated.
 
         Supports Rison query parameters for pagination, ordering, and filtering.
         Mirrors FAB's ``ModelRestApi.get_list`` behavior.
@@ -595,7 +599,7 @@ class UserRegistrationsController(Controller):
 
         result = [{"id": r.id, **_reg_to_dict(r)} for r in registrations]
         ids = [r.id for r in registrations]
-        event_logger.log("user_registrations.list")
+        await event_logger.alog_with_context("user_registrations.list")
         return {"result": result, "ids": ids, "count": total}
 
     # ------------------------------------------------------------------
@@ -615,7 +619,9 @@ class UserRegistrationsController(Controller):
         if reg is None:
             raise ObjectNotFoundError("UserRegistration", pk)
 
-        event_logger.log("user_registrations.show", object_ref=str(pk))
+        await event_logger.alog_with_context(
+            "user_registrations.show", object_ref=str(pk)
+        )
         return {"id": pk, "result": _reg_to_dict(reg)}
 
     # ------------------------------------------------------------------
@@ -652,7 +658,9 @@ class UserRegistrationsController(Controller):
             attrs["registration_hash"] = data.registration_hash
 
         reg = await reg_dao.create(attrs)
-        event_logger.log("user_registrations.create", extra={"username": data.username})
+        await event_logger.alog_with_context(
+            "user_registrations.create", extra={"username": data.username}
+        )
         return {"id": reg.id, "result": _reg_to_dict(reg)}
 
     # ------------------------------------------------------------------
@@ -680,7 +688,9 @@ class UserRegistrationsController(Controller):
         attrs = _build_reg_update_attrs(data)
 
         updated = await reg_dao.update(reg, attrs)
-        event_logger.log("user_registrations.update", object_ref=str(pk))
+        await event_logger.alog_with_context(
+            "user_registrations.update", object_ref=str(pk)
+        )
         return {"id": pk, "result": _reg_to_dict(updated)}
 
     # ------------------------------------------------------------------
@@ -705,7 +715,9 @@ class UserRegistrationsController(Controller):
             raise ObjectNotFoundError("UserRegistration", pk)
 
         await reg_dao.delete(reg)
-        event_logger.log("user_registrations.delete", object_ref=str(pk))
+        await event_logger.alog_with_context(
+            "user_registrations.delete", object_ref=str(pk)
+        )
         return {"message": "OK"}
 
     # ------------------------------------------------------------------

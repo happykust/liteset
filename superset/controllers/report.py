@@ -129,9 +129,12 @@ class ReportScheduleController(Controller):
             ],
         )
         total = await dao.count(filters=rison_filters or None)
-        event_logger.log("report.list")
+        await event_logger.alog_with_context("report.list")
         return serialize_list_response(
-            items, total, _LIST_COLUMNS, list_title="List Report Schedule",
+            items,
+            total,
+            _LIST_COLUMNS,
+            list_title="List Report Schedule",
         )
 
     @get(
@@ -159,7 +162,7 @@ class ReportScheduleController(Controller):
         if not results:
             raise ObjectNotFoundError("ReportSchedule", pk)
         report = results[0]
-        event_logger.log("report.get", object_ref=f"report:{pk}")
+        await event_logger.alog_with_context("report.get", object_ref=f"report:{pk}")
         return {
             "id": report.id,
             "result": ReportDetailResult.from_model(report),
@@ -186,7 +189,7 @@ class ReportScheduleController(Controller):
             ]
         cmd = CreateReportScheduleCommand(dao=dao, data=raw, user_id=current_user.id)
         item = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "report.create",
             object_ref=str(item.id),
             user_id=current_user.id,
@@ -216,7 +219,7 @@ class ReportScheduleController(Controller):
             dao=dao, pk=pk, data=raw, user_id=current_user.id
         )
         item = await cmd.execute()
-        event_logger.log(
+        await event_logger.alog_with_context(
             "report.update",
             object_ref=f"report:{pk}",
             user_id=current_user.id,
@@ -232,7 +235,7 @@ class ReportScheduleController(Controller):
         """DELETE /api/v1/report/<pk> — delete a single report schedule."""
         cmd = DeleteReportScheduleCommand(dao=dao, pk=pk)
         await cmd.execute()
-        event_logger.log("report.delete", object_ref=f"report:{pk}")
+        await event_logger.alog_with_context("report.delete", object_ref=f"report:{pk}")
         return {"message": "OK"}
 
     @delete(
@@ -249,7 +252,9 @@ class ReportScheduleController(Controller):
         ids = extract_ids_required(rison_params)
         cmd = BulkDeleteReportScheduleCommand(dao=dao, ids=ids)
         await cmd.execute()
-        event_logger.log("report.bulk_delete", extra={"count": len(ids)})
+        await event_logger.alog_with_context(
+            "report.bulk_delete", extra={"count": len(ids)}
+        )
         return {"message": "OK"}
 
     @get(

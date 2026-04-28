@@ -27,7 +27,11 @@ from litestar.di import Provide
 
 from superset.controllers.base import build_rison_query_params, serialize_list_response
 from superset.events import event_logger
-from superset.guards.rbac import require_authentication, require_permission
+from superset.guards.rbac import (
+    require_authenticated_user,
+    require_authentication,
+    require_permission,
+)
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_log_dao
 from superset.schemas.log import LogPostSchema
@@ -44,7 +48,7 @@ class LogController(Controller):
 
     @get(
         "/",
-        guards=[require_permission("can_read", "Log")],
+        guards=[require_authenticated_user, require_permission("can_read", "Log")],
     )
     async def get_list(
         self,
@@ -90,20 +94,38 @@ class LogController(Controller):
 
     @get(
         "/{pk:int}",
-        guards=[require_permission("can_read", "Log")],
+        guards=[require_authenticated_user, require_permission("can_read", "Log")],
     )
     async def get_single(self, pk: int, dao: Any) -> dict[str, Any]:
-        """GET /api/v1/log/{pk} — get single log entry."""
+        """GET /api/v1/log/{pk} — get single log entry.
+
+        msgspec cannot serialize the SA ``Log`` ORM instance directly, so
+        the response mirrors original Superset's Marshmallow ``LogModelView``
+        dump shape.
+        """
         from superset.exceptions import ObjectNotFoundError
 
         item = await dao.find_by_id(pk)
         if item is None:
             raise ObjectNotFoundError("Log", pk)
-        return {"result": item}
+        return {
+            "id": pk,
+            "result": {
+                "id": getattr(item, "id", None),
+                "action": getattr(item, "action", None),
+                "user_id": getattr(item, "user_id", None),
+                "dashboard_id": getattr(item, "dashboard_id", None),
+                "slice_id": getattr(item, "slice_id", None),
+                "json": getattr(item, "json", None),
+                "dttm": str(getattr(item, "dttm", "") or ""),
+                "duration_ms": getattr(item, "duration_ms", None),
+                "referrer": getattr(item, "referrer", None),
+            },
+        }
 
     @post(
         "/",
-        guards=[require_permission("can_write", "Log")],
+        guards=[require_authenticated_user, require_permission("can_write", "Log")],
         status_code=201,
     )
     async def create_log(
@@ -112,13 +134,21 @@ class LogController(Controller):
         dao: Any,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        """POST /api/v1/log/ — create log entry."""
+        """POST /api/v1/log/ — create log entry.
+
+        Only ``id`` is accepted in the payload (matches FAB's default
+        ``add_columns = [<pk>]`` behaviour); ``user_id`` is set from the
+        authenticated user. ``action`` and the other Log columns are
+        populated by call sites (event logger), not by external POSTs.
+        """
         import msgspec
 
         raw = msgspec.structs.asdict(data)
+        # Drop the optional id (let the DB auto-increment) and stamp user.
+        raw.pop("id", None)
         raw["user_id"] = current_user.id
         item = await dao.create(raw)
-        event_logger.log(
+        await event_logger.alog_with_context(
             "log.create",
             object_ref=f"log:{item.id}",
             user_id=current_user.id,

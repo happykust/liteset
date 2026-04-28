@@ -132,7 +132,7 @@ class ViewMenuController(Controller):
 
         result = [ViewMenuResponse(id=vm.id, name=vm.name) for vm in vms]
 
-        event_logger.log("view_menu.list")
+        await event_logger.alog_with_context("view_menu.list")
 
         return msgspec.to_builtins(
             ViewMenusSearchResponse(
@@ -164,7 +164,7 @@ class ViewMenuController(Controller):
             raise ObjectNotFoundError("ViewMenu", pk)
 
         result = ViewMenuResponse(id=vm.id, name=vm.name)
-        event_logger.log("view_menu.show", object_ref=str(pk))
+        await event_logger.alog_with_context("view_menu.show", object_ref=str(pk))
         return {"id": pk, "result": msgspec.to_builtins(result)}
 
     # ------------------------------------------------------------------
@@ -215,7 +215,9 @@ class ViewMenuController(Controller):
                 f"Database exception occurred: {exc}"
             ) from exc
 
-        event_logger.log("view_menu.create", extra={"name": data.name})
+        await event_logger.alog_with_context(
+            "view_menu.create", extra={"name": data.name}
+        )
         return {
             "id": vm.id,
             "result": {"name": vm.name},
@@ -254,7 +256,7 @@ class ViewMenuController(Controller):
                 f"Database exception occurred: {exc}"
             ) from exc
 
-        event_logger.log("view_menu.update", object_ref=str(pk))
+        await event_logger.alog_with_context("view_menu.update", object_ref=str(pk))
         return {"result": {"name": updated.name}}
 
     # ------------------------------------------------------------------
@@ -289,5 +291,5 @@ class ViewMenuController(Controller):
                 f"Database exception occurred: {exc}"
             ) from exc
 
-        event_logger.log("view_menu.delete", object_ref=str(pk))
+        await event_logger.alog_with_context("view_menu.delete", object_ref=str(pk))
         return {"message": "OK"}

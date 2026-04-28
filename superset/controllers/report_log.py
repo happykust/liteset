@@ -67,7 +67,10 @@ class ReportExecutionLogController(Controller):
         items = await dao.find_all(filters=filters, page=page, page_size=page_size)
         total = await dao.count(filters=filters)
         return serialize_list_response(
-            items, total, _LIST_COLUMNS, list_title="List Report Log",
+            items,
+            total,
+            _LIST_COLUMNS,
+            list_title="List Report Log",
         )
 
     @get(

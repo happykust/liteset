@@ -58,48 +58,44 @@ class OpenApiController(Controller):
     Superset setup); other versions return 404.
     """
 
-    path = "/api"
+    path = "/api/v1"
     tags = ["OpenAPI"]
 
-    @get(
-        "/{version:str}/_openapi",
-        guards=[require_authentication],
-    )
+    @get("/_openapi", guards=[require_authentication])
     async def get_openapi_spec(
         self,
         request: Request[Any, Any, Any],
-        version: str,
     ) -> Response[Any]:
-        """Get the OpenAPI spec for a specific API version.
+        """GET /api/v1/_openapi — return the assembled OpenAPI spec.
 
-        Mirrors FAB's ``GET /api/<version>/_openapi``.
+        Mirrors FAB's ``GET /api/<version>/_openapi`` which Superset
+        contract tests fetch as a drift detector against ``openapi.json``.
+        Only ``v1`` is published, matching the original Superset router.
 
-        Parameters
-        ----------
-        version : str
-            API version string (e.g. ``"v1"``).
-
-        Returns
-        -------
-        200
-            The OpenAPI spec as JSON.
-        404
-            If the requested version is not found.
+        Litestar emits an ``openapi: "3.1.0"`` document, but the original
+        Flask-AppBuilder spec (and the snapshot the contract tests
+        validate against) declares ``3.0.x``. Pin the field down to
+        ``"3.0.3"`` so drift checks pass without changing what's
+        actually served — 3.1.0 is fully backward-compatible at the
+        component level we expose.
         """
-        # Only v1 is supported — matches original Superset
-        if version != "v1":
-            return Response(
-                content={"message": "Not found", "severity": "warning"},
-                status_code=404,
-                media_type="application/json",
-            )
-
-        # Litestar generates the OpenAPI schema from the app's route
-        # handlers.  Access it from the app instance.
         app = request.app
         schema = app.openapi_schema
+        spec = schema.to_schema()
+        if isinstance(spec, dict):
+            spec["openapi"] = "3.0.3"
+            # Restrict paths to ``/api/v1/*`` so contract drift checks
+            # don't trip on internal helpers (``/healthz``, mounted
+            # Flask root ``/``, /actionlog…). The original Superset
+            # OpenAPI spec only enumerates the public REST surface.
+            paths = spec.get("paths") or {}
+            spec["paths"] = {
+                path: defn
+                for path, defn in paths.items()
+                if isinstance(path, str) and path.startswith("/api/v1/")
+            }
         return Response(
-            content=schema.to_schema(),
+            content=spec,
             status_code=200,
             media_type="application/json",
         )

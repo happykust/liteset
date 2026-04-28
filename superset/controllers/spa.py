@@ -32,7 +32,7 @@ from litestar import Controller, get, post, Request
 from litestar.datastructures import State
 from litestar.response import Redirect, Template
 
-from superset.commands.dashboard import CreateDashboardCommand
+from superset.commands.dashboard.create import CreateDashboardCommand
 from superset.db.daos.dashboard import AsyncDashboardDAO
 from superset.db.daos.log import AsyncLogDAO
 

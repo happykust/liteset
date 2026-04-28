@@ -154,7 +154,7 @@ class RoleController(Controller):
             for role in roles
         ]
 
-        event_logger.log("role.list")
+        await event_logger.alog_with_context("role.list")
 
         return msgspec.to_builtins(
             RolesSearchResponse(
@@ -188,7 +188,7 @@ class RoleController(Controller):
             permission_ids=[p.id for p in (role.permissions or [])],
             group_ids=[g.id for g in (getattr(role, "groups", None) or [])],
         )
-        event_logger.log("role.show", object_ref=str(pk))
+        await event_logger.alog_with_context("role.show", object_ref=str(pk))
         return {"id": pk, "result": msgspec.to_builtins(result)}
 
     # ------------------------------------------------------------------
@@ -211,7 +211,9 @@ class RoleController(Controller):
             raise SupersetValidationException("Role name is required")
 
         role = await role_dao.create({"name": data.name.strip()})
-        event_logger.log("role.create", extra={"role_name": data.name})
+        await event_logger.alog_with_context(
+            "role.create", extra={"role_name": data.name}
+        )
         return {"id": role.id, "result": {"id": role.id, "name": role.name}}
 
     # ------------------------------------------------------------------
@@ -239,7 +241,7 @@ class RoleController(Controller):
             raise SupersetValidationException("Role name is required")
 
         updated = await role_dao.update(role, {"name": data.name.strip()})
-        event_logger.log("role.update", object_ref=str(pk))
+        await event_logger.alog_with_context("role.update", object_ref=str(pk))
         return {"id": pk, "result": {"id": updated.id, "name": updated.name}}
 
     # ------------------------------------------------------------------
@@ -264,7 +266,7 @@ class RoleController(Controller):
             raise ObjectNotFoundError("Role", pk)
 
         await role_dao.delete(role)
-        event_logger.log("role.delete", object_ref=str(pk))
+        await event_logger.alog_with_context("role.delete", object_ref=str(pk))
         return {"message": "OK"}
 
     # ------------------------------------------------------------------
@@ -299,7 +301,9 @@ class RoleController(Controller):
             for pv in permission_views
         ]
 
-        event_logger.log("role.permissions", object_ref=str(role_id))
+        await event_logger.alog_with_context(
+            "role.permissions", object_ref=str(role_id)
+        )
         return msgspec.to_builtins(
             RolePermissionsResponse(
                 result=result,
@@ -313,6 +317,7 @@ class RoleController(Controller):
     @post(
         "/{role_id:int}/permissions",
         guards=[require_permission("can_write", "Role")],
+        status_code=200,
     )
     async def set_permissions(
         self,
@@ -328,7 +333,9 @@ class RoleController(Controller):
         if result is None:
             raise ObjectNotFoundError("Role", role_id)
 
-        event_logger.log("role.set_permissions", object_ref=str(role_id))
+        await event_logger.alog_with_context(
+            "role.set_permissions", object_ref=str(role_id)
+        )
         return {
             "result": {
                 "permission_view_menu_ids": data.permission_view_menu_ids,
@@ -358,7 +365,7 @@ class RoleController(Controller):
         if result == "not_found":
             raise ObjectNotFoundError("User", "some user_ids not found")
 
-        event_logger.log("role.set_users", object_ref=str(role_id))
+        await event_logger.alog_with_context("role.set_users", object_ref=str(role_id))
         return {"result": {"user_ids": data.user_ids}}
 
     # ------------------------------------------------------------------
@@ -384,7 +391,7 @@ class RoleController(Controller):
         if result == "not_found":
             raise ObjectNotFoundError("Group", "some group_ids not found")
 
-        event_logger.log("role.set_groups", object_ref=str(role_id))
+        await event_logger.alog_with_context("role.set_groups", object_ref=str(role_id))
         return {"result": {"group_ids": data.group_ids}}
 
     # ------------------------------------------------------------------
