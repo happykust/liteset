@@ -56,7 +56,12 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         object_id: int,
         tag_names: list[str],
     ) -> None:
-        """Create TaggedObject entries for the given tag names."""
+        """Create TaggedObject entries for the given tag names.
+
+        Stores ``object_type`` as the Enum *name* (string) — the
+        ``tagged_object.object_type`` column is VARCHAR after migration
+        ``07f9a902af1b`` which dropped the Postgres ENUM constraint.
+        """
         from superset.models.tags import ObjectType
 
         obj_type = ObjectType[object_type]
@@ -68,7 +73,7 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                 tagged = TaggedObject(
                     tag_id=tag_id,
                     object_id=object_id,
-                    object_type=obj_type,
+                    object_type=obj_type.name,
                 )
                 self.session.add(tagged)
         await self.session.flush()
@@ -141,15 +146,25 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         objects_to_tag: list[tuple[str, int]],
         tag: Tag,
     ) -> None:
-        """Create TaggedObject entries linking objects to a tag."""
+        """Create TaggedObject entries linking objects to a tag.
+
+        ``obj_type`` may arrive as either an :class:`ObjectType` enum or
+        an already-stringified name; coerce to string here so we never
+        pass an enum instance to asyncpg (which would raise DataError).
+        """
+        from superset.models.tags import ObjectType
+
         tag_id: int = tag.id  # type: ignore[assignment]
         for obj_type, obj_id in objects_to_tag:
-            existing = await self._find_tagged_object(obj_type, obj_id, tag_id)
+            obj_type_str = (
+                obj_type.name if isinstance(obj_type, ObjectType) else obj_type
+            )
+            existing = await self._find_tagged_object(obj_type_str, obj_id, tag_id)
             if not existing:
                 tagged = TaggedObject(
                     tag_id=tag_id,
                     object_id=obj_id,
-                    object_type=obj_type,
+                    object_type=obj_type_str,
                 )
                 self.session.add(tagged)
 

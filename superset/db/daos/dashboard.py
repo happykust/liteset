@@ -266,9 +266,24 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
           ``positions`` metadata is updated with new chartId references.
         - Calls ``set_dash_metadata`` with the old-to-new slice ID mapping
           so that filter_scopes and default_filters are properly remapped.
+
+        ``current_user`` may be a CachedUser dataclass (from the auth
+        middleware), which is *not* a SQLAlchemy mapped instance. Passing
+        it directly to ``dash.owners`` makes the unit-of-work walk a
+        non-mapped instance and raise ``AttributeError: 'CachedUser'
+        object has no attribute '_sa_instance_state'``. Resolve to the
+        ORM ``User`` row first.
         """
+        # Resolve current_user to a real ORM instance if it's a CachedUser
+        owner_user = None
+        if current_user is not None:
+            user_id = getattr(current_user, "id", None)
+            if user_id is not None:
+                from superset.models.security import User as _User
+
+                owner_user = await self.session.get(_User, user_id)
         dash = Dashboard()
-        dash.owners = [current_user] if current_user else []
+        dash.owners = [owner_user] if owner_user is not None else []
         dash.dashboard_title = data["dashboard_title"]
         dash.css = data.get("css")
 
@@ -291,8 +306,8 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
                     description=getattr(slc, "description", None),
                     cache_timeout=getattr(slc, "cache_timeout", None),
                 )
-                if current_user is not None:
-                    new_slice.owners = [current_user]
+                if owner_user is not None:
+                    new_slice.owners = [owner_user]
                 self.session.add(new_slice)
                 await self.session.flush()
                 new_slice.dashboards.append(dash)

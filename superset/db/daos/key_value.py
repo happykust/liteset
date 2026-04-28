@@ -71,9 +71,10 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         )
         if key is not None:
             if isinstance(key, UUID):
-                entry.uuid = key
+                # SA Column descriptor accepts the runtime value at assignment.
+                setattr(entry, "uuid", key)  # noqa: B010
             else:
-                entry.id = key
+                setattr(entry, "id", key)  # noqa: B010
         self.session.add(entry)
         return entry
 
@@ -154,7 +155,7 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
                     "expires_on": expires_on,
                 },
             )
-        return await self.create_entry(resource, value, expires_on)
+        return await self.create_entry(resource, value, expires_on=expires_on)
 
     async def delete_entry(
         self,
@@ -178,6 +179,20 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
     #   - ``value`` column: the payload (bytes)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _coerce_uuid(key: str) -> UUID | None:
+        """Try to parse ``key`` as UUID. Return None on invalid input.
+
+        The KeyValueEntry table stores UUIDs only, so any client-supplied
+        non-UUID string cannot match an existing row. Returning None lets
+        callers treat the result as a not-found instead of crashing with
+        a 500 (matches original Superset, which surfaces a 404).
+        """
+        try:
+            return UUID(key)
+        except (ValueError, AttributeError, TypeError):
+            return None
+
     async def set_value(
         self,
         resource: str,
@@ -185,10 +200,15 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         key: str,
         value: str,
     ) -> None:
-        """Store a string value keyed by resource name + UUID key."""
-        import uuid as _uuid
+        """Store a string value keyed by resource name + UUID key.
 
-        key_uuid = _uuid.UUID(key)
+        Raises ValueError if ``key`` is not a valid UUID; callers that
+        accept arbitrary string keys must coerce them upstream (see
+        the permalink/filter-state commands).
+        """
+        key_uuid = self._coerce_uuid(key)
+        if key_uuid is None:
+            raise ValueError(f"Invalid UUID key: {key!r}")
         stmt = (
             select(KeyValueEntry)
             .where(
@@ -220,10 +240,16 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         resource_id: int,
         key: str,
     ) -> str | None:
-        """Retrieve a string value by resource name + UUID key."""
-        import uuid as _uuid
+        """Retrieve a string value by resource name + UUID key.
 
-        key_uuid = _uuid.UUID(key)
+        Returns None for malformed UUIDs — keys that cannot exist in
+        the database. This mirrors original Superset's behaviour where
+        get_filter() raises KeyValueParseKeyError that the controller
+        translates to a 404.
+        """
+        key_uuid = self._coerce_uuid(key)
+        if key_uuid is None:
+            return None
         stmt = select(KeyValueEntry).where(
             KeyValueEntry.resource == resource,
             KeyValueEntry.uuid == key_uuid,
@@ -244,10 +270,13 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         resource_id: int,
         key: str,
     ) -> bool:
-        """Delete a value by resource name + UUID key."""
-        import uuid as _uuid
+        """Delete a value by resource name + UUID key.
 
-        key_uuid = _uuid.UUID(key)
+        Returns False for malformed UUIDs (treat as not-found).
+        """
+        key_uuid = self._coerce_uuid(key)
+        if key_uuid is None:
+            return False
         stmt = select(KeyValueEntry).where(
             KeyValueEntry.resource == resource,
             KeyValueEntry.uuid == key_uuid,

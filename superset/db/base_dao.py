@@ -101,10 +101,18 @@ class BaseAsyncDAO(Generic[T]):
     async def create(self, attributes: dict[str, Any]) -> T:
         """Create a new model instance and add to session.
 
+        Mirrors original Superset's BaseDAO.create() which uses setattr
+        instead of ``model(**attrs)`` so callers can pass schema-level
+        fields that are not direct columns/relationships (e.g. report
+        ``selected_tabs``, theme ``css``). Unknown keys become harmless
+        instance attributes and are ignored at flush time.
+
         Note: Does not flush or commit. Call session.flush() or session.commit()
         at the command/controller level.
         """
-        item = self.model_cls(**attributes)
+        item = self.model_cls()
+        for key, value in attributes.items():
+            setattr(item, key, value)
         self.session.add(item)
         return item
 

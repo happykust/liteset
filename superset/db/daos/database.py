@@ -250,3 +250,33 @@ class AsyncDatabaseUserOAuth2TokensDAO:
     async def get_database(self, database_id: int) -> Database | None:
         """Get database without access filters (for OAuth2 token retrieval)."""
         return await self.session.get(Database, database_id)
+
+    async def find_one_or_none(
+        self,
+        *,
+        user_id: int,
+        database_id: int,
+    ) -> Any | None:
+        """Return the OAuth2 token row for ``(user_id, database_id)`` or None."""
+        from superset.models.core import DatabaseUserOAuth2Tokens
+
+        stmt = select(DatabaseUserOAuth2Tokens).where(
+            DatabaseUserOAuth2Tokens.user_id == user_id,
+            DatabaseUserOAuth2Tokens.database_id == database_id,
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().one_or_none()
+
+    async def delete(self, token: Any) -> None:
+        """Delete an OAuth2 token row."""
+        await self.session.delete(token)
+        await self.session.flush()
+
+    async def create(self, attributes: dict[str, Any]) -> Any:
+        """Create a new OAuth2 token row."""
+        from superset.models.core import DatabaseUserOAuth2Tokens
+
+        token = DatabaseUserOAuth2Tokens(**attributes)
+        self.session.add(token)
+        await self.session.flush()
+        return token

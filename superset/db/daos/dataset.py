@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from superset.db.base_dao import BaseAsyncDAO
 from superset.models.connectors import SqlaTable, SqlMetric, TableColumn

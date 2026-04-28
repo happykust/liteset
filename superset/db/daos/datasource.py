@@ -64,6 +64,7 @@ class AsyncDatasourceDAO:
         model_cls = _DATASOURCE_TYPE_MAP.get(datasource_type)
         if model_cls is None:
             raise ValueError(f"Unknown datasource type: {datasource_type}")
+        stmt: Any
         if model_cls is SqlaTable:
             stmt = (
                 select(SqlaTable)
