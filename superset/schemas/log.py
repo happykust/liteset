@@ -21,12 +21,17 @@ from __future__ import annotations
 import msgspec
 
 
-class LogPostSchema(msgspec.Struct):
-    action: str
-    dashboard_id: int | None = None
-    slice_id: int | None = None
-    json: str = ""
-    duration_ms: int | None = None
+class LogPostSchema(msgspec.Struct, forbid_unknown_fields=True):
+    """POST body for ``/api/v1/log/``.
+
+    Mirrors original FAB ``LogRestApi`` which does not declare
+    ``add_columns`` — Flask-AppBuilder defaults it to ``[<pk>]`` (only
+    ``id``). Therefore POSTs containing any other field
+    (``action``, ``json``, ``dashboard_id``, …) are rejected as unknown
+    via ``forbid_unknown_fields=True``. An empty body is accepted (200).
+    """
+
+    id: int | None = None
 
 
 class RecentActivityItem(msgspec.Struct):

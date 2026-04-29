@@ -34,7 +34,11 @@ class CurrentUserResponse(msgspec.Struct):
     email: str
     is_active: bool
     is_anonymous: bool
-    login_count: int | None = None
+    # ``login_count`` is required and integer in the original
+    # ``UserResponseSchema`` (superset_old/views/users/schemas.py:38) — the
+    # OpenAPI spec marks it as a non-nullable int, so we default to 0
+    # rather than None when the underlying user has never logged in.
+    login_count: int = 0
     roles: list[RoleResponseSchema] = []
 
 

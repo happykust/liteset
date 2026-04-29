@@ -39,12 +39,18 @@ from superset.schemas.base import (
 
 
 class ChartPostSchema(msgspec.Struct):
-    """POST /api/v1/chart/"""
+    """POST /api/v1/chart/
+
+    Mirrors original ``ChartPostSchema`` at
+    superset_old/charts/schemas.py:186-245 — only ``slice_name``,
+    ``datasource_id`` and ``datasource_type`` are required. ``viz_type``
+    is optional (charts can be saved without a visualization picked).
+    """
 
     slice_name: Annotated[str, Meta(min_length=1)]
-    viz_type: str
     datasource_id: int
     datasource_type: Literal["table", "query", "saved_query", "dataset", "view"]
+    viz_type: str | None = None
     params: str | None = None
     query_context: str | None = None
     query_context_generation: bool | None = None

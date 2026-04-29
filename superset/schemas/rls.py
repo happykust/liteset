@@ -14,35 +14,77 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""msgspec Structs for the Row Level Security API."""
+"""msgspec Structs for the Row Level Security API.
+
+Mirrors ``superset_old/row_level_security/schemas.py`` exactly:
+
+* ``RLSPostSchema`` — required: ``name`` (1-255 chars), ``filter_type``
+  (``Regular``/``Base``), ``tables`` (≥ 1 id), ``roles`` (id list,
+  may be empty), ``clause`` (any string, including empty — original
+  has no length validator); optional with ``allow_none=True``:
+  ``description``, ``group_key``.
+* ``RLSPutSchema`` — every field optional; same per-field validators
+  apply when present.
+"""
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 import msgspec
 from msgspec import Meta
 
+# Literal aliases — msgspec validates a string against the literal set
+# automatically, mirroring marshmallow's ``OneOf([...])``.
+FilterTypeLiteral = Literal["Regular", "Base"]
+
 
 class RLSPostSchema(msgspec.Struct):
-    """Body for POST /api/v1/rowlevelsecurity/."""
+    """Body for POST /api/v1/rowlevelsecurity/.
 
-    name: Annotated[str, Meta(min_length=1)]
-    filter_type: str  # "Regular" | "Base"
-    clause: Annotated[str, Meta(min_length=1)]
-    description: str = ""
-    tables: list[int] = []  # dataset IDs
-    roles: list[int] = []  # role IDs
-    group_key: str = ""
+    Mirrors ``superset_old.row_level_security.schemas.RLSPostSchema``:
+    every field marked ``required=True`` there is required here, and
+    the marshmallow ``Length`` / ``OneOf`` validators map onto
+    ``msgspec.Meta`` constraints.
+
+    Note: ``clause`` has *no* length validator (mirrors the original
+    which only sets ``required=True, allow_none=False``). An empty
+    string is a valid clause. ``description`` and ``group_key`` accept
+    ``null`` (``allow_none=True`` in the original).
+    """
+
+    name: Annotated[str, Meta(min_length=1, max_length=255)]
+    filter_type: FilterTypeLiteral
+    clause: str
+    tables: Annotated[list[int], Meta(min_length=1)]
+    roles: list[int]
+    description: str | None = None
+    group_key: str | None = None
 
 
 class RLSPutSchema(msgspec.Struct):
-    """Body for PUT /api/v1/rowlevelsecurity/{pk}."""
+    """Body for PUT /api/v1/rowlevelsecurity/{pk}.
 
-    name: str | None | msgspec.UnsetType = msgspec.UNSET
-    filter_type: str | None | msgspec.UnsetType = msgspec.UNSET
-    clause: str | None | msgspec.UnsetType = msgspec.UNSET
+    Mirrors ``superset_old.row_level_security.schemas.RLSPutSchema`` —
+    every field is optional (``required=False``), and the same per-field
+    validators apply when the caller provides a value.
+
+    ``msgspec.UNSET`` distinguishes "absent" from ``None`` so the
+    controller can patch only the fields that were sent.
+
+    Per the original schema:
+    - ``name``, ``filter_type``, ``clause``, ``tables``, ``roles`` are
+      ``allow_none=False`` (when present, must not be null).
+    - ``description`` and ``group_key`` are ``allow_none=True`` (may be
+      null to clear the field).
+    """
+
+    name: Annotated[str, Meta(min_length=1, max_length=255)] | msgspec.UnsetType = (
+        msgspec.UNSET
+    )
+    filter_type: FilterTypeLiteral | msgspec.UnsetType = msgspec.UNSET
+    clause: str | msgspec.UnsetType = msgspec.UNSET
+    tables: list[int] | msgspec.UnsetType = msgspec.UNSET
+    roles: list[int] | msgspec.UnsetType = msgspec.UNSET
     description: str | None | msgspec.UnsetType = msgspec.UNSET
-    tables: list[int] | None | msgspec.UnsetType = msgspec.UNSET
-    roles: list[int] | None | msgspec.UnsetType = msgspec.UNSET
     group_key: str | None | msgspec.UnsetType = msgspec.UNSET

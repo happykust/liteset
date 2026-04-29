@@ -25,18 +25,21 @@ from msgspec import Meta
 
 
 class ThemePostSchema(msgspec.Struct):
-    """POST /api/v1/theme/"""
+    """POST /api/v1/theme/
+
+    Mirrors original ``ThemePostSchema`` at
+    superset_old/themes/schemas.py:83 — accepts ``theme_name`` and the
+    serialized ``json_data`` only. The legacy ``css``/``json_metadata``/
+    ``description`` fields belonged to a different (CSS template) entity
+    and are not part of the ``themes`` table schema.
+    """
 
     theme_name: Annotated[str, Meta(min_length=1)]
-    css: str = ""
-    json_metadata: str = ""
-    description: str = ""
+    json_data: str
 
 
 class ThemePutSchema(msgspec.Struct):
     """PUT /api/v1/theme/<pk>"""
 
     theme_name: str | None | msgspec.UnsetType = msgspec.UNSET
-    css: str | None | msgspec.UnsetType = msgspec.UNSET
-    json_metadata: str | None | msgspec.UnsetType = msgspec.UNSET
-    description: str | None | msgspec.UnsetType = msgspec.UNSET
+    json_data: str | None | msgspec.UnsetType = msgspec.UNSET
