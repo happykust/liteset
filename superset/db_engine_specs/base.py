@@ -392,9 +392,219 @@ class BaseEngineSpec:  # noqa: PLR0904
 
     # Does the engine support OAuth 2.0?
     supports_oauth2 = False
+    oauth2_scope: str = ""
+    oauth2_authorization_request_uri: str | None = None
+    oauth2_token_request_uri: str | None = None
+    # "data" or "json" — Keycloak and a few other IDPs reject json bodies.
+    oauth2_token_request_type: str = "data"  # noqa: S105
+    # Driver-specific exception that should trigger the OAuth2 dance.
+    # Per-engine specs override this with a concrete exception class
+    # (e.g. ``TrinoAuthError``).  Defaults to a sentinel that never matches.
+    oauth2_exception: type[BaseException] = type(
+        "_NoOAuth2Exception", (BaseException,), {}
+    )
 
     # Does the query id relate to the connection?
     has_query_id_before_execute = True
+
+    # ------------------------------------------------------------------
+    # OAuth2 (1:1 with superset_old/db_engine_specs/base.py)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def is_oauth2_enabled(cls) -> bool:
+        """Return True if the engine has a configured OAuth2 client."""
+        from superset.utils.oauth2 import get_oauth2_clients
+
+        return cls.supports_oauth2 and cls.engine_name in get_oauth2_clients()
+
+    @classmethod
+    def get_oauth2_config(cls) -> "Any | None":
+        """Build the engine-spec-level OAuth2 client config.
+
+        Returns ``None`` when no OAuth2 client is registered for this
+        engine.  The config dict matches :class:`OAuth2ClientConfig` and
+        is validated via :class:`OAuth2ClientConfigSchema` (1:1 with the
+        marshmallow schema in the original).
+        """
+        from superset.utils.oauth2 import (
+            get_oauth2_clients,
+            validate_oauth2_client_config,
+        )
+
+        clients = get_oauth2_clients()
+        if cls.engine_name not in clients:
+            return None
+
+        client = clients[cls.engine_name]
+        # Apply engine-spec defaults for the optional fields, then validate.
+        merged: dict[str, Any] = {
+            "id": client.get("id"),
+            "secret": client.get("secret"),
+            "scope": client.get("scope") or cls.oauth2_scope,
+            "authorization_request_uri": client.get(
+                "authorization_request_uri",
+                cls.oauth2_authorization_request_uri,
+            ),
+            "token_request_uri": client.get(
+                "token_request_uri", cls.oauth2_token_request_uri
+            ),
+            "request_content_type": client.get(
+                "request_content_type", cls.oauth2_token_request_type
+            ),
+        }
+        if "redirect_uri" in client:
+            merged["redirect_uri"] = client["redirect_uri"]
+        # Drop keys with None values so the schema's ``required`` checks
+        # surface the missing fields rather than masking them as type errors.
+        cleaned = {k: v for k, v in merged.items() if v is not None}
+        return validate_oauth2_client_config(cleaned)
+
+    @classmethod
+    def get_oauth2_authorization_uri(
+        cls,
+        config: dict[str, Any],
+        state: dict[str, Any],
+    ) -> str:
+        """Build the URL the browser should open to start the OAuth2 dance."""
+        from urllib.parse import urlencode, urljoin
+
+        from superset.utils.oauth2 import encode_oauth2_state
+
+        params = {
+            "scope": config["scope"],
+            "access_type": "offline",
+            "include_granted_scopes": "false",
+            "response_type": "code",
+            "state": encode_oauth2_state(state),
+            "redirect_uri": config["redirect_uri"],
+            "client_id": config["id"],
+            "prompt": "consent",
+        }
+        return urljoin(config["authorization_request_uri"], "?" + urlencode(params))
+
+    @classmethod
+    async def get_oauth2_token(
+        cls,
+        config: dict[str, Any],
+        code: str,
+    ) -> dict[str, Any]:
+        """Exchange an authorization ``code`` for refresh/access tokens.
+
+        Async port of the original — uses :class:`httpx.AsyncClient` instead
+        of ``requests``.
+        """
+        import httpx
+
+        from superset.utils.oauth2 import get_oauth2_timeout
+
+        timeout = get_oauth2_timeout().total_seconds()
+        body = {
+            "code": code,
+            "client_id": config["id"],
+            "client_secret": config["secret"],
+            "redirect_uri": config["redirect_uri"],
+            "grant_type": "authorization_code",
+        }
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            if config["request_content_type"] == "data":
+                response = await client.post(config["token_request_uri"], data=body)
+            else:
+                response = await client.post(config["token_request_uri"], json=body)
+        return response.json()
+
+    @classmethod
+    async def get_oauth2_fresh_token(
+        cls,
+        config: dict[str, Any],
+        refresh_token: str,
+    ) -> dict[str, Any]:
+        """Refresh an expired access token."""
+        import httpx
+
+        from superset.utils.oauth2 import get_oauth2_timeout
+
+        timeout = get_oauth2_timeout().total_seconds()
+        body = {
+            "client_id": config["id"],
+            "client_secret": config["secret"],
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        }
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            if config["request_content_type"] == "data":
+                response = await client.post(config["token_request_uri"], data=body)
+            else:
+                response = await client.post(config["token_request_uri"], json=body)
+        return response.json()
+
+    @classmethod
+    def needs_oauth2(cls, ex: Exception) -> bool:
+        """Return True if *ex* indicates OAuth2 authorization is required.
+
+        Mirrors the original ``isinstance(ex, cls.oauth2_exception)``
+        check.  The default sentinel never matches.
+        """
+        return isinstance(ex, cls.oauth2_exception)
+
+    @classmethod
+    async def start_oauth2_dance(
+        cls,
+        database: "Database",
+        user_id: int | None = None,
+        default_redirect_uri: str | None = None,
+    ) -> None:
+        """Raise :class:`OAuth2RedirectError` to start the OAuth2 dance.
+
+        1:1 with ``start_oauth2_dance`` in
+        ``superset_old/db_engine_specs/base.py``
+        — the original takes only ``database`` and reads ``user_id`` from
+        the Flask ``g`` global plus the redirect URI from
+        ``url_for("DatabaseRestApi.oauth2", _external=True)``.
+
+        In liteset the user identity lives in a :class:`ContextVar` (set by
+        :class:`AuthMiddleware`) and the absolute redirect URI is
+        configurable via ``WEBDRIVER_BASEURL`` / ``DATABASE_OAUTH2_REDIRECT_URI``.
+        Both can also be supplied explicitly by callers that have them in
+        scope (e.g. :class:`DatabaseTestConnectionCommand`).
+
+        The frontend catches the resulting :class:`OAuth2RedirectError`,
+        opens a popup at the returned ``url``, and waits for the popup to
+        ``postMessage`` back the auth code.  Once the user authorizes the
+        access, the popup is redirected to ``/api/v1/database/oauth2/``
+        (handled by :class:`DatabaseController.oauth2`), which exchanges
+        the code for a token and stores it in
+        ``database_user_oauth2_tokens``.
+        """
+        from uuid import uuid4
+
+        from superset.exceptions import OAuth2Error, OAuth2RedirectError
+        from superset.utils.core import get_current_user
+        from superset.utils.oauth2 import get_default_oauth2_redirect_uri
+
+        if user_id is None:
+            user = get_current_user()
+            user_id = getattr(user, "id", None) if user is not None else None
+            if user_id is None:
+                raise OAuth2Error(
+                    "No authenticated user in context — cannot start OAuth2 dance"
+                )
+
+        if default_redirect_uri is None:
+            default_redirect_uri = get_default_oauth2_redirect_uri()
+
+        tab_id = str(uuid4())
+        state: dict[str, Any] = {
+            "database_id": database.id,
+            "user_id": user_id,
+            "default_redirect_uri": default_redirect_uri,
+            "tab_id": tab_id,
+        }
+        config = database.get_oauth2_config()
+        if config is None:
+            raise OAuth2Error("No configuration found for OAuth2")
+        url = cls.get_oauth2_authorization_uri(config, state)
+        raise OAuth2RedirectError(url, tab_id, default_redirect_uri)
 
     # ------------------------------------------------------------------
     # RLS
@@ -460,6 +670,39 @@ class BaseEngineSpec:  # noqa: PLR0904
     ) -> str | None:
         """Return the schema configured in a SQLAlchemy URI, if any."""
         return None
+
+    @classmethod
+    def get_default_schema_for_query(
+        cls,
+        database: Database,
+        query: Any,
+        template_params: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Return the default schema for a given query.
+
+        1:1 with ``get_default_schema_for_query`` in
+        ``superset_old/db_engine_specs/base.py``
+        (line 707). Used by access-control to determine the schema of
+        unqualified table references inside SQL Lab queries:
+
+        1. Dialects that allow per-query schema switching honour the
+           query's own ``schema`` field;
+        2. Dialects that hard-code the schema in the SQLAlchemy URI
+           or ``connect_args`` use that;
+        3. Otherwise, fall back to the database default.
+        """
+        if cls.supports_dynamic_schema:
+            return getattr(query, "schema", None)
+
+        try:
+            connect_args = database.get_extra()["engine_params"]["connect_args"]
+        except KeyError:
+            connect_args = {}
+        sqlalchemy_uri = make_url_safe(database.sqlalchemy_uri)
+        if schema := cls.get_schema_from_engine_params(sqlalchemy_uri, connect_args):
+            return schema
+
+        return cls.get_default_schema(database, getattr(query, "catalog", None))
 
     @classmethod
     def get_allows_alias_in_select(
@@ -1638,10 +1881,10 @@ class BasicPropertiesType(TypedDict):
 
 
 # The original code uses a Marshmallow ``Schema`` subclass here.  We don't
-# ship Marshmallow in liteset, so we expose an equivalent hand-coded dict
-# that mimics the OpenAPI output of ``MarshmallowPlugin``.  It is kept as
-# a class attribute so that ``hasattr(spec, "parameters_schema")`` — which
-# callers use as a "supports dynamic form" probe — still returns ``True``.
+# ship Marshmallow in liteset, so ``parameters_schema`` becomes the JSON
+# Schema dict directly: callers do ``hasattr(spec, "parameters_schema")``
+# (still ``True``), check truthiness (a non-empty dict is truthy), and
+# pass the value to ``parameters_json_schema()`` which returns it as-is.
 BASIC_PARAMETERS_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -1663,7 +1906,7 @@ BASIC_PARAMETERS_JSON_SCHEMA: dict[str, Any] = {
             "type": "integer",
             "format": "int32",
             "minimum": 0,
-            "maximum": 65535,
+            "maximum": 65536,
             "exclusiveMaximum": True,
             "description": "Database port",
         },
@@ -1689,34 +1932,6 @@ BASIC_PARAMETERS_JSON_SCHEMA: dict[str, Any] = {
 }
 
 
-class BasicParametersSchema:
-    """
-    Minimal stand-in for the original ``BasicParametersSchema`` Marshmallow
-    class.  Only the surface area actually used by the engine specs is
-    implemented: ``hasattr(cls, "parameters_schema")`` must keep returning
-    ``True``, and the object must be truthy so that
-    ``if not cls.parameters_schema`` in ``parameters_json_schema`` short-
-    circuits correctly.
-
-    Any attribute lookup that isn't part of that minimal surface area
-    raises ``NotImplementedError`` so that unexpected Marshmallow-style
-    method calls (``dump``, ``load``, ``validate``, ``declared_fields``,
-    etc.) fail loudly instead of returning ``None`` or a bound method
-    that silently no-ops.
-    """
-
-    def __bool__(self) -> bool:
-        return True
-
-    def __getattr__(self, name: str) -> Any:
-        raise NotImplementedError(
-            f"BasicParametersSchema is a stub; attribute {name!r} is not "
-            "implemented in liteset.  The original Marshmallow schema was "
-            "removed during the migration -- use the hand-coded "
-            "BASIC_PARAMETERS_JSON_SCHEMA fragment instead."
-        )
-
-
 class BasicParametersMixin:
     """
     Mixin for configuring DB engine specs via a dictionary.
@@ -1729,8 +1944,11 @@ class BasicParametersMixin:
 
     """
 
-    # schema describing the parameters used to configure the DB
-    parameters_schema = BasicParametersSchema()
+    # JSON Schema describing the parameters used to configure the DB.  In the
+    # original Apache Superset this was a Marshmallow ``Schema`` instance; in
+    # liteset we attach the OpenAPI fragment directly so that
+    # ``parameters_json_schema()`` is a no-op identity function.
+    parameters_schema: dict[str, Any] = BASIC_PARAMETERS_JSON_SCHEMA
 
     # recommended driver name for the DB engine spec
     default_driver = ""
@@ -1877,23 +2095,16 @@ class BasicParametersMixin:
         """
         Return configuration parameters as OpenAPI.
 
-        In the original implementation this is generated from the Marshmallow
-        ``BasicParametersSchema`` via ``apispec`` / ``MarshmallowPlugin``.  In
-        liteset we don't use Marshmallow for engine specs, so we return an
-        equivalent hand-coded OpenAPI fragment (see
-        ``BASIC_PARAMETERS_JSON_SCHEMA`` above).
+        ``parameters_schema`` is itself a JSON Schema dict (see
+        ``BASIC_PARAMETERS_JSON_SCHEMA`` above), so we return it as-is.
         """
-        if not cls.parameters_schema:
-            return None
-
-        return BASIC_PARAMETERS_JSON_SCHEMA
+        return cls.parameters_schema or None
 
 
 __all__ = [
     "BASIC_PARAMETERS_JSON_SCHEMA",
     "BaseEngineSpec",
     "BasicParametersMixin",
-    "BasicParametersSchema",
     "BasicParametersType",
     "BasicPropertiesType",
     "ColumnSpec",

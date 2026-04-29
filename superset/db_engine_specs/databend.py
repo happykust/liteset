@@ -246,9 +246,7 @@ class DatabendConnectEngineSpec(BasicParametersMixin, DatabendEngineSpec):
         url_params.pop("encryption", None)
         # SQLAlchemy 2.x masks password in ``str(URL)`` — use
         # render_as_string to preserve the original 1.4 behaviour.
-        return URL(f"{cls.engine}", **url_params).render_as_string(
-            hide_password=False
-        )
+        return URL(f"{cls.engine}", **url_params).render_as_string(hide_password=False)
 
     @classmethod
     def get_parameters_from_uri(

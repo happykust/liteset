@@ -27,6 +27,17 @@ from superset.errors import SupersetErrorType
 
 SYNTAX_ERROR_REGEX = re.compile('SQLError: near "(?P<server_error>.*?)": syntax error')
 
+# The shillelagh google-sheets adapter raises this exception when the access
+# token is missing / expired.  ``shillelagh`` is an optional dependency, so
+# fall back to a sentinel (matches BaseEngineSpec.oauth2_exception default
+# behaviour: never matches anything).
+try:
+    from shillelagh.exceptions import (  # type: ignore[import-not-found]
+        UnauthenticatedError as _UnauthenticatedError,
+    )
+except ImportError:  # pragma: no cover -- optional dep
+    _UnauthenticatedError = type("_NoUnauthenticatedError", (BaseException,), {})
+
 
 class GSheetsEngineSpec(ShillelaghEngineSpec):
     """Engine for Google spreadsheets"""
@@ -54,9 +65,17 @@ class GSheetsEngineSpec(ShillelaghEngineSpec):
     supports_file_upload = True
 
     # OAuth 2.0
+    # Mirrors ``superset_old/db_engine_specs/gsheets.py``.
+    SCOPES = (
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://spreadsheets.google.com/feeds",
+    )
     supports_oauth2 = True
+    oauth2_scope = " ".join(SCOPES)
     oauth2_authorization_request_uri = "https://accounts.google.com/o/oauth2/v2/auth"
     oauth2_token_request_uri = "https://oauth2.googleapis.com/token"  # noqa: S105
+    oauth2_exception = _UnauthenticatedError
 
     @classmethod
     def build_sqlalchemy_uri(

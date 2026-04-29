@@ -61,6 +61,28 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# OAuth2: ``trino`` is an optional dependency.  Mirror the original
+# ``CustomTrinoAuthErrorMeta`` pattern from
+# ``superset_old/db_engine_specs/trino.py`` — match Trino HttpError 401
+# responses and treat them as OAuth2 redirect triggers.
+try:  # pragma: no cover -- optional dep
+    from trino.exceptions import (
+        HttpError as _TrinoHttpError,  # type: ignore[import-not-found]
+    )
+except ImportError:  # pragma: no cover
+    _TrinoHttpError = Exception  # type: ignore[assignment,misc]
+
+
+class _TrinoAuthErrorMeta(type):
+    """Metaclass that flags HTTP-401 errors from the Trino driver."""
+
+    def __instancecheck__(cls, instance: object) -> bool:
+        return isinstance(instance, _TrinoHttpError) and "error 401" in str(instance)
+
+
+class TrinoAuthError(_TrinoHttpError, metaclass=_TrinoAuthErrorMeta):  # type: ignore[misc]
+    """Sentinel exception class for Trino OAuth2 401 detection."""
+
 
 # ---------------------------------------------------------------------------
 # Custom Presto/Trino SQL types (minimal stubs -- enough for column mapping)
@@ -373,6 +395,11 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
     engine = "trino"
     engine_name = "Trino"
     allows_alias_to_source_column = False
+
+    # OAuth 2.0 — 1:1 with superset_old/db_engine_specs/trino.py
+    supports_oauth2 = True
+    oauth2_exception = TrinoAuthError
+    oauth2_token_request_type = "data"  # noqa: S105
 
     @classmethod
     def get_allow_cost_estimate(cls, extra: dict[str, Any]) -> bool:

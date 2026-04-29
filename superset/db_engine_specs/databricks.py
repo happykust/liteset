@@ -15,20 +15,23 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Databricks engine spec -- ported 1:1 from ``superset_old/db_engine_specs/databricks.py``.
+"""Databricks engine spec.
+
+Ported 1:1 from ``superset_old/db_engine_specs/databricks.py``.
 
 The only deviations from the original file are:
 
-* Marshmallow ``Schema`` / ``fields`` imports are dropped; the schema
-  classes are replaced with minimal attribute-free stubs so that
-  ``parameters_schema = DatabricksNativeSchema()`` keeps working as a
-  truthy sentinel.  The original Marshmallow types are not used anywhere
-  in engine-spec business logic, only in OpenAPI generation which has
-  been re-implemented in ``superset/db_engine_specs/base.py`` via the
-  ``BASIC_PARAMETERS_JSON_SCHEMA`` fragment.
-* ``apispec`` + ``MarshmallowPlugin`` are not installed in liteset, so
-  ``parameters_json_schema`` falls back to ``None`` when the Marshmallow
-  stack is missing (the original would also crash without apispec).
+* Marshmallow ``Schema`` / ``fields`` imports are dropped.  The original
+  Marshmallow ``Schema`` subclasses (``DatabricksBaseSchema``,
+  ``DatabricksNativeSchema``, ``DatabricksNativePropertiesSchema``,
+  ``DatabricksPythonConnectorSchema``) existed solely so that FAB's
+  OpenAPI generator could introspect them.  In liteset we attach the
+  equivalent JSON Schema dictionaries directly to ``parameters_schema``
+  / ``properties_schema`` -- see the ``DATABRICKS_*_PARAMETERS_SCHEMA``
+  module-level dicts below.  ``parameters_json_schema()`` is then a
+  trivial identity function.
+* The OpenAPI introspection helper is no longer needed since the
+  dictionaries already are valid OpenAPI fragments.
 
 Everything else -- class hierarchy, attributes, time-grain dict, SQL
 URL construction, ``validate_parameters`` semantics, and the
@@ -120,38 +123,78 @@ def monkeypatch_dialect() -> None:
         pass
 
 
-class _SchemaStub:
-    """
-    Minimal stand-in for a Marshmallow ``Schema`` instance.
+# JSON Schema fragments mirroring the original Marshmallow ``Schema``
+# classes.  These are attached directly to the engine specs as
+# ``parameters_schema`` / ``properties_schema``; ``parameters_json_schema``
+# returns them unchanged.
 
-    The original Databricks engine spec exposes several Marshmallow schema
-    classes purely so that FAB's OpenAPI generator can introspect them.  In
-    liteset we don't run Marshmallow at all, but the engine spec code paths
-    that do ``hasattr(cls, "parameters_schema")`` or
-    ``if cls.parameters_schema:`` must keep working.  This stub preserves
-    that contract (truthy, instantiable) while raising loudly on any
-    unexpected attribute access so that regressions are easy to spot.
-
-    Deviation from original: Marshmallow ``Schema`` -> stub; necessary
-    technical mapping, not a logic change.
-    """
-
-    def __bool__(self) -> bool:
-        return True
-
-    def __getattr__(self, name: str) -> Any:
-        raise NotImplementedError(
-            f"Databricks schema stub: attribute {name!r} is not implemented "
-            "in liteset.  The original Marshmallow schema was removed "
-            "during the migration."
-        )
+_DATABRICKS_BASE_PROPERTIES: dict[str, Any] = {
+    "access_token": {"type": "string"},
+    "host": {"type": "string"},
+    "port": {
+        "type": "integer",
+        "format": "int32",
+        "minimum": 0,
+        "maximum": 65536,
+        "exclusiveMaximum": True,
+        "description": "Database port",
+    },
+    "encryption": {
+        "type": "boolean",
+        "description": "Use an encrypted connection to the database",
+    },
+}
+_DATABRICKS_BASE_REQUIRED: list[str] = ["access_token", "host", "port"]
 
 
-class DatabricksBaseSchema(_SchemaStub):
-    """
-    Fields that are required for both Databricks drivers that uses a
-    dynamic form.
-    """
+# Mirror of the original ``DatabricksBaseSchema``.
+DATABRICKS_BASE_PARAMETERS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": dict(_DATABRICKS_BASE_PROPERTIES),
+    "required": list(_DATABRICKS_BASE_REQUIRED),
+}
+
+
+# Mirror of the original ``DatabricksNativeSchema`` (adds ``database``).
+DATABRICKS_NATIVE_PARAMETERS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        **_DATABRICKS_BASE_PROPERTIES,
+        "database": {"type": "string"},
+    },
+    "required": [*_DATABRICKS_BASE_REQUIRED, "database"],
+}
+
+
+# Mirror of the original ``DatabricksNativePropertiesSchema`` — flat schema
+# inheriting from ``DatabricksNativeSchema`` and adding ``http_path``.
+DATABRICKS_NATIVE_PROPERTIES_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        **_DATABRICKS_BASE_PROPERTIES,
+        "database": {"type": "string"},
+        "http_path": {"type": "string"},
+    },
+    "required": [*_DATABRICKS_BASE_REQUIRED, "database", "http_path"],
+}
+
+
+# Mirror of the original ``DatabricksPythonConnectorSchema``.
+DATABRICKS_PYTHON_CONNECTOR_PARAMETERS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        **_DATABRICKS_BASE_PROPERTIES,
+        "http_path_field": {"type": "string"},
+        "default_catalog": {"type": "string"},
+        "default_schema": {"type": "string"},
+    },
+    "required": [
+        *_DATABRICKS_BASE_REQUIRED,
+        "http_path_field",
+        "default_catalog",
+        "default_schema",
+    ],
+}
 
 
 class DatabricksBaseParametersType(TypedDict):
@@ -164,18 +207,6 @@ class DatabricksBaseParametersType(TypedDict):
     host: str
     port: int
     encryption: bool
-
-
-class DatabricksNativeSchema(DatabricksBaseSchema):
-    """
-    Additional fields required only for the DatabricksNativeEngineSpec.
-    """
-
-
-class DatabricksNativePropertiesSchema(DatabricksNativeSchema):
-    """
-    Properties required only for the DatabricksNativeEngineSpec.
-    """
 
 
 class DatabricksNativeParametersType(DatabricksBaseParametersType):
@@ -194,12 +225,6 @@ class DatabricksNativePropertiesType(TypedDict):
 
     parameters: DatabricksNativeParametersType
     extra: str
-
-
-class DatabricksPythonConnectorSchema(DatabricksBaseSchema):
-    """
-    Additional fields required only for the DatabricksPythonConnectorEngineSpec.
-    """
 
 
 class DatabricksPythonConnectorParametersType(DatabricksBaseParametersType):
@@ -444,8 +469,8 @@ class DatabricksNativeEngineSpec(DatabricksDynamicBaseEngineSpec):
     drivers = {"connector": "Native all-purpose driver"}
     default_driver = "connector"
 
-    parameters_schema = DatabricksNativeSchema()
-    properties_schema = DatabricksNativePropertiesSchema()
+    parameters_schema = DATABRICKS_NATIVE_PARAMETERS_SCHEMA
+    properties_schema = DATABRICKS_NATIVE_PROPERTIES_SCHEMA
 
     sqlalchemy_uri_placeholder = (
         "databricks+connector://token:{access_token}@{host}:{port}/{database_name}"
@@ -509,30 +534,10 @@ class DatabricksNativeEngineSpec(DatabricksDynamicBaseEngineSpec):
         """
         Return configuration parameters as OpenAPI.
 
-        Deviation from original: the original uses ``apispec`` +
-        ``MarshmallowPlugin`` to introspect ``cls.properties_schema``.
-        Neither library is installed in liteset and the stub schema has
-        no fields, so we return ``None`` -- which matches the original's
-        behaviour when ``properties_schema`` is falsy.
+        ``properties_schema`` is already a JSON Schema dict (see
+        ``DATABRICKS_NATIVE_PROPERTIES_SCHEMA``), so we return it as-is.
         """
-        if not cls.properties_schema:
-            return None
-
-        try:
-            # pylint: disable=import-outside-toplevel
-            from apispec import APISpec
-            from apispec.ext.marshmallow import MarshmallowPlugin
-
-            spec = APISpec(
-                title="Database Parameters",
-                version="1.0.0",
-                openapi_version="3.0.2",
-                plugins=[MarshmallowPlugin()],
-            )
-            spec.components.schema(cls.__name__, schema=cls.properties_schema)
-            return spec.to_dict()["components"]["schemas"][cls.__name__]
-        except ImportError:
-            return None
+        return cls.properties_schema or None
 
     @classmethod
     def get_default_catalog(cls, database: Database) -> str:
@@ -594,7 +599,7 @@ class DatabricksPythonConnectorEngineSpec(DatabricksDynamicBaseEngineSpec):
     default_driver = "databricks-sql-python"
     drivers = {"databricks-sql-python": "Databricks SQL Python"}
 
-    parameters_schema = DatabricksPythonConnectorSchema()
+    parameters_schema = DATABRICKS_PYTHON_CONNECTOR_PARAMETERS_SCHEMA
 
     sqlalchemy_uri_placeholder = (
         "databricks://token:{access_token}@{host}:{port}?http_path={http_path}"
