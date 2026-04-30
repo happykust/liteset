@@ -14,6 +14,15 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""``port`` advanced data type plugin.
+
+Direct port of superset_old/advanced_data_type/plugins/internet_port.py
+— translates port names (``http``, ``ssh``, ...) and numeric ports into
+a standard AdvancedDataTypeResponse.
+"""
+
+from __future__ import annotations
+
 import itertools
 from typing import Any
 
@@ -24,7 +33,7 @@ from superset.advanced_data_type.types import (
     AdvancedDataTypeRequest,
     AdvancedDataTypeResponse,
 )
-from superset.utils.core import FilterOperator, FilterStringOperators
+from superset.utils.core import FilterOperator
 
 port_conversion_dict: dict[str, list[int]] = {
     "http": [80],
@@ -35,7 +44,7 @@ port_conversion_dict: dict[str, list[int]] = {
     "telnet": [23],
     "telnets": [992],
     "smtp": [25],
-    "submissions": [465],  # aka smtps, ssmtp, urd
+    "submissions": [465],
     "kerberos": [88],
     "kerberos-adm": [749],
     "poperator3": [110],
@@ -46,7 +55,7 @@ port_conversion_dict: dict[str, list[int]] = {
     "snmp": [161],
     "ldap": [389],
     "ldaps": [636],
-    "imap2": [143],  # aka imap
+    "imap2": [143],
     "imaps": [993],
     "MySQL": [3306],
     "Remote Desktop": [3389],
@@ -55,23 +64,24 @@ port_conversion_dict: dict[str, list[int]] = {
     "pdap": [344],
 }
 
+_VALID_FILTER_OPERATORS = [
+    "Equal to (=)",
+    "Greater than or equal (>=)",
+    "Greater than (>)",
+    "In",
+    "Less than (<)",
+    "Less than or equal (<=)",
+]
 
-def port_translation_func(req: AdvancedDataTypeRequest) -> AdvancedDataTypeResponse:
-    """
-    Convert a passed in AdvancedDataTypeRequest to a AdvancedDataTypeResponse
-    """
+
+def port_translation_func(
+    req: AdvancedDataTypeRequest,
+) -> AdvancedDataTypeResponse:
     resp: AdvancedDataTypeResponse = {
         "values": [],
         "error_message": "",
         "display_value": "",
-        "valid_filter_operators": [
-            FilterStringOperators.EQUALS,
-            FilterStringOperators.GREATER_THAN_OR_EQUAL,
-            FilterStringOperators.GREATER_THAN,
-            FilterStringOperators.IN,
-            FilterStringOperators.LESS_THAN,
-            FilterStringOperators.LESS_THAN_OR_EQUAL,
-        ],
+        "valid_filter_operators": list(_VALID_FILTER_OPERATORS),
     }
     if req["values"] == [""]:
         resp["values"].append([""])
@@ -92,20 +102,16 @@ def port_translation_func(req: AdvancedDataTypeRequest) -> AdvancedDataTypeRespo
                 f"'{string_value}' does not appear to be a port name or number"
             )
             break
-        else:
-            resp["display_value"] = ", ".join(
-                map(  # noqa: C417
-                    lambda x: (
-                        f"{x['start']} - {x['end']}" if isinstance(x, dict) else str(x)
-                    ),
-                    resp["values"],
-                )
-            )
+    if resp["values"]:
+        resp["display_value"] = ", ".join(
+            ", ".join(str(v) for v in entry) if isinstance(entry, list) else str(entry)
+            for entry in resp["values"]
+        )
     return resp
 
 
 def port_translate_filter_func(  # noqa: C901
-    col: Column, operator: FilterOperator, values: list[Any]
+    col: Column[Any], operator: FilterOperator, values: list[Any]
 ) -> Any:
     """
     Convert a passed in column, FilterOperator
