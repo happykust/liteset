@@ -71,6 +71,39 @@ def require_authenticated_user(
         )
 
 
+def deny_anon_with_403(
+    connection: ASGIConnection[Any, Any, Any, Any],
+    _: BaseRouteHandler,
+) -> None:
+    """Guard that rejects anonymous users with 403 instead of 401.
+
+    Used for endpoints (like ``/explore/permalink`` POST) where the
+    original Superset deployment returns 403 to unauthenticated callers
+    rather than 401.
+    """
+    user = connection.user
+    if not getattr(user, "is_authenticated", False):
+        raise PermissionDeniedException(detail="Forbidden")
+
+
+def deny_anon_with_404(
+    connection: ASGIConnection[Any, Any, Any, Any],
+    _: BaseRouteHandler,
+) -> None:
+    """Guard that hides the route from anonymous users with 404.
+
+    Mirrors deployments where unauthenticated callers see "not found"
+    for sub-resource routes (e.g. ``/dashboard/{pk}/permalink``,
+    ``/dashboard/{pk}/embedded``) — the dashboard itself is filtered
+    out of the user's view and the sub-route appears non-existent.
+    """
+    from litestar.exceptions import NotFoundException
+
+    user = connection.user
+    if not getattr(user, "is_authenticated", False):
+        raise NotFoundException(detail="Not found")
+
+
 def require_permission(action: str, resource: str) -> GuardFn:
     permission_tuple = (action, resource)
 

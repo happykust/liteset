@@ -139,7 +139,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
     Tries in order:
     1. Session cookie (Flask itsdangerous) -> user_id -> DB lookup
     2. JWT Bearer token (guest tokens for embedded dashboards)
-    3. API key header (stub — Superset has no native support)
 
     Performance: Resolved users are cached in Redis (TTL 60s).
     On Redis failure, falls back to direct DB lookup.
@@ -165,11 +164,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         user = await self._authenticate_jwt(connection)
         if user:
             return AuthenticationResult(user=user, auth="jwt")
-
-        # 4. Try API key
-        user = await self._authenticate_api_key(connection)
-        if user:
-            return AuthenticationResult(user=user, auth="api_key")
 
         # Return anonymous user with Public role permissions (if configured).
         # This allows public routes (health checks, SPA assets, public dashboards)
@@ -456,20 +450,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
 
         # Resolve from DB
         return await self._resolve_user_from_db(connection, user_id)
-
-    async def _authenticate_api_key(
-        self, connection: ASGIConnection[Any, Any, Any, Any]
-    ) -> Any | None:
-        """Authenticate via API key header.
-
-        Stub — Superset does not have native API key support.
-        Reserved for future extension.
-        """
-        api_key = connection.headers.get("x-api-key")
-        if not api_key:
-            return None
-        logger.debug("API key auth attempted but not implemented")
-        return None
 
     async def _resolve_user_from_db(
         self,
