@@ -17,9 +17,11 @@
 """Key-value store exceptions -- ported 1:1 from
 superset_old/key_value/exceptions.py.
 
-The original uses ``flask_babel.lazy_gettext`` for translatable messages.
-In the Litestar migration we use plain strings because the i18n layer has
-not been ported yet; the message text is kept identical for grep-ability.
+The original uses a lazy-gettext for translatable messages. In the
+Litestar port we use plain strings here (the equivalent
+:func:`superset.i18n.lazy_gettext` is available for any future
+translatable-message work); the message text is kept identical for
+grep-ability.
 """
 
 from __future__ import annotations

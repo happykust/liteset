@@ -30,7 +30,7 @@ import yaml
 from superset.commands.base import AsyncBaseCommand
 from superset.exceptions import CommandInvalidError
 
-MAX_ZIP_ENTRIES = 500
+MAX_ZIP_ENTRIES = 1000
 MAX_ENTRY_SIZE = 50 * 1024 * 1024  # 50 MB
 
 

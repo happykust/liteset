@@ -98,7 +98,9 @@ class AsyncKeyValueManager:
         if key is not None:
             entry = await self._dao.upsert_entry(resource, key, encoded, expires_on)
         else:
-            entry = await self._dao.create_entry(resource, encoded, expires_on)
+            entry = await self._dao.create_entry(
+                resource, encoded, expires_on=expires_on
+            )
         return entry.id  # type: ignore[return-value]
 
     async def delete(self, resource: str, key: int) -> bool:
