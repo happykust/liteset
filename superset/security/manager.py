@@ -23,9 +23,12 @@ and by controllers/guards (request-scoped session from DI).
 
 from __future__ import annotations
 
+import asyncio
+import datetime as dt
 import json
 import logging
 import re
+import ssl
 from typing import Any, cast, TYPE_CHECKING
 
 from sqlalchemy import and_, or_, select
@@ -187,6 +190,701 @@ class AsyncSecurityManager:
         stmt: Any = select(role_model).where(role_model.id == role_id)
         result = await self.dao.session.execute(stmt)
         return result.scalars().one_or_none()
+
+    # ------------------------------------------------------------------
+    # LDAP authentication
+    # ------------------------------------------------------------------
+    #
+    # Ported 1:1 from
+    # ``flask_appbuilder/security/manager.py::auth_user_ldap`` and
+    # surrounding helpers (``_search_ldap``, ``_bind_ldap``,
+    # ``_ldap_bind_indirect``, ``_ldap_calculate_user_roles``,
+    # ``ldap_extract``, ``ldap_extract_list``).
+    #
+    # Implementation differences with the original FAB code:
+    #
+    # * We use the pure-Python ``ldap3`` package (rather than the C-extension
+    #   ``python-ldap``) so the call-graph stays free of build-time native
+    #   dependencies.  ``ldap3`` is itself synchronous; we wrap blocking
+    #   calls with :func:`asyncio.to_thread` to keep the controller
+    #   coroutine-safe.
+    # * FAB reads ``current_app.config[...]``; we accept ``settings``
+    #   (a :class:`SupersetSettings` instance) as an explicit parameter.
+    # * FAB calls ``self.add_user`` which lives on the FAB sqla manager;
+    #   we inline the equivalent insert via :class:`AsyncSecurityDAO`.
+    # * Role syncing follows ``AUTH_ROLES_SYNC_AT_LOGIN`` (default False)
+    #   and ``AUTH_ROLES_MAPPING`` exactly as in FAB.
+
+    async def auth_user_ldap(  # noqa: C901
+        self,
+        username: str,
+        password: str,
+        *,
+        settings: Any,
+    ) -> Any | None:
+        """Authenticate a user via LDAP.
+
+        1:1 port of
+        ``BaseSecurityManager.auth_user_ldap`` from Flask-AppBuilder.
+
+        :param username: The username to authenticate
+        :param password: The plaintext password to validate
+        :param settings: A :class:`SupersetSettings` instance (LDAP config)
+        :returns: The authenticated :class:`User` ORM object, or ``None``
+            on failure (invalid creds, search miss, inactive user, etc.).
+        """
+        # If no username is provided, go away.
+        if not username:
+            return None
+
+        # ``ldap3`` is the only optional dependency here.  Detect a
+        # missing install up front so the failure mode is unambiguous.
+        try:
+            import ldap3
+            from ldap3.core.exceptions import LDAPException
+        except ImportError:
+            logger.error("ldap3 library is not installed")
+            return None
+
+        # Search the metadata DB for the user.
+        user = await self.dao.get_user_by_username(username)
+
+        # If user exists but is inactive, deny silently — mirrors FAB.
+        if user is not None and not getattr(user, "active", True):
+            return None
+
+        # If user is unknown and self-registration is disabled, deny.
+        # Mirrors FAB: ``if (not user) and (not self.auth_user_registration)``.
+        auth_user_registration = bool(
+            getattr(settings, "auth_user_registration", False)
+        )
+        if user is None and not auth_user_registration:
+            return None
+
+        # Required: AUTH_LDAP_SERVER must be configured.
+        ldap_server_uri: str = getattr(settings, "auth_ldap_server", "") or ""
+        if not ldap_server_uri:
+            logger.error(
+                "AUTH_LDAP_SERVER must be configured to use LDAP authentication"
+            )
+            return None
+
+        try:
+            ldap_result = await self._ldap_authenticate_and_search(
+                ldap_module=ldap3,
+                ldap_server_uri=ldap_server_uri,
+                username=username,
+                password=password,
+                settings=settings,
+            )
+        except LDAPException as exc:
+            logger.error("LDAP error during authentication: %s", exc)
+            return None
+
+        if ldap_result is None:
+            # Bind failed or search came up empty — auth failure.
+            # Mirror FAB by recording a failed-login stat for known users.
+            if user is not None:
+                await self._update_user_auth_stat(user, success=False)
+            return None
+
+        user_dn, user_attributes = ldap_result
+
+        # Sync roles for existing users when AUTH_ROLES_SYNC_AT_LOGIN is on.
+        if (
+            user is not None
+            and user_attributes
+            and getattr(settings, "auth_roles_sync_at_login", False)
+        ):
+            user.roles = await self._ldap_calculate_user_roles(
+                user_attributes, settings=settings
+            )
+            logger.debug(
+                "Calculated new roles for user '%s' as: %s",
+                user_dn,
+                [r.name for r in user.roles],
+            )
+
+        # Self-register new LDAP users if enabled.
+        if user is None and user_attributes and auth_user_registration:
+            first_name = self._ldap_extract(
+                user_attributes,
+                getattr(settings, "auth_ldap_firstname_field", "givenName"),
+                "",
+            )
+            last_name = self._ldap_extract(
+                user_attributes,
+                getattr(settings, "auth_ldap_lastname_field", "sn"),
+                "",
+            )
+            email = self._ldap_extract(
+                user_attributes,
+                getattr(settings, "auth_ldap_email_field", "mail"),
+                f"{username}@email.notfound",
+            )
+            roles = await self._ldap_calculate_user_roles(
+                user_attributes, settings=settings
+            )
+            user = await self._register_user(
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+                email=email,
+                roles=roles,
+            )
+            if user is None:
+                logger.info("LDAP self-registration failed for '%s'", username)
+                return None
+            logger.debug("New LDAP user registered: %s", username)
+
+        if user is None:
+            return None
+
+        await self._update_user_auth_stat(user, success=True)
+        return user
+
+    async def _ldap_authenticate_and_search(  # noqa: C901
+        self,
+        *,
+        ldap_module: Any,
+        ldap_server_uri: str,
+        username: str,
+        password: str,
+        settings: Any,
+    ) -> tuple[str | None, dict[str, list[bytes]] | None] | None:
+        """Establish the LDAP connection and resolve ``(user_dn, attrs)``.
+
+        Encapsulates both the indirect-bind (service account search) and
+        direct-bind flows.  All blocking ``ldap3`` calls are dispatched
+        through :func:`asyncio.to_thread` so the calling coroutine never
+        stalls the event loop.
+
+        Returns ``None`` on authentication failure (bind failed, search
+        miss, etc.), or a ``(user_dn, user_attributes)`` tuple on success.
+        ``user_dn`` may legitimately be ``None`` in the direct-bind flow
+        when ``AUTH_LDAP_SEARCH`` is not configured — mirrors FAB which
+        leaves ``user_dn = None`` in that path.
+        """
+
+        bind_user: str = getattr(settings, "auth_ldap_bind_user", "") or ""
+        ldap_search: str = getattr(settings, "auth_ldap_search", "") or ""
+
+        def _do_ldap_flow() -> (  # noqa: C901
+            tuple[str | None, dict[str, list[bytes]] | None] | None
+        ):
+            # Build a TLS context that mirrors the FAB knobs.
+            tls = self._build_ldap_tls(ldap_module, settings)
+
+            server = ldap_module.Server(
+                ldap_server_uri,
+                use_ssl=False,
+                tls=tls,
+                get_info=ldap_module.NONE,
+            )
+
+            # Open the connection without binding yet — we'll bind below.
+            con = ldap_module.Connection(
+                server,
+                auto_bind=False,
+                client_strategy=ldap_module.SYNC,
+                raise_exceptions=False,
+            )
+            # ``referrals`` is set to False (mirrors FAB's
+            # ``set_option(OPT_REFERRALS, 0)``).
+            con.referrals = False
+
+            # ``open()`` initialises the socket.  ``start_tls()`` is only
+            # called when AUTH_LDAP_USE_TLS is set and the URI is plain LDAP.
+            con.open()
+            if getattr(settings, "auth_ldap_use_tls", False):
+                if not con.start_tls():
+                    logger.error(
+                        "LDAP TLS upgrade failed against server '%s'",
+                        ldap_server_uri,
+                    )
+                    con.unbind()
+                    return None
+
+            try:
+                # Define defaults — mirror FAB lines 1275-1276
+                # (``user_dn = None``; ``user_attributes = {}``).
+                user_dn: str | None = None
+                user_attributes: dict[str, list[bytes]] | None = {}
+
+                # Flow 1: indirect bind (service account performs search).
+                if bind_user:
+                    if not self._ldap_bind_indirect_sync(con, settings):
+                        return None
+
+                    if not ldap_search:
+                        logger.error(
+                            "AUTH_LDAP_SEARCH must be set when using"
+                            " AUTH_LDAP_BIND_USER"
+                        )
+                        return None
+
+                    user_dn, user_attributes = self._search_ldap_sync(
+                        con, username, settings
+                    )
+                    if user_dn is None:
+                        logger.info("LDAP search returned no entry for '%s'", username)
+                        return None
+
+                    if not self._bind_ldap_sync(con, user_dn, password):
+                        logger.info(
+                            "LDAP bind FAILED for resolved DN of user '%s'",
+                            username,
+                        )
+                        return None
+
+                    return user_dn, user_attributes
+
+                # Flow 2: direct bind (end-user creds drive both bind & search).
+                bind_username = username
+                if append_domain := getattr(settings, "auth_ldap_append_domain", ""):
+                    bind_username = f"{bind_username}@{append_domain}"
+                if username_format := getattr(
+                    settings, "auth_ldap_username_format", ""
+                ):
+                    bind_username = username_format % bind_username
+
+                if not self._bind_ldap_sync(con, bind_username, password):
+                    logger.info(
+                        "LDAP bind FAILED for direct username '%s'", bind_username
+                    )
+                    return None
+
+                # Mirror FAB: in the direct-bind flow ``user_dn`` stays
+                # ``None`` unless ``AUTH_LDAP_SEARCH`` is configured —
+                # ``bind_username`` is NOT a DN and must not be returned
+                # as one (FAB code: ``flask_appbuilder/security/manager.py``
+                # lines 1275, 1313-1356).
+                if ldap_search:
+                    user_dn, user_attributes = self._search_ldap_sync(
+                        con, username, settings
+                    )
+                    if user_dn is None:
+                        logger.info("LDAP search returned no entry for '%s'", username)
+                        return None
+                return user_dn, user_attributes
+            finally:
+                try:
+                    con.unbind()
+                except Exception:  # noqa: BLE001, S110
+                    pass  # best-effort cleanup
+
+        return await asyncio.to_thread(_do_ldap_flow)
+
+    @staticmethod
+    def _build_ldap_tls(ldap_module: Any, settings: Any) -> Any | None:
+        """Construct a ``ldap3.Tls`` instance from FAB-style TLS knobs.
+
+        Mirrors the ``ldap.set_option(OPT_X_TLS_*)`` calls in
+        ``BaseSecurityManager.auth_user_ldap``.  Returns ``None`` when no
+        TLS configuration is in effect.
+        """
+        cacertdir = getattr(settings, "auth_ldap_tls_cacertdir", "") or ""
+        cacertfile = getattr(settings, "auth_ldap_tls_cacertfile", "") or ""
+        certfile = getattr(settings, "auth_ldap_tls_certfile", "") or ""
+        keyfile = getattr(settings, "auth_ldap_tls_keyfile", "") or ""
+        allow_self_signed = bool(
+            getattr(settings, "auth_ldap_allow_self_signed", False)
+        )
+        tls_demand = bool(getattr(settings, "auth_ldap_tls_demand", False))
+        use_tls = bool(getattr(settings, "auth_ldap_use_tls", False))
+
+        if not (
+            cacertdir
+            or cacertfile
+            or certfile
+            or keyfile
+            or allow_self_signed
+            or tls_demand
+            or use_tls
+        ):
+            return None
+
+        if allow_self_signed:
+            validate = ssl.CERT_NONE
+        elif tls_demand:
+            validate = ssl.CERT_REQUIRED
+        else:
+            validate = ssl.CERT_OPTIONAL
+
+        return ldap_module.Tls(
+            local_private_key_file=keyfile or None,
+            local_certificate_file=certfile or None,
+            ca_certs_file=cacertfile or None,
+            ca_certs_path=cacertdir or None,
+            validate=validate,
+        )
+
+    @staticmethod
+    def _bind_ldap_sync(con: Any, dn: str, password: str) -> bool:
+        """Validate ``dn``/``password`` against the live LDAP connection.
+
+        Mirrors :pymeth:`BaseSecurityManager._ldap_bind` exactly: returns
+        ``True`` on a successful bind, ``False`` on invalid credentials.
+        """
+        logger.debug("LDAP bind TRY with DN: '%s'", dn)
+        try:
+            ok = con.rebind(user=dn, password=password)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("LDAP bind raised: %s", exc)
+            return False
+        if ok:
+            logger.debug("LDAP bind SUCCESS with DN: '%s'", dn)
+            return True
+        logger.debug("LDAP bind FAILED for DN: '%s'", dn)
+        return False
+
+    @staticmethod
+    def _ldap_bind_indirect_sync(con: Any, settings: Any) -> bool:
+        """Bind as ``AUTH_LDAP_BIND_USER`` for service-account search.
+
+        Mirrors :pymeth:`BaseSecurityManager._ldap_bind_indirect`.
+        """
+        bind_user: str = getattr(settings, "auth_ldap_bind_user", "") or ""
+        bind_password: str = getattr(settings, "auth_ldap_bind_password", "") or ""
+        assert bind_user, "AUTH_LDAP_BIND_USER must be set"
+
+        logger.debug("LDAP bind indirect TRY with username: '%s'", bind_user)
+        try:
+            ok = con.rebind(user=bind_user, password=bind_password)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("LDAP indirect bind raised: %s", exc)
+            return False
+        if not ok:
+            logger.error(
+                "AUTH_LDAP_BIND_USER and AUTH_LDAP_BIND_PASSWORD are"
+                " not valid LDAP bind credentials"
+            )
+            return False
+        logger.debug("LDAP bind indirect SUCCESS with username: '%s'", bind_user)
+        return True
+
+    @staticmethod
+    def _search_ldap_sync(  # noqa: C901
+        con: Any,
+        username: str,
+        settings: Any,
+    ) -> tuple[str | None, dict[str, list[bytes]] | None]:
+        """Search LDAP for a single user entry.
+
+        Mirrors :pymeth:`BaseSecurityManager._search_ldap`.  Returns
+        ``(user_dn, attributes_dict)`` or ``(None, None)`` if the search
+        produced zero or multiple matches.
+        """
+        ldap_search = getattr(settings, "auth_ldap_search", "") or ""
+        assert ldap_search, "AUTH_LDAP_SEARCH must be set"
+
+        uid_field = getattr(settings, "auth_ldap_uid_field", "uid")
+        ldap_search_filter = getattr(settings, "auth_ldap_search_filter", "") or ""
+        if ldap_search_filter:
+            filter_str = f"(&{ldap_search_filter}({uid_field}={username}))"
+        else:
+            filter_str = f"({uid_field}={username})"
+
+        request_fields = [
+            getattr(settings, "auth_ldap_firstname_field", "givenName"),
+            getattr(settings, "auth_ldap_lastname_field", "sn"),
+            getattr(settings, "auth_ldap_email_field", "mail"),
+        ]
+        roles_mapping = getattr(settings, "auth_roles_mapping", {}) or {}
+        if roles_mapping:
+            request_fields.append(
+                getattr(settings, "auth_ldap_group_field", "memberOf")
+            )
+
+        logger.debug(
+            "LDAP search for '%s' with fields %s in scope '%s'",
+            filter_str,
+            request_fields,
+            ldap_search,
+        )
+
+        # ldap3 returns raw results in `con.response` after `search()`.
+        ok = con.search(
+            search_base=ldap_search,
+            search_filter=filter_str,
+            search_scope="SUBTREE",
+            attributes=request_fields,
+        )
+        if not ok:
+            logger.debug("LDAP search returned no results")
+            return None, None
+
+        # Filter out search-continuation referrals.
+        entries: list[Any] = [
+            entry
+            for entry in (con.response or [])
+            if entry.get("type") == "searchResEntry"
+            and isinstance(entry.get("attributes"), dict)
+        ]
+        if len(entries) > 1:
+            logger.error(
+                "LDAP search for '%s' in scope '%s' returned multiple results",
+                filter_str,
+                ldap_search,
+            )
+            return None, None
+        if not entries:
+            return None, None
+
+        entry = entries[0]
+        user_dn = entry.get("dn")
+        # Normalise attribute values to ``list[bytes]`` so the same
+        # downstream extraction logic works for both ldap3 and python-ldap.
+        raw_attrs: dict[str, Any] = entry.get("attributes", {}) or {}
+        normalised: dict[str, list[bytes]] = {}
+        for key, value in raw_attrs.items():
+            values: list[Any]
+            if isinstance(value, list):
+                values = value
+            elif value is None:
+                values = []
+            else:
+                values = [value]
+
+            byte_values: list[bytes] = []
+            for v in values:
+                if isinstance(v, bytes):
+                    byte_values.append(v)
+                elif isinstance(v, str):
+                    byte_values.append(v.encode("utf-8"))
+                else:
+                    byte_values.append(str(v).encode("utf-8"))
+            normalised[key] = byte_values
+        return user_dn, normalised
+
+    async def _search_ldap(
+        self,
+        ldap: Any,
+        con: Any,
+        username: str,
+        *,
+        settings: Any,
+    ) -> tuple[str | None, dict[str, list[bytes]] | None]:
+        """Async wrapper around :meth:`_search_ldap_sync`.
+
+        Exposed as ``async`` to satisfy the contract documented in the
+        FAB port plan; delegates to the blocking helper via
+        :func:`asyncio.to_thread`.
+        """
+        del ldap  # signature-compatibility with FAB
+        return await asyncio.to_thread(self._search_ldap_sync, con, username, settings)
+
+    async def _bind_ldap(
+        self,
+        ldap: Any,
+        con: Any,
+        username: str,
+        password: str,
+    ) -> bool:
+        """Async wrapper around :meth:`_bind_ldap_sync`."""
+        del ldap  # signature-compatibility with FAB
+        return await asyncio.to_thread(self._bind_ldap_sync, con, username, password)
+
+    async def _ldap_bind_indirect(
+        self,
+        ldap: Any,
+        con: Any,
+        *,
+        settings: Any,
+    ) -> bool:
+        """Async wrapper around :meth:`_ldap_bind_indirect_sync`."""
+        del ldap  # signature-compatibility with FAB
+        return await asyncio.to_thread(self._ldap_bind_indirect_sync, con, settings)
+
+    @staticmethod
+    def _ldap_extract(
+        ldap_dict: dict[str, list[bytes]],
+        field_name: str,
+        fallback: str,
+    ) -> str:
+        """Extract the first value of an LDAP attribute as ``str``.
+
+        Mirrors :pymeth:`BaseSecurityManager.ldap_extract` from FAB.
+        """
+        raw_value = ldap_dict.get(field_name) or [b""]
+        first = raw_value[0]
+        if isinstance(first, bytes):
+            try:
+                decoded = first.decode("utf-8")
+            except UnicodeDecodeError:
+                decoded = ""
+        else:
+            decoded = str(first)
+        return decoded or fallback
+
+    async def _ldap_extract_list(
+        self,
+        attributes: dict[str, list[bytes]],
+        name: str,
+    ) -> list[str]:
+        """Extract a multi-valued LDAP attribute as ``list[str]``.
+
+        Mirrors :pymeth:`BaseSecurityManager.ldap_extract_list` from FAB.
+        Empty strings are filtered out, exactly as in the original.
+        """
+        raw_list = attributes.get(name) or []
+        result: list[str] = []
+        for raw in raw_list:
+            if isinstance(raw, bytes):
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+            else:
+                text = str(raw)
+            if text:
+                result.append(text)
+        return result
+
+    async def _ldap_calculate_user_roles(
+        self,
+        user_attributes: dict[str, list[bytes]],
+        *,
+        settings: Any,
+    ) -> list[Any]:
+        """Map LDAP attributes to a list of FAB :class:`Role` objects.
+
+        Ports :pymeth:`BaseSecurityManager._ldap_calculate_user_roles` 1:1:
+
+        * ``AUTH_ROLES_MAPPING`` translates LDAP group DNs (or any other
+          configured field) into one or more Superset role names.
+        * When ``AUTH_USER_REGISTRATION`` is on, the configured
+          ``AUTH_USER_REGISTRATION_ROLE`` is appended.
+        """
+        user_role_objects: dict[int, Any] = {}
+
+        roles_mapping = getattr(settings, "auth_roles_mapping", {}) or {}
+        if roles_mapping:
+            group_field = getattr(settings, "auth_ldap_group_field", "memberOf")
+            user_role_keys = set(
+                await self._ldap_extract_list(user_attributes, group_field)
+            )
+            for role_key, fab_role_names in roles_mapping.items():
+                if role_key not in user_role_keys:
+                    continue
+                for fab_role_name in fab_role_names:
+                    fab_role = await self.dao.get_role_by_name(fab_role_name)
+                    if fab_role is not None:
+                        user_role_objects[fab_role.id] = fab_role
+                    else:
+                        logger.warning(
+                            "Can't find role specified in AUTH_ROLES_MAPPING: %s",
+                            fab_role_name,
+                        )
+
+        if getattr(settings, "auth_user_registration", False):
+            registration_role_name = getattr(
+                settings, "auth_user_registration_role", "Public"
+            )
+            fab_role = await self.dao.get_role_by_name(registration_role_name)
+            if fab_role is not None:
+                user_role_objects.setdefault(fab_role.id, fab_role)
+            else:
+                logger.warning(
+                    "Can't find AUTH_USER_REGISTRATION role: %s",
+                    registration_role_name,
+                )
+
+        return list(user_role_objects.values())
+
+    async def _register_user(
+        self,
+        *,
+        username: str,
+        first_name: str,
+        last_name: str,
+        email: str,
+        roles: list[Any] | None = None,
+    ) -> Any | None:
+        """Insert a new ``ab_user`` row for an externally authenticated user.
+
+        Mirrors :pymeth:`SecurityManager.add_user` from FAB but skips the
+        password hashing step — LDAP/OAuth users authenticate against the
+        external IdP, not the local password column.  ``ab_user.password``
+        is left ``NULL`` so the row cannot be used for DB-auth login.
+        """
+        user_model: Any = self.dao.user_model
+        session = self.dao.session
+
+        # Mirror FAB AuditMixin defaults: created/changed timestamps are
+        # naive local time (``datetime.now()`` — see
+        # ``flask_appbuilder/security/sqla/models.py`` lines 177-181).
+        # ``created_by_fk``/``changed_by_fk`` default to
+        # ``cls.get_user_id`` which returns ``g.user.id`` if available,
+        # else ``None`` — for self-registration there is no admin user
+        # so both are ``None`` (the columns are nullable).
+        now = dt.datetime.now()
+        new_user = user_model(
+            first_name=first_name,
+            last_name=last_name,
+            username=username,
+            email=email,
+            active=True,
+            password=None,
+            login_count=0,
+            fail_login_count=0,
+            created_on=now,
+            changed_on=now,
+        )
+        # Set audit FKs explicitly — these columns are inherited from
+        # FAB's ``AuditMixin`` and are nullable.  The Liteset User model
+        # may not declare them as ORM-mapped columns, so we assign via
+        # ``setattr`` so SQLAlchemy persists them only when the column
+        # exists on the mapped table.
+        if hasattr(user_model, "created_by_fk"):
+            new_user.created_by_fk = None
+        if hasattr(user_model, "changed_by_fk"):
+            new_user.changed_by_fk = None
+        if roles:
+            new_user.roles = list(roles)
+
+        try:
+            session.add(new_user)
+            await session.flush()
+            await session.commit()
+        except SQLAlchemyError:
+            logger.exception("Failed to register external user '%s'", username)
+            await session.rollback()
+            return None
+        # Re-fetch with eagerly loaded roles to match ``get_user_by_*``
+        # contract elsewhere in the SM.
+        return await self.dao.get_user_by_id(new_user.id)
+
+    async def _update_user_auth_stat(self, user: Any, *, success: bool) -> None:
+        """Increment login/failure counters and persist them.
+
+        Ports :pymeth:`BaseSecurityManager.update_user_auth_stat` 1:1.
+        Failures are counted but never raise — auth stat bookkeeping
+        must not block the login response.
+        """
+        try:
+            if not getattr(user, "login_count", None):
+                user.login_count = 0
+            if not getattr(user, "fail_login_count", None):
+                user.fail_login_count = 0
+            if success:
+                user.login_count = (user.login_count or 0) + 1
+                # FAB uses naive local time; mirror exactly.
+                user.last_login = dt.datetime.now()
+                user.fail_login_count = 0
+            else:
+                user.fail_login_count = (user.fail_login_count or 0) + 1
+            user.changed_on = dt.datetime.now()
+            await self.dao.session.commit()
+        except SQLAlchemyError:
+            logger.exception(
+                "Failed to update auth stats for user_id=%s",
+                getattr(user, "id", None),
+            )
+            try:
+                await self.dao.session.rollback()
+            except SQLAlchemyError:
+                pass
 
     def is_admin(self, user: Any) -> bool:
         """Check if user has the Admin role."""
@@ -585,9 +1283,7 @@ class AsyncSecurityManager:
             if chart_ds and await self.can_access_datasource(chart_ds, user=user):
                 return
 
-            raise SupersetSecurityException(
-                self.get_chart_access_error_object(chart)
-            )
+            raise SupersetSecurityException(self.get_chart_access_error_object(chart))
 
     @staticmethod
     def _get_default_schema_for_query(
@@ -982,73 +1678,121 @@ class AsyncSecurityManager:
             if perm_name == DATASOURCE_ACCESS
         ]
 
-    async def get_rls_filters(self, table: Any, *, user: Any) -> list[Any]:
-        """Get Row Level Security filters for a table.
+    async def _resolve_user_roles_for_rls(self, user: Any) -> list[Any] | None:
+        """Resolve the list of role objects to use for RLS filtering.
 
-        Queries RowLevelSecurityFilter with M2M joins on tables and roles.
+        Mirrors the original ``SupersetSecurityManager.get_user_roles``
+        contract used inside ``get_rls_filters``:
+
+        * Authenticated user → their assigned roles.
+        * Anonymous / missing user → ``[Public role]`` if
+          ``AUTH_ROLE_PUBLIC`` is configured *and* the role exists in
+          the metadata DB; otherwise ``None`` to signal "no roles, no
+          filtering — return [] from ``get_rls_filters``".
+        """
+        is_anonymous = (
+            user is None
+            or getattr(user, "is_anonymous", False)
+            or not getattr(user, "is_authenticated", True)
+        )
+        if not is_anonymous:
+            return list(getattr(user, "roles", []) or [])
+
+        public_role_name = self._public_role_name
+        if not public_role_name:
+            return None
+        public_role = await self.dao.get_role_by_name(public_role_name)
+        if public_role is None:
+            return None
+        return [public_role]
+
+    async def get_rls_filters(self, table: Any, *, user: Any) -> list[Any]:
+        """Retrieve RLS filters for the current user and table.
+
+        Ported 1:1 from
+        ``superset_old/security/manager.py::SupersetSecurityManager.get_rls_filters``.
+
         Two filter types:
-        - Regular: user HAS the role -> filter applies
-        - Base: user does NOT have the role -> filter applies
-        Results are ordered by group_key.
+        - **Regular**: applies if the user holds one of the listed roles.
+        - **Base**: applies if the user does *not* hold one of the listed
+          roles (Admin is exempted by listing the Admin role on the
+          BASE filter, exactly as in the original — there is no
+          special-cased ``is_admin`` branch).
+
+        Anonymous users get the Public role (if ``AUTH_ROLE_PUBLIC`` is
+        configured), exactly mirroring the original
+        ``SupersetSecurityManager.get_user_roles`` fallback. If no Public
+        role can be resolved, returns ``[]``.
         """
         from superset.models.connectors import (
             RLSFilterRoles,
             RLSFilterTables,
             RowLevelSecurityFilter,
         )
+        from superset.utils.core import RowLevelSecurityFilterType
 
-        if self.is_admin(user):
+        roles = await self._resolve_user_roles_for_rls(user)
+        if roles is None:
             return []
+        user_roles = [r.id for r in roles]
 
-        user_roles = [r.id for r in getattr(user, "roles", [])]
-
-        # Sub-query: RLS filter IDs that apply to this table
         filter_tables_sq = select(RLSFilterTables.c.rls_filter_id).where(
             RLSFilterTables.c.table_id == table.id
         )
 
-        # Sub-query: Regular filters where user has the role
         regular_filter_roles_sq = (
             select(RLSFilterRoles.c.rls_filter_id)
             .join(
                 RowLevelSecurityFilter,
                 RLSFilterRoles.c.rls_filter_id == RowLevelSecurityFilter.id,
             )
-            .where(RowLevelSecurityFilter.filter_type == "Regular")
+            .where(
+                RowLevelSecurityFilter.filter_type == RowLevelSecurityFilterType.REGULAR
+            )
             .where(RLSFilterRoles.c.role_id.in_(user_roles))
         )
 
-        # Sub-query: Base filters where user has the role (to be excluded)
         base_filter_roles_sq = (
             select(RLSFilterRoles.c.rls_filter_id)
             .join(
                 RowLevelSecurityFilter,
                 RLSFilterRoles.c.rls_filter_id == RowLevelSecurityFilter.id,
             )
-            .where(RowLevelSecurityFilter.filter_type == "Base")
+            .where(
+                RowLevelSecurityFilter.filter_type == RowLevelSecurityFilterType.BASE
+            )
             .where(RLSFilterRoles.c.role_id.in_(user_roles))
         )
 
         stmt = (
-            select(RowLevelSecurityFilter)
+            select(
+                RowLevelSecurityFilter.id,
+                RowLevelSecurityFilter.group_key,
+                RowLevelSecurityFilter.clause,
+            )
             .where(RowLevelSecurityFilter.id.in_(filter_tables_sq))
             .where(
                 or_(
                     and_(
-                        RowLevelSecurityFilter.filter_type == "Regular",
+                        RowLevelSecurityFilter.filter_type
+                        == RowLevelSecurityFilterType.REGULAR,
                         RowLevelSecurityFilter.id.in_(regular_filter_roles_sq),
                     ),
                     and_(
-                        RowLevelSecurityFilter.filter_type == "Base",
+                        RowLevelSecurityFilter.filter_type
+                        == RowLevelSecurityFilterType.BASE,
                         RowLevelSecurityFilter.id.notin_(base_filter_roles_sq),
                     ),
                 )
             )
-            .order_by(RowLevelSecurityFilter.group_key)
         )
 
+        # Mirror the original which returns ``[(id, group_key, clause), ...]``
+        # via ``self.session.query(RLSF.id, RLSF.group_key, RLSF.clause)``.
+        # Row objects support ``.id``/``.group_key``/``.clause`` attribute
+        # access exactly like ORM instances.
         result = await self.dao.session.execute(stmt)
-        return list(result.scalars().all())
+        return list(result.all())
 
     async def get_rls_sorted(self, table: Any, *, user: Any) -> list[Any]:
         """Retrieve RLS filters sorted by ID for deterministic cache keys.
@@ -1493,3 +2237,102 @@ class AsyncSecurityManager:
         if user is not None and self.is_guest_user(user):
             return user
         return None
+
+
+# ---------------------------------------------------------------------------
+# Sync proxy
+# ---------------------------------------------------------------------------
+#
+# ``SQL_QUERY_MUTATOR`` is a user-supplied callable (configured in
+# ``superset_config.py``) that the original Superset invokes inside the
+# *synchronous* ``Database.mutate_sql_based_on_config`` code path.  It
+# is given ``security_manager`` as a kwarg so the mutator can read the
+# current user, check role/permission membership, etc.
+#
+# Liteset's :class:`AsyncSecurityManager` is request-scoped (DI'd from
+# Litestar) and async — so we cannot pass it directly to a sync
+# callback.  Instead we expose a small synchronous read-only proxy:
+# the methods most mutators care about (``get_user_id``,
+# ``is_user_admin``, ``current_user``) all have synchronous answers
+# already, since they read from :mod:`superset.utils.core`'s
+# user-context :class:`ContextVar` which is populated by
+# :mod:`superset.middleware.auth` before any DB call runs.  More
+# elaborate methods (``has_access``, etc.) are intentionally
+# unavailable from the sync proxy — mutators that need them should
+# move to the async pipeline.
+
+
+class SyncSecurityManagerProxy:
+    """Sync read-only adapter for :class:`AsyncSecurityManager`.
+
+    Designed for ``SQL_QUERY_MUTATOR`` callbacks invoked from the
+    synchronous ``Database.mutate_sql_based_on_config`` path. Mirrors
+    the read-only API surface most mutators actually need:
+
+    - ``get_user_id()`` → current user's primary key, or ``None`` when
+      unauthenticated (e.g. Celery task / Alembic migration).
+    - ``current_user`` → the live user object held on the request
+      :class:`ContextVar`.
+    - ``is_user_admin()`` → whether the current user has the Admin
+      role (delegates to :meth:`AsyncSecurityManager.is_admin`).
+
+    Aliases ``current_user_id`` / ``is_admin`` are provided for
+    parity with the original
+    :class:`SupersetSecurityManager` attribute names.
+    """
+
+    def __init__(self, async_sm: AsyncSecurityManager | None = None) -> None:
+        self._async = async_sm
+
+    # ── User-context lookups ────────────────────────────────────────
+    @staticmethod
+    def get_user_id() -> int | None:
+        """Return the current user's primary key, or ``None``."""
+        from superset.utils.core import get_user_id
+
+        return get_user_id()
+
+    # 1:1 alias with original FAB ``SupersetSecurityManager.current_user_id``.
+    @property
+    def current_user_id(self) -> int | None:
+        return self.get_user_id()
+
+    @property
+    def current_user(self) -> Any | None:
+        """Return the live user object on the request ContextVar."""
+        from superset.utils.core import get_current_user
+
+        return get_current_user()
+
+    # ── Role membership ─────────────────────────────────────────────
+    def is_user_admin(self) -> bool:
+        """Return ``True`` if the current user is an Admin."""
+        user = self.current_user
+        if user is None:
+            return False
+        if self._async is not None:
+            return self._async.is_admin(user)
+        # Fall back to inspecting role names directly when no async
+        # SM is attached (e.g. during early bootstrap / Celery).
+        return any(
+            getattr(r, "name", None) == "Admin"
+            for r in getattr(user, "roles", []) or []
+        )
+
+    # 1:1 alias with original ``SupersetSecurityManager.is_admin``.
+    def is_admin(self) -> bool:
+        return self.is_user_admin()
+
+
+def get_sync_security_manager_proxy() -> SyncSecurityManagerProxy:
+    """Return a fresh :class:`SyncSecurityManagerProxy`.
+
+    Intentionally constructs without a bound :class:`AsyncSecurityManager`
+    instance — the proxy's read-only methods rely on the user
+    :class:`ContextVar` from :mod:`superset.utils.core` and do not
+    require an async session.  Call sites that *do* have an
+    async-SM in hand can construct ``SyncSecurityManagerProxy(async_sm)``
+    directly to enable :meth:`is_user_admin` to use the configured
+    admin role name from the async manager.
+    """
+    return SyncSecurityManagerProxy()

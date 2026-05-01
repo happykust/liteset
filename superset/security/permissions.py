@@ -98,6 +98,11 @@ ADMIN_ONLY_VIEW_MENUS: frozenset[str] = frozenset(
         "ResetPasswordView",
         "UserInfoEditView",
         "SecurityRestApi",
+        # Log views (audit trail) — Admin-only in original
+        # Superset (security/manager.py:270-273)
+        "Action Log",
+        "Action Logs",
+        "Log",
     }
 )
 
