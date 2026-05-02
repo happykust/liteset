@@ -245,8 +245,18 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
         return None
 
     @property
+    def digest(self) -> str | None:
+        from superset.thumbnails.digest import get_chart_digest
+
+        return get_chart_digest(self)
+
+    @property
     def thumbnail_url(self) -> str | None:
-        if not self.changed_on:
-            return None
-        digest = self.changed_on.strftime("%Y%m%d%H%M%S")
-        return f"/api/v1/chart/{self.id}/thumbnail/{digest}/"
+        """
+        Returns a thumbnail URL with a HEX digest. We want to avoid browser cache
+        if the dashboard has changed.
+        """
+        if digest := self.digest:
+            return f"/api/v1/chart/{self.id}/thumbnail/{digest}/"
+
+        return None

@@ -214,6 +214,13 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
         return {}
 
     @property
+    def charts(self) -> list[str]:
+        """Slice names of every attached chart, mirroring the original
+        ``Dashboard.charts`` property used for thumbnail digest hashing.
+        """
+        return [slc.slice_name for slc in (self.slices or [])]
+
+    @property
     def changed_by_name(self) -> str:
         """Return the name of the user who last changed the dashboard."""
         if not self.changed_by:
@@ -249,8 +256,18 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
         }
 
     @property
+    def digest(self) -> str | None:
+        from superset.thumbnails.digest import get_dashboard_digest
+
+        return get_dashboard_digest(self)
+
+    @property
     def thumbnail_url(self) -> str | None:
-        if not self.changed_on:
-            return None
-        digest = self.changed_on.strftime("%Y%m%d%H%M%S")
-        return f"/api/v1/dashboard/{self.id}/thumbnail/{digest}/"
+        """
+        Returns a thumbnail URL with a HEX digest. We want to avoid browser cache
+        if the dashboard has changed.
+        """
+        if digest := self.digest:
+            return f"/api/v1/dashboard/{self.id}/thumbnail/{digest}/"
+
+        return None

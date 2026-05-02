@@ -235,6 +235,15 @@ class SavedQuery(Base, AuditMixinNullable, ExtraJSONMixin, ImportExportMixin):
         viewonly=True,
     )
 
+    export_parent = "database"
+    export_fields = [
+        "catalog",
+        "schema",
+        "label",
+        "description",
+        "sql",
+    ]
+
 
 # ---------------------------------------------------------------------------
 # TabState

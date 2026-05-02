@@ -54,3 +54,16 @@ class EmbeddedDashboard(Base, AuditMixinNullable):
         foreign_keys=[dashboard_id],
         back_populates="embedded",
     )
+
+    # -- derived properties ---------------------------------------------------
+
+    @property
+    def allowed_domains(self) -> list[str]:
+        """List of domains allowed to embed the dashboard.
+
+        Empty list means any domain can embed. Mirrors the original
+        Superset model at superset_old/models/embedded_dashboard.py:54-60.
+        """
+        if not self.allow_domain_list:
+            return []
+        return self.allow_domain_list.split(",")

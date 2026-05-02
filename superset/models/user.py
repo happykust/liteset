@@ -27,7 +27,7 @@ to avoid duplicate mapper registrations.
 from __future__ import annotations
 
 from sqlalchemy import Column, ForeignKey, Integer, String
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import backref, relationship
 
 from superset.models.helpers import AuditMixinNullable, Base
 
@@ -48,9 +48,13 @@ class UserAttribute(Base, AuditMixinNullable):
 
     # -- relationships --------------------------------------------------------
 
+    # ``backref="extra_attributes"`` exposes ``User.extra_attributes`` —
+    # required by the avatar endpoint and matches original Superset at
+    # superset_old/models/user_attributes.py:39-41.
     user = relationship(
         "User",
         foreign_keys=[user_id],
+        backref=backref("extra_attributes"),
     )
     welcome_dashboard = relationship(
         "Dashboard",

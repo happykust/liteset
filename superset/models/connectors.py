@@ -35,6 +35,7 @@ import sqlalchemy as sa
 from sqlalchemy import (
     Boolean,
     Column,
+    Enum as SAEnum,
     ForeignKey,
     Integer,
     JSON,
@@ -53,6 +54,9 @@ from superset.models.helpers import (
     ImportExportMixin,
     MediumText,
     metadata,
+)
+from superset.utils.core import (
+    RowLevelSecurityFilterType as _RowLevelSecurityFilterType,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,22 +78,97 @@ def _escape_sql_string(value: str) -> str:
 # list SQLAlchemy uses internally for default quoting behaviour.
 _SQL_RESERVED_WORDS: frozenset[str] = frozenset(
     {
-        "all", "analyse", "analyze", "and", "any", "array", "as", "asc",
-        "asymmetric", "both", "case", "cast", "check", "collate", "column",
-        "constraint", "create", "current_catalog", "current_date",
-        "current_role", "current_time", "current_timestamp", "current_user",
-        "default", "deferrable", "desc", "distinct", "do", "else", "end",
-        "except", "false", "fetch", "for", "foreign", "from", "grant",
-        "group", "having", "in", "initially", "intersect", "into", "lateral",
-        "leading", "limit", "localtime", "localtimestamp", "not", "null",
-        "offset", "on", "only", "or", "order", "placing", "primary",
-        "references", "returning", "select", "session_user", "some",
-        "symmetric", "table", "then", "to", "trailing", "true", "union",
-        "unique", "user", "using", "variadic", "when", "where", "window",
+        "all",
+        "analyse",
+        "analyze",
+        "and",
+        "any",
+        "array",
+        "as",
+        "asc",
+        "asymmetric",
+        "both",
+        "case",
+        "cast",
+        "check",
+        "collate",
+        "column",
+        "constraint",
+        "create",
+        "current_catalog",
+        "current_date",
+        "current_role",
+        "current_time",
+        "current_timestamp",
+        "current_user",
+        "default",
+        "deferrable",
+        "desc",
+        "distinct",
+        "do",
+        "else",
+        "end",
+        "except",
+        "false",
+        "fetch",
+        "for",
+        "foreign",
+        "from",
+        "grant",
+        "group",
+        "having",
+        "in",
+        "initially",
+        "intersect",
+        "into",
+        "lateral",
+        "leading",
+        "limit",
+        "localtime",
+        "localtimestamp",
+        "not",
+        "null",
+        "offset",
+        "on",
+        "only",
+        "or",
+        "order",
+        "placing",
+        "primary",
+        "references",
+        "returning",
+        "select",
+        "session_user",
+        "some",
+        "symmetric",
+        "table",
+        "then",
+        "to",
+        "trailing",
+        "true",
+        "union",
+        "unique",
+        "user",
+        "using",
+        "variadic",
+        "when",
+        "where",
+        "window",
         "with",
         # additional commonly-reserved identifiers across engines
-        "date", "time", "timestamp", "year", "month", "day", "hour",
-        "minute", "second", "level", "number", "position", "value",
+        "date",
+        "time",
+        "timestamp",
+        "year",
+        "month",
+        "day",
+        "hour",
+        "minute",
+        "second",
+        "level",
+        "number",
+        "position",
+        "value",
     }
 )
 
@@ -124,7 +203,15 @@ def _parse_dttm(value: Any) -> datetime | None:
 
 @dataclass
 class QueryResult:
-    """Result of executing a query against a datasource."""
+    """Result of executing a query against a datasource.
+
+    Mirrors the response payload shape exposed by the original
+    Apache Superset chart-data endpoint — surfacing
+    ``applied_filter_columns``, ``rejected_filter_columns``,
+    ``applied_template_filters``, ``labels_expected`` and
+    ``prequeries`` so downstream consumers (cache keys, dashboards
+    UX) get the same metadata they used to.
+    """
 
     df: pd.DataFrame = field(default_factory=pd.DataFrame)
     query: str = ""
@@ -132,8 +219,11 @@ class QueryResult:
     error_message: str = ""
     from_dttm: datetime | None = None
     to_dttm: datetime | None = None
-    applied_filter_columns: list[str] = field(default_factory=list)
-    rejected_filter_columns: list[str] = field(default_factory=list)
+    applied_filter_columns: list[Any] = field(default_factory=list)
+    rejected_filter_columns: list[Any] = field(default_factory=list)
+    applied_template_filters: list[str] = field(default_factory=list)
+    labels_expected: list[str] = field(default_factory=list)
+    prequeries: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -156,36 +246,24 @@ sqlatable_user = Table(
     ),
 )
 
+# M2M tables — ported 1:1 from
+# ``superset_old/connectors/sqla/models.py``: no ``ondelete=CASCADE`` (the
+# original Superset migrations don't define one), and ``role_id`` is
+# ``nullable=False``.
 RLSFilterRoles = Table(
     "rls_filter_roles",
     metadata,
     Column("id", Integer, primary_key=True),
-    Column(
-        "role_id",
-        Integer,
-        ForeignKey("ab_role.id", ondelete="CASCADE"),
-    ),
-    Column(
-        "rls_filter_id",
-        Integer,
-        ForeignKey("row_level_security_filters.id", ondelete="CASCADE"),
-    ),
+    Column("role_id", Integer, ForeignKey("ab_role.id"), nullable=False),
+    Column("rls_filter_id", Integer, ForeignKey("row_level_security_filters.id")),
 )
 
 RLSFilterTables = Table(
     "rls_filter_tables",
     metadata,
     Column("id", Integer, primary_key=True),
-    Column(
-        "table_id",
-        Integer,
-        ForeignKey("tables.id", ondelete="CASCADE"),
-    ),
-    Column(
-        "rls_filter_id",
-        Integer,
-        ForeignKey("row_level_security_filters.id", ondelete="CASCADE"),
-    ),
+    Column("table_id", Integer, ForeignKey("tables.id")),
+    Column("rls_filter_id", Integer, ForeignKey("row_level_security_filters.id")),
 )
 
 
@@ -257,6 +335,24 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
         foreign_keys=[table_id],
         back_populates="columns",
     )
+
+    export_fields = [
+        "table_id",
+        "column_name",
+        "verbose_name",
+        "is_dttm",
+        "is_active",
+        "type",
+        "advanced_data_type",
+        "groupby",
+        "filterable",
+        "expression",
+        "description",
+        "python_date_format",
+        "extra",
+    ]
+    update_from_object_fields = [s for s in export_fields if s not in ("table_id",)]
+    export_parent = "table"
 
     # -- Computed properties ---------------------------------------------------
 
@@ -330,6 +426,168 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
         )
         return {s: getattr(self, s) for s in attrs if hasattr(self, s)}
 
+    # -- AST hooks used by helpers.ExploreMixin.get_sqla_query ---------------
+
+    @property
+    def database(self) -> Any:
+        """Return the parent dataset's database, or None."""
+        table = getattr(self, "table", None)
+        return getattr(table, "database", None) if table is not None else None
+
+    @property
+    def db_engine_spec(self) -> Any:
+        """Return the parent dataset's engine spec."""
+        db = self.database
+        return db.db_engine_spec if db is not None else None
+
+    @property
+    def db_extra(self) -> dict[str, Any] | None:
+        """Return the parent dataset's database extra JSON dict."""
+        db = self.database
+        if db is not None and hasattr(db, "get_extra"):
+            try:
+                return db.get_extra()
+            except Exception:  # noqa: BLE001
+                return None
+        return None
+
+    @property
+    def is_temporal(self) -> bool:
+        """True if this column represents a datetime.
+
+        1:1 with ``TableColumn.is_temporal`` in
+        ``superset_old/connectors/sqla/models.py``
+        (line 848): tri-state semantics — when ``is_dttm`` has been
+        explicitly set (``True`` or ``False``) we honour it, otherwise
+        we fall through to the engine spec's column-spec resolution.
+        This is materially different from a two-state ``bool(is_dttm)``
+        check because users can opt a column *out* of being temporal
+        even when the database type would suggest otherwise (e.g.
+        manual override on a numeric epoch column with
+        ``python_date_format`` set elsewhere).
+        """
+        if self.is_dttm is not None:
+            return bool(self.is_dttm)
+        spec = self.db_engine_spec
+        if spec is None or not self.type:
+            return False
+        try:
+            column_spec = spec.get_column_spec(self.type, db_extra=self.db_extra)
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(column_spec and column_spec.is_dttm)
+
+    def get_sqla_col(
+        self,
+        label: str | None = None,
+        template_processor: Any | None = None,
+    ) -> Any:
+        """Return a SQLAlchemy ``ColumnElement`` for this column.
+
+        1:1 with ``TableColumn.get_sqla_col`` in
+        ``superset_old/connectors/sqla/models.py``
+        (line 887). Honours calculated columns (``self.expression``)
+        with optional Jinja templating, and applies engine-spec label
+        compatibility via ``Database.make_sqla_column_compatible``.
+        """
+        from sqlalchemy import column as sa_column
+        from sqlalchemy.sql import literal_column
+
+        from superset.exceptions import (
+            QueryObjectValidationError,
+            SupersetSyntaxErrorException,
+        )
+
+        label = label or self.column_name
+        spec = self.db_engine_spec
+        type_ = None
+        if spec is not None and self.type:
+            try:
+                column_spec = spec.get_column_spec(self.type, db_extra=self.db_extra)
+                type_ = column_spec.sqla_type if column_spec else None
+            except Exception:  # noqa: BLE001
+                type_ = None
+
+        expression = self.expression
+        if expression:
+            if template_processor:
+                try:
+                    expression = template_processor.process_template(expression)
+                except SupersetSyntaxErrorException as ex:
+                    raise QueryObjectValidationError(
+                        f"Error in jinja expression in column expression: {ex}"
+                    ) from ex
+            col = literal_column(expression, type_=type_)
+        else:
+            col = sa_column(self.column_name, type_=type_)
+
+        db = self.database
+        if db is not None:
+            return db.make_sqla_column_compatible(col, label)
+        return col
+
+    def get_timestamp_expression(
+        self,
+        time_grain: str | None,
+        label: str | None = None,
+        template_processor: Any | None = None,
+    ) -> Any:
+        """Return time-grain-truncated timestamp expression.
+
+        1:1 with ``TableColumn.get_timestamp_expression`` in
+        ``superset_old/connectors/sqla/models.py``
+        (line 918). Builds a ``TimestampExpression`` AST node via the
+        engine spec's ``get_timestamp_expr`` for time-bucketing of
+        datetime columns; supports epoch-stored columns via
+        ``python_date_format``.
+        """
+        from sqlalchemy import column as sa_column, DateTime
+        from sqlalchemy.sql import literal_column
+
+        from superset.exceptions import (
+            QueryObjectValidationError,
+            SupersetSyntaxErrorException,
+        )
+        from superset.models.helpers import DTTM_ALIAS
+
+        label = label or DTTM_ALIAS
+        pdf = self.python_date_format
+        is_epoch = pdf in ("epoch_s", "epoch_ms")
+        spec = self.db_engine_spec
+        type_ = DateTime
+        if spec is not None and self.type:
+            try:
+                column_spec = spec.get_column_spec(self.type, db_extra=self.db_extra)
+                type_ = column_spec.sqla_type if column_spec else DateTime
+            except Exception:  # noqa: BLE001
+                type_ = DateTime
+
+        if not self.expression and not time_grain and not is_epoch:
+            sqla_col = sa_column(self.column_name, type_=type_)
+            db = self.database
+            if db is not None:
+                return db.make_sqla_column_compatible(sqla_col, label)
+            return sqla_col
+
+        expression = self.expression
+        if expression:
+            if template_processor:
+                try:
+                    expression = template_processor.process_template(expression)
+                except SupersetSyntaxErrorException as ex:
+                    raise QueryObjectValidationError(
+                        f"Error in jinja expression in datetime column: {ex}"
+                    ) from ex
+            col = literal_column(expression, type_=type_)
+        else:
+            col = sa_column(self.column_name, type_=type_)
+
+        time_expr = spec.get_timestamp_expr(col, pdf, time_grain)
+        db = self.database
+        if db is not None:
+            return db.make_sqla_column_compatible(time_expr, label)
+        return time_expr
+
 
 # ---------------------------------------------------------------------------
 # SqlMetric
@@ -366,6 +624,21 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
         back_populates="metrics",
     )
 
+    export_fields = [
+        "metric_name",
+        "verbose_name",
+        "metric_type",
+        "table_id",
+        "expression",
+        "description",
+        "d3format",
+        "currency",
+        "extra",
+        "warning_text",
+    ]
+    update_from_object_fields = [s for s in export_fields if s != "table_id"]
+    export_parent = "table"
+
     # -- Computed properties ---------------------------------------------------
 
     @property
@@ -384,6 +657,52 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
             "verbose_name",
         )
         return {s: getattr(self, s) for s in attrs}
+
+    # -- AST hook used by helpers.ExploreMixin.get_sqla_query ---------------
+
+    def get_sqla_col(
+        self,
+        label: str | None = None,
+        template_processor: Any | None = None,
+    ) -> Any:
+        """Return a SQLAlchemy ``ColumnElement`` for this metric.
+
+        1:1 with ``SqlMetric.get_sqla_col`` in
+        ``superset_old/connectors/sqla/models.py``
+        (line 1027). Honours optional Jinja templating of the metric
+        expression and applies engine-spec label compatibility.
+        """
+        from sqlalchemy.sql import literal_column
+
+        from superset.exceptions import (
+            QueryObjectValidationError,
+            SupersetSyntaxErrorException,
+        )
+
+        label = label or self.metric_name
+        expression = self.expression
+        # 1:1 with original — Jinja-process the expression even when
+        # it is empty / falsy. The original at
+        # ``superset_old/connectors/sqla/models.py:SqlMetric.get_sqla_col``
+        # only gates on ``template_processor`` being supplied; gating
+        # on ``expression`` would skip Jinja for legitimately empty
+        # macros that resolve to non-empty SQL post-processing.
+        if template_processor:
+            try:
+                expression = template_processor.process_template(expression)
+            except SupersetSyntaxErrorException as ex:
+                raise QueryObjectValidationError(
+                    f"Error in jinja expression in metric expression: {ex}"
+                ) from ex
+
+        sqla_col = literal_column(expression)
+        # 1:1 with original — let the AttributeError bubble when
+        # ``self.table`` or ``self.table.database`` is missing.
+        # Silently returning the raw column would skip the
+        # engine-spec ``make_label_compatible`` step (Oracle 30-char
+        # truncation / MSSQL bracketed alias), which produces invalid
+        # SQL on those dialects rather than a loud failure here.
+        return self.table.database.make_sqla_column_compatible(sqla_col, label)
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +760,30 @@ class SqlaTable(
         "Database",
         foreign_keys=[database_id],
     )
+
+    export_fields = [
+        "table_name",
+        "main_dttm_col",
+        "description",
+        "default_endpoint",
+        "database_id",
+        "offset",
+        "cache_timeout",
+        "catalog",
+        "schema",
+        "sql",
+        "params",
+        "template_params",
+        "filter_select_enabled",
+        "fetch_values_predicate",
+        "extra",
+        "normalize_columns",
+        "always_filter_main_dttm",
+        "folders",
+    ]
+    update_from_object_fields = [f for f in export_fields if f != "database_id"]
+    export_parent = "database"
+    export_children = ["metrics", "columns"]
 
     # -- DatasourceProtocol implementation ------------------------------------
 
@@ -844,6 +1187,418 @@ class SqlaTable(
         """Return extra cache keys for per-query cache isolation."""
         return []
 
+    # -- AST hooks used by helpers.ExploreMixin.get_sqla_query --------------
+
+    @property
+    def db_extra(self) -> dict[str, Any] | None:
+        """Return the database extra JSON dict."""
+        try:
+            if self.database is not None and hasattr(self.database, "get_extra"):
+                return self.database.get_extra()
+        except Exception:  # noqa: BLE001
+            return None
+        return None
+
+    @property
+    def db_engine_spec(self) -> Any:
+        """Return the database engine spec (heavy version)."""
+        return self.database.db_engine_spec if self.database is not None else None
+
+    @property
+    def is_virtual(self) -> bool:
+        """True if this dataset wraps a custom SQL query (vs. a physical table).
+
+        1:1 with ``SqlaTable.is_virtual`` in
+        ``superset_old/connectors/sqla/models.py``.
+        """
+        return bool(self.sql)
+
+    def get_sqla_table(self) -> Any:
+        """Return a SQLAlchemy ``TableClause`` for the physical table.
+
+        1:1 with ``SqlaTable.get_sqla_table`` in
+        ``superset_old/connectors/sqla/models.py``
+        (line 1400). Honours BigQuery-style cross-catalog queries by
+        baking the catalog into a manually-quoted identifier.
+        """
+        from sqlalchemy.sql import quoted_name as _quoted_name, table as _sa_table
+
+        spec = self.db_engine_spec
+        supports_cross_catalog = bool(
+            getattr(spec, "supports_cross_catalog_queries", False)
+        )
+        if self.catalog and supports_cross_catalog:
+            # SQLAlchemy doesn't have built-in catalog support for
+            # ``TableClause``; manually construct the identifier with
+            # proper dialect-specific quoting.
+            quote_id = self.database.quote_identifier
+            catalog_q = quote_id(self.catalog)
+            table_q = quote_id(self.table_name)
+            if self.schema:
+                schema_q = quote_id(self.schema)
+                full = f"{catalog_q}.{schema_q}.{table_q}"
+            else:
+                full = f"{catalog_q}.{table_q}"
+            return _sa_table(_quoted_name(full, quote=False))
+
+        if self.schema:
+            return _sa_table(self.table_name, schema=self.schema)
+        return _sa_table(self.table_name)
+
+    def get_from_clause(
+        self, template_processor: Any | None = None
+    ) -> tuple[Any, str | None]:
+        """Return ``(FromClause, optional_cte)`` for this dataset.
+
+        1:1 with ``SqlaTable.get_from_clause`` in
+        ``superset_old/connectors/sqla/models.py``
+        (line 1425). Physical datasets short-circuit to
+        :meth:`get_sqla_table`; virtual datasets fall through to
+        :meth:`ExploreMixin.get_from_clause` which renders the user
+        SQL, applies RLS predicates inside the subquery, and decides
+        whether the engine needs a CTE hoisted to the top.
+        """
+        if not self.is_virtual:
+            return self.get_sqla_table(), None
+        from superset.models.helpers import ExploreMixin
+
+        return ExploreMixin.get_from_clause(self, template_processor)
+
+    @property
+    def template_params_dict(self) -> dict[str, Any]:
+        """Return parsed ``template_params`` JSON, or empty dict.
+
+        1:1 with ``SqlaTable.template_params_dict`` in
+        ``superset_old/connectors/sqla/models.py``.
+        """
+        import json as _json
+
+        try:
+            if self.template_params:
+                value = _json.loads(self.template_params)
+                if isinstance(value, dict):
+                    return value
+        except (ValueError, TypeError):
+            pass
+        return {}
+
+    def get_template_processor(self, **kwargs: Any) -> Any:
+        """Return a Jinja template processor for this dataset.
+
+        1:1 with ``SqlaTable.get_template_processor`` in
+        ``superset_old/connectors/sqla/models.py``
+        (line 1397).
+        """
+        from superset.jinja_context import get_template_processor
+
+        return get_template_processor(table=self, database=self.database, **kwargs)
+
+    def make_sqla_column_compatible(
+        self, sqla_col: Any, label: str | None = None
+    ) -> Any:
+        """Apply engine-spec label compatibility (Oracle truncation, etc.).
+
+        Delegates to :meth:`Database.make_sqla_column_compatible` which
+        is the 1:1 port of the original. The wrapper exists because
+        :class:`ExploreMixin` calls
+        ``self.make_sqla_column_compatible`` directly.
+        """
+        return self.database.make_sqla_column_compatible(sqla_col, label)
+
+    def convert_tbl_column_to_sqla_col(
+        self,
+        tbl_column: TableColumn,
+        label: str | None = None,
+        template_processor: Any | None = None,
+    ) -> Any:
+        """Wrap a ``TableColumn`` as a SQLAlchemy expression.
+
+        1:1 with ``SqlaTable.convert_tbl_column_to_sqla_col`` in
+        ``superset_old/connectors/sqla/models.py``
+        (line ~860). Delegates to :meth:`TableColumn.get_sqla_col`
+        which produces a properly-typed and properly-labelled
+        ``ColumnElement`` honouring the engine spec.
+        """
+        return tbl_column.get_sqla_col(
+            label=label, template_processor=template_processor
+        )
+
+    def get_fetch_values_predicate(
+        self,
+        template_processor: Any | None = None,
+    ) -> Any:
+        """Return a SQLAlchemy ``TextClause`` for the fetch-values predicate.
+
+        1:1 with ``SqlaTable.get_fetch_values_predicate`` in
+        ``superset_old/connectors/sqla/models.py``
+        (line 1377). Used by ``apply_fetch_values_predicate`` and
+        :meth:`values_for_column` to scope filter-dropdown queries.
+        """
+        from jinja2.exceptions import TemplateError
+
+        from superset.exceptions import (
+            QueryObjectValidationError,
+            SupersetSyntaxErrorException,
+        )
+
+        fetch_values_predicate = self.fetch_values_predicate
+        if not fetch_values_predicate:
+            return None
+
+        if template_processor:
+            try:
+                fetch_values_predicate = template_processor.process_template(
+                    fetch_values_predicate
+                )
+            except (TemplateError, SupersetSyntaxErrorException) as ex:
+                raise QueryObjectValidationError(
+                    f"Error in jinja expression in fetch values predicate: {ex}"
+                ) from ex
+
+        try:
+            return self.db_engine_spec.get_text_clause(fetch_values_predicate)
+        except Exception as ex:  # noqa: BLE001
+            raise QueryObjectValidationError(
+                f"Error in fetch values predicate: {ex}"
+            ) from ex
+
+    def adhoc_metric_to_sqla(
+        self,
+        metric: dict[str, Any],
+        columns_by_name: dict[str, TableColumn],
+        template_processor: Any | None = None,
+        processed: bool = False,
+    ) -> Any:
+        """Convert an adhoc metric dict to a SQLAlchemy ``ColumnElement``.
+
+        1:1 with ``SqlaTable.adhoc_metric_to_sqla`` in
+        ``superset_old/connectors/sqla/models.py``
+        (line 1434). Resolves SIMPLE adhoc metrics through
+        ``TableColumn.get_sqla_col`` so calculated columns retain
+        their expression — the bug-fix the original made over the
+        helpers-mixin version.
+        """
+        from typing import cast as _cast
+
+        from sqlalchemy import column as sa_column
+        from sqlalchemy.sql import literal_column
+
+        from superset.exceptions import (
+            QueryObjectValidationError,
+            SupersetSecurityException,
+        )
+        from superset.models.helpers import AdhocMetricExpressionType
+        from superset.utils.column import get_metric_name
+
+        expression_type = metric.get("expressionType")
+        # 1:1 with original — passes the dataset's ``verbose_map`` so
+        # SIMPLE adhoc metrics that reference a TableColumn render
+        # with the user-friendly verbose name when one is configured.
+        label = get_metric_name(metric, self.verbose_map)
+
+        if expression_type == AdhocMetricExpressionType.SIMPLE:
+            metric_column = metric.get("column") or {}
+            column_name = _cast(str, metric_column.get("column_name"))
+            table_column: TableColumn | None = columns_by_name.get(column_name)
+            if table_column:
+                sqla_column = table_column.get_sqla_col(
+                    template_processor=template_processor
+                )
+            else:
+                sqla_column = sa_column(column_name)
+            sqla_metric = self.sqla_aggregations[metric["aggregate"]](sqla_column)
+        elif expression_type == AdhocMetricExpressionType.SQL:
+            expression = metric.get("sqlExpression")
+            if not processed:
+                try:
+                    expression = self._process_select_expression(
+                        expression=expression,
+                        database_id=self.database_id,
+                        engine=self.database.backend,
+                        schema=self.schema,
+                        template_processor=template_processor,
+                    )
+                except SupersetSecurityException as ex:
+                    # 1:1 with original — surface the structured
+                    # ``ex.message`` (a SupersetError summary) rather
+                    # than ``str(ex)`` which would include the full
+                    # ``SupersetSecurityException`` repr and leak
+                    # internal trace information into chart-data
+                    # validation errors.
+                    raise QueryObjectValidationError(ex.message) from ex
+            sqla_metric = literal_column(expression)
+        else:
+            raise QueryObjectValidationError("Adhoc metric expressionType is invalid")
+
+        return self.make_sqla_column_compatible(sqla_metric, label)
+
+    def adhoc_column_to_sqla(
+        self,
+        col: dict[str, Any],
+        force_type_check: bool = False,
+        template_processor: Any | None = None,
+    ) -> Any:
+        """Turn an adhoc column dict into a SQLAlchemy ``ColumnElement``.
+
+        1:1 with ``SqlaTable.adhoc_column_to_sqla`` in
+        ``superset_old/connectors/sqla/models.py``
+        (line 1486). Honours:
+
+        - ``isColumnReference``: quote bare identifiers via the dialect
+          preparer so reserved words / mixed-case names round-trip
+          correctly.
+        - Time-grain on adhoc BASE_AXIS columns: dispatch to
+          ``db_engine_spec.get_timestamp_expr`` after probing the
+          column type when ``force_type_check`` is set.
+        - Calculated columns referenced by name in ``sqlExpression``:
+          fall through to ``TableColumn.get_sqla_col`` which carries
+          the calculated-column expression.
+        """
+        import sqlalchemy as _sa
+        from sqlalchemy.sql import literal_column
+
+        from superset.exceptions import (
+            ColumnNotFoundException,
+            QueryObjectValidationError,
+            SupersetSecurityException,
+        )
+        from superset.utils.column import get_column_name
+
+        label = get_column_name(col)
+        sql_expression = col["sqlExpression"]
+        time_grain = col.get("timeGrain")
+        has_timegrain = col.get("columnType") == "BASE_AXIS" and time_grain
+        is_dttm = False
+        pdf: str | None = None
+        is_column_reference = col.get("isColumnReference", False)
+
+        # First check if this references a known TableColumn — happens
+        # when the user picks a calculated column from the adhoc
+        # picker.  In that case we use the column's own
+        # ``get_sqla_col`` so the expression survives.
+        col_in_metadata = self.get_column(sql_expression)
+        if col_in_metadata is not None:
+            sqla_column = col_in_metadata.get_sqla_col(
+                template_processor=template_processor
+            )
+            is_dttm = col_in_metadata.is_temporal
+            pdf = col_in_metadata.python_date_format
+        else:
+            try:
+                expression_to_process = sql_expression
+                if is_column_reference:
+                    expression_to_process = self.database.quote_identifier(
+                        sql_expression
+                    )
+                expression = self._process_select_expression(
+                    expression=expression_to_process,
+                    database_id=self.database_id,
+                    engine=self.database.backend,
+                    schema=self.schema,
+                    template_processor=template_processor,
+                )
+            except SupersetSecurityException as ex:
+                raise QueryObjectValidationError(str(ex)) from ex
+
+            sqla_column = literal_column(expression)
+            if has_timegrain or force_type_check:
+                # Probe the adhoc column's type by running a LIMIT 1
+                # SELECT through the database. This matches the
+                # original behaviour where ``get_columns_description``
+                # (which relies on the sync engine) is used to decide
+                # whether the adhoc column is temporal so it can be
+                # bucketed via ``get_timestamp_expr``.
+                try:
+                    tbl, _cte = self.get_from_clause(template_processor)
+                    qry = _sa.select(sqla_column).limit(1).select_from(tbl)
+                    sql = self.database.compile_sqla_query(
+                        qry,
+                        catalog=self.catalog,
+                        schema=self.schema,
+                    )
+                    is_dttm = self._probe_adhoc_column_is_dttm(sql)
+                except QueryObjectValidationError:
+                    raise
+                except Exception as ex:  # noqa: BLE001
+                    raise ColumnNotFoundException(
+                        message=f"Could not probe adhoc column type: {ex}"
+                    ) from ex
+
+        if is_dttm and has_timegrain:
+            sqla_column = self.db_engine_spec.get_timestamp_expr(
+                col=sqla_column,
+                pdf=pdf,
+                time_grain=time_grain,
+            )
+
+        return self.make_sqla_column_compatible(sqla_column, label)
+
+    def _probe_adhoc_column_is_dttm(self, sql: str) -> bool:
+        """Return True if executing ``sql`` yields a temporal column.
+
+        Helper for :meth:`adhoc_column_to_sqla` — runs a LIMIT 1
+        introspection query through the sync engine and asks the
+        database's engine spec to interpret the DBAPI ``cursor.description``
+        type codes via :meth:`BaseEngineSpec.get_column_spec`.
+
+        1:1 with ``get_columns_description`` in
+        ``superset_old/connectors/sqla/utils.py``
+        and ``superset_old/result_set.py:SupersetResultSet.is_temporal``:
+        the original wraps the query in
+        :class:`SupersetResultSet` which derives ``is_dttm`` from
+        ``db_engine_spec.get_column_spec(native_type).is_dttm`` — *not*
+        from a brittle string-match on the DBAPI type-code repr.
+        """
+        try:
+            from sqlalchemy import text as sa_text
+
+            from superset.utils.database import get_sync_connection
+
+            with get_sync_connection(self.database) as (conn, _spec):
+                result = conn.execute(sa_text(sql))
+                description = getattr(result.cursor, "description", None) or []
+                if not description:
+                    return False
+
+                # The probe SELECT projects only the adhoc column, so
+                # ``description[0]`` is the relevant entry.  ``type_code``
+                # may be a class, an int constant or a string depending
+                # on the driver; the engine spec's ``get_column_spec``
+                # accepts a native-type *string*, so coerce.
+                desc_row = description[0]
+                if len(desc_row) < 2:
+                    return False
+                type_code: Any = desc_row[1]
+
+                # Coerce the DBAPI type-code into a string the engine
+                # spec can map.  This mirrors
+                # ``superset_old/result_set.py:convert_to_string`` —
+                # str | bytes pass through, anything else is stringified.
+                if isinstance(type_code, bytes):
+                    native_type = type_code.decode("utf-8")
+                elif isinstance(type_code, str):
+                    native_type = type_code
+                else:
+                    # SQLAlchemy stores the class on its way out (e.g.
+                    # ``<class 'cx_Oracle.DATETIME'>``).  Use ``__name__``
+                    # when present so the engine-spec regex tables hit;
+                    # otherwise fall back to ``str(...)``.
+                    native_type = getattr(type_code, "__name__", None) or str(type_code)
+
+                spec = self.db_engine_spec
+                if spec is None:
+                    return False
+                try:
+                    column_spec = spec.get_column_spec(
+                        native_type,
+                        db_extra=self.database.get_extra(),
+                    )
+                except Exception:  # noqa: BLE001
+                    return False
+                return bool(column_spec and column_spec.is_dttm)
+        except Exception:  # noqa: BLE001
+            return False
+
     def clone(self) -> SqlaTable:
         """Create a copy of this dataset.
 
@@ -973,6 +1728,62 @@ class SqlaTable(
             parts.append(self._quote_identifier(str(self.schema)))
         parts.append(self._quote_identifier(str(self.table_name)))
         return ".".join(parts)
+
+    def _build_from_ast(self) -> tuple[Any, str | None]:
+        """Return ``(from_clause, cte_sql)`` as a SQLAlchemy AST node.
+
+        Mirrors the original ``ExploreMixin.get_from_clause``
+        (``superset_old/models/helpers.py:1163``) but returns a
+        SQLAlchemy ``FromClause`` rather than a ``str`` so it can be
+        passed directly to ``sa.select(...).select_from(...)``.
+
+        - Physical dataset → ``sa.table(table_name, schema=...)``
+          (catalog is folded into the schema for engines that need it).
+        - Virtual dataset on an engine that supports CTEs in
+          subqueries → ``TextAsFrom(user_sql).alias("virtual_table")``.
+        - Virtual dataset on an engine that does *not* support CTEs in
+          subqueries (e.g. MSSQL/Ocient) → ``sa.table(cte_alias)`` plus
+          a ``cte_sql`` string the caller hoists above the SELECT.
+        """
+        from sqlalchemy.sql.expression import TextAsFrom
+
+        if not self.sql:
+            # Physical dataset — build a real Table-like FROM node.
+            schema_name = self.schema or None
+            if self.catalog:
+                # Some engines pack catalog.schema into the schema; mirror
+                # the string-builder behaviour by joining them so the
+                # dialect emits ``catalog.schema.table``.
+                schema_name = (
+                    f"{self.catalog}.{schema_name}"
+                    if schema_name
+                    else str(self.catalog)
+                )
+            return sa.table(str(self.table_name), schema=schema_name), None
+
+        # Virtual dataset
+        inner = self.sql.strip().rstrip(";")
+        engine_spec = self.database.db_engine_spec
+        cte: str | None = None
+        try:
+            cte = engine_spec.get_cte_query(inner)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to detect CTE in virtual dataset SQL for table %s",
+                self.table_name,
+                exc_info=True,
+            )
+            cte = None
+
+        if cte:
+            # Engine spec rewrote the user SQL into a top-level CTE; the
+            # FROM references the CTE alias, and the caller prepends
+            # ``cte`` above the rendered SELECT.
+            return sa.table(engine_spec.cte_alias), cte
+
+        # Default virtual handling: wrap user SQL as a derived table
+        # alias, exactly matching original ``get_from_clause``.
+        return TextAsFrom(sa.text(inner), []).alias("virtual_table"), None
 
     def _get_virtual_from_clause(self) -> tuple[str, str | None]:
         """Return ``(table_ref, cte_sql)`` for use in a SELECT.
@@ -1252,355 +2063,157 @@ class SqlaTable(
 
         return " AND ".join(clauses) if clauses else None
 
+    # ------------------------------------------------------------------
+    # SQL build pipeline — Strategy A: wire-up
+    # ``helpers.ExploreMixin.get_sqla_query``
+    # ------------------------------------------------------------------
+
+    def _adapt_query_dict_for_get_sqla_query(
+        self, query_dict: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Map QueryContext-style ``query_dict`` keys → ``get_sqla_query`` kwargs.
+
+        The wire format used by ``QueryContext.to_dict`` (and propagated
+        through the chart-data pipeline) uses snake_case names like
+        ``filter`` (not ``filters``) and lumps temporal extras into
+        ``extras``. The :meth:`helpers.ExploreMixin.get_sqla_query`
+        signature is the original Superset 1:1 contract — see
+        ``superset_old/models/helpers.py:1653`` — so we translate keys
+        here.
+        """
+        # Build the kwargs dict, accepting both ``filter`` and ``filters``
+        # for compatibility with both the wire format and dataclasses
+        # that prefer the plural name.
+        adapted: dict[str, Any] = {
+            "apply_fetch_values_predicate": query_dict.get(
+                "apply_fetch_values_predicate", False
+            ),
+            "columns": query_dict.get("columns") or [],
+            "extras": query_dict.get("extras") or {},
+            "filter": query_dict.get("filter") or query_dict.get("filters") or [],
+            "from_dttm": _parse_dttm(query_dict.get("from_dttm")),
+            "granularity": query_dict.get("granularity"),
+            "groupby": query_dict.get("groupby") or [],
+            "inner_from_dttm": _parse_dttm(query_dict.get("inner_from_dttm")),
+            "inner_to_dttm": _parse_dttm(query_dict.get("inner_to_dttm")),
+            "is_rowcount": query_dict.get("is_rowcount", False),
+            "is_timeseries": query_dict.get("is_timeseries", False),
+            "metrics": query_dict.get("metrics"),
+            "orderby": query_dict.get("orderby") or [],
+            "order_desc": query_dict.get("order_desc", True),
+            "to_dttm": _parse_dttm(query_dict.get("to_dttm")),
+            "series_columns": query_dict.get("series_columns") or [],
+            "series_limit": query_dict.get("series_limit"),
+            "series_limit_metric": query_dict.get("series_limit_metric"),
+            "group_others_when_limit_reached": query_dict.get(
+                "group_others_when_limit_reached", False
+            ),
+            "row_limit": query_dict.get("row_limit"),
+            "row_offset": query_dict.get("row_offset"),
+            "timeseries_limit": query_dict.get("timeseries_limit"),
+            "timeseries_limit_metric": query_dict.get("timeseries_limit_metric"),
+            "time_shift": query_dict.get("time_shift"),
+        }
+        return adapted
+
+    def _get_sqla_query_with_rls(
+        self,
+        query_dict: dict[str, Any],
+        rls_filters: list[Any] | None = None,
+    ) -> Any:
+        """Run :meth:`get_sqla_query` honouring caller-supplied RLS clauses.
+
+        The original chart-data pipeline computes the user's RLS
+        predicates inside :meth:`get_sqla_row_level_filters` (sync)
+        which reads from the active session/user context. The Liteset
+        async pipeline computes RLS up-front via
+        :func:`superset.utils.rls.compose_rls_where_clauses` and pushes
+        it down so we don't have to re-resolve the user inside a sync
+        helper.
+
+        Implementation: we forward ``rls_filters`` as a *kwarg* to
+        :meth:`helpers.ExploreMixin.get_sqla_query`. That method
+        consumes the kwarg and either uses the supplied clauses (push
+        path, used by async controllers) or falls back to the regular
+        :meth:`get_sqla_row_level_filters` pull path. This avoids the
+        monkey-patch race-condition that the previous implementation
+        exhibited — concurrent ``async`` tasks running
+        ``_build_sql`` / ``async_query`` on the same shared
+        ``SqlaTable`` instance now never mutate instance attributes,
+        so each task's RLS clauses stay private to its own call.
+        """
+        adapted = self._adapt_query_dict_for_get_sqla_query(query_dict)
+        if rls_filters is not None:
+            adapted["rls_filters"] = rls_filters
+        return self.get_sqla_query(**adapted)
+
     def _build_sql(  # noqa: C901
         self,
         query_dict: dict[str, Any],
-        rls_filters: list[str] | None = None,
+        rls_filters: list[Any] | None = None,
     ) -> tuple[str, datetime | None, datetime | None]:
         """Build a SQL string from query_dict parameters.
 
-        Args:
-            query_dict: The query parameters dict from QueryContext.
-            rls_filters: Optional list of raw SQL WHERE-clause fragments
-                from Row-Level Security rules. The caller
-                (QueryContextProcessor) is responsible for fetching
-                these from the security manager.
+        Strategy A — thin wrapper over
+        :meth:`helpers.ExploreMixin.get_sqla_query` which is a 1:1
+        port of the original Apache Superset AST pipeline at
+        ``superset_old/models/helpers.py:1653-2347``. The wrapper:
 
-        Returns (sql, from_dttm, to_dttm).
+        1. Adapts the QueryContext wire-format keys to
+           ``get_sqla_query`` kwargs.
+        2. Injects caller-supplied RLS clauses (preferred form
+           ``ClauseElement``, backward-compat ``str``).
+        3. Compiles the AST via :meth:`Database.compile_sqla_query`
+           (handles literal-bind, dialect-specific identifier quoting
+           and the ``%%`` double-percent fixup).
+        4. Hoists any CTE the engine spec required to live above the
+           SELECT (MSSQL / Ocient).
+        5. Applies ``SQL_QUERY_MUTATOR`` via
+           :meth:`Database.mutate_sql_based_on_config`.
+
+        All 19 behavioural deltas (mixed-NULL IN, time filters via
+        ``convert_dttm`` / ``python_date_format``, ``time_grain`` on
+        filters / ORDER BY, ``is_rowcount``,
+        ``group_others_when_limit_reached``, ``apply_fetch_values_predicate``,
+        ``time_shift``, ``always_filter_main_dttm``,
+        ``make_orderby_compatible``, ``allows_alias_in_orderby`` /
+        ``allows_hidden_cc_in_orderby`` / ``allows_hidden_orderby_agg``,
+        ``make_label_compatible``, ``extras.where`` / ``extras.having``
+        Jinja, ``extra_cache_keys``, virtual-dataset RLS injection)
+        are handled inside :meth:`get_sqla_query` itself, mirroring
+        the original.
+
+        Returns ``(sql, from_dttm, to_dttm)``.
         """
-        columns_raw: list[Any] = query_dict.get("columns") or []
-        # ``metrics_raw`` preserves the ``None`` vs ``[]`` distinction
-        # from the original ``helpers.get_sqla_query`` where
-        # ``need_groupby = bool(metrics is not None or groupby)``.
-        # An empty list means "user explicitly picked no metrics but
-        # still wants an aggregate query" — this powers the Select
-        # native-filter flow which sends ``columns=[col], metrics=[]``
-        # expecting ``GROUP BY col`` to dedupe values.  ``None`` means
-        # "raw columns mode, do not aggregate" (used by the Table viz
-        # ``query_mode='raw'``).
-        metrics_raw_orig: list[Any] | None = query_dict.get("metrics")
-        metrics_raw: list[Any] = metrics_raw_orig or []
-        groupby_raw: list[Any] = query_dict.get("groupby") or []
-        filters: list[dict[str, Any]] = query_dict.get("filter", [])
-        extras: dict[str, Any] = query_dict.get("extras", {})
-        granularity: str | None = query_dict.get("granularity")
-        from_dttm = query_dict.get("from_dttm")
-        to_dttm = query_dict.get("to_dttm")
-        order_desc: bool = query_dict.get("order_desc", True)
-        orderby: list[Any] = query_dict.get("orderby", [])
-        row_limit: int | None = query_dict.get("row_limit")
-        row_offset: int = query_dict.get("row_offset", 0)
-        is_timeseries: bool = query_dict.get("is_timeseries", False)
-        time_grain: str | None = extras.get("time_grain_sqla")
-        series_limit: int | None = query_dict.get("series_limit")
-        series_limit_metric: Any = query_dict.get("series_limit_metric")
-        series_columns: list[Any] = query_dict.get("series_columns") or []
+        sqla_query = self._get_sqla_query_with_rls(query_dict, rls_filters=rls_filters)
 
-        # Fallback: if granularity column doesn't exist in this
-        # dataset's datetime columns, use main_dttm_col instead.
-        # Matches original get_sqla_query() logic in helpers.py:1683-1684.
-        if granularity is not None and granularity not in self.dttm_cols:
-            granularity = self.main_dttm_col
-
-        # Parse datetime bounds
-        from_dttm = _parse_dttm(from_dttm)
-        to_dttm = _parse_dttm(to_dttm)
-
-        # Determine if we need aggregation.  Matches original
-        # ``helpers.get_sqla_query:1731`` which uses
-        # ``bool(metrics is not None or groupby)`` — crucially, an
-        # empty list ``metrics=[]`` still triggers aggregate mode,
-        # only an explicit ``None`` falls through to raw mode.  This
-        # is load-bearing for the Select native filter flow (sends
-        # ``columns=[col], metrics=[]`` and relies on the resulting
-        # ``GROUP BY col`` to dedupe values so the "214 options"
-        # placeholder shows the correct distinct count) while still
-        # letting the Table viz ``query_mode='raw'`` path (metrics
-        # omitted entirely → ``None``) skip aggregation.
-        need_groupby = (metrics_raw_orig is not None) or bool(groupby_raw)
-        if not need_groupby and orderby:
-            named_metrics = {m.metric_name for m in (self.metrics or [])}
-            for item in orderby:
-                if not (isinstance(item, (list, tuple)) and len(item) == 2):
-                    continue
-                col_spec = item[0]
-                if isinstance(col_spec, dict):
-                    # Adhoc metric dict — mirror original's need_groupby flip
-                    need_groupby = True
-                    break
-                if isinstance(col_spec, str) and col_spec in named_metrics:
-                    need_groupby = True
-                    break
-
-        # ----- SELECT clause -----
-        select_parts: list[str] = []
-        group_by_parts: list[str] = []
-        labels_expected: list[str] = []
-
-        # If granularity is set and it's a timeseries, add time column first
-        if granularity and is_timeseries:
-            time_expr = self._get_time_grain_expr(granularity, time_grain)
-            alias = "__timestamp"
-            select_parts.append(f"{time_expr} AS {self._quote_identifier(alias)}")
-            group_by_parts.append(time_expr)
-            labels_expected.append(alias)
-
-        if need_groupby:
-            # GROUP BY mode: resolve groupby/columns, then metrics
-            groupby_cols = groupby_raw or columns_raw
-            for col_spec in groupby_cols:
-                expr, label = self._resolve_column_expression(col_spec)
-
-                # If this column IS the granularity and we have a time grain,
-                # apply time grain truncation
-                col_name = (
-                    col_spec
-                    if isinstance(col_spec, str)
-                    else (
-                        col_spec.get("label") or col_spec.get("column_name", "")
-                        if isinstance(col_spec, dict)
-                        else str(col_spec)
-                    )
-                )
-                if col_name == granularity and time_grain:
-                    expr = self._get_time_grain_expr(col_name, time_grain)
-
-                if label not in labels_expected:
-                    select_parts.append(f"{expr} AS {self._quote_identifier(label)}")
-                    group_by_parts.append(expr)
-                    labels_expected.append(label)
-
-            for metric in metrics_raw:
-                expr, label = self._resolve_metric_expression(metric)
-                select_parts.append(f"{expr} AS {self._quote_identifier(label)}")
-                labels_expected.append(label)
-        else:
-            # Raw columns mode (no aggregation)
-            for col_spec in columns_raw:
-                expr, label = self._resolve_column_expression(col_spec)
-                select_parts.append(f"{expr} AS {self._quote_identifier(label)}")
-                labels_expected.append(label)
-
-        if not select_parts:
-            select_parts.append("*")
-
-        # ----- FROM clause -----
-        table_ref = self._get_table_ref()
-
-        # ----- WHERE clause -----
-        where_parts: list[str] = []
-
-        # Time filter from from_dttm / to_dttm
-        if granularity and from_dttm:
-            col_obj = self.get_column(granularity)
-            col_ref = self._quote_identifier(granularity)
-            if col_obj and col_obj.expression:
-                col_ref = str(col_obj.expression)
-            where_parts.append(f"{col_ref} >= '{from_dttm.isoformat()}'")
-        if granularity and to_dttm:
-            col_obj = self.get_column(granularity)
-            col_ref = self._quote_identifier(granularity)
-            if col_obj and col_obj.expression:
-                col_ref = str(col_obj.expression)
-            where_parts.append(f"{col_ref} < '{to_dttm.isoformat()}'")
-
-        # Adhoc filters
-        for flt in filters:
-            clause = self._build_filter_clause(flt, from_dttm, to_dttm)
-            if clause:
-                where_parts.append(clause)
-
-        # extras.where
-        if extras.get("where"):
-            where_parts.append(f"({extras['where']})")
-
-        # Row-Level Security filters
-        if rls_filters:
-            for rls_clause in rls_filters:
-                rls_clause = rls_clause.strip()
-                if rls_clause:
-                    where_parts.append(f"({rls_clause})")
-
-        # ----- HAVING clause -----
-        having_parts: list[str] = []
-        if extras.get("having"):
-            having_parts.append(f"({extras['having']})")
-
-        # ----- ORDER BY clause -----
-        order_parts: list[str] = []
-        if orderby:
-            metrics_by_name = {m.metric_name: m for m in (self.metrics or [])}
-            columns_by_name = {c.column_name: c for c in (self.columns or [])}
-            for item in orderby:
-                if isinstance(item, (list, tuple)) and len(item) == 2:
-                    col_spec, ascending = item
-                    # Resolve the column/metric for ordering.
-                    # Original logic (helpers.py:1815-1826): checks
-                    # metrics_exprs_by_label → metrics_by_name → columns_by_name
-                    if isinstance(col_spec, str):
-                        if col_spec in metrics_by_name:
-                            # Named metric — use its stored expression
-                            order_ref = metrics_by_name[col_spec].expression
-                        elif col_spec in columns_by_name:
-                            col_obj = columns_by_name[col_spec]
-                            order_ref = (
-                                col_obj.expression
-                                if col_obj.expression
-                                else self._quote_identifier(col_spec)
-                            )
-                        else:
-                            # Could be a label alias from the SELECT list
-                            order_ref = self._quote_identifier(col_spec)
-                    elif isinstance(col_spec, dict):
-                        expr, _label = self._resolve_metric_expression(col_spec)
-                        order_ref = expr
-                    else:
-                        order_ref = str(col_spec)
-                    direction = "ASC" if ascending else "DESC"
-                    order_parts.append(f"{order_ref} {direction}")
-        elif metrics_raw and need_groupby:
-            # Default: order by first metric
-            first_metric_label = (
-                labels_expected[-len(metrics_raw)] if metrics_raw else None
-            )
-            if first_metric_label:
-                direction = "DESC" if order_desc else "ASC"
-                order_parts.append(
-                    f"{self._quote_identifier(first_metric_label)} {direction}"
-                )
-
-        # ----- Series limit subquery -----
-        # When series_limit is set, restrict the outer query to only the
-        # top N series.  We build a subquery that groups by the series
-        # columns (groupby minus the time column), orders by the
-        # series_limit_metric (or the first metric), and limits to N.
-        # The outer query then filters via WHERE … IN (subquery).
-        # Mirrors original helpers.get_sqla_query (superset_old/models/helpers.py):
-        # only apply the top-N series subquery when the query actually has a
-        # "series" dimension — either is_timeseries without explicit
-        # series_columns (so every groupby column IS a series) or an explicit
-        # series_columns list.  Non-timeseries charts like Treemap/Table set
-        # series_limit to the value of form_data.limit but do NOT expect
-        # top-N subqueries; they should just return all rows.
-        series_limit_clause: str | None = None
-        apply_series_limit = (is_timeseries and not series_columns) or bool(
-            series_columns
+        sql = self.database.compile_sqla_query(
+            sqla_query.sqla_query,
+            catalog=self.catalog,
+            schema=self.schema,
+            is_virtual=bool(self.sql),
         )
-        if series_limit and need_groupby and group_by_parts and apply_series_limit:
-            # Determine which group-by expressions represent the series.
-            # Mirrors original helpers.get_sqla_query logic
-            # (superset_old/models/helpers.py:1879-1882):
-            #   groupby_series_columns[outer.name] = outer IFF
-            #     (is_timeseries and not series_column_labels)  -- every groupby is a series
-            #     OR outer.name in series_column_labels         -- explicit series list
-            series_group_exprs: list[str] = []
-            series_group_labels: list[str] = []
-            groupby_cols_list = groupby_raw or columns_raw
-            # Resolve series_columns to a set of label strings for comparison
-            series_col_names: set[str] = set()
-            for sc in series_columns:
-                if isinstance(sc, str):
-                    series_col_names.add(sc)
-                elif isinstance(sc, dict):
-                    n = sc.get("label") or sc.get("column_name") or ""
-                    if n:
-                        series_col_names.add(n)
-            for col_spec in groupby_cols_list:
-                col_name = (
-                    col_spec
-                    if isinstance(col_spec, str)
-                    else (
-                        col_spec.get("label") or col_spec.get("column_name", "")
-                        if isinstance(col_spec, dict)
-                        else str(col_spec)
-                    )
-                )
-                # When series_columns is explicit, include ONLY those columns
-                # in the top-N subquery (matches original's
-                # `outer.name in series_column_labels` branch).  Otherwise
-                # (is_timeseries with no series_columns) include every
-                # groupby column except the time-grain granularity.
-                if series_col_names:
-                    if col_name not in series_col_names:
-                        continue
-                else:
-                    if col_name == granularity and is_timeseries:
-                        continue
-                expr, label = self._resolve_column_expression(col_spec)
-                series_group_exprs.append(expr)
-                series_group_labels.append(label)
+        sql = self._apply_cte(sql, sqla_query.cte)
+        sql = self.database.mutate_sql_based_on_config(sql)
 
-            if series_group_exprs:
-                # Determine the ordering metric for the subquery
-                if series_limit_metric:
-                    sl_expr, _sl_label = self._resolve_metric_expression(
-                        series_limit_metric
-                    )
-                elif metrics_raw:
-                    sl_expr, _sl_label = self._resolve_metric_expression(metrics_raw[0])
-                else:
-                    sl_expr = "COUNT(*)"
-
-                direction = "DESC" if order_desc else "ASC"
-                inner_select = ", ".join(series_group_exprs)
-                inner_group = ", ".join(series_group_exprs)
-                inner_where = (
-                    f"\nWHERE {' AND '.join(where_parts)}" if where_parts else ""
-                )
-                subq = (
-                    f"SELECT {inner_select}\n"
-                    f"FROM {table_ref}{inner_where}\n"
-                    f"GROUP BY {inner_group}\n"
-                    f"ORDER BY {sl_expr} {direction}\n"
-                    f"LIMIT {int(series_limit)}"
-                )
-
-                if len(series_group_exprs) == 1:
-                    series_limit_clause = f"{series_group_exprs[0]} IN ({subq})"
-                else:
-                    # Multi-column series: use a tuple IN subquery
-                    outer_tuple = ", ".join(series_group_exprs)
-                    series_limit_clause = f"({outer_tuple}) IN ({subq})"
-
-        # ----- Assemble SQL -----
-        sql = f"SELECT {', '.join(select_parts)}\nFROM {table_ref}"
-
-        # Merge series limit into WHERE
-        all_where = list(where_parts)
-        if series_limit_clause:
-            all_where.append(series_limit_clause)
-
-        if all_where:
-            sql += f"\nWHERE {' AND '.join(all_where)}"
-
-        if group_by_parts and need_groupby:
-            sql += f"\nGROUP BY {', '.join(group_by_parts)}"
-
-        if having_parts:
-            sql += f"\nHAVING {' AND '.join(having_parts)}"
-
-        if order_parts:
-            sql += f"\nORDER BY {', '.join(order_parts)}"
-
-        if row_limit:
-            sql += f"\nLIMIT {int(row_limit)}"
-
-        if row_offset:
-            sql += f"\nOFFSET {int(row_offset)}"
-
-        return sql, from_dttm, to_dttm
+        return (
+            sql,
+            _parse_dttm(query_dict.get("from_dttm")),
+            _parse_dttm(query_dict.get("to_dttm")),
+        )
 
     # -- Async query execution ------------------------------------------------
 
-    async def async_values_for_column(
+    async def async_values_for_column(  # noqa: C901  # complex business logic
         self,
         column_name: str,
         limit: int = 10000,
-        rls_filters: list[str] | None = None,
+        rls_filters: list[Any] | None = None,
     ) -> list[Any]:
         """Return distinct values of ``column_name`` for filter dropdowns.
 
-        Async port of ``superset_old.models.helpers.values_for_column``.
+        Async port of
+        ``superset_old.models.helpers.values_for_column``.
         Builds ``SELECT DISTINCT <col> AS column_values FROM <table>
         [WHERE <fetch_values_predicate> AND <rls_filters>] LIMIT <n>`` and
         executes it via the dataset's async engine.
@@ -1609,8 +2222,15 @@ class SqlaTable(
             column_name: The dataset column whose distinct values are
                 requested.
             limit: Maximum number of distinct values to return.
-            rls_filters: Optional list of raw SQL WHERE-clause fragments
-                from Row-Level Security rules. The caller (controller)
+            rls_filters: Optional list of Row-Level Security clauses.
+                Preferred form: ``list[ClauseElement]`` (``TextClause`` /
+                ``BooleanClauseList``) returned by
+                :func:`superset.utils.rls.compose_rls_where_clauses` —
+                each clause is compiled against the database's SQL
+                dialect via ``self.database.get_dialect()`` so identifier
+                quoting and dialect-specific translation happen
+                automatically.  Backward-compat: raw SQL ``str``
+                fragments are still accepted.  The caller (controller)
                 is responsible for obtaining these from the security
                 manager via ``get_rls_filters`` — mirrors the pattern
                 used by ``async_query`` and matches the original sync
@@ -1618,6 +2238,10 @@ class SqlaTable(
                 ``self.get_sqla_row_level_filters`` and ANDs them into
                 the WHERE clause.
         """
+        from sqlalchemy import and_
+        from sqlalchemy.sql import literal_column, text as sa_text
+        from sqlalchemy.sql.elements import ClauseElement
+
         cols = {c.column_name: c for c in (self.columns or [])}
         if column_name not in cols:
             raise KeyError(column_name)
@@ -1625,26 +2249,36 @@ class SqlaTable(
         target_col = cols[column_name]
 
         # Respect calculated columns: use ``expression`` when present,
-        # otherwise quote the physical column name.
+        # otherwise quote the physical column name.  ``literal_column``
+        # carries the verbatim expression while the ``.label("column_values")``
+        # alias is rendered with engine-correct quoting at compile time.
         col_expr = getattr(target_col, "expression", None)
         if col_expr:
-            projection = f"{col_expr} AS column_values"
+            select_col = literal_column(col_expr).label("column_values")
         else:
-            projection = f"{self._quote_identifier(column_name)} AS column_values"
+            select_col = literal_column(self._quote_identifier(column_name)).label(
+                "column_values"
+            )
 
-        # Resolve the FROM clause.  For virtual datasets this may
-        # produce a CTE that has to be prepended to the final SQL —
-        # matches original ``helpers.values_for_column`` (lines
-        # 1569 and 1593) where ``get_from_clause`` returns
-        # ``(tbl, cte)`` and ``_apply_cte`` hoists the CTE above the
-        # SELECT.
-        table_ref, cte_sql = self._get_virtual_from_clause()
-        sql = f"SELECT DISTINCT {projection} FROM {table_ref}"
+        # Resolve the FROM clause as a native SQLAlchemy AST node.
+        # For virtual datasets this may produce a CTE that has to be
+        # prepended to the final SQL — matches original
+        # ``helpers.values_for_column`` (lines 1569 and 1593) where
+        # ``get_from_clause`` returns ``(tbl, cte)`` and ``_apply_cte``
+        # hoists the CTE above the SELECT.
+        from_clause, cte_sql = self._build_from_ast()
+
+        # Build the AST: SELECT DISTINCT <col> AS column_values FROM <tbl>
+        qry = sa.select(select_col).distinct().select_from(from_clause)
 
         # Assemble WHERE clause from fetch_values_predicate + RLS filters.
         # Matches original ``helpers.values_for_column`` (lines 1585-1589)
-        # where both predicates are ANDed together.
-        where_parts: list[str] = []
+        # where both predicates are ANDed together — but here we add each
+        # as a SQLAlchemy ``ClauseElement`` and let ``and_(...)`` compose
+        # them so RLS clauses (which may be ``BooleanClauseList`` /
+        # ``or_(...)`` for group_key OR-within / AND-across) integrate as
+        # native AST nodes rather than via string concatenation.
+        where_clauses: list[ClauseElement] = []
         fvp = getattr(self, "fetch_values_predicate", None)
         if fvp:
             # Apply Jinja template processing so expressions like
@@ -1659,23 +2293,41 @@ class SqlaTable(
             # sync helpers are invoked from the async pipeline.
             from superset.jinja_context import get_template_processor
 
-            processor = get_template_processor(
-                database=self.database, table=self
-            )
-            fvp_processed = await asyncio.to_thread(
-                processor.process_template, fvp
-            )
-            where_parts.append(f"({fvp_processed})")
+            processor = get_template_processor(database=self.database, table=self)
+            fvp_processed = await asyncio.to_thread(processor.process_template, fvp)
+            where_clauses.append(sa_text(f"({fvp_processed})"))
+
         if rls_filters:
             for rls_clause in rls_filters:
-                clause = rls_clause.strip() if rls_clause else ""
-                if clause:
-                    where_parts.append(f"({clause})")
-        if where_parts:
-            sql += f" WHERE {' AND '.join(where_parts)}"
+                if isinstance(rls_clause, str):
+                    stripped = rls_clause.strip()
+                    if not stripped:
+                        continue
+                    rls_clause = sa_text(stripped)
+                if isinstance(rls_clause, ClauseElement):
+                    where_clauses.append(rls_clause)
+                else:
+                    logger.warning(
+                        "Unknown RLS clause type %s, skipping",
+                        type(rls_clause).__name__,
+                    )
+
+        if where_clauses:
+            qry = qry.where(and_(*where_clauses))
 
         if limit:
-            sql += f" LIMIT {int(limit)}"
+            qry = qry.limit(int(limit))
+
+        # Compile the entire AST through the database's dialect — single
+        # pass produces engine-correct identifier quoting and dialect-
+        # specific translation for SELECT, FROM, WHERE, RLS, and LIMIT.
+        dialect = self.database.get_dialect()
+        sql = str(
+            qry.compile(
+                dialect=dialect,
+                compile_kwargs={"literal_binds": True},
+            )
+        )
 
         # Prepend the CTE (if any) so engines that disallow CTEs
         # inside a subquery still execute a well-formed statement.
@@ -1704,31 +2356,110 @@ class SqlaTable(
     async def async_query(
         self,
         query_dict: dict[str, Any],
-        rls_filters: list[str] | None = None,
+        rls_filters: list[Any] | None = None,
     ) -> QueryResult:
         """Execute a query against this dataset and return a QueryResult.
 
         This is the primary entry point for the async query pipeline used by
         AsyncQueryContextProcessor._get_query_result().
 
+        Surfaces all metadata produced by
+        :meth:`helpers.ExploreMixin.get_sqla_query` — namely
+        ``applied_filter_columns``, ``rejected_filter_columns``,
+        ``applied_template_filters``, ``labels_expected`` and
+        ``prequeries`` — so the chart-data response payload matches the
+        original Apache Superset shape (delta #19).
+
         Args:
             query_dict: The query parameters dict from QueryContext.
-            rls_filters: Optional list of raw SQL WHERE-clause fragments
-                from Row-Level Security rules.  The caller is responsible
+            rls_filters: Optional list of Row-Level Security clauses
+                (``ClauseElement`` preferred — ``TextClause`` /
+                ``BooleanClauseList``; raw ``str`` fragments still
+                accepted for backward compat).  See ``_build_sql`` for
+                the dialect-compile pipeline.  The caller is responsible
                 for obtaining these from the security manager.
         """
         try:
-            sql, from_dttm, to_dttm = self._build_sql(
-                query_dict, rls_filters=rls_filters
+            # SQL building below is sync and CPU/IO heavy:
+            #   * ``_get_sqla_query_with_rls`` runs Jinja templating and
+            #     SQLAlchemy AST construction (and may trigger
+            #     ``_probe_adhoc_column_is_dttm`` which opens a sync
+            #     DB-API connection).
+            #   * ``compile_sqla_query`` enters a sync engine context and
+            #     compiles the AST to a dialect string (and runs the
+            #     SQLGlot OPTIMIZE_SQL pass for virtual datasets).
+            #   * ``mutate_sql_based_on_config`` dispatches the
+            #     user-defined ``SQL_QUERY_MUTATOR`` callable, which is
+            #     also sync.
+            #
+            # Running them directly inside this coroutine would block the
+            # event loop. Hand them off to a worker thread via
+            # :func:`asyncio.to_thread`, which on Python >=3.9 copies the
+            # current :class:`~contextvars.Context` (verified for 3.12 in
+            # CPython's stdlib) so :func:`get_current_user` and friends
+            # still resolve to the same caller-bound user inside the
+            # worker thread.
+            sqla_query = await asyncio.to_thread(
+                self._get_sqla_query_with_rls,
+                query_dict,
+                rls_filters,
             )
+            sql = await asyncio.to_thread(
+                self.database.compile_sqla_query,
+                sqla_query.sqla_query,
+                self.catalog,
+                self.schema,
+                bool(self.sql),
+            )
+            sql = self._apply_cte(sql, sqla_query.cte)
+            sql = await asyncio.to_thread(self.database.mutate_sql_based_on_config, sql)
             logger.debug("SqlaTable.async_query SQL:\n%s", sql)
+
+            from_dttm = _parse_dttm(query_dict.get("from_dttm"))
+            to_dttm = _parse_dttm(query_dict.get("to_dttm"))
+
             df = await self._execute_sql(sql)
+
+            # 1:1 with original
+            # ``superset_old/connectors/sqla/models.py:assign_column_label``
+            # (line 1626) — dialects like MSSQL / Snowflake may rename
+            # or change the case of columns. The expected behaviour is:
+            #
+            # 1. If the engine returned *fewer* columns than the
+            #    helpers-mixin counted (``labels_expected``), the
+            #    query is malformed; raise a validation error rather
+            #    than silently truncating user output.
+            # 2. If the engine returned *more* columns (e.g. an
+            #    ORDER BY column not in SELECT was returned anyway),
+            #    keep only the leading ``labels_expected`` columns —
+            #    this matches the ``df.iloc[:, 0:len(labels_expected)]``
+            #    slice in the original.
+            # 3. Reassign ``df.columns`` to the canonical labels so
+            #    downstream viz components find the column names they
+            #    expect.
+            if not df.empty and sqla_query.labels_expected:
+                from superset.exceptions import QueryObjectValidationError
+
+                expected = list(sqla_query.labels_expected)
+                if len(df.columns) < len(expected):
+                    raise QueryObjectValidationError(
+                        "Db engine did not return all queried columns"
+                    )
+                if len(df.columns) > len(expected):
+                    df = df.iloc[:, 0 : len(expected)]
+                df.columns = expected
+
             return QueryResult(
                 df=df,
                 query=sql,
                 status="success",
                 from_dttm=from_dttm,
                 to_dttm=to_dttm,
+                applied_filter_columns=list(sqla_query.applied_filter_columns),
+                rejected_filter_columns=list(sqla_query.rejected_filter_columns),
+                applied_template_filters=list(sqla_query.applied_template_filters),
+                labels_expected=list(sqla_query.labels_expected),
+                prequeries=list(sqla_query.prequeries),
             )
         except Exception as ex:
             logger.warning(
@@ -1751,24 +2482,38 @@ class SqlaTable(
 
 
 class RowLevelSecurityFilter(Base, AuditMixinNullable):
-    """A row-level security filter applied to datasets."""
+    """A row-level security filter applied to datasets.
+
+    Schema mirrors ``superset_old/connectors/sqla/models.py`` exactly so
+    existing Apache Superset metadata databases work unchanged.
+    """
 
     __tablename__ = "row_level_security_filters"
 
     id = Column(Integer, primary_key=True)
-    name = Column(String(255), unique=True)
+    name = Column(String(255), unique=True, nullable=False)
     description = Column(Text)
-    filter_type = Column(String(50))
-    group_key = Column(String(255))
+    filter_type = Column(
+        SAEnum(
+            *[ft.value for ft in _RowLevelSecurityFilterType],
+            name="filter_type_enum",
+        ),
+    )
+    group_key = Column(String(255), nullable=True)
     clause = Column(MediumText(), nullable=False)
 
-    # -- relationships --------------------------------------------------------
-
+    # ``backref`` mirrors the original — gives ``Role.row_level_security_filters``
+    # and ``SqlaTable.row_level_security_filters``. ``overlaps="table"`` on
+    # ``tables`` silences the SQLAlchemy warning caused by the same column
+    # being referenced from ``SqlaTable.table_name`` aliases.
     roles = relationship(
         "Role",
         secondary=RLSFilterRoles,
+        backref="row_level_security_filters",
     )
     tables = relationship(
         "SqlaTable",
         secondary=RLSFilterTables,
+        backref="row_level_security_filters",
+        overlaps="table",
     )

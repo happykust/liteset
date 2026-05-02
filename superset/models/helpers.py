@@ -247,13 +247,121 @@ class ImportExportMixin(UUIDMixin):
     """Marker mixin for models that support YAML import/export.
 
     The actual import/export logic lives in superset.importexport.
-    This mixin provides the ``uuid`` column and export field declarations.
+    This mixin provides the ``uuid`` column, the export field declarations
+    and a ported ``export_to_dict`` helper (see original at
+    superset_old/models/helpers.py:368).
     """
 
     export_parent: str | None = None
     export_children: list[str] = []  # noqa: RUF012
     export_fields: list[str] = []  # noqa: RUF012
     extra_import_fields: list[str] = []  # noqa: RUF012
+
+    @classmethod
+    def export_schema(
+        cls, recursive: bool = True, include_parent_ref: bool = False
+    ) -> dict[str, Any]:
+        """Return a schema description for the model — used by
+        :func:`superset.utils.dict_import_export.export_schema_to_dict`.
+
+        Direct port of original ``ImportExportMixin.export_schema`` at
+        ``superset_old/models/helpers.py:217``.
+        """
+        parent_excludes: set[str] = set()
+        if not include_parent_ref:
+            parent_ref = cls.__mapper__.relationships.get(cls.export_parent)
+            if parent_ref:
+                parent_excludes = {column.name for column in parent_ref.local_columns}
+
+        def formatter(column: sa.Column) -> str:
+            return (
+                f"{str(column.type)} Default ({column.default.arg})"
+                if column.default
+                else str(column.type)
+            )
+
+        schema: dict[str, Any] = {
+            column.name: formatter(column)
+            for column in cls.__table__.columns
+            if (column.name in cls.export_fields and column.name not in parent_excludes)
+        }
+        if recursive:
+            for column in cls.export_children:
+                child_class = cls.__mapper__.relationships[column].argument.class_
+                schema[column] = [
+                    child_class.export_schema(
+                        recursive=recursive, include_parent_ref=include_parent_ref
+                    )
+                ]
+        return schema
+
+    def export_to_dict(
+        self,
+        recursive: bool = True,
+        include_parent_ref: bool = False,
+        include_defaults: bool = False,
+        export_uuids: bool = False,
+    ) -> dict[Any, Any]:
+        """Serialize the model to a plain dict using ``export_fields``.
+
+        Direct port of original ``ImportExportMixin.export_to_dict`` —
+        used by the theme/dashboard/chart export commands to render YAML.
+        """
+        export_fields = set(self.export_fields)
+        if export_uuids:
+            export_fields.add("uuid")
+            export_fields.discard("id")
+
+        cls = self.__class__
+        parent_excludes: set[str] = set()
+        if recursive and not include_parent_ref:
+            parent_ref = cls.__mapper__.relationships.get(cls.export_parent)
+            if parent_ref is not None:
+                parent_excludes = {c.name for c in parent_ref.local_columns}
+
+        dict_rep = {
+            c.name: getattr(self, c.name)
+            for c in cls.__table__.columns
+            if (
+                c.name in export_fields
+                and c.name not in parent_excludes
+                and (
+                    include_defaults
+                    or (
+                        getattr(self, c.name) is not None
+                        and (not c.default or getattr(self, c.name) != c.default.arg)
+                    )
+                )
+            )
+        }
+
+        # Order keys by declaration order in export_fields (DSU pattern).
+        order = {field: i for i, field in enumerate(self.export_fields)}
+        decorated = sorted(
+            ((order.get(k, len(order)), k) for k in dict_rep), key=lambda t: t[0]
+        )
+        dict_rep = {k: dict_rep[k] for _, k in decorated}
+
+        if recursive:
+            for cld in self.export_children:
+                children = getattr(self, cld, None) or []
+                dict_rep[cld] = sorted(
+                    [
+                        child.export_to_dict(
+                            recursive=recursive,
+                            include_parent_ref=include_parent_ref,
+                            include_defaults=include_defaults,
+                        )
+                        for child in children
+                    ],
+                    key=lambda k: sorted(str(k.items())),
+                )
+
+        # Convert UUID columns to plain strings so yaml/json serialise cleanly.
+        for k, v in list(dict_rep.items()):
+            if isinstance(v, uuid.UUID):
+                dict_rep[k] = str(v)
+        return dict_rep
 
 
 class ExtraJSONMixin:
@@ -456,7 +564,7 @@ class ExploreMixin:
 
     This is the core SQL-building mixin ported 1:1 from the original
     Flask-based ``superset_old/models/helpers.py``.  Flask-specific
-    integration points (``flask.g``, ``flask_babel._``, ``current_app.config``)
+    integration points (``flask.g``, ``superset.i18n._``, ``current_app.config``)
     have been removed; the pure SQLAlchemy query-building logic is preserved
     exactly.
     """
@@ -568,10 +676,25 @@ class ExploreMixin:
         self,
         template_processor: Any | None = None,
     ) -> list[TextClause]:
-        # TODO: We should refactor this mixin and remove this method
-        # as it exists in the BaseDatasource and is not applicable
-        # for datasources of type query
-        return []
+        """Synchronous RLS hook used by SQL Lab pipelines.
+
+        Delegates to :func:`superset.utils.rls.compose_rls_text_clauses`
+        which mirrors the original
+        ``superset_old.connectors.sqla.models.BaseDatasource.get_sqla_row_level_filters``
+        (group_key OR-within / AND-across, Jinja templating,
+        ``EMBEDDED_SUPERSET`` guest RLS).
+
+        The async chart-data pipeline uses
+        :func:`superset.utils.rls.compose_rls_where_clauses` instead —
+        that variant takes the security manager as an argument because
+        it can ``await`` async session calls; this sync variant opens
+        its own session against the metadata DB and resolves the
+        current user from the ``ContextVar`` populated by auth
+        middleware.
+        """
+        from superset.utils.rls import compose_rls_text_clauses
+
+        return compose_rls_text_clauses(self, template_processor=template_processor)
 
     def _process_sql_expression(
         self,
@@ -1312,13 +1435,14 @@ class ExploreMixin:
         tbl, cte = self.get_from_clause(tp)
 
         qry = (
+            # SQLAlchemy 2.0: pass column expression positionally (the
+            # legacy 1.4 single-list form is removed).  The alias is
+            # important because some dialects automatically add a
+            # random alias to the projection due to ``DISTINCT``;
+            # others uppercase column names.  This gives a
+            # deterministic column name in the resulting DataFrame.
             sa.select(
-                # The alias (label) here is important because some dialects
-                # will automatically add a random alias to the projection
-                # because of the call to DISTINCT; others will uppercase the
-                # column names.  This gives us a deterministic column name in
-                # the dataframe.
-                [target_col.get_sqla_col(template_processor=tp).label("column_values")]
+                target_col.get_sqla_col(template_processor=tp).label("column_values")
             )
             .select_from(tbl)
             .distinct()
@@ -1420,8 +1544,28 @@ class ExploreMixin:
         timeseries_limit: int | None = None,
         timeseries_limit_metric: Metric | None = None,
         time_shift: str | None = None,
+        rls_filters: list[Any] | None = None,
     ) -> SqlaQuery:
-        """Querying any sqla table from this common interface."""
+        """Querying any sqla table from this common interface.
+
+        :param rls_filters: Optional caller-supplied Row-Level Security
+            clauses to inject in lieu of resolving them via
+            :meth:`get_sqla_row_level_filters`. Preferred form is
+            ``list[ClauseElement]`` (``TextClause`` /
+            ``BooleanClauseList`` returned by
+            :func:`superset.utils.rls.compose_rls_where_clauses`); raw
+            ``str`` fragments are still accepted for backward
+            compatibility and are wrapped in :func:`sqlalchemy.text`.
+            When ``None`` (default), the original *pull* path is used —
+            i.e. :meth:`get_sqla_row_level_filters` is invoked to
+            resolve RLS from the active session/user context. The
+            *push* form is used by the async chart-data pipeline so we
+            don't have to re-resolve the user inside a sync helper. It
+            also eliminates a concurrency hazard that would arise if
+            two async tasks shared a ``SqlaTable`` instance: each task
+            now owns its kwarg-passed clause list rather than mutating
+            the instance via monkey-patch.
+        """
         from superset.typing import GenericDataType
         from superset.utils.date import get_since_until_from_time_range
         from superset.utils.feature_flags import feature_flag_manager
@@ -1726,7 +1870,10 @@ class ExploreMixin:
         if not db_engine_spec.allows_hidden_orderby_agg:
             select_exprs = remove_duplicates(select_exprs + orderby_exprs)
 
-        qry = sa.select(select_exprs)
+        # SQLAlchemy 2.0: pass column expressions as positional arguments,
+        # not a single list (the legacy 1.4 API).  ``select_exprs`` is
+        # always a list[ColumnElement] so star-unpack is safe.
+        qry = sa.select(*select_exprs)
 
         if groupby_all_columns:
             qry = qry.group_by(*groupby_all_columns.values())
@@ -1941,7 +2088,32 @@ class ExploreMixin:
                         raise QueryObjectValidationError(
                             f"Invalid filter operation type: {op}"
                         )
-        where_clause_and += self.get_sqla_row_level_filters(template_processor)
+        # ── Row-Level Security ──────────────────────────────────────
+        # Two paths exist for RLS clause injection (1:1 with original
+        # behaviour, but with concurrency-safe push-down added):
+        #
+        # 1. *Pull* (default, when ``rls_filters is None``):
+        #    delegate to :meth:`get_sqla_row_level_filters` which
+        #    resolves the active user via session ContextVar and
+        #    composes their RLS clauses through the security manager.
+        #
+        # 2. *Push* (when ``rls_filters`` is provided): the caller
+        #    (typically the async chart-data pipeline) has already
+        #    resolved RLS up-front and supplies the ready-made
+        #    ``ClauseElement`` list as a kwarg.  This avoids
+        #    monkey-patching ``get_sqla_row_level_filters`` on a shared
+        #    ``SqlaTable`` instance (a leakage / race hazard under
+        #    concurrent ``async`` calls).
+        if rls_filters is not None:
+            for clause in rls_filters:
+                if isinstance(clause, str):
+                    stripped = clause.strip()
+                    if stripped:
+                        where_clause_and.append(self.text(stripped))
+                else:
+                    where_clause_and.append(clause)
+        else:
+            where_clause_and += self.get_sqla_row_level_filters(template_processor)
         if extras:
             where = extras.get("where")
             if where:
@@ -2014,7 +2186,7 @@ class ExploreMixin:
                     inner_select_exprs.append(inner)
 
                 inner_select_exprs += [inner_main_metric_expr]
-                subq = sa.select(inner_select_exprs).select_from(tbl)
+                subq = sa.select(*inner_select_exprs).select_from(tbl)
                 inner_time_filter = []
 
                 if dttm_col and not db_engine_spec.time_groupby_inline:
@@ -2079,8 +2251,8 @@ class ExploreMixin:
                         )
                     )
 
-                    # Reconstruct query with modified expressions
-                    qry = sa.select(select_exprs)
+                    # Reconstruct query with modified expressions (SA2.0 API)
+                    qry = sa.select(*select_exprs)
                     if groupby_all_columns:
                         qry = qry.group_by(*groupby_all_columns.values())
 
@@ -2158,8 +2330,8 @@ class ExploreMixin:
                         )
                     )
 
-                    # Reconstruct query with modified expressions
-                    qry = sa.select(select_exprs)
+                    # Reconstruct query with modified expressions (SA2.0 API)
+                    qry = sa.select(*select_exprs)
                     if groupby_all_columns:
                         qry = qry.group_by(*groupby_all_columns.values())
 
@@ -2185,7 +2357,7 @@ class ExploreMixin:
                 raise QueryObjectValidationError("Database does not support subqueries")
             label = "rowcount"
             col = self.make_sqla_column_compatible(literal_column("COUNT(*)"), label)
-            qry = sa.select([col]).select_from(qry.alias("rowcount_qry"))
+            qry = sa.select(col).select_from(qry.alias("rowcount_qry"))
             labels_expected = [label]
 
         filter_columns = [flt.get("col") for flt in filter] if filter else []

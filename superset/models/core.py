@@ -129,6 +129,10 @@ class Theme(AuditMixinNullable, ImportExportMixin, Base):
     is_system_default = Column(Boolean, default=False, nullable=False)
     is_system_dark = Column(Boolean, default=False, nullable=False)
 
+    # Mirrors original Superset Theme.export_fields at
+    # superset_old/models/core.py:134
+    export_fields = ["theme_name", "json_data"]
+
 
 class Database(AuditMixinNullable, ImportExportMixin, Base):
     """A database connection registered in Superset."""
@@ -232,6 +236,422 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         """
         sqla_url = make_url_safe(self.sqlalchemy_uri_decrypted)
         return sqla_url.get_dialect()()
+
+    def quote_identifier(self, name: str) -> str:
+        """Conditionally quote an identifier using the dialect's preparer.
+
+        1:1 with ``Database.quote_identifier`` in
+        ``superset_old/models/core.py``
+        (line 645) — used by ``adhoc_column_to_sqla`` and
+        ``Database.compile_sqla_query`` to safely render bare column /
+        catalog / schema references.
+        """
+        return self.get_dialect().identifier_preparer.quote(name)
+
+    def get_reserved_words(self) -> set[str]:
+        """1:1 with original (line 649)."""
+        return self.get_dialect().preparer.reserved_words
+
+    def get_default_catalog(self) -> str | None:
+        """Return the default catalog for this database.
+
+        1:1 with ``get_default_catalog`` in
+        ``superset_old/db_engine_specs/base.py``
+        (line 678) — most engines don't support catalogs at all and
+        return ``None``; the engine spec overrides this for engines
+        that do (BigQuery → project, Trino → catalog).
+        """
+        spec = self.db_engine_spec
+        if spec is not None and hasattr(spec, "get_default_catalog"):
+            try:
+                return spec.get_default_catalog(self)
+            except Exception:  # noqa: BLE001
+                return None
+        return None
+
+    def get_default_schema(self, catalog: str | None = None) -> str | None:
+        """Return the default schema for this database.
+
+        1:1 with ``Database.get_default_schema`` in
+        ``superset_old/models/core.py``
+        (line 604) — delegates to the engine spec's
+        :meth:`get_default_schema`, which lets dialect-specific
+        overrides (Postgres → ``public``, BigQuery → project-default,
+        etc.) take effect rather than the bare SQLAlchemy
+        ``inspector.default_schema_name`` fallback.
+        """
+        spec = self.db_engine_spec
+        if spec is None:
+            return None
+        try:
+            return spec.get_default_schema(self, catalog)
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "Could not introspect default schema for database %s",
+                self.database_name,
+                exc_info=True,
+            )
+            return None
+
+    def get_default_schema_for_query(
+        self,
+        query: Any,
+        template_params: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Return the default schema for a given query.
+
+        1:1 with ``Database.get_default_schema_for_query`` in
+        ``superset_old/models/core.py``
+        — delegates to the engine spec so dialects that compute the
+        default schema dynamically (e.g. ``USE schema``-aware engines)
+        can override.
+        """
+        spec = self.db_engine_spec
+        if spec is None:
+            return None
+        try:
+            return spec.get_default_schema_for_query(self, query, template_params)
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "Could not resolve query default schema for database %s",
+                self.database_name,
+                exc_info=True,
+            )
+            return None
+
+    def get_sqla_engine(
+        self,
+        catalog: str | None = None,
+        schema: str | None = None,
+        source: Any | None = None,
+        nullpool: bool = True,
+    ) -> Any:
+        """Return a context manager yielding a sync SQLAlchemy engine.
+
+        1:1 with ``Database.get_sqla_engine`` in
+        ``superset_old/models/core.py``.
+        Wraps ``superset.utils.database.get_sync_engine`` which is the
+        Liteset-side equivalent of the Flask app's sync engine
+        registry. Used by ``compile_sqla_query`` and ``get_df``.
+        """
+        from superset.utils.database import get_sync_engine
+
+        return get_sync_engine(
+            self,
+            catalog=catalog,
+            schema=schema,
+            nullpool=nullpool,
+        )
+
+    def get_inspector(
+        self,
+        catalog: str | None = None,
+        schema: str | None = None,
+    ) -> Any:
+        """Return a context manager yielding a SQLAlchemy Inspector.
+
+        1:1 with ``Database.get_inspector`` in
+        ``superset_old/models/core.py``
+        (line 875). Both ``catalog`` and ``schema`` are forwarded to
+        ``get_sqla_engine`` so dialects that scope inspectors per
+        catalog/schema (e.g. BigQuery / MSSQL) bind to the right
+        namespace.
+        """
+        from contextlib import contextmanager
+
+        from sqlalchemy import inspect as sa_inspect
+
+        @contextmanager
+        def _ctx() -> Any:
+            from superset.utils.database import get_sync_engine
+
+            with get_sync_engine(self, catalog=catalog, schema=schema) as engine:
+                yield sa_inspect(engine)
+
+        return _ctx()
+
+    async def get_all_table_names_in_schema(
+        self,
+        *,
+        catalog: str | None,
+        schema: str,
+        force: bool = False,
+        cache: bool = False,
+        cache_timeout: int | None = None,
+    ) -> set[tuple[str, str, str | None]]:
+        """1:1 with ``Database.get_all_table_names_in_schema`` in
+        ``superset_old/models/core.py``.
+
+        The original is sync and decorated with ``cache_util.memoized_func``
+        for Flask-Caching.  The async port wraps the sync inspector call
+        with :func:`superset.utils.cache.memoized_func` so the same
+        cache-key shape is reused (``db:{id}:catalog:{c}:schema:{s}:table_list``).
+        ``force`` / ``cache`` / ``cache_timeout`` are honoured by the
+        decorator at call-time exactly as in the original.
+        """
+
+        from superset.extensions import cache_manager
+        from superset.utils.cache import memoized_func
+
+        @memoized_func(  # type: ignore[misc]
+            key="db:{database_id}:catalog:{catalog}:schema:{schema}:table_list",
+            cache=cache_manager.cache,
+        )
+        async def _impl(
+            database_id: int,
+            catalog: str | None,
+            schema: str,
+        ) -> set[tuple[str, str, str | None]]:
+            try:
+                with self.get_inspector(catalog=catalog, schema=schema) as inspector:
+                    return {
+                        (table, schema, catalog)
+                        for table in self.db_engine_spec.get_table_names(
+                            database=self,
+                            inspector=inspector,
+                            schema=schema,
+                        )
+                    }
+            except Exception as ex:  # noqa: BLE001
+                raise self.db_engine_spec.get_dbapi_mapped_exception(ex) from ex
+
+        return await _impl(  # type: ignore[no-any-return]
+            self.id,
+            catalog,
+            schema,
+            force=force,
+            cache=cache,
+            cache_timeout=cache_timeout,
+        )
+
+    async def get_all_view_names_in_schema(
+        self,
+        *,
+        catalog: str | None,
+        schema: str,
+        force: bool = False,
+        cache: bool = False,
+        cache_timeout: int | None = None,
+    ) -> set[tuple[str, str, str | None]]:
+        """1:1 with ``Database.get_all_view_names_in_schema`` in
+        ``superset_old/models/core.py``."""
+
+        from superset.extensions import cache_manager
+        from superset.utils.cache import memoized_func
+
+        @memoized_func(  # type: ignore[misc]
+            key="db:{database_id}:catalog:{catalog}:schema:{schema}:view_list",
+            cache=cache_manager.cache,
+        )
+        async def _impl(
+            database_id: int,
+            catalog: str | None,
+            schema: str,
+        ) -> set[tuple[str, str, str | None]]:
+            try:
+                with self.get_inspector(catalog=catalog, schema=schema) as inspector:
+                    return {
+                        (view, schema, catalog)
+                        for view in self.db_engine_spec.get_view_names(
+                            database=self,
+                            inspector=inspector,
+                            schema=schema,
+                        )
+                    }
+            except Exception as ex:  # noqa: BLE001
+                raise self.db_engine_spec.get_dbapi_mapped_exception(ex) from ex
+
+        return await _impl(  # type: ignore[no-any-return]
+            self.id,
+            catalog,
+            schema,
+            force=force,
+            cache=cache,
+            cache_timeout=cache_timeout,
+        )
+
+    def make_sqla_column_compatible(
+        self, sqla_col: Any, label: str | None = None
+    ) -> Any:
+        """Take care of metric formatting / aliasing.
+
+        1:1 with ``Database.make_sqla_column_compatible`` in
+        ``superset_old/models/core.py``
+        (line 1129). Honours the engine spec's
+        ``get_allows_alias_in_select`` and ``make_label_compatible`` —
+        crucial for Oracle's 30-char label truncation and MSSQL's
+        bracketed alias quoting.
+        """
+        label_expected = label or sqla_col.name
+        if self.db_engine_spec.get_allows_alias_in_select(self):
+            label = self.db_engine_spec.make_label_compatible(label_expected)
+            sqla_col = sqla_col.label(label)
+        sqla_col.key = label_expected
+        return sqla_col
+
+    def mutate_sql_based_on_config(self, sql_: str, is_split: bool = False) -> str:
+        """Apply ``SQL_QUERY_MUTATOR`` config hook to the SQL.
+
+        1:1 with ``Database.mutate_sql_based_on_config`` in
+        ``superset_old/models/core.py``
+        (line 652). The mutator is loaded from ``superset.config`` —
+        ``superset_config.py`` users can register a function as
+        ``SQL_QUERY_MUTATOR``. Honours ``MUTATE_AFTER_SPLIT`` so the
+        mutator either runs once on the whole script or on each
+        individual statement post-split.
+
+        ``security_manager`` is passed as a sync read-only proxy
+        (:class:`superset.security.manager.SyncSecurityManagerProxy`)
+        which mirrors the read-only API surface mutators commonly
+        need — ``get_user_id`` / ``current_user`` / ``is_user_admin``
+        — while keeping the async :class:`AsyncSecurityManager`
+        separate.  Mutators that relied on the original
+        FAB ``SecurityManager`` for those three methods continue to
+        work unchanged.
+        """
+        try:
+            from superset import config as _config
+        except ImportError:
+            return sql_
+
+        # Two configuration discovery paths:
+        # 1. Legacy uppercase module-level constants
+        #    (``SQL_QUERY_MUTATOR`` / ``MUTATE_AFTER_SPLIT``) — what
+        #    superset_config.py users have always set.
+        # 2. Pydantic settings (``sql_query_mutator`` /
+        #    ``mutate_after_split``) — Liteset's preferred form.
+        sql_mutator = getattr(_config, "SQL_QUERY_MUTATOR", None)
+        mutate_after_split = getattr(_config, "MUTATE_AFTER_SPLIT", False)
+        if sql_mutator is None:
+            try:
+                settings = _config.SupersetSettings()
+                sql_mutator = getattr(settings, "sql_query_mutator", None)
+                mutate_after_split = getattr(settings, "mutate_after_split", False)
+            except Exception:  # noqa: BLE001, S110
+                pass
+
+        if sql_mutator and (is_split == mutate_after_split):
+            from superset.security.manager import (
+                get_sync_security_manager_proxy,
+            )
+
+            sm_proxy = get_sync_security_manager_proxy()
+            # 1:1 with superset_old/models/core.py:663-669 — only
+            # ``security_manager`` and ``database`` are passed; the
+            # current user is reachable via ``sm_proxy.current_user``.
+            return sql_mutator(
+                sql_,
+                security_manager=sm_proxy,
+                database=self,
+            )
+        return sql_
+
+    def compile_sqla_query(
+        self,
+        qry: Any,
+        catalog: str | None = None,
+        schema: str | None = None,
+        is_virtual: bool = False,
+    ) -> str:
+        """Compile a SQLAlchemy ``Select`` AST to a SQL string.
+
+        1:1 with ``Database.compile_sqla_query`` in
+        ``superset_old/models/core.py``
+        (line 741). Uses the dialect's identifier preparer for
+        engine-correct quoting and handles the ``%%`` double-percent
+        fixup that some DB-API drivers require. When ``is_virtual=True``
+        and the ``OPTIMIZE_SQL`` feature flag is enabled the rendered
+        SQL is also routed through :class:`SQLScript.optimize` which
+        applies predicate-pushdown and other SQLGlot-driven
+        optimizations on the virtual-dataset SELECT.
+        """
+        # Match the original by reading the dialect from the engine
+        # bound to ``catalog`` / ``schema`` so dialect plug-ins that
+        # vary per-catalog (BigQuery / Trino) get the right preparer.
+        with self.get_sqla_engine(catalog=catalog, schema=schema) as engine:
+            sql = str(qry.compile(engine, compile_kwargs={"literal_binds": True}))
+            # pylint: disable=protected-access
+            if getattr(engine.dialect.identifier_preparer, "_double_percents", False):
+                sql = sql.replace("%%", "%")
+
+        # OPTIMIZE_SQL — only meaningful for virtual datasources where
+        # SQLGlot can push predicates / prune projections through the
+        # outer SELECT. 1:1 with original (line 757-759). Failures
+        # bubble up, matching the original's behaviour.
+        if is_virtual and self._is_optimize_sql_enabled():
+            from superset.sql.parse import SQLScript
+
+            script = SQLScript(sql, engine=self.db_engine_spec.engine).optimize()
+            sql = script.format()
+
+        return sql
+
+    @staticmethod
+    def _is_optimize_sql_enabled() -> bool:
+        """Return whether the ``OPTIMIZE_SQL`` feature flag is enabled.
+
+        Matches the original's ``is_feature_enabled('OPTIMIZE_SQL')``
+        check. Wrapped in a static method so callers don't have to
+        import :mod:`superset.utils.feature_flags` directly.
+        """
+        from superset.utils.feature_flags import feature_flag_manager
+
+        return feature_flag_manager.is_feature_enabled("OPTIMIZE_SQL")
+
+    def get_df(
+        self,
+        sql: str,
+        catalog: str | None = None,
+        schema: str | None = None,
+        mutator: Any | None = None,
+    ) -> Any:
+        """Execute SQL and return a pandas DataFrame.
+
+        Sync variant of the chart-data execute path. 1:1 with
+        ``superset_old/models/core.py:Database.get_df`` (line 672) —
+        runs the script statement-by-statement, applies the mutator on
+        the final result, and returns a DataFrame.
+
+        Used by helpers.ExploreMixin.exc_query and the prequery
+        pipeline (series-limit fallback for engines without subquery
+        joins). Most production paths in Liteset are async — this
+        method exists so the synchronous helpers code path remains
+        runnable when invoked from a worker thread.
+        """
+        import pandas as pd
+        from sqlalchemy import text as sa_text
+
+        from superset.sql.parse import SQLScript
+        from superset.utils.database import get_sync_engine
+
+        script = SQLScript(sql, self.db_engine_spec.engine)
+        with get_sync_engine(self, catalog=catalog, schema=schema) as engine:
+            with engine.connect() as conn:
+                df: pd.DataFrame | None = None
+                statements = list(script.statements)
+                for i, statement in enumerate(statements):
+                    sql_ = self.mutate_sql_based_on_config(
+                        statement.format(), is_split=True
+                    )
+                    is_last = i == len(statements) - 1
+                    result = conn.execute(sa_text(sql_))
+                    if not is_last:
+                        if result.returns_rows:
+                            result.fetchall()
+                        continue
+                    if result.returns_rows:
+                        cols = list(result.keys())
+                        rows = result.fetchall()
+                        df = pd.DataFrame([tuple(row) for row in rows], columns=cols)
+                    else:
+                        df = pd.DataFrame()
+                if df is None:
+                    df = pd.DataFrame()
+                if mutator:
+                    mutated = mutator(df)
+                    if mutated is not None:
+                        df = mutated
+                return df
 
     # ------------------------------------------------------------------
     # Engine spec
@@ -520,6 +940,54 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         :return: The effective username
         """
         return object_url.username if self.impersonate_user else None
+
+    # ------------------------------------------------------------------
+    # OAuth2 (1:1 with superset_old/models/core.py)
+    # ------------------------------------------------------------------
+
+    def is_oauth2_enabled(self) -> bool:
+        """Return True when OAuth2 is enabled for this database.
+
+        Mirrors ``Database.is_oauth2_enabled`` from the original — checks
+        first for an in-row override in ``encrypted_extra``, then for a
+        global engine-spec-level config.
+        """
+        try:
+            client_config = self.get_oauth2_config()
+        except (json.JSONDecodeError, KeyError, TypeError):
+            logger.warning("Invalid OAuth2 client configuration for database %s", self)
+            client_config = None
+        return client_config is not None or self.db_engine_spec.is_oauth2_enabled()
+
+    def get_oauth2_config(self) -> dict[str, Any] | None:
+        """Return the OAuth2 client configuration for this database.
+
+        Per-database overrides live in ``encrypted_extra.oauth2_client_info``;
+        falls back to the global engine-spec-level config.
+        """
+        encrypted_extra = self.get_encrypted_extra()
+        if oauth2_client_info := encrypted_extra.get("oauth2_client_info"):
+            # Mirror the marshmallow load_default behaviour: ensure all
+            # required keys exist so consumers don't crash on a half-baked
+            # in-row override.
+            from superset.utils.oauth2 import get_default_oauth2_redirect_uri
+
+            return {
+                "id": oauth2_client_info["id"],
+                "secret": oauth2_client_info["secret"],
+                "scope": oauth2_client_info.get("scope", ""),
+                "redirect_uri": oauth2_client_info.get(
+                    "redirect_uri", get_default_oauth2_redirect_uri()
+                ),
+                "authorization_request_uri": oauth2_client_info[
+                    "authorization_request_uri"
+                ],
+                "token_request_uri": oauth2_client_info["token_request_uri"],
+                "request_content_type": oauth2_client_info.get(
+                    "request_content_type", "json"
+                ),
+            }
+        return self.db_engine_spec.get_oauth2_config()
 
 
 class DatabaseUserOAuth2Tokens(AuditMixinNullable, Base):
