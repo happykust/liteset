@@ -14,10 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Contextvars-based i18n, replacing flask-babel.
+"""Contextvars-based i18n.
 
 Provides gettext() and lazy_gettext() compatible with Superset's
-translation patterns but without Flask dependency.
+translation patterns but without any Flask dependency.
 """
 
 from __future__ import annotations
@@ -48,23 +48,32 @@ def get_locale() -> str:
     return _current_locale.get()
 
 
-def gettext(msgid: str) -> str:
-    """Translate a string using the current locale."""
+def gettext(msgid: str, **variables: Any) -> str:
+    """Translate a string using the current locale.
+
+    When ``variables`` are supplied the translated string is interpolated
+    via ``result % variables`` so that ``%(name)s``-style placeholders are
+    filled in (mirrors the legacy gettext API surface).
+    """
     locale = _current_locale.get()
     catalog = _translations.get(locale, {})
-    return catalog.get(msgid, msgid)
+    result = catalog.get(msgid, msgid)
+    if variables:
+        return result % variables
+    return result
 
 
 class LazyString:
     """Proxy that defers gettext resolution until string is used."""
 
-    __slots__ = ("_msgid",)
+    __slots__ = ("_msgid", "_variables")
 
-    def __init__(self, msgid: str) -> None:
+    def __init__(self, msgid: str, **variables: Any) -> None:
         self._msgid = msgid
+        self._variables: dict[str, Any] = variables
 
     def _resolve(self) -> str:
-        return gettext(self._msgid)
+        return gettext(self._msgid, **self._variables)
 
     def __str__(self) -> str:
         return self._resolve()
@@ -108,6 +117,15 @@ class LazyString:
         return format(str(self), format_spec)
 
 
-def lazy_gettext(msgid: str) -> LazyString:
-    """Return a lazy proxy that resolves translation on access."""
-    return LazyString(msgid)
+def lazy_gettext(msgid: str, **variables: Any) -> LazyString:
+    """Return a lazy proxy that resolves translation on access.
+
+    ``variables`` are stored on the proxy and applied via ``%`` interpolation
+    once the string is materialised (matches the legacy lazy-gettext API).
+    """
+    return LazyString(msgid, **variables)
+
+
+# ``_`` is the conventional alias used across the codebase for the active
+# gettext callable.
+_ = gettext

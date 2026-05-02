@@ -14,40 +14,52 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Compatibility shim for ``superset.extensions``.
+"""Module-level extension singletons (mirrors ``superset_old/extensions``).
 
-Legacy migrations import:
-  - ``encrypted_field_factory``
+Hosts the singletons that legacy code expects to import from
+``superset.extensions``:
 
-Migrations use ``encrypted_field_factory.create(sa.String(...))`` to define
-column types in local ORM models declared inside migration scripts. The shim
-returns the underlying SA type as-is (no encryption) which is safe because
-these local models are only used for data migration queries -- the actual table
-schema is managed by Alembic ``op.`` calls, not by these ORM definitions.
+* ``encrypted_field_factory`` — async-friendly port of
+  :class:`superset.utils.encrypt.EncryptedFieldFactory` used by SQLA
+  models to declare encrypted columns.
+* ``machine_auth_provider_factory`` — full port of the Flask
+  ``MachineAuthProviderFactory``; initialised in
+  :func:`superset.app.on_startup` and consumed by ``utils/webdriver``
+  and the Celery report task to mint screenshot/CSV-fetch cookies.
+* ``cache_manager`` — multi-cache holder (``cache``, ``data_cache``,
+  ``thumbnail_cache`` …); see :class:`superset.cache.manager.CacheManager`.
+* ``stats_logger_manager`` — process-wide stats-logger holder; default
+  is a :class:`~superset.stats_logger.DummyStatsLogger`, swapped to
+  whatever ``settings.stats_logger`` provides during app startup.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from superset.cache.manager import CacheManager
+from superset.stats_logger import StatsLoggerManager
+from superset.utils.encrypt import EncryptedFieldFactory
+from superset.utils.machine_auth import MachineAuthProviderFactory
 
-import sqlalchemy as sa
+# ---------------------------------------------------------------------------
+# Singletons.  All are initialised lazily; ``superset.app.on_startup``
+# wires real Redis / settings into them at runtime.  Tests / CLI tools
+# that don't go through ``on_startup`` get the default (no-op) behaviour.
+# ---------------------------------------------------------------------------
+
+encrypted_field_factory = EncryptedFieldFactory()
+
+# Configured by ``superset.app.on_startup`` once settings are loaded.
+# Webdriver / Celery report code reads this lazily via ``.instance``.
+machine_auth_provider_factory = MachineAuthProviderFactory()
+
+cache_manager = CacheManager()
+
+stats_logger_manager = StatsLoggerManager()
 
 
-class _EncryptedFieldFactory:
-    """Minimal stub that mimics ``EncryptedFieldFactory.create()``.
-
-    Returns the wrapped SA type unchanged so migrations can define column
-    types without requiring the encryption adapter to be initialised.
-    """
-
-    def create(
-        self, sa_type: sa.types.TypeEngine[object] | type, *args: Any, **kwargs: Any
-    ) -> sa.types.TypeEngine[object]:  # noqa: E501
-        if isinstance(sa_type, type):
-            return sa_type()
-        return sa_type
-
-
-encrypted_field_factory = _EncryptedFieldFactory()
-
-__all__ = ["encrypted_field_factory"]
+__all__ = [
+    "cache_manager",
+    "encrypted_field_factory",
+    "machine_auth_provider_factory",
+    "stats_logger_manager",
+]

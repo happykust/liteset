@@ -27,6 +27,7 @@ from litestar.config.cors import CORSConfig
 from litestar.contrib.jinja import JinjaTemplateEngine
 from litestar.datastructures import State
 from litestar.di import Provide
+from litestar.exceptions import ValidationException as _ValidationException
 from litestar.handlers import post
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.plugins import SwaggerRenderPlugin
@@ -34,6 +35,7 @@ from litestar.response import Response
 from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import IntegrityError as _IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from superset.config import SupersetSettings
@@ -53,14 +55,35 @@ from superset.dependencies import (
 )
 from superset.exceptions import (
     generic_exception_handler,
+    integrity_error_handler,
     superset_exception_handler,
     SupersetException,
+    validation_error_handler,
 )
 from superset.logging import configure_logging
 from superset.middleware.auth import SupersetAuthMiddleware
 from superset.middleware.locale import LocaleMiddleware
 from superset.middleware.proxy_fix import ProxyFixMiddleware
+from superset.middleware.request_context import RequestContextMiddleware
 from superset.middleware.security_headers import SecurityHeadersMiddleware
+
+
+def _build_exception_handlers() -> dict[Any, Any]:
+    """Exception → handler map for the Litestar app.
+
+    * ``ValidationException`` (msgspec / Litestar request-body validation)
+      is mapped to ``422`` — matches original FAB/Marshmallow behaviour
+      that contract tests expect.
+    * SQLAlchemy ``IntegrityError`` is mapped to ``422`` so unique- and
+      foreign-key violations don't surface as 500s.
+    """
+    return {
+        SupersetException: superset_exception_handler,
+        _ValidationException: validation_error_handler,
+        _IntegrityError: integrity_error_handler,
+        Exception: generic_exception_handler,
+    }
+
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +172,14 @@ async def on_startup(app: Litestar) -> None:
 
     feature_flag_manager.init_from_config(settings.feature_flags)
 
+    # Initialise the machine-auth provider factory (used by the Selenium /
+    # Playwright webdriver helpers and by the Celery report task to mint
+    # session cookies for headless browsers).  Must happen before any
+    # controller or background task touches ``machine_auth_provider_factory``.
+    from superset.extensions import machine_auth_provider_factory
+
+    machine_auth_provider_factory.init_app(app)
+
     engine = create_db_engine(settings.sqlalchemy_database_uri)
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
@@ -165,6 +196,30 @@ async def on_startup(app: Litestar) -> None:
             app.state.redis = None
     else:
         app.state.redis = None
+
+    # Initialise the multi-cache holder used by ``utils.cache.memoized_func``,
+    # ``utils.cache.set_and_log_cache``, ``viz.py``, ``screenshots.py``, and
+    # the ``commands.chart_data`` / ``commands.sqllab`` async pipelines.
+    from superset.extensions import cache_manager, stats_logger_manager
+
+    cache_manager.init_app(
+        redis=app.state.redis,
+        cache_default_timeout=settings.cache_default_timeout,
+        cache_config=settings.cache_config,
+        data_cache_config=settings.data_cache_config,
+        thumbnail_cache_config=settings.thumbnail_cache_config,
+        filter_state_cache_config=settings.filter_state_cache_config,
+        explore_form_data_cache_config=settings.explore_form_data_cache_config,
+        # Pass the raw Redis URL so the cache manager can build its
+        # *own* sync Redis client for Celery / Selenium / Playwright
+        # call sites.  Sharing the async client across event loops
+        # would deadlock on cross-loop awaits — distinct sync/async
+        # clients pointing at the same Redis cluster keep keyspace
+        # behaviour identical to the original Flask Superset.
+        redis_url=settings.redis_url or None,
+    )
+    # Wire the configured stats logger (defaults to ``DummyStatsLogger``).
+    stats_logger_manager.configure(settings.stats_logger)
 
     # Initialize active WebSocket connections tracker
     app.state.active_websockets = {}
@@ -254,7 +309,6 @@ def create_app(  # noqa: C901
     from superset.controllers.explore_permalink import ExplorePermalinkController
     from superset.controllers.group import GroupController
     from superset.controllers.import_export import ImportExportController
-
     from superset.controllers.legacy_api import LegacyApiController
     from superset.controllers.legacy_datasource import LegacyDatasourceController
     from superset.controllers.log import LogController
@@ -698,16 +752,19 @@ def create_app(  # noqa: C901
             SecurityHeadersMiddleware(),
             # RateLimitMiddleware(),  # disabled — too aggressive for dev/testing
             LocaleMiddleware(),
+            # RequestContextMiddleware must run BEFORE the auth middleware
+            # so audit-logging code paths inside auth/guards (which fire
+            # synchronously from controllers) can resolve the request /
+            # form_data ContextVars.  It also must run before CSRF so the
+            # CSRF check sees a body the middleware has already cached.
+            RequestContextMiddleware(),
             SupersetAuthMiddleware,
             *([csrf_middleware] if csrf_middleware else []),
         ],
         csrf_config=None,  # Using custom middleware
         on_startup=startup_hooks,
         on_shutdown=[on_shutdown],
-        exception_handlers={
-            SupersetException: superset_exception_handler,
-            Exception: generic_exception_handler,
-        },
+        exception_handlers=_build_exception_handlers(),
         openapi_config=OpenAPIConfig(
             title=settings.app_name,
             version=settings.version_string or "v0.0.0-dev",

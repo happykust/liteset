@@ -273,9 +273,9 @@ class ExtraCache:
         # merged by controller)
         result = url_params.get(param, default)
         if result and escape_result and self.dialect:
-            result = String().literal_processor(dialect=self.dialect)(value=result)[  # type: ignore[no-untyped-call]
-                1:-1
-            ]
+            result = String().literal_processor(  # type: ignore[no-untyped-call]
+                dialect=self.dialect
+            )(value=result)[1:-1]
         if add_to_cache_keys:
             self.cache_key_wrapper(result)
         return result
@@ -517,7 +517,7 @@ class BaseTemplateProcessor:
         self.set_context(**kwargs)
 
         # custom filters
-        self.env.filters["where_in"] = WhereInMacro(database.get_dialect())  # type: ignore[attr-defined]
+        self.env.filters["where_in"] = WhereInMacro(database.get_dialect())
         self.env.filters["to_datetime"] = to_datetime
 
     def set_context(self, **kwargs: Any) -> None:
@@ -618,7 +618,7 @@ class JinjaTemplateProcessor(BaseTemplateProcessor):
             applied_filters=self._applied_filters,
             removed_filters=self._removed_filters,
             database=self._database,
-            dialect=self._database.get_dialect(),  # type: ignore[attr-defined]
+            dialect=self._database.get_dialect(),
             table=self._table,
         )
 
@@ -705,13 +705,13 @@ class PrestoTemplateProcessor(JinjaTemplateProcessor):
     def latest_partitions(self, table_name: str) -> list[str] | None:
         from superset.db_engine_specs.presto import PrestoEngineSpec
 
-        table_name, schema = self._schema_table(table_name, self._schema)  # type: ignore[arg-type]
+        table_name, schema = self._schema_table(table_name, self._schema)
         return cast(PrestoEngineSpec, self._database.db_engine_spec).latest_partition(  # type: ignore[attr-defined]
             database=self._database, table=Table(table_name, schema)
         )[1]
 
     def latest_sub_partition(self, table_name: str, **kwargs: Any) -> Any:
-        table_name, schema = self._schema_table(table_name, self._schema)  # type: ignore[arg-type]
+        table_name, schema = self._schema_table(table_name, self._schema)
 
         from superset.db_engine_specs.presto import PrestoEngineSpec
 
@@ -850,16 +850,24 @@ def get_dataset_id_from_context(metric_key: str) -> int:
     Retrieves the Dataset ID from the template context.
 
     In the original Superset this reads from Flask request context (JSON body,
-    form data, request args, g.form_data). In Liteset we read from the form_data
-    context var that is set by the controller before template rendering.
+    form data, request args, g.form_data). In Liteset we first read from the
+    request-scoped form_data ContextVar populated by the request_context
+    middleware, then fall back to :func:`superset.utils.core.get_form_data`
+    which mirrors the original ``g.form_data`` slot — this is the path used
+    by Celery tasks (``async_queries``) and the ``warm_up_cache`` command,
+    neither of which run inside an HTTP request.
     """
+    # Lazy import avoids a top-level cycle (utils.core imports nothing
+    # from jinja_context, but downstream callers import from utils.core
+    # all over the place during module initialisation).
+    from superset.utils.core import get_form_data as get_task_form_data
 
     exc_message = (
         f"Please specify the Dataset ID for the ``{metric_key}`` "
         f"metric in the Jinja macro."
     )
 
-    form_data = get_form_data()
+    form_data = get_form_data() or get_task_form_data()
     if not form_data:
         raise SupersetTemplateException(exc_message)
 

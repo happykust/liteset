@@ -314,6 +314,9 @@ class AsyncQueryContextProcessor:
         # Check cache
         cached_df: pd.DataFrame | None = None
         cached_annotation_data: dict[str, Any] = {}
+        cached_applied_filter_columns: list[Any] = []
+        cached_rejected_filter_columns: list[Any] = []
+        cached_applied_template_filters: list[str] = []
         is_cached = False
         if self._cache_manager is not None and cache_key and not force:
             cached_result = await self._cache_get(cache_key)
@@ -321,6 +324,18 @@ class AsyncQueryContextProcessor:
                 if isinstance(cached_result, dict) and "df" in cached_result:
                     cached_df = cached_result["df"]
                     cached_annotation_data = cached_result.get("annotation_data", {})
+                    # Surfaced filter / template metadata stored alongside
+                    # the DataFrame so cache hits expose the same shape
+                    # as cache misses (delta #19).
+                    cached_applied_filter_columns = list(
+                        cached_result.get("applied_filter_columns") or []
+                    )
+                    cached_rejected_filter_columns = list(
+                        cached_result.get("rejected_filter_columns") or []
+                    )
+                    cached_applied_template_filters = list(
+                        cached_result.get("applied_template_filters") or []
+                    )
                 elif isinstance(cached_result, pd.DataFrame):
                     cached_df = cached_result
                 if cached_df is not None:
@@ -346,6 +361,13 @@ class AsyncQueryContextProcessor:
         status = "success"
         df: pd.DataFrame
 
+        # ``result`` is the freshly-computed dict from
+        # :meth:`_get_query_result` on a cache miss. Initialised to
+        # ``None`` so we can branch deterministically below
+        # (``if result is not None``) instead of relying on the brittle
+        # ``"result" in locals()`` introspection that previous revisions
+        # used and that mypy/pyflakes both complain about.
+        result: dict[str, Any] | None = None
         annotation_data: dict[str, Any] = cached_annotation_data
         if cached_df is not None:
             df = cached_df
@@ -381,11 +403,26 @@ class AsyncQueryContextProcessor:
                 # Fetch annotation data only on cache miss
                 annotation_data = await self.get_annotation_data(query_object)
 
-                # Store df + annotation_data in cache together
+                # Store df + annotation_data + surfaced metadata in
+                # cache together. Persisting the applied/rejected
+                # filter columns and applied template filters means a
+                # subsequent cache hit can expose the same chart-data
+                # response shape as a fresh execution (delta #19) —
+                # otherwise cache hits would silently drop the
+                # surfaced filter telemetry.
                 if self._cache_manager is not None and cache_key:
                     cache_payload = {
                         "df": df,
                         "annotation_data": annotation_data,
+                        "applied_filter_columns": list(
+                            result.get("applied_filter_columns") or []
+                        ),
+                        "rejected_filter_columns": list(
+                            result.get("rejected_filter_columns") or []
+                        ),
+                        "applied_template_filters": list(
+                            result.get("applied_template_filters") or []
+                        ),
                     }
                     await self._cache_set(cache_key, cache_payload, timeout)
             except Exception as ex:
@@ -407,14 +444,39 @@ class AsyncQueryContextProcessor:
         ]
         rejected_filters: list[dict[str, str]] = []
 
+        # Surfaced metadata from the SQL build pipeline. Mirrors the
+        # original ``superset_old/connectors/sqla/models.py`` chart-data
+        # response shape (delta #19) — filter columns the dataset
+        # actually applied vs. silently dropped, plus the names of any
+        # filters absorbed by Jinja templates inside the virtual
+        # dataset.  Two paths:
+        #
+        # - Cache hit: values were stored in the payload alongside the
+        #   DataFrame, so we propagate them straight through.
+        # - Cache miss: ``result`` is the freshly-computed dict from
+        #   :meth:`_get_query_result` — read the metadata directly.
+        applied_filter_columns_meta: list[Any] = list(cached_applied_filter_columns)
+        rejected_filter_columns_meta: list[Any] = list(cached_rejected_filter_columns)
+        applied_template_filters_meta: list[str] = list(cached_applied_template_filters)
+        if result is not None:
+            applied_filter_columns_meta = list(
+                result.get("applied_filter_columns") or []
+            )
+            rejected_filter_columns_meta = list(
+                result.get("rejected_filter_columns") or []
+            )
+            applied_template_filters_meta = list(
+                result.get("applied_template_filters") or []
+            )
+
         return {
             "cache_key": cache_key,
             "cached_dttm": None,
             "cache_timeout": timeout,
             "df": df,
-            "applied_template_filters": [],
-            "applied_filter_columns": [],
-            "rejected_filter_columns": [],
+            "applied_template_filters": applied_template_filters_meta,
+            "applied_filter_columns": applied_filter_columns_meta,
+            "rejected_filter_columns": rejected_filter_columns_meta,
             "annotation_data": annotation_data,
             "error": error_message,
             "is_cached": is_cached,
@@ -478,16 +540,24 @@ class AsyncQueryContextProcessor:
         datasource = self._datasource
         query_dict = query_object.to_dict()
 
-        # Gather RLS filters from security manager and pass to query
-        rls_clauses: list[Any] = []
+        # Gather RLS clauses with the original group_key OR/AND grouping
+        # and Jinja templating semantics — see
+        # ``BaseDatasource.get_sqla_row_level_filters`` in
+        # ``superset_old.connectors.sqla.models``.
+        # Returns ``list[ClauseElement]`` (TextClause / BooleanClauseList)
+        # — caller (``_build_sql``) compiles each one through the target
+        # dialect for proper quoting and dialect translation.
+        from sqlalchemy.sql.elements import ClauseElement
+
+        from superset.utils.rls import compose_rls_where_clauses
+
+        rls_clauses: list[ClauseElement] = []
         if hasattr(self._security_manager, "get_rls_filters"):
-            try:
-                rls_filters = await self._security_manager.get_rls_filters(
-                    self._datasource, user=self._user
-                )
-                rls_clauses = [f.clause for f in rls_filters]
-            except Exception:  # noqa: BLE001
-                logger.warning("Failed to retrieve RLS filters", exc_info=True)
+            rls_clauses = await compose_rls_where_clauses(
+                self._datasource,
+                user=self._user,
+                security_manager=self._security_manager,
+            )
 
         # Check if datasource supports async query
         if hasattr(datasource, "async_query"):
@@ -509,13 +579,40 @@ class AsyncQueryContextProcessor:
                 f"Datasource {type(datasource).__name__} does not support querying"
             )
 
-        # Normalize result to dict
+        # Normalize result to dict.  Surface the SQL-build metadata
+        # (applied / rejected filter columns, applied template
+        # filters) so the caller can include them in the final
+        # payload — matches the original
+        # ``superset_old/common/query_context_processor.py`` chart-data
+        # response shape (delta #19).
+        applied_filter_columns: list[Any] = []
+        rejected_filter_columns: list[Any] = []
+        applied_template_filters: list[str] = []
+
         if hasattr(result, "df"):
             df = result.df
             query_str = getattr(result, "query", "")
+            applied_filter_columns = list(
+                getattr(result, "applied_filter_columns", []) or []
+            )
+            rejected_filter_columns = list(
+                getattr(result, "rejected_filter_columns", []) or []
+            )
+            applied_template_filters = list(
+                getattr(result, "applied_template_filters", []) or []
+            )
         elif isinstance(result, dict):
             df = result.get("df", pd.DataFrame())
             query_str = result.get("query", "")
+            applied_filter_columns = list(
+                result.get("applied_filter_columns", []) or []
+            )
+            rejected_filter_columns = list(
+                result.get("rejected_filter_columns", []) or []
+            )
+            applied_template_filters = list(
+                result.get("applied_template_filters", []) or []
+            )
         else:
             df = pd.DataFrame()
             query_str = ""
@@ -526,11 +623,17 @@ class AsyncQueryContextProcessor:
             # chance to join the time-shifted columns onto the DataFrame.
             # Mirrors the original
             # ``superset_old/common/query_context_processor.py:get_query_result``
-            # which does ``normalize_df → processing_time_offsets → exec_post_processing``
-            # in that order.
+            # which does ``normalize_df → processing_time_offsets →
+            # exec_post_processing`` in that order.
             df = await asyncio.to_thread(self._normalize_df, df, query_object)
 
-        return {"df": df, "query": query_str}
+        return {
+            "df": df,
+            "query": query_str,
+            "applied_filter_columns": applied_filter_columns,
+            "rejected_filter_columns": rejected_filter_columns,
+            "applied_template_filters": applied_template_filters,
+        }
 
     def _normalize_df(  # noqa: C901
         self, df: pd.DataFrame, query_object: AsyncQueryObject
@@ -922,8 +1025,8 @@ class AsyncQueryContextProcessor:
 
         # Resolve outer time bounds from the query object.
         #
-        # Mirrors the original
-        # ``superset_old/common/utils/time_range_utils.py::get_since_until_from_query_object``:
+        # Mirrors ``get_since_until_from_query_object`` in
+        # ``superset_old/common/utils/time_range_utils.py``:
         # ``query_object.time_range`` takes precedence, otherwise fall back to
         # scanning ``query_object.filters`` for a ``TEMPORAL_RANGE`` entry.
         # The Explore UI emits time filters as adhoc TEMPORAL_RANGE entries

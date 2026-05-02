@@ -43,7 +43,7 @@ class AsyncQueryObject:
 
     datasource: dict[str, Any]
     columns: list[Any] = field(default_factory=list)
-    metrics: list[Any] = field(default_factory=list)
+    metrics: list[Any] | None = field(default_factory=list)
     orderby: list[tuple[Any, bool]] = field(default_factory=list)
     filters: list[dict[str, Any]] = field(default_factory=list)
     extras: dict[str, Any] = field(default_factory=dict)
@@ -71,7 +71,7 @@ class AsyncQueryObject:
     group_others_when_limit_reached: bool = False
     granularity_sqla: str | None = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: C901  # complex business logic
         # P1-9: Deprecated field renaming — backward compatibility
         if self.granularity_sqla and not self.granularity:
             self.granularity = self.granularity_sqla
@@ -113,7 +113,7 @@ class AsyncQueryObject:
                     self.from_dttm = parsed_from
                 if self.to_dttm is None:
                     self.to_dttm = parsed_to
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 # Malformed time_range — leave dttms None, emit un-filtered SQL
                 pass
 

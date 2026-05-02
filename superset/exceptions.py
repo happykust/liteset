@@ -216,13 +216,9 @@ class SupersetSecurityException(SupersetException):
 
         if isinstance(error, _SupersetError):
             self.error = error
-            super().__init__(
-                message=error.message or self.__class__.message, **kwargs
-            )
+            super().__init__(message=error.message or self.__class__.message, **kwargs)
         else:
-            super().__init__(
-                message=message or self.__class__.message, **kwargs
-            )
+            super().__init__(message=message or self.__class__.message, **kwargs)
 
 
 class SupersetVizException(SupersetErrorsException):
@@ -528,15 +524,25 @@ class ScreenshotImageNotAvailableException(SupersetException):
 
 
 class CommandException(SupersetException):
-    """Base for command-layer errors."""
+    """Base for command-layer errors.
+
+    ``message`` accepts a plain string or a Marshmallow-style nested error
+    dict (``{file_or_field: {field: [msg, ...]}}``); the dict shape is
+    preserved verbatim because front-end parsers rely on it.
+    """
 
     status_code = 500
 
     def __init__(
-        self, message: str = "", exceptions: list[Exception] | None = None
+        self,
+        message: str | dict[str, Any] = "",
+        exceptions: list[Exception] | None = None,
     ) -> None:
         self.exceptions = exceptions or []
-        super().__init__(message=message)
+        super().__init__(message=message if isinstance(message, str) else str(message))
+        # Preserve the structured payload for callers that parse it back.
+        if not isinstance(message, str):
+            self.extra["errors"] = message
 
     def to_sip40(self) -> dict[str, Any]:
         """Convert to SIP-40 error dict, including sub-errors."""
@@ -569,7 +575,8 @@ class ForbiddenError(CommandException):
 class DashboardsForbiddenError(ForbiddenError):
     """Raised when user is not allowed to modify one of the target dashboards.
 
-    Ported 1:1 from ``superset_old/commands/chart/exceptions.py::DashboardsForbiddenError``.
+    Ported 1:1 from ``DashboardsForbiddenError`` in
+    ``superset_old/commands/chart/exceptions.py``.
     """
 
     message = "Changing one or more of these dashboards is forbidden"
@@ -591,6 +598,50 @@ class OwnersNotFoundValidationError(CommandInvalidError):
 
     status_code = 422
     message = "Owners are invalid"
+
+
+class RolesNotFoundValidationError(CommandInvalidError):
+    """Raised when one or more requested role ids can't be resolved.
+
+    Ported 1:1 from
+    ``superset_old/commands/exceptions.py::RolesNotFoundValidationError``.
+    """
+
+    status_code = 422
+    message = "Some roles do not exist"
+
+
+class DatasourceNotFoundValidationError(CommandInvalidError):
+    """Raised when one or more requested datasource (table) ids can't be resolved.
+
+    Ported 1:1 from
+    ``superset_old/commands/exceptions.py::DatasourceNotFoundValidationError``.
+    """
+
+    status_code = 422
+    message = "Datasource does not exist"
+
+
+class RLSRuleNotFoundError(CommandException):
+    """Raised when an RLS rule lookup by id returns nothing.
+
+    Ported 1:1 from
+    ``superset_old/commands/security/exceptions.py::RLSRuleNotFoundError``.
+    """
+
+    status_code = 404
+    message = "RLS Rule not found."
+
+
+class RuleDeleteFailedError(CommandException):
+    """Raised when bulk-delete of RLS rules fails inside the transaction.
+
+    Ported 1:1 from
+    ``superset_old/commands/security/exceptions.py::RuleDeleteFailedError``.
+    """
+
+    status_code = 500
+    message = "RLS rules could not be deleted."
 
 
 class CreateFailedError(CommandException):
@@ -693,6 +744,71 @@ def superset_exception_handler(
         },
         status_code=exc.status_code,
         media_type=MediaType.JSON,
+    )
+
+
+def validation_error_handler(
+    request: Request[Any, Any, Any], exc: Exception
+) -> Response[Any]:
+    """Translate Litestar ValidationException to 400/422.
+
+    Splits two cases that are conflated by Litestar's default 400:
+
+    * ``unknown field`` (msgspec ``forbid_unknown_fields``) → ``422``
+      Unprocessable Entity — the payload is syntactically valid JSON but
+      contains keys the server refuses to accept (FAB add_columns
+      whitelist semantics).
+    * everything else (missing required fields, type mismatch) → ``400``
+      Bad Request, matching the original FAB / Marshmallow behaviour
+      that the contract tests expect.
+    """
+    detail = getattr(exc, "detail", "") or str(exc)
+    extra = getattr(exc, "extra", None)
+    body_text = str(detail) + " " + (str(extra) if extra else "")
+    status_code = 422 if "unknown field" in body_text.lower() else 400
+    error_type = "UNKNOWN_FIELD" if status_code == 422 else "VALIDATION_ERROR"
+    return Response(
+        content={
+            "errors": [
+                {
+                    "message": detail,
+                    "error_type": error_type,
+                    "level": "error",
+                    "extra": {},
+                }
+            ],
+            "message": detail,
+            "detail": detail,
+        },
+        status_code=status_code,
+    )
+
+
+def integrity_error_handler(
+    request: Request[Any, Any, Any], exc: Exception
+) -> Response[Any]:
+    """Translate SQLAlchemy IntegrityError to a 422 response.
+
+    Mirrors original Flask Superset behaviour where unique-constraint
+    or foreign-key violations surface as ``422 Unprocessable Entity``
+    rather than ``500 Internal Server Error``.
+    """
+    detail = str(getattr(exc, "orig", exc)) or "Integrity error"
+    logger.warning("IntegrityError on %s %s: %s", request.method, request.url, detail)
+    return Response(
+        content={
+            "errors": [
+                {
+                    "message": detail,
+                    "error_type": "INTEGRITY_ERROR",
+                    "level": "error",
+                    "extra": {},
+                }
+            ],
+            "message": detail,
+            "detail": detail,
+        },
+        status_code=422,
     )
 
 

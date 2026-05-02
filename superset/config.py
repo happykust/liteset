@@ -30,6 +30,8 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from superset.tasks.types import ExecutorType
+
 # Minimum 16 characters for secret key (validated via field_validator below).
 # SecretStr masks the value in repr/logs to prevent accidental exposure.
 SecretKeyStr = SecretStr
@@ -106,6 +108,28 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "AUTH_TYPE": "auth_type",
     "AUTH_USER_REGISTRATION": "auth_user_registration",
     "AUTH_USER_REGISTRATION_ROLE": "auth_user_registration_role",
+    "AUTH_ROLES_MAPPING": "auth_roles_mapping",
+    "AUTH_ROLES_SYNC_AT_LOGIN": "auth_roles_sync_at_login",
+    # LDAP knobs (mirrors Flask-AppBuilder)
+    "AUTH_LDAP_SERVER": "auth_ldap_server",
+    "AUTH_LDAP_SEARCH": "auth_ldap_search",
+    "AUTH_LDAP_SEARCH_FILTER": "auth_ldap_search_filter",
+    "AUTH_LDAP_APPEND_DOMAIN": "auth_ldap_append_domain",
+    "AUTH_LDAP_USERNAME_FORMAT": "auth_ldap_username_format",
+    "AUTH_LDAP_BIND_USER": "auth_ldap_bind_user",
+    "AUTH_LDAP_BIND_PASSWORD": "auth_ldap_bind_password",
+    "AUTH_LDAP_USE_TLS": "auth_ldap_use_tls",
+    "AUTH_LDAP_ALLOW_SELF_SIGNED": "auth_ldap_allow_self_signed",
+    "AUTH_LDAP_TLS_DEMAND": "auth_ldap_tls_demand",
+    "AUTH_LDAP_TLS_CACERTDIR": "auth_ldap_tls_cacertdir",
+    "AUTH_LDAP_TLS_CACERTFILE": "auth_ldap_tls_cacertfile",
+    "AUTH_LDAP_TLS_CERTFILE": "auth_ldap_tls_certfile",
+    "AUTH_LDAP_TLS_KEYFILE": "auth_ldap_tls_keyfile",
+    "AUTH_LDAP_UID_FIELD": "auth_ldap_uid_field",
+    "AUTH_LDAP_GROUP_FIELD": "auth_ldap_group_field",
+    "AUTH_LDAP_FIRSTNAME_FIELD": "auth_ldap_firstname_field",
+    "AUTH_LDAP_LASTNAME_FIELD": "auth_ldap_lastname_field",
+    "AUTH_LDAP_EMAIL_FIELD": "auth_ldap_email_field",
     "PUBLIC_ROLE_LIKE": "public_role_like",
     "API_LOGIN_ALLOW_MULTIPLE_PROVIDERS": "api_login_allow_multiple_providers",
     "OAUTH_PROVIDERS": "oauth_providers",
@@ -198,6 +222,8 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "GET_FEATURE_FLAGS_FUNC": "get_feature_flags_func",
     "IS_FEATURE_ENABLED_FUNC": "is_feature_enabled_func",
     # ── Existing fields that were missing mappings ──
+    "AUTH_ROLE_PUBLIC": "auth_role_public",
+    "AUTH_ROLE_ADMIN": "auth_role_admin",
     "GUEST_ROLE_NAME": "guest_role_name",
     "GUEST_TOKEN_JWT_SECRET": "guest_token_jwt_secret",
     "GUEST_TOKEN_JWT_ALGO": "guest_token_jwt_algo",
@@ -421,6 +447,7 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "DATABASE_OAUTH2_CLIENTS": "database_oauth2_clients",
     "DATABASE_OAUTH2_JWT_ALGORITHM": "database_oauth2_jwt_algorithm",
     "DATABASE_OAUTH2_TIMEOUT": "database_oauth2_timeout",
+    "DATABASE_OAUTH2_REDIRECT_URI": "database_oauth2_redirect_uri",
     # ── CSP / Talisman ──
     "CONTENT_SECURITY_POLICY_WARNING": "content_security_policy_warning",
     "TALISMAN_ENABLED": "talisman_enabled",
@@ -700,6 +727,33 @@ class SupersetSettings(BaseSettings):
     recaptcha_public_key: str = ""
     custom_security_manager: Any | None = None
 
+    # ── Roles mapping / sync (used by LDAP & OAuth providers) ──
+    auth_roles_mapping: dict[str, list[str]] = {}
+    auth_roles_sync_at_login: bool = False
+
+    # ── LDAP authentication ──
+    # Mirrors Flask-AppBuilder's LDAP configuration knobs 1:1.  Defaults
+    # match FAB's ``setdefault`` calls in ``BaseSecurityManager.__init__``.
+    auth_ldap_server: str = ""
+    auth_ldap_search: str = ""
+    auth_ldap_search_filter: str = ""
+    auth_ldap_append_domain: str = ""
+    auth_ldap_username_format: str = ""
+    auth_ldap_bind_user: str = ""
+    auth_ldap_bind_password: str = ""
+    auth_ldap_use_tls: bool = False
+    auth_ldap_allow_self_signed: bool = False
+    auth_ldap_tls_demand: bool = False
+    auth_ldap_tls_cacertdir: str = ""
+    auth_ldap_tls_cacertfile: str = ""
+    auth_ldap_tls_certfile: str = ""
+    auth_ldap_tls_keyfile: str = ""
+    auth_ldap_uid_field: str = "uid"
+    auth_ldap_group_field: str = "memberOf"
+    auth_ldap_firstname_field: str = "givenName"
+    auth_ldap_lastname_field: str = "sn"
+    auth_ldap_email_field: str = "mail"
+
     # ── Session cookies ──
     session_cookie_httponly: bool = True
     session_cookie_secure: bool = False
@@ -941,8 +995,8 @@ class SupersetSettings(BaseSettings):
     custom_font_urls: list[str] = []
 
     # ── Cache warmup / Thumbnails ──
-    cache_warmup_executors: list[Any] = []  # [ExecutorType.OWNER] in original
-    thumbnail_executors: list[Any] = []  # [ExecutorType.CURRENT_USER] in original
+    cache_warmup_executors: list[Any] = [ExecutorType.OWNER]
+    thumbnail_executors: list[Any] = [ExecutorType.CURRENT_USER]
     thumbnail_dashboard_digest_func: Any | None = None  # Callable or None
     thumbnail_chart_digest_func: Any | None = None  # Callable or None
     thumbnail_cache_config: dict[str, Any] = {
@@ -1203,7 +1257,7 @@ class SupersetSettings(BaseSettings):
     # ── Alerts & Reports (extended) ──
     alert_reports_cron_window_size: int = 59
     alert_reports_working_time_out_kill: bool = True
-    alert_reports_executors: list[Any] = []  # [ExecutorType.OWNER] in original
+    alert_reports_executors: list[Any] = [ExecutorType.OWNER]
     alert_reports_working_time_out_lag: int = 10
     alert_reports_working_soft_time_out_lag: int = 1
     alert_reports_query_execution_max_tries: int = 1
@@ -1253,6 +1307,10 @@ class SupersetSettings(BaseSettings):
     database_oauth2_clients: dict[str, dict[str, Any]] = {}
     database_oauth2_jwt_algorithm: str = "HS256"
     database_oauth2_timeout: int = 30  # seconds (timedelta(seconds=30) in original)
+    # Optional explicit redirect URI override.  When unset, the default
+    # is ``/api/v1/database/oauth2/`` (relative — engines requiring an
+    # absolute URI must configure this).
+    database_oauth2_redirect_uri: str = ""
 
     # ── CSP / Talisman ──
     content_security_policy_warning: bool = True

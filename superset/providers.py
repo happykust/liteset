@@ -58,6 +58,12 @@ def provide_database_dao(session: AsyncSession) -> Any:
     return AsyncDatabaseDAO(session)
 
 
+def provide_database_user_oauth2_tokens_dao(session: AsyncSession) -> Any:
+    from superset.db.daos.database import AsyncDatabaseUserOAuth2TokensDAO
+
+    return AsyncDatabaseUserOAuth2TokensDAO(session)
+
+
 def provide_dataset_dao(session: AsyncSession) -> Any:
     from superset.db.daos.dataset import AsyncDatasetDAO
 
