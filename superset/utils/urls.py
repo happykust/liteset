@@ -14,38 +14,242 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-import urllib
-from contextlib import nullcontext
+
+"""URL helpers — port of ``superset_old/utils/urls.py`` to Liteset.
+
+The original module relied on Flask's :func:`flask.url_for` to resolve
+view names (Superset.dashboard, ExploreView.root, etc.) to URLs in a
+``test_request_context``.  Liteset is Litestar/ASGI: there is no
+``flask.url_for`` and no Flask request context, so :func:`get_url_path`
+ports each view name used by the screenshot / thumbnail / report /
+celery code paths to its concrete URL template.
+
+The mapping is intentionally explicit (rather than reflective on the
+Litestar router) because:
+
+* Several names — ``Superset.dashboard``, ``Superset.slice``,
+  ``Superset.dashboard_permalink``, ``ExploreView.root`` — point at
+  legacy template-rendering routes that live on the Flask SPA, not on
+  the Litestar API; their URLs are part of the public surface.
+* ``ChartDataRestApi.get_data``, ``ChartRestApi.warm_up_cache``,
+  ``ChartRestApi.screenshot``, ``DashboardRestApi.thumbnail``,
+  ``DashboardRestApi.screenshot``, ``SecurityRestApi.csrf_token`` are
+  Liteset REST endpoints; we hard-code their canonical paths to avoid
+  importing the controllers (and their full DAO/middleware chain) just
+  to compute a URL.
+
+The remaining helpers (:func:`headless_url`, :func:`is_secure_url`,
+:func:`modify_url_query`) are pure stdlib and are ported verbatim.
+"""
+
+from __future__ import annotations
+
+import functools
+import urllib.parse
 from typing import Any
 from urllib.parse import urlparse
 
-from flask import current_app as app, has_request_context, url_for
+# ---------------------------------------------------------------------------
+# Settings access (lazy, cached) — mirrors the pattern used in
+# ``superset/utils/rls.py`` so this module never instantiates a heavy
+# ``SupersetSettings`` until somebody actually calls a helper that needs
+# the WEBDRIVER_BASEURL config.
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=1)
+def _cached_settings() -> Any:
+    """Return a process-wide cached :class:`SupersetSettings` instance.
+
+    Imported lazily so this module is safe to import at module-load
+    time (for example, from ``utils/screenshots.py``) without paying
+    the env-scan / file I/O of building ``SupersetSettings``.
+    """
+    from superset.config import SupersetSettings
+
+    return SupersetSettings()  # type: ignore[call-arg]
+
+
+def _baseurl(user_friendly: bool) -> str:
+    """Pull the base URL out of ``SupersetSettings``.
+
+    Mirrors ``superset_old/utils/urls.py`` 1:1: returns
+    ``WEBDRIVER_BASEURL_USER_FRIENDLY`` or ``WEBDRIVER_BASEURL`` directly,
+    with no fallback between them.  Operators who want the user-friendly
+    URL to mirror the headless one must set both keys explicitly.
+    """
+    settings = _cached_settings()
+    if user_friendly:
+        return str(getattr(settings, "webdriver_baseurl_user_friendly", "") or "")
+    return str(getattr(settings, "webdriver_baseurl", "") or "")
+
+
+# ---------------------------------------------------------------------------
+# Public helpers
+# ---------------------------------------------------------------------------
 
 
 def get_url_host(user_friendly: bool = False) -> str:
-    if user_friendly:
-        return app.config["WEBDRIVER_BASEURL_USER_FRIENDLY"]
-    return app.config["WEBDRIVER_BASEURL"]
+    """Return the configured ``WEBDRIVER_BASEURL`` (or the user-friendly
+    variant when ``user_friendly=True``).
+
+    Mirrors ``superset_old.utils.urls.get_url_host``: in the original
+    this returned ``app.config["WEBDRIVER_BASEURL_USER_FRIENDLY"]`` /
+    ``app.config["WEBDRIVER_BASEURL"]`` directly; here the values come
+    from :class:`SupersetSettings`.
+    """
+    return _baseurl(user_friendly)
 
 
 def headless_url(path: str, user_friendly: bool = False) -> str:
+    """Join ``path`` onto the configured base URL.
+
+    Verbatim port of the original — ``urljoin`` semantics matter
+    (relative ``path`` resolved against the base, absolute ``path``
+    replaces it).
+    """
     return urllib.parse.urljoin(get_url_host(user_friendly=user_friendly), path)
 
 
-def get_url_path(view: str, user_friendly: bool = False, **kwargs: Any) -> str:
-    request_context: Any
-    if has_request_context():
-        request_context = nullcontext
-    else:
-        request_context = app.test_request_context
+# ---------------------------------------------------------------------------
+# View-name → URL-template mapping
+# ---------------------------------------------------------------------------
+#
+# Each entry maps a legacy Flask view name (used by the original
+# ``get_url_path`` callers) to:
+#
+#   1. The set of kwargs whose values fill placeholders in the URL
+#      template (``path_params``);
+#   2. A format string for the URL itself.
+#
+# Any kwarg passed to :func:`get_url_path` that is *not* in the
+# template's path-params set is treated as a query-string parameter,
+# matching the way Flask's ``url_for`` appends unknown kwargs as a
+# query string.
+#
+# Empty path_params (e.g. ``ChartRestApi.warm_up_cache``) means every
+# kwarg is a query-string parameter.
 
-    with request_context():
-        return headless_url(url_for(view, **kwargs), user_friendly=user_friendly)
+_PathSpec = tuple[set[str], str]
+
+_VIEW_TEMPLATES: dict[str, _PathSpec] = {
+    # ``Superset.dashboard`` — Flask SPA dashboard view.
+    "Superset.dashboard": (
+        {"dashboard_id_or_slug"},
+        "/superset/dashboard/{dashboard_id_or_slug}/",
+    ),
+    # ``Superset.slice`` — Flask SPA explore-view shortcut by slice id.
+    "Superset.slice": ({"slice_id"}, "/superset/slice/{slice_id}/"),
+    # ``Superset.dashboard_permalink`` — Flask SPA stateful dashboard link.
+    "Superset.dashboard_permalink": (
+        {"key"},
+        "/superset/dashboard/p/{key}/",
+    ),
+    # ``Superset.welcome`` — landing page after login.
+    "Superset.welcome": (set(), "/superset/welcome/"),
+    # ``Superset.profile`` — current user's profile page.
+    "Superset.profile": (set(), "/superset/profile/"),
+    # ``Superset.explore`` — Flask SPA explore alias (legacy URL).
+    "Superset.explore": (set(), "/explore/"),
+    # ``Superset.filter`` — column-filter ajax endpoint (cascading filters).
+    "Superset.filter": (
+        {"datasource_type", "datasource_id", "column"},
+        "/superset/filter/{datasource_type}/{datasource_id}/{column}/",
+    ),
+    # ``ExploreView.root`` — Flask SPA explore root (chart builder).
+    "ExploreView.root": (set(), "/explore/"),
+    # Liteset REST: chart data endpoint.
+    "ChartDataRestApi.get_data": (
+        {"pk"},
+        "/api/v1/chart/{pk}/data/",
+    ),
+    # Liteset REST: chart cache warm-up.
+    "ChartRestApi.warm_up_cache": (set(), "/api/v1/chart/warm_up_cache"),
+    # Liteset REST: chart cache_screenshot (lazy-load digest).
+    "ChartRestApi.cache_screenshot": (
+        {"pk", "digest"},
+        "/api/v1/chart/{pk}/cache_screenshot/{digest}/",
+    ),
+    # Liteset REST: chart screenshot fetch (cached image by digest).
+    "ChartRestApi.screenshot": (
+        {"pk", "digest"},
+        "/api/v1/chart/{pk}/screenshot/{digest}/",
+    ),
+    # Liteset REST: dashboard thumbnail (kicks Celery task).
+    "DashboardRestApi.thumbnail": (
+        {"pk", "digest"},
+        "/api/v1/dashboard/{pk}/thumbnail/{digest}/",
+    ),
+    # Liteset REST: dashboard screenshot fetch.
+    "DashboardRestApi.screenshot": (
+        {"pk", "digest"},
+        "/api/v1/dashboard/{pk}/screenshot/{digest}/",
+    ),
+    # Liteset REST: chart thumbnail (kicks Celery task).
+    "ChartRestApi.thumbnail": (
+        {"pk", "digest"},
+        "/api/v1/chart/{pk}/thumbnail/{digest}/",
+    ),
+    # Liteset REST: CSRF token endpoint.
+    "SecurityRestApi.csrf_token": (set(), "/api/v1/security/csrf_token/"),
+}
+
+
+def _resolve_view_path(view: str, kwargs: dict[str, Any]) -> str:
+    """Resolve ``view`` to a URL path, substituting path params and
+    appending the rest as query-string parameters.
+
+    Raises :class:`ValueError` for unknown views — more informative than
+    the bare ``KeyError`` that ``dict[view]`` would raise, and matches
+    the spirit of Flask's ``BuildError`` ("could not build url for
+    endpoint").  Add the missing view to :data:`_VIEW_TEMPLATES` with
+    its URL template.
+    """
+    spec = _VIEW_TEMPLATES.get(view)
+    if spec is None:
+        raise ValueError(
+            f"Unknown view name {view!r}. Add it to "
+            "superset.utils.urls._VIEW_TEMPLATES with its URL template."
+        )
+    path_param_names, template = spec
+
+    # Pull path params out of kwargs; whatever's left becomes querystring.
+    path_values: dict[str, Any] = {}
+    query_values: dict[str, Any] = {}
+    for key, value in kwargs.items():
+        if key in path_param_names:
+            path_values[key] = value
+        else:
+            query_values[key] = value
+
+    # Path-param substitution. Missing path params raise KeyError, which
+    # is exactly what we want — the call-site bug surfaces immediately.
+    path = template.format(**path_values)
+
+    if query_values:
+        # Use ``doseq=True`` so list-valued kwargs (rare but legal in
+        # Flask url_for) are encoded as repeated key=value pairs.
+        path = f"{path}?{urllib.parse.urlencode(query_values, doseq=True)}"
+    return path
+
+
+def get_url_path(view: str, user_friendly: bool = False, **kwargs: Any) -> str:
+    """Return a fully-qualified URL for ``view`` against the configured
+    base URL.
+
+    The original Flask version used :func:`flask.url_for` to resolve
+    ``view`` against the in-process URL map (under
+    ``app.test_request_context`` when no real request was bound).  In
+    Liteset we resolve through the static :data:`_VIEW_TEMPLATES`
+    mapping above — see this module's docstring for rationale.
+    """
+    return headless_url(_resolve_view_path(view, kwargs), user_friendly=user_friendly)
 
 
 def modify_url_query(url: str, **kwargs: Any) -> str:
-    """
-    Replace or add parameters to a URL.
+    """Replace or add parameters to a URL.
+
+    Verbatim port of the original — pure stdlib, no Flask dependency.
     """
     parts = list(urllib.parse.urlsplit(url))
     params = urllib.parse.parse_qs(parts[3])
@@ -61,11 +265,10 @@ def modify_url_query(url: str, **kwargs: Any) -> str:
 
 
 def is_secure_url(url: str) -> bool:
-    """
-    Validates if a URL is secure (uses HTTPS).
+    """Validate that a URL uses HTTPS.
 
     :param url: The URL to validate.
-    :return: True if the URL uses HTTPS (secure), False if it uses HTTP (non-secure).
+    :return: ``True`` if the URL uses HTTPS, ``False`` otherwise.
     """
     parsed_url = urlparse(url)
     return parsed_url.scheme == "https"

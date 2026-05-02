@@ -19,7 +19,7 @@ from typing import Any
 
 import pandas as pd
 
-from superset.utils.core import GenericDataType  # type: ignore[attr-defined]
+from superset.typing import GenericDataType
 
 
 def quote_formulas(df: pd.DataFrame) -> pd.DataFrame:

@@ -17,11 +17,10 @@ specific language governing permissions and limitations
 under the License.
 """
 
-from typing import Any, Dict
+from typing import Any
 
 from jinja2 import TemplateSyntaxError
 from jinja2.sandbox import SandboxedEnvironment
-from marshmallow import ValidationError
 
 from superset.utils import json
 
@@ -61,7 +60,7 @@ def _check_filter_sql_expression(sql_expression: str) -> None:
     try:
         validate_jinja_template(sql_expression)
     except JinjaValidationError as e:
-        raise ValidationError(
+        raise JinjaValidationError(
             f"Invalid Jinja2 template in SQL filter: {e.message}"
         ) from e
 
@@ -72,12 +71,12 @@ def _check_filter_clause(clause: str) -> None:
         try:
             validate_jinja_template(clause)
         except JinjaValidationError as e:
-            raise ValidationError(
+            raise JinjaValidationError(
                 f"Invalid Jinja2 template in WHERE clause: {e.message}"
             ) from e
 
 
-def _check_filter_dict(filter_dict: Dict[str, Any]) -> None:
+def _check_filter_dict(filter_dict: dict[str, Any]) -> None:
     """Check SQL expressions in a filter dictionary."""
     if not isinstance(filter_dict, dict):
         return
@@ -91,7 +90,7 @@ def _check_filter_dict(filter_dict: Dict[str, Any]) -> None:
         _check_filter_clause(clause)
 
 
-def validate_jinja_template_in_params(params: Dict[str, Any]) -> None:
+def validate_jinja_template_in_params(params: dict[str, Any]) -> None:
     """
     Validates Jinja2 templates in chart parameters.
     This function checks adhoc_filters and other fields that might contain Jinja2.
@@ -122,12 +121,12 @@ def validate_params_json_with_jinja(value: str | None) -> None:
     try:
         params = json.loads(value)
     except (json.JSONDecodeError, TypeError) as ex:  # type: ignore[attr-defined]
-        raise ValidationError("Invalid JSON") from ex
+        raise JinjaValidationError("Invalid JSON") from ex
 
     # Then validate Jinja2 templates within the params
     try:
         validate_jinja_template_in_params(params)
-    except ValidationError:
+    except JinjaValidationError:
         raise
     except Exception as ex:
-        raise ValidationError(f"Template validation error: {str(ex)}") from ex
+        raise JinjaValidationError(f"Template validation error: {str(ex)}") from ex

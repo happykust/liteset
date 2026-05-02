@@ -27,7 +27,7 @@ import re
 import uuid
 from contextvars import ContextVar
 from enum import Enum, StrEnum
-from typing import Any, cast, TypeVar
+from typing import Any, cast, NamedTuple, TypeVar
 
 import sqlalchemy as sa
 from sqlalchemy import Text
@@ -41,6 +41,11 @@ from superset.constants import (
     EXTRA_FORM_DATA_OVERRIDE_REGULAR_MAPPINGS,
     NO_TIME_RANGE,
 )
+
+# ``GenericDataType`` originally lived in ``superset.utils.core``; the
+# Liteset port hoisted it to ``superset.typing`` to keep core lean.  We
+# re-export it here so legacy import paths keep working — multiple
+# subsystems (csv, excel, viz) reference ``superset.utils.core.GenericDataType``.
 from superset.utils.hashing import md5_sha_from_dict
 
 # ---------------------------------------------------------------------------
@@ -129,16 +134,52 @@ def generic_find_uq_constraint_name(
 
 
 # ---------------------------------------------------------------------------
-# get_user_id  (stub — migrations run outside of a request context)
+# Current-user / logs-context ContextVars
+# ---------------------------------------------------------------------------
+# Declared early so :func:`get_user_id` (used by event-logger code paths
+# that import this module standalone) can resolve the bound user.
+_current_user_ctx: ContextVar[Any] = ContextVar("_current_user_ctx", default=None)
+
+# Form-data ContextVar — direct port of the original ``g.form_data`` slot
+# that ``superset_old/tasks/async_queries.py::set_form_data`` populated
+# and ``superset_old/jinja_context.py::get_dataset_id_from_context``
+# read as a fallback.  Lives in ``utils.core`` (not ``jinja_context``)
+# because non-template code paths (Celery tasks, warm-up cache command)
+# must be able to set it without pulling in the Jinja module.
+_current_form_data_ctx: ContextVar[Any] = ContextVar(
+    "_current_form_data_ctx", default=None
+)
+
+
+# ---------------------------------------------------------------------------
+# get_user_id  (port of superset_old/utils/core.py:get_user_id)
 # ---------------------------------------------------------------------------
 def get_user_id() -> int | None:
-    """
-    Return the current user ID.
+    """Return the ID of the current user, or ``None`` if unset.
 
-    During migrations there is no Flask request context, so this always
-    returns ``None``.
+    Port of ``superset_old.utils.core.get_user_id`` which read
+    ``g.user.id``.  In Liteset the user is held on a :class:`ContextVar`
+    populated by the auth middleware; this helper digs the ``id`` out of
+    whichever object the middleware put there.
+
+    Returns ``None`` when no user has been bound to the current async
+    task — the canonical case during alembic migrations, Celery tasks
+    that run outside of an authenticated request, or unit tests that
+    never call :func:`set_current_user`.
     """
-    return None
+    try:
+        user = _current_user_ctx.get(None)
+    except LookupError:
+        return None
+    if user is None:
+        return None
+    user_id = getattr(user, "id", None)
+    if user_id is None:
+        return None
+    try:
+        return int(user_id)
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +332,19 @@ class FilterOperator(StrEnum):
     TEMPORAL_RANGE = "TEMPORAL_RANGE"
 
 
+class RowLevelSecurityFilterType(StrEnum):
+    """Type of an RLS filter — ported 1:1 from the original Superset.
+
+    See ``superset_old/utils/core.py``.
+    - ``REGULAR``: filter applies when the user holds one of the listed roles.
+    - ``BASE``: filter applies to everyone *except* users holding the listed
+      roles (typically used to exempt Admin from a global filter).
+    """
+
+    REGULAR = "Regular"
+    BASE = "Base"
+
+
 class FilterStringOperators(StrEnum):
     EQUALS = "EQUALS"
     NOT_EQUALS = "NOT_EQUALS"
@@ -307,6 +361,90 @@ class FilterStringOperators(StrEnum):
     LATEST_PARTITION = "LATEST_PARTITION"
     IS_TRUE = "IS_TRUE"
     IS_FALSE = "IS_FALSE"
+
+
+# ---------------------------------------------------------------------------
+# LoggerLevel  (ported 1:1 from superset_old/utils/core.py:194)
+# ---------------------------------------------------------------------------
+class LoggerLevel(StrEnum):
+    """Logger method names — used by ``utils.log.get_logger_from_status``."""
+
+    INFO = "info"
+    WARNING = "warning"
+    EXCEPTION = "exception"
+
+
+# ---------------------------------------------------------------------------
+# DatasourceType  (ported 1:1 from superset_old/utils/core.py)
+# ---------------------------------------------------------------------------
+class DatasourceType(StrEnum):
+    """Type of a Superset data source — used by cache_manager,
+    explore-form-data cache, and a number of legacy controllers.
+    """
+
+    TABLE = "table"
+    DATASET = "dataset"
+    QUERY = "query"
+    SAVEDQUERY = "saved_query"
+    VIEW = "view"
+
+
+# ---------------------------------------------------------------------------
+# to_int  (ported 1:1 from superset_old/utils/core.py:1931)
+# ---------------------------------------------------------------------------
+def to_int(v: Any, value_if_invalid: int = 0) -> int:
+    """Coerce ``v`` to ``int`` returning a fallback on failure."""
+    try:
+        return int(v)
+    except (ValueError, TypeError):
+        return value_if_invalid
+
+
+# ---------------------------------------------------------------------------
+# error_msg_from_exception  (ported 1:1 from superset_old/utils/core.py:455)
+# ---------------------------------------------------------------------------
+def error_msg_from_exception(ex: Exception) -> str:
+    """Translate an exception into a human-readable error message.
+
+    Database drivers expose error info in different ways; this function
+    inspects ``ex.message`` (which may be a dict) and falls back to
+    ``str(ex)`` when nothing more specific is available.
+    """
+    msg: Any = ""
+    if hasattr(ex, "message"):
+        if isinstance(ex.message, dict):
+            msg = ex.message.get("message")
+        elif ex.message:
+            msg = ex.message
+    return str(msg) or str(ex)
+
+
+# ---------------------------------------------------------------------------
+# logs_context  --  ContextVar replacing legacy ``flask.g.logs_context``
+# (used by superset.utils.decorators:logs_context)
+# ---------------------------------------------------------------------------
+_logs_context_ctx: ContextVar[dict[str, Any] | None] = ContextVar(
+    "_logs_context_ctx", default=None
+)
+
+
+def get_logs_context() -> dict[str, Any]:
+    """Return the per-task logs-context dict, initialising it on first read.
+
+    Mirrors the original ``flask.g.logs_context`` behaviour: callers expect
+    a *mutable* dict that survives the duration of the running request /
+    Celery task.
+    """
+    ctx = _logs_context_ctx.get()
+    if ctx is None:
+        ctx = {}
+        _logs_context_ctx.set(ctx)
+    return ctx
+
+
+def reset_logs_context() -> None:
+    """Reset the logs-context for the current async task."""
+    _logs_context_ctx.set(None)
 
 
 # ---------------------------------------------------------------------------
@@ -357,9 +495,9 @@ def get_user_agent(database: Any, source: QuerySource | None) -> str:
 # the request context is threaded via Litestar's dependency injection.  For
 # code paths that do *not* have access to a ``Request`` (e.g. Celery tasks,
 # Jinja template rendering triggered outside a controller) we use a
-# context-var based approach.
+# context-var based approach (the underlying ``_current_user_ctx`` is
+# declared near the top of this module so :func:`get_user_id` can use it).
 # ---------------------------------------------------------------------------
-_current_user_ctx: ContextVar[Any] = ContextVar("_current_user_ctx", default=None)
 
 
 def set_current_user(user: Any) -> None:
@@ -370,6 +508,98 @@ def set_current_user(user: Any) -> None:
 def get_current_user() -> Any:
     """Return the current user or ``None``."""
     return _current_user_ctx.get(None)
+
+
+def set_form_data(form_data: dict[str, Any]) -> Any:
+    """Bind ``form_data`` to the current async task; return a reset token.
+
+    Direct port of ``superset_old/tasks/async_queries.py::set_form_data``
+    (and the equivalent line in ``commands/chart/warm_up_cache.py``)
+    which assigned ``g.form_data = form_data`` so that
+    ``jinja_context.get_dataset_id_from_context`` could later resolve
+    the dataset id from the running task's form payload.
+
+    Returns the :class:`ContextVar` token so callers can reset the
+    binding in a ``finally`` clause and avoid leaking form data
+    across Celery tasks that share an event loop.
+    """
+    return _current_form_data_ctx.set(form_data)
+
+
+def get_form_data() -> dict[str, Any]:
+    """Return the form_data bound to the current async task, or ``{}``.
+
+    Mirrors the original ``getattr(g, "form_data", {})`` fallback used
+    by ``jinja_context.get_dataset_id_from_context``.  Always returns
+    a dict so callers can use ``.get(...)`` without a None-check.
+    """
+    value = _current_form_data_ctx.get(None)
+    return value if isinstance(value, dict) else {}
+
+
+def reset_form_data(token: Any) -> None:
+    """Reset the form_data binding using the token returned by
+    :func:`set_form_data`.
+
+    Falls back to a hard ``set(None)`` if the token has gone stale
+    (e.g. it was produced in a different task than the cleanup hook);
+    we never want a stale form_data to leak across tasks.
+    """
+    try:
+        _current_form_data_ctx.reset(token)
+    except (LookupError, ValueError):
+        _current_form_data_ctx.set(None)
+
+
+# ---------------------------------------------------------------------------
+# current_request  --  ContextVar that holds the in-flight Litestar Request.
+#
+# The original Apache Superset relied on Flask's thread-local ``request``
+# proxy.  In our async port we instead bind the active request to a
+# :class:`ContextVar` from a tiny ASGI middleware
+# (``superset.middleware.request_context``) so that code paths which lack
+# direct access to the request (deep inside Commands, audit-logging
+# decorators, etc.) can still observe per-request fields like the
+# ``Referer`` header or query string without having to thread the request
+# through every signature.
+#
+# ``ContextVar`` semantics give us automatic per-task isolation: concurrent
+# requests served by the same event loop never see each other's bindings,
+# and Celery / CLI call sites that have no inbound request simply observe
+# ``None`` (which matches the original ``has_request_context() is False``
+# branch in ``superset_old/utils/log.py``).
+# ---------------------------------------------------------------------------
+_current_request_ctx: ContextVar[Any] = ContextVar("_current_request_ctx", default=None)
+
+
+def set_current_request(request: Any) -> Any:
+    """Bind ``request`` to the current async task; return a reset token.
+
+    Called by :class:`superset.middleware.request_context.RequestContextMiddleware`
+    on every inbound HTTP request.  Returns the token produced by
+    ``ContextVar.set`` so the middleware can pass it to
+    :func:`reset_current_request` once the response has been sent.
+    """
+    return _current_request_ctx.set(request)
+
+
+def get_current_request() -> Any:
+    """Return the request bound to the current async task, or ``None``."""
+    return _current_request_ctx.get(None)
+
+
+def reset_current_request(token: Any) -> None:
+    """Reset the request binding using the token returned by
+    :func:`set_current_request`.
+
+    Falls back to a hard ``set(None)`` if the token has gone stale (e.g.
+    the middleware ran in a different task than the cleanup hook); we
+    never want a stale request to leak across requests.
+    """
+    try:
+        _current_request_ctx.reset(token)
+    except (LookupError, ValueError):
+        _current_request_ctx.set(None)
 
 
 def get_username() -> str | None:
@@ -501,3 +731,17 @@ def merge_extra_filters(form_data: dict[str, Any]) -> None:  # noqa: C901
                 else:
                     adhoc_filters.append(simple_filter_to_adhoc(filtr))
         del form_data["extra_filters"]
+
+
+class DatasourceName(NamedTuple):
+    """Tuple shape used by ``Database.get_all_table_names_in_schema``.
+
+    1:1 with ``superset_old.utils.core.DatasourceName`` — the
+    ``TablesDatabaseCommand`` wraps each ``(table, schema, catalog)``
+    triple from the (cached) inspector call so downstream code can
+    address ``.table`` / ``.schema`` / ``.catalog`` by name.
+    """
+
+    table: str
+    schema: str
+    catalog: str | None = None

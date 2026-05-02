@@ -23,10 +23,12 @@ source databases registered in the ``dbs`` table.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 from superset.db.engine_specs import get_async_engine_spec
@@ -61,6 +63,89 @@ def get_engine_spec_for_database(database: Any) -> type[BaseAsyncEngineSpec]:
         if "://" in uri:
             backend = uri.split("://")[0].split("+")[0]
     return get_async_engine_spec(backend)
+
+
+def _to_sync_uri(uri: str) -> str:
+    """Convert an async SQLAlchemy URI to its sync equivalent.
+
+    Inverse of :func:`_to_async_uri`. Used by :func:`get_sync_engine`
+    so a Database model registered with an async-only URI (e.g.
+    ``postgresql+asyncpg://``) can still be inspected via the
+    synchronous SQLAlchemy engine when the helpers ``ExploreMixin``
+    code path needs ``with database.get_sqla_engine() as engine``.
+    """
+    async_to_sync = {v: k for k, v in _SYNC_TO_ASYNC_DRIVERS.items()}
+    for async_prefix, sync_prefix in async_to_sync.items():
+        if uri.startswith(async_prefix):
+            return uri.replace(async_prefix, sync_prefix, 1)
+    return uri
+
+
+@contextmanager
+def get_sync_engine(
+    database: Any,
+    catalog: str | None = None,
+    schema: str | None = None,
+    nullpool: bool = True,
+) -> Iterator[Engine]:
+    """Yield a synchronous SQLAlchemy ``Engine`` for the given database.
+
+    1:1 with ``Database.get_sqla_engine`` in
+    ``superset_old/models/core.py``
+    (line 568). Used by helpers.ExploreMixin code paths that compile
+    a SELECT statement and read ``engine.dialect`` for identifier
+    quoting and ``%%`` double-percent fixup detection.
+
+    The engine is disposed when the context exits so we don't hold
+    onto pooled connections after the helper finishes.
+    """
+    uri = getattr(database, "sqlalchemy_uri_decrypted", None) or getattr(
+        database, "sqlalchemy_uri", ""
+    )
+    sync_uri = _to_sync_uri(str(uri))
+
+    # Engine extra params from the database's ``extra`` JSON.  The
+    # heavy ``adjust_engine_params`` flow (BigQuery, Hive…) is
+    # intentionally bypassed here — those specs require Flask app
+    # context which is not available in the async runtime.  Liteset
+    # users that need engine-spec-specific connect args set them via
+    # ``extra.engine_params.connect_args`` in the dataset configuration.
+    connect_args: dict[str, Any] = {}
+    try:
+        extra = database.get_extra() if hasattr(database, "get_extra") else {}
+        engine_params = (extra or {}).get("engine_params") or {}
+        connect_args = engine_params.get("connect_args") or {}
+    except Exception:  # noqa: BLE001
+        connect_args = {}
+
+    engine_kwargs: dict[str, Any] = {"connect_args": connect_args}
+    if nullpool:
+        from sqlalchemy.pool import NullPool
+
+        engine_kwargs["poolclass"] = NullPool
+
+    engine = create_engine(sync_uri, **engine_kwargs)
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
+@contextmanager
+def get_sync_connection(
+    database: Any,
+) -> Iterator[tuple[Connection, type[BaseAsyncEngineSpec]]]:
+    """Yield a synchronous SQLAlchemy ``Connection`` and async engine spec.
+
+    Used by :class:`SqlaTable` for metadata introspection paths that
+    cannot be async (column reflection, virtual-dataset
+    ``LIMIT 0`` probe). Returns the async engine spec so callers can
+    still use type-mapping helpers shared between sync and async.
+    """
+    spec = get_engine_spec_for_database(database)
+    with get_sync_engine(database) as engine:
+        with engine.connect() as conn:
+            yield conn, spec
 
 
 @asynccontextmanager

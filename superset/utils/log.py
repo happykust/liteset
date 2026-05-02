@@ -14,439 +14,246 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-# mypy: ignore-errors
+"""Backward-compatibility shim — primary implementation lives in
+:mod:`superset.events`.
+
+The original ``superset_old/utils/log.py`` is fully ported into
+:mod:`superset.events` (which is async-native and Flask-free).  This
+module re-exports those primitives plus a handful of pure helpers
+(:func:`stats_timing`, :func:`get_logger_from_status`,
+:func:`get_event_logger_from_cfg_value`, :func:`collect_request_payload`,
+:func:`logs_context`).
+
+Importing from ``superset.utils.log`` continues to work unchanged so any
+existing call site (third-party plugins, ported tasks, the legacy
+``DBEventLogger`` config alias) keeps functioning.
+"""
+
 from __future__ import annotations
 
 import functools
 import inspect
 import logging
-import textwrap
-from abc import ABC, abstractmethod
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta
-from typing import Any, Callable, cast, Literal, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
 
-from flask import g, has_request_context, request
-from flask_appbuilder.const import API_URI_RIS_KEY
-from sqlalchemy.exc import SQLAlchemyError
-
-from superset.extensions import stats_logger_manager
-from superset.utils import json
+# Re-exports from the async-native event-logger module.
+from superset.events import (
+    API_URI_RIS_KEY,
+    AsyncDBEventLogger,
+    configure_event_logger,
+    event_logger,
+    EventLogger,
+    get_event_logger_from_cfg_value,
+    log_this_with_context,
+    StdOutEventLogger,
+)
 from superset.utils.core import get_user_id, LoggerLevel, to_int
 
 if TYPE_CHECKING:
-    pass
+    from superset.stats_logger import BaseStatsLogger
 
 logger = logging.getLogger(__name__)
 
 
-def collect_request_payload() -> dict[str, Any]:
-    """Collect log payload identifiable from request context"""
-    if not request:
-        return {}
+# ---------------------------------------------------------------------------
+# AbstractEventLogger / DBEventLogger -- legacy aliases.
+# ---------------------------------------------------------------------------
+#
+# The original ``superset_old/utils/log.py`` exported three concrete
+# classes:
+#
+#   * ``AbstractEventLogger`` -- the abstract base class.
+#   * ``DBEventLogger``       -- the SQLAlchemy-persisting impl.
+#   * ``StdOutEventLogger``   -- the stdout-printing impl.
+#
+# In the Liteset port these live under :mod:`superset.events` with the
+# updated names ``EventLogger`` / ``AsyncDBEventLogger`` /
+# ``StdOutEventLogger``.  Keep the old import paths working for plugins,
+# tests, and any documentation that references the legacy names.
 
-    payload: dict[str, Any] = {
-        "path": request.path,
-        **request.form.to_dict(),
-        # url search params can overwrite POST body
-        **request.args.to_dict(),
-    }
+AbstractEventLogger = EventLogger
+DBEventLogger = AsyncDBEventLogger
 
-    if request.is_json:
-        json_payload = request.get_json(cache=True, silent=True) or {}
-        payload.update(json_payload)
 
-    # save URL match pattern in addition to the request path
-    url_rule = str(request.url_rule)
-    if url_rule != request.path:
-        payload["url_rule"] = url_rule
+# ---------------------------------------------------------------------------
+# stats_timing — context manager (1:1 port from
+# ``superset_old.utils.decorators.stats_timing``).
+# ---------------------------------------------------------------------------
 
-    # remove rison raw string (q=xxx in search params) in favor of
-    # rison object (could come from `payload_override`)
-    if "rison" in payload and API_URI_RIS_KEY in payload:
-        del payload[API_URI_RIS_KEY]
-    # delete empty rison object
-    if "rison" in payload and not payload["rison"]:
-        del payload["rison"]
 
-    return payload
+@contextmanager
+def stats_timing(stats_key: str, stats_logger: BaseStatsLogger) -> Iterator[float]:
+    """Time a block and report the result via ``stats_logger.timing``.
+
+    The original lived in ``utils.decorators`` but is more naturally
+    grouped with the event-logger primitives.
+    """
+    start = time.time()
+    try:
+        yield start
+    finally:
+        stats_logger.timing(stats_key, time.time() - start)
+
+
+# ---------------------------------------------------------------------------
+# get_logger_from_status -- maps HTTP status codes → log methods.
+# ---------------------------------------------------------------------------
 
 
 def get_logger_from_status(
     status: int,
 ) -> tuple[Callable[..., None], str]:
+    """Return ``(logger_method, level_name)`` for the given HTTP status.
+
+    Identical to the original implementation; kept here so legacy callers
+    can keep doing ``from superset.utils.log import get_logger_from_status``.
+    Delegates to :meth:`EventLogger.get_logger_from_status` to keep a
+    single source of truth.
     """
-    Return logger method by status of exception.
-    Maps logger level to status code level
+    return EventLogger.get_logger_from_status(status)
+
+
+# ---------------------------------------------------------------------------
+# collect_request_payload — async port of the original Flask helper.
+# ---------------------------------------------------------------------------
+
+
+async def collect_request_payload(request: Any | None = None) -> dict[str, Any]:
+    """Async request-payload collector.
+
+    Mirrors ``superset_old/utils/log.py:collect_request_payload`` but
+    awaits Litestar's ``form()`` / ``json()`` coroutines so the audit
+    payload includes form/JSON body fields.  Delegates to
+    :meth:`EventLogger.collect_request_payload` (single source of truth).
+
+    The function is tolerant of Litestar-shaped requests as well as the
+    plain dict-shaped objects used in tests; missing accessors degrade
+    gracefully to whatever can be read synchronously.
     """
-    log_map = {
-        "2": LoggerLevel.INFO,
-        "3": LoggerLevel.INFO,
-        "4": LoggerLevel.WARNING,
-        "5": LoggerLevel.EXCEPTION,
+    # Use the ``EventLogger`` implementation directly so the legacy
+    # function shape matches the original 1:1.
+    return await event_logger.collect_request_payload(request)
+
+
+# Legacy back-compat alias kept for callers (rare, but documented in the
+# original) who imported the async name explicitly.
+collect_request_payload_async = collect_request_payload
+
+
+# ---------------------------------------------------------------------------
+# Legacy decorator alias.
+# ---------------------------------------------------------------------------
+
+
+def log_this(f: Callable[..., Any]) -> Callable[..., Any]:
+    """Convenience decorator — wraps ``f`` with :func:`log_this_with_context`.
+
+    Mirrors the original ``AbstractEventLogger.log_this`` so callers that
+    used to do ``@event_logger.log_this`` keep working.
+    """
+    return log_this_with_context()(f)
+
+
+# ---------------------------------------------------------------------------
+# Async-aware logs_context decorator
+# ---------------------------------------------------------------------------
+
+
+def logs_context(
+    context_func: Callable[..., dict[Any, Any]] | None = None,
+    **ctx_kwargs: Any,
+) -> Callable[..., Any]:
+    """Add structured fields to the per-task logs-context dict.
+
+    Replaces the original Flask ``g.logs_context`` with an
+    ``asyncio.ContextVar`` (see :func:`superset.utils.core.get_logs_context`).
+    Behaviour is identical: the decorator collects values from the
+    decorated function's kwargs, optional ``ctx_kwargs`` and an optional
+    ``context_func`` callable, then merges them into the per-task context
+    dict before invoking the wrapped function.
+    """
+
+    available_keys = {
+        "slice_id",
+        "dashboard_id",
+        "dataset_id",
+        "execution_id",
+        "report_schedule_id",
     }
-    log_level = log_map[str(status)[0]]
 
-    return (getattr(logger, log_level), log_level)
+    def decorate(f: Callable[..., Any]) -> Callable[..., Any]:
+        is_async = inspect.iscoroutinefunction(f)
 
-
-class AbstractEventLogger(ABC):
-    # Parameters that are passed under the `curated_payload` arg to the log method
-    curated_payload_params = {
-        "force",
-        "standalone",
-        "runAsync",
-        "json",
-        "csv",
-        "queryLimit",
-        "select_as_cta",
-    }
-    # Similarly, parameters that are passed under the `curated_form_data` arg
-    curated_form_data_params = {
-        "dashboardId",
-        "sliceId",
-        "viz_type",
-        "force",
-        "compare_lag",
-        "forecastPeriods",
-        "granularity_sqla",
-        "legendType",
-        "legendOrientation",
-        "show_legend",
-        "time_grain_sqla",
-    }
-
-    def __call__(
-        self,
-        action: str,
-        object_ref: str | None = None,
-        log_to_statsd: bool = True,
-        duration: timedelta | None = None,
-        **payload_override: dict[str, Any],
-    ) -> object:
-        # pylint: disable=W0201
-        self.action = action
-        self.object_ref = object_ref
-        self.log_to_statsd = log_to_statsd
-        self.payload_override = payload_override
-        return self
-
-    def __enter__(self) -> None:
-        # pylint: disable=W0201
-        self.start = datetime.now()
-
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        # Log data w/ arguments being passed in
-        self.log_with_context(
-            action=self.action,
-            object_ref=self.object_ref,
-            log_to_statsd=self.log_to_statsd,
-            duration=datetime.now() - self.start,
-            **self.payload_override,
-        )
-
-    @classmethod
-    def curate_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
-        """Curate payload to only include relevant keys/safe keys"""
-        return {k: v for k, v in payload.items() if k in cls.curated_payload_params}
-
-    @classmethod
-    def curate_form_data(cls, payload: dict[str, Any]) -> dict[str, Any]:
-        """Curate form_data to only include relevant keys/safe keys"""
-        return {k: v for k, v in payload.items() if k in cls.curated_form_data_params}
-
-    @abstractmethod
-    def log(  # pylint: disable=too-many-arguments
-        self,
-        user_id: int | None,
-        action: str,
-        dashboard_id: int | None,
-        duration_ms: int | None,
-        slice_id: int | None,
-        referrer: str | None,
-        curated_payload: dict[str, Any] | None,
-        curated_form_data: dict[str, Any] | None,
-        *args: Any,
-        **kwargs: Any,
-    ) -> None:
-        pass
-
-    def log_with_context(  # pylint: disable=too-many-locals,too-many-arguments
-        self,
-        action: str,
-        duration: timedelta | None = None,
-        object_ref: str | None = None,
-        log_to_statsd: bool = True,
-        database: Any | None = None,
-        **payload_override: dict[str, Any] | None,
-    ) -> None:
-        # pylint: disable=import-outside-toplevel
-        from superset import db
-        from superset.views.core import get_form_data
-
-        referrer = request.referrer[:1000] if request and request.referrer else None
-
-        duration_ms = int(duration.total_seconds() * 1000) if duration else None
-
-        # Initial try and grab user_id via flask.g.user
-        user_id = get_user_id()
-
-        # Whenever a user is not bounded to a session we
-        # need to add them back before logging to capture user_id
-        if user_id is None and has_request_context():
-            try:
-                actual_user = g.get("user", None)
-                if actual_user is not None:
-                    db.session.add(actual_user)
-                    user_id = get_user_id()
-            except Exception as ex:
-                logging.warning("Failed to add user to db session: %s", ex)
-                user_id = None
-        payload = collect_request_payload()
-        if object_ref:
-            payload["object_ref"] = object_ref
-        if payload_override:
-            payload.update(payload_override)
-
-        dashboard_id = to_int(payload.get("dashboard_id"))
-
-        database_params = {"database_id": payload.get("database_id")}
-        if database and type(database).__name__ == "Database":
-            database_params = {
-                "database_id": database.id,
-                "engine": database.backend,
-                "database_driver": database.driver,
+        def _build_payload(
+            args: tuple[Any, ...], kwargs: dict[str, Any]
+        ) -> dict[str, Any]:
+            payload: dict[str, Any] = {
+                k: v for k, v in kwargs.items() if k in available_keys and v is not None
             }
-
-        form_data: dict[str, Any] = {}
-        if "form_data" in payload:
-            form_data, _ = get_form_data()
-            payload["form_data"] = form_data
-            slice_id = form_data.get("slice_id")
-        else:
-            slice_id = payload.get("slice_id")
-
-        slice_id = to_int(slice_id)
-
-        if log_to_statsd:
-            stats_logger_manager.instance.incr(action)
-
-        try:
-            # bulk insert
-            explode_by = payload.get("explode")
-            records = json.loads(payload.get(explode_by))  # type: ignore
-        except Exception:  # pylint: disable=broad-except
-            records = [payload]
-
-        self.log(
-            user_id,
-            action,
-            records=records,
-            dashboard_id=dashboard_id,
-            slice_id=slice_id,
-            duration_ms=duration_ms,
-            referrer=referrer,
-            curated_payload=self.curate_payload(payload),
-            curated_form_data=self.curate_form_data(form_data),
-            **database_params,
-        )
-
-    @contextmanager
-    def log_context(
-        self,
-        action: str,
-        object_ref: str | None = None,
-        log_to_statsd: bool = True,
-        **kwargs: Any,
-    ) -> Iterator[Callable[..., None]]:
-        """
-        Log an event with additional information from the request context.
-        :param action: a name to identify the event
-        :param object_ref: reference to the Python object that triggered this action
-        :param log_to_statsd: whether to update statsd counter for the action
-        """
-        payload_override = kwargs.copy()
-        start = datetime.now()
-        # yield a helper to add additional payload
-        yield lambda **kwargs: payload_override.update(kwargs)
-        duration = datetime.now() - start
-
-        # take the action from payload_override else take the function param action
-        action_str = payload_override.pop("action", action)
-        self.log_with_context(
-            action_str, duration, object_ref, log_to_statsd, **payload_override
-        )
-
-    def _wrapper(
-        self,
-        f: Callable[..., Any],
-        action: str | Callable[..., str] | None = None,
-        object_ref: str | Callable[..., str] | Literal[False] | None = None,
-        allow_extra_payload: bool | None = False,
-        **wrapper_kwargs: Any,
-    ) -> Callable[..., Any]:
-        @functools.wraps(f)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            action_str = (
-                action(*args, **kwargs) if callable(action) else action
-            ) or f.__name__
-            object_ref_str = (
-                object_ref(*args, **kwargs) if callable(object_ref) else object_ref
-            ) or (f.__qualname__ if object_ref is not False else None)
-            with self.log_context(
-                action=action_str, object_ref=object_ref_str, **wrapper_kwargs
-            ) as log:
-                log(**kwargs)
-                if allow_extra_payload:
-                    # add a payload updater to the decorated function
-                    value = f(*args, add_extra_log_payload=log, **kwargs)
-                else:
-                    value = f(*args, **kwargs)
-            return value
-
-        return wrapper
-
-    def log_this(self, f: Callable[..., Any]) -> Callable[..., Any]:
-        """Decorator that uses the function name as the action"""
-        return self._wrapper(f)
-
-    def log_this_with_context(self, **kwargs: Any) -> Callable[..., Any]:
-        """Decorator that can override kwargs of log_context"""
-
-        def func(f: Callable[..., Any]) -> Callable[..., Any]:
-            return self._wrapper(f, **kwargs)
-
-        return func
-
-    def log_this_with_extra_payload(self, f: Callable[..., Any]) -> Callable[..., Any]:
-        """Decorator that instrument `update_log_payload` to kwargs"""
-        return self._wrapper(f, allow_extra_payload=True)
-
-
-def get_event_logger_from_cfg_value(cfg_value: Any) -> AbstractEventLogger:
-    """
-    This function implements the deprecation of assignment
-    of class objects to EVENT_LOGGER configuration, and validates
-    type of configured loggers.
-
-    The motivation for this method is to gracefully deprecate the ability to configure
-    EVENT_LOGGER with a class type, in favor of preconfigured instances which may have
-    required construction-time injection of proprietary or locally-defined dependencies.
-
-    :param cfg_value: The configured EVENT_LOGGER value to be validated
-    :return: if cfg_value is a class type, will return a new instance created using a
-    default con
-    """
-    result: Any = cfg_value
-    if inspect.isclass(cfg_value):
-        logging.warning(
-            textwrap.dedent(
-                """
-                In superset private config, EVENT_LOGGER has been assigned a class
-                object. In order to accomodate pre-configured instances without a
-                default constructor, assignment of a class is deprecated and may no
-                longer work at some point in the future. Please assign an object
-                instance of a type that implements
-                superset.utils.log.AbstractEventLogger.
-                """
-            )
-        )
-
-        event_logger_type = cast(type[Any], cfg_value)
-        result = event_logger_type()
-
-    # Verify that we have a valid logger impl
-    if not isinstance(result, AbstractEventLogger):
-        raise TypeError(
-            "EVENT_LOGGER must be configured with a concrete instance"
-            "of superset.utils.log.AbstractEventLogger."
-        )
-
-    logging.debug("Configured event logger of type %s", type(result))
-    return cast(AbstractEventLogger, result)
-
-
-class DBEventLogger(AbstractEventLogger):
-    """Event logger that commits logs to Superset DB"""
-
-    def log(  # pylint: disable=too-many-arguments,too-many-locals
-        self,
-        user_id: int | None,
-        action: str,
-        dashboard_id: int | None,
-        duration_ms: int | None,
-        slice_id: int | None,
-        referrer: str | None,
-        *args: Any,
-        **kwargs: Any,
-    ) -> None:
-        # pylint: disable=import-outside-toplevel
-        from superset import db
-        from superset.models.core import Log
-
-        records = kwargs.get("records", [])
-        logs = []
-        for record in records:
-            json_string: str | None
             try:
-                json_string = json.dumps(record)
-            except Exception:  # pylint: disable=broad-except
-                json_string = None
-            log = Log(
-                action=action,
-                json=json_string,
-                dashboard_id=dashboard_id or record.get("dashboard_id"),
-                slice_id=slice_id or record.get("slice_id"),
-                duration_ms=duration_ms,
-                referrer=referrer,
-                user_id=user_id,
-            )
-            logs.append(log)
-        try:
-            db.session.bulk_save_objects(logs)
-            db.session.commit()  # pylint: disable=consider-using-transaction
-        except SQLAlchemyError as ex:
-            # Log errors but don't raise - logging failures should not break the
-            # application. Common in tests where the session may be in prepared state or
-            # db is locked
-            logging.error("DBEventLogger failed to log event(s)")
-            logging.exception(ex)
-            # Rollback to clean up the session state
-            try:
-                db.session.rollback()
-            except Exception:  # pylint: disable=broad-except
-                # If rollback also fails, just continue - don't let issues crash the app
-                logging.error(
-                    "DBEventLogger failed to rollback the session after failure"
+                payload.update(
+                    {
+                        k: v
+                        for k, v in ctx_kwargs.items()
+                        if k in available_keys and v is not None
+                    }
                 )
+                if context_func is not None:
+                    payload.update(
+                        {
+                            k: v
+                            for k, v in context_func(*args, **kwargs).items()
+                            if k in available_keys and v is not None
+                        }
+                    )
+            except (TypeError, KeyError, AttributeError):
+                logger.warning("Invalid data was passed to the logs_context decorator")
+            return payload
+
+        if is_async:
+
+            @functools.wraps(f)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                from superset.utils.core import get_logs_context
+
+                get_logs_context().update(_build_payload(args, kwargs))
+                return await f(*args, **kwargs)
+
+            return async_wrapper
+
+        @functools.wraps(f)
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            from superset.utils.core import get_logs_context
+
+            get_logs_context().update(_build_payload(args, kwargs))
+            return f(*args, **kwargs)
+
+        return sync_wrapper
+
+    return decorate
 
 
-class StdOutEventLogger(AbstractEventLogger):
-    """Event logger that prints to stdout for debugging purposes"""
-
-    def log(  # pylint: disable=too-many-arguments
-        self,
-        user_id: int | None,
-        action: str,
-        dashboard_id: int | None,
-        duration_ms: int | None,
-        slice_id: int | None,
-        referrer: str | None,
-        curated_payload: dict[str, Any] | None,
-        curated_form_data: dict[str, Any] | None,
-        *args: Any,
-        **kwargs: Any,
-    ) -> None:
-        data = dict(  # pylint: disable=use-dict-literal
-            user_id=user_id,
-            action=action,
-            dashboard_id=dashboard_id,
-            duration_ms=duration_ms,
-            slice_id=slice_id,
-            referrer=referrer,
-            curated_payload=curated_payload,
-            curated_form_data=curated_form_data,
-            **kwargs,
-        )
-        print("StdOutEventLogger: ", data)
+__all__ = [
+    "API_URI_RIS_KEY",
+    "AbstractEventLogger",
+    "AsyncDBEventLogger",
+    "DBEventLogger",
+    "EventLogger",
+    "LoggerLevel",
+    "StdOutEventLogger",
+    "collect_request_payload",
+    "collect_request_payload_async",
+    "configure_event_logger",
+    "event_logger",
+    "get_event_logger_from_cfg_value",
+    "get_logger_from_status",
+    "get_user_id",
+    "log_this",
+    "log_this_with_context",
+    "logs_context",
+    "stats_timing",
+    "to_int",
+]
