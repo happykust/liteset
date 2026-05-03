@@ -579,7 +579,7 @@ class SQLLabScenarios:
         results = []
 
         for i in range(num_queries):
-            sql = f"SELECT {i}, COUNT(*) FROM events GROUP BY 1"
+            sql = f"SELECT {i}, COUNT(*) FROM events GROUP BY 1"  # noqa: S608  # synthetic load-test SQL
             result = self.client.execute_sql(
                 database_id=database_id, sql=sql, schema=schema, run_async=True
             )

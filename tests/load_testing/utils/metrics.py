@@ -328,7 +328,7 @@ class MetricsCollector:
 
         with self._lock:
             all_points = []
-            for name, points in self._metrics.items():
+            for _name, points in self._metrics.items():
                 for point in points:
                     all_points.append(
                         {

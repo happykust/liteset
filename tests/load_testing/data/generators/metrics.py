@@ -109,7 +109,7 @@ class MetricsGenerator(DataGenerator):
             "environment": self.weighted_choice(self.environments, self.env_weights),
         }
 
-    def _generate_value(self, metric_name: str) -> float:
+    def _generate_value(self, metric_name: str) -> float:  # noqa: C901  # complex business logic
         """Generate realistic value based on metric type."""
         # Percentage metrics (0-100)
         if metric_name in [

@@ -122,7 +122,7 @@ CLICKHOUSE_CONFIG = DatabaseConfig(
         "GROUP BY date ORDER BY date",
         # Complex aggregation
         """
-        SELECT 
+        SELECT
             event_type,
             count() as cnt,
             uniqExact(user_id) as unique_users,
@@ -135,7 +135,7 @@ CLICKHOUSE_CONFIG = DatabaseConfig(
         """,
         # Timeseries with granularity
         """
-        SELECT 
+        SELECT
             toStartOfHour(timestamp) as hour,
             count() as events,
             uniqExact(user_id) as users
@@ -146,7 +146,7 @@ CLICKHOUSE_CONFIG = DatabaseConfig(
         """,
         # Heavy aggregation
         """
-        SELECT 
+        SELECT
             toDate(timestamp) as date,
             event_type,
             count() as cnt,
@@ -182,7 +182,7 @@ POSTGRESQL_CONFIG = DatabaseConfig(
         "SELECT * FROM sales LIMIT 1000",
         # Aggregation
         """
-        SELECT 
+        SELECT
             DATE_TRUNC('day', sale_date) as date,
             COUNT(*) as sales_count,
             SUM(amount) as total_amount
@@ -193,7 +193,7 @@ POSTGRESQL_CONFIG = DatabaseConfig(
         """,
         # Join query
         """
-        SELECT 
+        SELECT
             c.category_name,
             r.region_name,
             COUNT(*) as sales_count,
@@ -210,7 +210,7 @@ POSTGRESQL_CONFIG = DatabaseConfig(
         """,
         # Window function
         """
-        SELECT 
+        SELECT
             sale_date,
             amount,
             SUM(amount) OVER (
@@ -225,7 +225,7 @@ POSTGRESQL_CONFIG = DatabaseConfig(
         """,
         # Subquery
         """
-        SELECT 
+        SELECT
             u.user_id,
             u.name,
             u.country,
@@ -233,7 +233,7 @@ POSTGRESQL_CONFIG = DatabaseConfig(
             user_stats.total_amount
         FROM users u
         JOIN (
-            SELECT 
+            SELECT
                 user_id,
                 COUNT(*) as total_purchases,
                 SUM(amount) as total_amount
@@ -266,7 +266,7 @@ MYSQL_CONFIG = DatabaseConfig(
         "SELECT * FROM orders LIMIT 1000",
         # Aggregation
         """
-        SELECT 
+        SELECT
             DATE(order_date) as date,
             COUNT(*) as order_count,
             SUM(total_amount) as revenue
@@ -277,7 +277,7 @@ MYSQL_CONFIG = DatabaseConfig(
         """,
         # Join query
         """
-        SELECT 
+        SELECT
             c.customer_segment,
             COUNT(DISTINCT o.order_id) as orders,
             SUM(oi.quantity) as items_sold,
@@ -311,7 +311,7 @@ TRINO_CONFIG = DatabaseConfig(
         "SELECT * FROM analytics_events LIMIT 1000",
         # Aggregation across catalogs
         """
-        SELECT 
+        SELECT
             date_trunc('day', event_time) as date,
             event_name,
             count(*) as event_count,

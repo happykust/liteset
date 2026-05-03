@@ -23,9 +23,10 @@ C. Scaling — degradation point (10 -> 50 -> 100 -> 200 users)
 D. Dashboard simulation — 50 parallel chart/data requests
 E. Long queries — async IO-bound advantage
 """
+
 from __future__ import annotations
 
-from locust import HttpUser, between, tag, task
+from locust import between, HttpUser, tag, task
 
 CHART_DATA_PAYLOAD = {
     "datasource": {"id": 1, "type": "table"},

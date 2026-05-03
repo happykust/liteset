@@ -132,7 +132,7 @@ class DashboardScenarios:
 
         return dashboard, charts
 
-    def load_dashboard_chart_data(
+    def load_dashboard_chart_data(  # noqa: C901  # complex business logic
         self, dashboard_id: int | None = None, force_refresh: bool = False
     ) -> list[dict]:
         """

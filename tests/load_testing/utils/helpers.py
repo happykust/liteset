@@ -74,7 +74,7 @@ def generate_uuid() -> str:
 def generate_cache_key(*args) -> str:
     """Generate cache key from arguments."""
     key_str = ":".join(str(arg) for arg in args)
-    return hashlib.md5(key_str.encode()).hexdigest()
+    return hashlib.md5(key_str.encode()).hexdigest()  # noqa: S324  # cache key, not crypto
 
 
 def random_date_range(start: datetime, end: datetime) -> tuple[datetime, datetime]:
@@ -180,7 +180,7 @@ def wait_for_async_query(
 
     start_time = time.time()
 
-    for attempt in range(max_attempts):
+    for _attempt in range(max_attempts):
         if timeout and (time.time() - start_time) > timeout:
             return None
 
