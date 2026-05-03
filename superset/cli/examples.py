@@ -192,9 +192,11 @@ def _assign_admin_to_examples() -> None:
     from superset.models.security import User
     from superset.models.slice import Slice
 
-    admin = session.execute(
-        select(User).join(User.roles).where(User.active.is_(True))
-    ).scalars().first()
+    admin = (
+        session.execute(select(User).join(User.roles).where(User.active.is_(True)))
+        .scalars()
+        .first()
+    )
     if admin is None:
         click.secho(
             "  No active user found; skipping admin owner backfill.",

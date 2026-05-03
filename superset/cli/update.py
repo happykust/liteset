@@ -355,7 +355,18 @@ def sync_tags() -> None:
     help="Previous secret key (or set PREVIOUS_SECRET_KEY env var)",
 )
 def re_encrypt_secrets(previous_secret_key: Optional[str] = None) -> None:
-    """Re-encrypt secrets with a new SECRET_KEY."""
+    """Re-encrypt secrets with a new SECRET_KEY.
+
+    Walks every metadata table and re-encrypts every ``EncryptedType``
+    column under the new ``SECRET_KEY`` configured in the active
+    :class:`superset.config.SupersetSettings`.  The previous key must be
+    supplied via ``--previous-secret-key`` or the
+    ``PREVIOUS_SECRET_KEY`` environment variable.
+
+    The migrator uses a synchronous engine (mirroring
+    ``utils.rls._metadata_sync_engine``) because re-encryption is a
+    one-shot operation that runs outside any Litestar request context.
+    """
     import os
 
     previous_secret_key = previous_secret_key or os.environ.get("PREVIOUS_SECRET_KEY")
@@ -368,46 +379,13 @@ def re_encrypt_secrets(previous_secret_key: Optional[str] = None) -> None:
         )
         sys.exit(1)
 
-    import anyio
+    # Importing :mod:`superset.models` (transitively, via the encryption
+    # utilities) registers every model on ``Base.metadata`` so the
+    # migrator's ``discover_encrypted_fields`` walk sees them.
+    import superset.models  # noqa: F401  (side-effect: model registration)
+    from superset.utils.encrypt import SecretsMigrator
 
-    async def _re_encrypt() -> None:
-        from sqlalchemy import text
-
-        from superset.config import SupersetSettings
-        from superset.db.engine import create_db_engine, create_session_factory
-
-        settings = SupersetSettings()  # type: ignore[call-arg]
-        engine = create_db_engine(settings.sqlalchemy_database_uri)
-        session_factory = create_session_factory(engine)
-
-        click.echo("Re-encrypting database connection secrets...")
-        async with session_factory() as session:
-            result = await session.execute(
-                text("SELECT id, sqlalchemy_uri, encrypted_extra, extra FROM dbs")
-            )
-            rows = result.fetchall()
-
-            if not rows:
-                click.echo("No database connections found.")
-                await engine.dispose()
-                return
-
-            count = 0
-            for row in rows:
-                db_id = row[0]
-                # The actual re-encryption logic depends on the encryption
-                # implementation.  Here we mark them as needing re-encryption.
-                click.echo(f"  Processing database id={db_id}...")
-                count += 1
-
-            click.secho(
-                f"Processed {count} database connection(s).\n"
-                "NOTE: Full re-encryption requires the encryption utilities "
-                "from superset.utils.encrypt.  Ensure the new SECRET_KEY is "
-                "configured before running this command.",
-                fg="yellow",
-            )
-
-        await engine.dispose()
-
-    anyio.run(_re_encrypt)
+    click.echo("Re-encrypting metadata secrets with the new SECRET_KEY...")
+    migrator = SecretsMigrator(previous_secret_key=previous_secret_key)
+    migrator.run()
+    click.secho("All encrypted columns have been re-encrypted.", fg="green")

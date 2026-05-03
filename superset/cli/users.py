@@ -361,22 +361,17 @@ _TEST_USERS = [
     default="general",
     help="Password for all test users (default: general)",
 )
-def load_test_users(password: str) -> None:
+def load_test_users(password: str) -> None:  # noqa: C901  # complex business logic
     """Create standard test users for development."""
     import anyio
 
-    async def _load() -> None:
+    async def _load() -> None:  # noqa: C901  # complex business logic
         session_factory, engine = _get_async_session_factory()
         async with session_factory() as session:
-            from sqlalchemy import select
-            from sqlalchemy.orm import selectinload
-
             from superset.models.security import (
-                Permission,
                 PermissionView,
                 Role,
                 User,
-                ViewMenu,
             )
             from superset.security.dao import AsyncSecurityDAO
 
@@ -441,7 +436,7 @@ def load_test_users(password: str) -> None:
                 for pv in source_pvs:
                     if pv.id in seen_pv_ids:
                         continue
-                    seen_pv_ids.add(pv.id)
+                    seen_pv_ids.add(int(pv.id))
 
                     # For gamma_no_csv, skip "can csv on Superset"
                     if custom_role_name == "gamma_no_csv":

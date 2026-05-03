@@ -41,6 +41,36 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# soft_time_limit resolution
+# ---------------------------------------------------------------------------
+# Mirrors the original ``query_timeout = current_app.config[
+# "SQLLAB_ASYNC_TIME_LIMIT_SEC"]`` evaluated at module load: Celery binds
+# ``soft_time_limit`` when the ``@celery_app.task`` decorator runs, so we
+# need a value at import time.  We attempt to instantiate
+# :class:`SupersetSettings` (which reads env / superset_config.py) and
+# fall back to the same default the model declares (21600s = 6h) when
+# the worker process imports this module before settings are present —
+# matching the original which crashed at import on missing config but
+# letting the module import cleanly in unit tests / worker bootstrap.
+def _resolve_query_timeout() -> int:
+    try:
+        from superset.config import SupersetSettings
+
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        return int(getattr(settings, "sqllab_async_time_limit_sec", 21600))
+    except Exception:  # noqa: BLE001 — best-effort import-time resolution
+        logger.debug(
+            "Could not resolve sqllab_async_time_limit_sec at module import; "
+            "falling back to default 21600s",
+            exc_info=True,
+        )
+        return 21600
+
+
+query_timeout = _resolve_query_timeout()
+
+
+# ---------------------------------------------------------------------------
 # Redis Streams sync helpers (mirrors AsyncEventManager.update_job)
 # ---------------------------------------------------------------------------
 
@@ -116,39 +146,137 @@ STATUS_ERROR = "error"
 
 
 # ---------------------------------------------------------------------------
-# User loading helper
+# User loading helpers
 # ---------------------------------------------------------------------------
 
 
-def _load_user_from_job_metadata(
+async def _load_user_from_job_metadata(
     job_metadata: dict[str, Any],
-    session: Any,
+    async_session: Any,
+    settings: Any,
 ) -> Any:
-    """Load user from job_metadata using a sync SQLAlchemy session.
+    """Resolve the request user from ``job_metadata``.
 
-    Mirrors the original ``_load_user_from_job_metadata`` which used
-    ``security_manager.get_user_by_id()`` / ``get_anonymous_user()``.
+    Ports the original ``_load_user_from_job_metadata`` which dispatched
+    on ``user_id`` (logged-in user via ``security_manager.get_user_by_id``)
+    or ``guest_token`` (embedded guest user via
+    ``security_manager.get_guest_user_from_token``), falling through to
+    ``security_manager.get_anonymous_user()`` — an
+    :class:`AnonymousUserMixin` instance with ``is_authenticated=False``.
+
+    Runs against the live :class:`AsyncSession` so the returned object
+    can be reused inside the same task pipeline (RLS, permissions, audit
+    logging) without lazy-loading errors.
+
+    Mutates ``job_metadata`` in place: the guest token is removed once
+    consumed so it is not re-broadcast on the Redis status update,
+    matching the original behaviour.
     """
-    from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
+    from superset.middleware.auth import UnauthenticatedUser
+    from superset.security.dao import AsyncSecurityDAO
 
-    from superset.models.security import User
+    dao = AsyncSecurityDAO(async_session)
 
+    # 1. Logged-in user --------------------------------------------------
     if user_id := job_metadata.get("user_id"):
-        stmt = select(User).where(User.id == user_id).options(selectinload(User.roles))
-        user = session.execute(stmt).scalars().one_or_none()
+        user = await dao.get_user_by_id(user_id)
         if user is not None:
             return user
 
-    # Guest token handling: the original deleted the token from metadata
-    # and called security_manager.get_guest_user_from_token(). In Liteset
-    # the guest user mechanism is not yet implemented in the sync path,
-    # so we fall through to anonymous.
-    if "guest_token" in job_metadata:
-        del job_metadata["guest_token"]
+    # 2. Embedded guest user (JWT) --------------------------------------
+    guest_token = job_metadata.pop("guest_token", None)
+    if guest_token:
+        guest = await _load_guest_user_from_token(guest_token, settings, dao)
+        if guest is not None:
+            return guest
 
-    # Return None (anonymous); caller should handle accordingly.
-    return None
+    # 3. Anonymous — port of ``security_manager.get_anonymous_user()``.
+    # The original returned a Flask-Login ``AnonymousUserMixin`` instance
+    # (``is_authenticated=False``, ``is_anonymous=True``).  Liteset's
+    # equivalent is :class:`UnauthenticatedUser`, which the auth
+    # middleware (``_build_anonymous_user``) hands out for unauthenticated
+    # HTTP requests; we reuse it here so that downstream code observes
+    # the same shape regardless of whether it ran inside a request or
+    # inside this Celery task.
+    return UnauthenticatedUser()
+
+
+async def _load_guest_user_from_token(
+    guest_token: str,
+    settings: Any,
+    dao: Any,
+) -> Any | None:
+    """Decode a guest JWT token and build a :class:`GuestUser`.
+
+    Mirrors :meth:`SupersetAuthMiddleware._resolve_guest_from_jwt`:
+
+    1. Parse the token with the dedicated guest secret/algo if configured,
+       otherwise the application secret key.
+    2. Validate the required ``user`` / ``resources`` / ``rls_rules``
+       claims.
+    3. Look up the configured ``GUEST_ROLE_NAME`` role and merge its
+       permissions into the resulting :class:`GuestUser` so RBAC checks
+       behave identically to the live request path.
+
+    Returns ``None`` when the token is invalid, expired, or missing
+    required claims (anonymous-equivalent fall-through).
+    """
+    from superset.security.guest import GuestUser, parse_guest_token
+
+    secret_key = getattr(settings, "guest_token_jwt_secret", "") or _resolve_secret(
+        settings
+    )
+    algorithm = getattr(settings, "guest_token_jwt_algo", "HS256")
+
+    audience_setting = getattr(settings, "guest_token_jwt_audience", None)
+    if callable(audience_setting):
+        audience = audience_setting() or ""
+    else:
+        audience = audience_setting or ""
+    audience = str(audience) if audience else ""
+
+    payload = parse_guest_token(
+        guest_token,
+        secret_key,
+        algorithm=algorithm,
+        audience=audience,
+    )
+    if payload is None:
+        return None
+
+    # Required claims (match middleware ``_resolve_guest_from_jwt``)
+    if (
+        payload.get("user") is None
+        or payload.get("resources") is None
+        or payload.get("rls_rules") is None
+    ):
+        logger.warning("Guest token missing required claims; ignoring")
+        return None
+
+    guest_user = GuestUser.from_token_payload(payload)
+
+    role_name = getattr(settings, "guest_role_name", "Guest")
+    try:
+        role = await dao.get_role_by_name(role_name)
+        if role is not None:
+            role_perms = await dao.get_permissions_for_role_name(role_name)
+            guest_user.permissions = guest_user.permissions | role_perms
+    except Exception:
+        logger.warning(
+            "Failed to load Guest role '%s' for async query task",
+            role_name,
+            exc_info=True,
+        )
+
+    return guest_user
+
+
+def _resolve_secret(settings: Any) -> str:
+    """Return the application secret key as a plain string."""
+    secret_key = getattr(settings, "secret_key", "")
+    if hasattr(secret_key, "get_secret_value"):
+        secret_key = secret_key.get_secret_value()
+    return str(secret_key) if secret_key else ""
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +360,10 @@ def _create_query_context_from_form(form_data: dict[str, Any]) -> Any:
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(name="superset.tasks.async_queries.load_chart_data_into_cache")
+@celery_app.task(
+    name="load_chart_data_into_cache",
+    soft_time_limit=query_timeout,
+)
 def load_chart_data_into_cache(
     job_metadata: dict[str, Any],
     form_data: dict[str, Any],
@@ -243,17 +374,26 @@ def load_chart_data_into_cache(
     Creates an AsyncQueryContext from form_data, runs the ChartDataCommand
     with ``cache=True``, and updates the job status via Redis Streams.
     """
-    from superset.commands.chart_data import ChartDataCommand
+    from superset.commands.chart.data.get_data_command import ChartDataCommand
     from superset.common.query_context_processor import AsyncQueryContextProcessor
     from superset.config import SupersetSettings
     from superset.db.session import get_sync_session
     from superset.security.dao import AsyncSecurityDAO
     from superset.security.manager import AsyncSecurityManager
+    from superset.utils.core import (
+        reset_form_data,
+        set_current_user,
+        set_form_data,
+    )
 
     session = get_sync_session()
+    # Bind form_data to the current task context so that
+    # ``jinja_context.get_dataset_id_from_context`` (and any other
+    # template helper that falls back to ``g.form_data`` in the
+    # original) can resolve the dataset from this task's payload.
+    form_data_token = set_form_data(form_data)
     try:
         settings = SupersetSettings()  # type: ignore[call-arg]
-        user = _load_user_from_job_metadata(job_metadata, session)
 
         query_context = _create_query_context_from_form(form_data)
 
@@ -279,13 +419,21 @@ def load_chart_data_into_cache(
                 pass
 
         # Build the processor and command using async wrappers run
-        # synchronously via asyncio.run()
+        # synchronously via asyncio.run().  User identity (regular user
+        # or :class:`GuestUser`) is resolved inside the async block and
+        # bound to the request-scoped :class:`ContextVar` so that RLS,
+        # permissions and audit logging see the right principal — the
+        # async port of the original ``override_user(...)`` wrapper.
         async def _execute() -> dict[str, Any]:
             from superset.db.session import create_session_factory, get_engine
 
             engine = get_engine()
             factory = create_session_factory(engine)
             async with factory() as async_session:
+                user = await _load_user_from_job_metadata(
+                    job_metadata, async_session, settings
+                )
+                set_current_user(user)
                 dao = AsyncSecurityDAO(async_session)
                 feature_flags = getattr(settings, "feature_flags", {})
                 embedded_enabled = getattr(
@@ -327,10 +475,14 @@ def load_chart_data_into_cache(
         _update_job(job_metadata, STATUS_ERROR, errors=errors)
         raise
     finally:
+        reset_form_data(form_data_token)
         session.close()
 
 
-@celery_app.task(name="superset.tasks.async_queries.load_explore_json_into_cache")
+@celery_app.task(
+    name="load_explore_json_into_cache",
+    soft_time_limit=query_timeout,
+)
 def load_explore_json_into_cache(  # noqa: C901
     job_metadata: dict[str, Any],
     form_data: dict[str, Any],
@@ -346,15 +498,23 @@ def load_explore_json_into_cache(  # noqa: C901
     """
     from superset.config import SupersetSettings
     from superset.db.session import get_sync_session
+    from superset.utils.core import (
+        reset_form_data,
+        set_current_user,
+        set_form_data,
+    )
     from superset.utils.hashing import md5_sha_from_dict
     from superset.utils.json import json_int_dttm_ser
 
     cache_key_prefix = "ejr-"  # ejr: explore_json request
 
     session = get_sync_session()
+    # Same rationale as ``load_chart_data_into_cache``: expose form_data
+    # to template helpers (``g.form_data`` equivalent) for the duration
+    # of this task, then reset on exit to prevent cross-task leakage.
+    form_data_token = set_form_data(form_data)
     try:
         settings = SupersetSettings()  # type: ignore[call-arg]
-        _load_user_from_job_metadata(job_metadata, session)
 
         # Resolve datasource from form_data
         datasource_ref = form_data.get("datasource", "")
@@ -390,9 +550,22 @@ def load_explore_json_into_cache(  # noqa: C901
         # Deep copy form_data before viz modifies it
         original_form_data = copy.deepcopy(form_data)
 
-        # Build viz object and run query (async, via asyncio.run)
+        # Build viz object and run query (async, via asyncio.run).
+        # Resolve user identity inside the async block (regular user via
+        # ``user_id`` or :class:`GuestUser` via ``guest_token``) and bind
+        # it to the request-scoped :class:`ContextVar` — the async port
+        # of the original ``override_user(...)`` wrapper around the body.
         async def _execute() -> dict[str, Any]:
+            from superset.db.session import create_session_factory, get_engine
             from superset.viz import get_viz as _get_viz
+
+            engine = get_engine()
+            factory = create_session_factory(engine)
+            async with factory() as async_session:
+                user = await _load_user_from_job_metadata(
+                    job_metadata, async_session, settings
+                )
+                set_current_user(user)
 
             viz_obj = _get_viz(
                 datasource=datasource,
@@ -452,4 +625,5 @@ def load_explore_json_into_cache(  # noqa: C901
         _update_job(job_metadata, STATUS_ERROR, errors=errors)
         raise
     finally:
+        reset_form_data(form_data_token)
         session.close()

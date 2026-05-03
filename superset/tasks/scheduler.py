@@ -101,7 +101,8 @@ def execute(self: Task, report_schedule_id: int) -> None:
     5. Update ``last_state``, ``last_eval_dttm``.
     6. Create ``ReportExecutionLog`` entry.
 
-    Ported 1:1 from ``superset_old/tasks/scheduler.py::execute``.
+    Ported 1:1 from ``:execute`` in
+    ``superset_old/tasks/scheduler.py``.
     """
     from superset.commands.report_exceptions import (
         ReportScheduleUnexpectedError,
