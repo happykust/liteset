@@ -630,8 +630,9 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
     @protect()
     @statsd_metrics
     @event_logger.log_this_with_context(
-        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
-        f".sync-permissions",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.sync-permissions"
+        ),
         log_to_statsd=False,
     )
     def sync_permissions(self, pk: int, **kwargs: Any) -> FlaskResponse:
@@ -889,8 +890,9 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
     @safe
     @statsd_metrics
     @event_logger.log_this_with_context(
-        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
-        f".table_metadata_deprecated",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.table_metadata_deprecated"
+        ),
         log_to_statsd=False,
     )
     def table_metadata_deprecated(
@@ -953,8 +955,9 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
     @statsd_metrics
     @deprecated(deprecated_in="4.0")
     @event_logger.log_this_with_context(
-        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
-        f".table_extra_metadata_deprecated",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.table_extra_metadata_deprecated"
+        ),
         log_to_statsd=False,
     )
     def table_extra_metadata_deprecated(
@@ -1016,8 +1019,9 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
     @protect()
     @statsd_metrics
     @event_logger.log_this_with_context(
-        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
-        f".table_metadata",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.table_metadata"
+        ),
         log_to_statsd=False,
     )
     def table_metadata(self, pk: int) -> FlaskResponse:
@@ -1095,8 +1099,9 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
     @protect()
     @statsd_metrics
     @event_logger.log_this_with_context(
-        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
-        f".table_extra_metadata",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.table_extra_metadata"
+        ),
         log_to_statsd=False,
     )
     def table_extra_metadata(self, pk: int) -> FlaskResponse:
@@ -1238,8 +1243,9 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
     @protect()
     @statsd_metrics
     @event_logger.log_this_with_context(
-        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
-        f".test_connection",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.test_connection"
+        ),
         log_to_statsd=False,
     )
     @requires_json
@@ -1288,8 +1294,9 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
     @safe
     @statsd_metrics
     @event_logger.log_this_with_context(
-        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
-        f".related_objects",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.related_objects"
+        ),
         log_to_statsd=False,
     )
     def related_objects(self, pk: int) -> Response:
@@ -1784,8 +1791,9 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
     @safe
     @statsd_metrics
     @event_logger.log_this_with_context(
-        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
-        f".function_names",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.function_names"
+        ),
         log_to_statsd=False,
     )
     def function_names(self, pk: int) -> Response:
@@ -1939,8 +1947,9 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
     @protect()
     @statsd_metrics
     @event_logger.log_this_with_context(
-        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
-        f".validate_parameters",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.validate_parameters"
+        ),
         log_to_statsd=False,
     )
     @requires_json
@@ -1996,8 +2005,9 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
     @statsd_metrics
     @deprecated(deprecated_in="4.0")
     @event_logger.log_this_with_context(
-        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
-        f".delete_ssh_tunnel",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.delete_ssh_tunnel"
+        ),
         log_to_statsd=False,
     )
     def delete_ssh_tunnel(self, pk: int) -> Response:
@@ -2063,8 +2073,9 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
     @safe
     @statsd_metrics
     @event_logger.log_this_with_context(
-        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
-        f".schemas_access_for_file_upload",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.schemas_access_for_file_upload"
+        ),
         log_to_statsd=False,
     )
     def schemas_access_for_file_upload(self, pk: int) -> Response:

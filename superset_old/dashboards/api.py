@@ -1038,8 +1038,9 @@ class DashboardRestApi(BaseSupersetModelRestApi):
     @safe
     @statsd_metrics
     @event_logger.log_this_with_context(
-        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
-        f".cache_dashboard_screenshot",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.cache_dashboard_screenshot"
+        ),
         log_to_statsd=False,
     )
     def cache_dashboard_screenshot(self, pk: int, **kwargs: Any) -> WerkzeugResponse:
@@ -1366,8 +1367,9 @@ class DashboardRestApi(BaseSupersetModelRestApi):
     @statsd_metrics
     @rison(get_fav_star_ids_schema)
     @event_logger.log_this_with_context(
-        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
-        f".favorite_status",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.favorite_status"
+        ),
         log_to_statsd=False,
     )
     def favorite_status(self, **kwargs: Any) -> Response:
@@ -1460,8 +1462,9 @@ class DashboardRestApi(BaseSupersetModelRestApi):
     @safe
     @statsd_metrics
     @event_logger.log_this_with_context(
-        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
-        f".remove_favorite",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.remove_favorite"
+        ),
         log_to_statsd=False,
     )
     def remove_favorite(self, pk: int) -> Response:
@@ -1758,9 +1761,9 @@ class DashboardRestApi(BaseSupersetModelRestApi):
     @permission_name("set_embedded")
     @statsd_metrics
     @event_logger.log_this_with_context(
-        action=lambda self,
-        *args,
-        **kwargs: f"{self.__class__.__name__}.delete_embedded",
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.delete_embedded"
+        ),
         log_to_statsd=False,
     )
     @with_dashboard
