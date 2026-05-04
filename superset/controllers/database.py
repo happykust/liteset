@@ -27,7 +27,7 @@ import re
 from typing import Any, cast, TYPE_CHECKING
 
 import msgspec
-from litestar import Controller, delete, get, post, put
+from litestar import Controller, delete, get, post, put, Request
 from litestar.datastructures import UploadFile
 from litestar.di import Provide
 from litestar.enums import RequestEncodingType
@@ -253,6 +253,296 @@ def _build_database_result(db: Any) -> DatabaseDetailResult:
     return DatabaseDetailResult.from_model(db, mask_uri=mask_uri_password)
 
 
+# ---------------------------------------------------------------------------
+# Engine-spec-aware ``SELECT *`` generation
+# ---------------------------------------------------------------------------
+
+
+def _engine_select_star_sync(database: Any, table: Table) -> str:
+    """Generate engine-correct ``SELECT *`` SQL via the engine spec.
+
+    Mirrors original ``Database.select_star`` /
+    ``BaseEngineSpec.select_star`` — quoting matches the engine's
+    dialect (backticks for MySQL, brackets for MSSQL, double-quotes
+    for Postgres / Trino / Snowflake / Redshift / BigQuery, etc.) and
+    a partition-aware ``WHERE`` is applied for Hive / Presto / Trino
+    partitioned tables.
+
+    Runs in a worker thread (called via :func:`asyncio.to_thread`)
+    because :func:`Database.get_sqla_engine` opens a sync SQLAlchemy
+    Engine.
+    """
+    db_engine_spec = getattr(database, "db_engine_spec", None)
+    if db_engine_spec is None or not hasattr(db_engine_spec, "select_star"):
+        if table.schema:
+            return f'SELECT *\nFROM "{table.schema}"."{table.table}"'
+        return f'SELECT *\nFROM "{table.table}"'
+
+    catalog = getattr(database, "get_default_catalog", lambda: None)()
+    qualified = Table(table.table, table.schema, table.catalog or catalog)
+
+    # Pre-fetch columns through the engine's Inspector so the
+    # ``select_star`` call doesn't recurse into ``database.get_columns``
+    # (which is not yet ported on the new ``Database`` model).  When
+    # column probing fails we fall back to ``cols=[]`` +
+    # ``latest_partition=False``.
+    cols: list[dict[str, Any]] = []
+    try:
+        with database.get_inspector(  # type: ignore[attr-defined]
+            catalog=qualified.catalog,
+            schema=qualified.schema,
+        ) as inspector:
+            cols = db_engine_spec.get_columns(inspector, qualified)
+    except Exception:  # noqa: BLE001
+        _log.warning(
+            "select_star: failed to introspect columns for %s",
+            qualified,
+            exc_info=True,
+        )
+
+    latest_partition = bool(cols)
+    try:
+        with database.get_sqla_engine(  # type: ignore[attr-defined]
+            catalog=qualified.catalog,
+            schema=qualified.schema,
+        ) as engine:
+            return db_engine_spec.select_star(
+                database,
+                qualified,
+                engine,
+                limit=100,
+                show_cols=False,
+                indent=True,
+                latest_partition=latest_partition,
+                cols=cols or None,
+            )
+    except Exception:  # noqa: BLE001
+        if hasattr(db_engine_spec, "quote_table"):
+            try:
+                from sqlalchemy.dialects import registry as _registry
+
+                dialect_name = (
+                    str(getattr(database, "sqlalchemy_uri", "") or "")
+                    .split("://")[0]
+                    .split("+")[0]
+                )
+                dialect_cls = _registry.load(dialect_name)
+                full = db_engine_spec.quote_table(qualified, dialect_cls())
+                return f"SELECT *\nFROM {full}\nLIMIT 100"
+            except Exception:  # noqa: BLE001, S110
+                pass
+        if qualified.schema:
+            return (
+                f'SELECT *\nFROM "{qualified.schema}"."{qualified.table}"\nLIMIT 100'
+            )
+        return f'SELECT *\nFROM "{qualified.table}"\nLIMIT 100'
+
+
+async def _engine_select_star(database: Any, table: Table) -> str:
+    """Async wrapper around :func:`_engine_select_star_sync`."""
+    return await asyncio.to_thread(_engine_select_star_sync, database, table)
+
+
+# ---------------------------------------------------------------------------
+# OAuth2 token purge — mirrors ``Database.purge_oauth2_tokens``
+# (``superset_old/models/core.py:1189``).
+# ---------------------------------------------------------------------------
+
+_OAUTH2_PURGE_KEYS: frozenset[str] = frozenset(
+    {"id", "scope", "authorization_request_uri", "token_request_uri"}
+)
+
+
+def _extract_oauth2_client_info(raw: str | None) -> dict[str, Any]:
+    """Parse ``encrypted_extra`` JSON and return ``oauth2_client_info``."""
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    info = payload.get("oauth2_client_info")
+    return info if isinstance(info, dict) else {}
+
+
+async def _purge_oauth2_tokens(
+    dao: "DatabaseDAOProtocol", database_id: int
+) -> None:
+    """Delete every ``DatabaseUserOAuth2Tokens`` row for ``database_id``.
+
+    Mirrors ``Database.purge_oauth2_tokens`` at
+    ``superset_old/models/core.py:1189-1199`` (with the column-name
+    bug from the original — which filtered on ``id`` rather than
+    ``database_id`` — corrected).
+    """
+    from sqlalchemy import delete as sa_delete
+
+    from superset.models.core import DatabaseUserOAuth2Tokens
+
+    session = getattr(dao, "session", None)
+    if session is None:
+        return
+    stmt = sa_delete(DatabaseUserOAuth2Tokens).where(
+        DatabaseUserOAuth2Tokens.database_id == database_id
+    )
+    await session.execute(stmt)
+    await session.flush()
+
+
+async def _purge_oauth2_tokens_if_needed(
+    *,
+    dao: "DatabaseDAOProtocol",
+    database: Any,
+    new_encrypted_extra: str | None,
+) -> None:
+    """Purge OAuth2 tokens iff the OAuth2 client config rotated.
+
+    Mirrors ``UpdateDatabaseCommand._handle_oauth2`` at
+    ``superset_old/commands/database/update.py:128-159``:
+
+    - When ``encrypted_extra`` becomes ``None`` (OAuth2 disabled),
+      purge unconditionally.
+    - Otherwise we conservatively purge whenever ``oauth2_client_info``
+      is set in the new payload.  The original implementation diffs
+      against the pre-update encrypted_extra; in the async/setattr
+      flow the previous value is no longer accessible at this point,
+      so we err on the side of safety (idempotent DELETE — no-op if
+      no tokens exist).
+    """
+    if new_encrypted_extra is None:
+        await _purge_oauth2_tokens(dao, int(database.id))
+        return
+
+    new_config = _extract_oauth2_client_info(new_encrypted_extra)
+    if not new_config:
+        return
+
+    await _purge_oauth2_tokens(dao, int(database.id))
+
+
+# ---------------------------------------------------------------------------
+# SSH tunnel CRUD wrappers
+# ---------------------------------------------------------------------------
+
+
+async def _create_ssh_tunnel(
+    *,
+    dao: "DatabaseDAOProtocol",
+    database: Any,
+    payload: dict[str, Any],
+) -> Any:
+    """Run :class:`CreateSSHTunnelCommand` for ``database`` + ``payload``.
+
+    Mirrors original ``CreateDatabaseCommand.run`` lines 88-99 — the
+    SSH tunnel row is inserted in a second step after the database
+    row is created.
+    """
+    from superset.commands.database.ssh_tunnel.create import CreateSSHTunnelCommand
+    from superset.commands.database.ssh_tunnel.exceptions import (
+        SSHTunnelingNotEnabledError,
+    )
+    from superset.db.daos.database import AsyncSSHTunnelDAO
+    from superset.utils.feature_flags import feature_flag_manager
+
+    if not feature_flag_manager.is_feature_enabled("SSH_TUNNELING"):
+        raise SSHTunnelingNotEnabledError()
+
+    ssh_dao = AsyncSSHTunnelDAO(dao.session)  # type: ignore[attr-defined]
+    cmd = CreateSSHTunnelCommand(
+        dao=ssh_dao,
+        database=database,
+        data=dict(payload),
+    )
+    return await cmd.execute()
+
+
+async def _sync_ssh_tunnel(
+    *,
+    dao: "DatabaseDAOProtocol",
+    database: Any,
+    payload: dict[str, Any] | None,
+) -> Any:
+    """Create / update / delete the SSH tunnel row.
+
+    Mirrors original ``UpdateDatabaseCommand._handle_ssh_tunnel`` lines
+    161-185:
+
+    - ``payload is None`` (or ``{}``): delete current tunnel if present.
+    - ``payload`` + no current tunnel: ``CreateSSHTunnelCommand``.
+    - ``payload`` + current tunnel: ``UpdateSSHTunnelCommand``.
+    """
+    from superset.commands.database.ssh_tunnel.delete import DeleteSSHTunnelCommand
+    from superset.commands.database.ssh_tunnel.exceptions import (
+        SSHTunnelingNotEnabledError,
+    )
+    from superset.commands.database.ssh_tunnel.update import UpdateSSHTunnelCommand
+    from superset.db.daos.database import AsyncSSHTunnelDAO
+    from superset.utils.feature_flags import feature_flag_manager
+
+    if not feature_flag_manager.is_feature_enabled("SSH_TUNNELING"):
+        raise SSHTunnelingNotEnabledError()
+
+    ssh_dao = AsyncSSHTunnelDAO(dao.session)  # type: ignore[attr-defined]
+    current = await ssh_dao.get_by_database_id(int(database.id))
+
+    if payload is None or payload == {}:  # noqa: PLC1901  # explicit empty-dict check
+        if current is not None:
+            del_cmd = DeleteSSHTunnelCommand(
+                dao=cast("AsyncDatabaseDAO", dao),
+                database_id=int(database.id),
+            )
+            await del_cmd.execute()
+        return None
+
+    if current is None:
+        return await _create_ssh_tunnel(
+            dao=dao,
+            database=database,
+            payload=payload,
+        )
+
+    upd_cmd = UpdateSSHTunnelCommand(
+        dao=ssh_dao,
+        model_id=current.id,
+        data=dict(payload),
+    )
+    return await upd_cmd.execute()
+
+
+def _serialise_ssh_tunnel(tunnel: Any) -> dict[str, Any]:
+    """Return ``tunnel.data`` for the API response.
+
+    Mirrors original ``superset_old/databases/api.py:post`` /
+    ``put`` handlers which echo ``mask_password_info(model.ssh_tunnel)``
+    back into the response (lines 466-467 / 553-555).  The new
+    ``SSHTunnel`` model embeds masking in its ``data`` property so we
+    can reuse it directly.
+    """
+    if tunnel is None:
+        return {}
+    if hasattr(tunnel, "data"):
+        return dict(tunnel.data)
+    return {
+        "id": getattr(tunnel, "id", None),
+        "server_address": getattr(tunnel, "server_address", ""),
+        "server_port": getattr(tunnel, "server_port", 22),
+        "username": getattr(tunnel, "username", ""),
+    }
+
+
+def _coerce_ssh_tunnel_payload(value: Any) -> dict[str, Any] | None:
+    """Convert a msgspec struct / dict into a plain dict (or ``None``)."""
+    if value is None or value is msgspec.UNSET:
+        return None
+    if hasattr(value, "__struct_fields__"):
+        return msgspec.structs.asdict(value)
+    if isinstance(value, dict):
+        return dict(value)
+    return None
+
+
 class DatabaseController(Controller):
     path = "/api/v1/database"
     tags = ["Databases"]
@@ -458,9 +748,16 @@ class DatabaseController(Controller):
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
+        result = _build_database_result(database)
+        # Merge SSH tunnel data into response — matches original
+        # superset_old/databases/api.py:get (lines 397-403) which calls
+        # DatabaseDAO.get_ssh_tunnel(pk) and adds payload["result"]["ssh_tunnel"].
+        tunnel = await dao.get_ssh_tunnel(pk)
+        if tunnel is not None:
+            result.ssh_tunnel = _serialise_ssh_tunnel(tunnel) or None
         return DatabaseGetResponse(
             id=database.id,
-            result=_build_database_result(database),
+            result=result,
         )
 
     # ------------------------------------------------------------------
@@ -505,6 +802,14 @@ class DatabaseController(Controller):
         if data.masked_encrypted_extra is not None:
             create_data["encrypted_extra"] = data.masked_encrypted_extra
 
+        # Extract ssh_tunnel before stripping it from create_data — the
+        # CreateDatabaseCommand only creates the Database row; the SSH tunnel
+        # is inserted in a separate step via CreateSSHTunnelCommand, matching
+        # superset_old/commands/database/create.py:88-102.
+        ssh_tunnel_payload = _coerce_ssh_tunnel_payload(
+            create_data.pop("ssh_tunnel", None)
+        )
+
         cmd = CreateDatabaseCommand(
             dao=cast("AsyncDatabaseDAO", dao),
             data=create_data,
@@ -512,14 +817,39 @@ class DatabaseController(Controller):
         )
         db = await cmd.execute()
         db_id = int(db.id)
+
+        # Create SSH tunnel row if the request included one and the feature is enabled.
+        # Mirrors original CreateDatabaseCommand.run() lines 88-102.
+        tunnel: Any | None = None
+        if ssh_tunnel_payload:
+            try:
+                tunnel = await _create_ssh_tunnel(
+                    dao=dao,
+                    database=db,
+                    payload=ssh_tunnel_payload,
+                )
+            except Exception as _ssh_exc:  # noqa: BLE001
+                # Log and re-raise so the client sees a clear error —
+                # matches original superset_old error propagation.
+                _log.warning(
+                    "Failed to create SSH tunnel for database %s: %s",
+                    db_id,
+                    _ssh_exc,
+                )
+                raise
+
         await event_logger.alog_with_context(
             "database.create",
             object_ref=f"database:{db_id}",
             user_id=current_user.id,
         )
+        result = _build_database_result(db)
+        # Include masked SSH tunnel in response, matching original line 466-467.
+        if tunnel is not None:
+            result.ssh_tunnel = _serialise_ssh_tunnel(tunnel) or None
         return DatabaseGetResponse(
             id=db_id,
-            result=_build_database_result(db),
+            result=result,
         )
 
     # ------------------------------------------------------------------
@@ -566,6 +896,19 @@ class DatabaseController(Controller):
             else:
                 update_data["encrypted_extra"] = None
 
+        # Extract ssh_tunnel before passing data to UpdateDatabaseCommand.
+        # The command only updates Database model columns; SSH tunnel is handled
+        # separately via _sync_ssh_tunnel (create/update/delete), matching
+        # superset_old/commands/database/update.py:98 + _handle_ssh_tunnel.
+        # Use UNSET sentinel to distinguish "not sent" from "sent as null".
+        ssh_tunnel_in_body = "ssh_tunnel" in update_data
+        ssh_tunnel_payload_raw = update_data.pop("ssh_tunnel", msgspec.UNSET)
+        ssh_tunnel_payload: dict[str, Any] | None = (
+            _coerce_ssh_tunnel_payload(ssh_tunnel_payload_raw)
+            if ssh_tunnel_in_body
+            else msgspec.UNSET  # type: ignore[assignment]
+        )
+
         cmd = UpdateDatabaseCommand(
             dao=cast("AsyncDatabaseDAO", dao),
             database_id=pk,
@@ -573,14 +916,53 @@ class DatabaseController(Controller):
             user_id=current_user.id,
         )
         db = await cmd.execute()
+
+        # -----------------------------------------------------------------
+        # OAuth2 token purge — mirrors UpdateDatabaseCommand._handle_oauth2.
+        # Must run AFTER the database row is updated so we compare against
+        # the NEW encrypted_extra value.
+        # -----------------------------------------------------------------
+        new_encrypted_extra = update_data.get("encrypted_extra", msgspec.UNSET)
+        if new_encrypted_extra is not msgspec.UNSET:
+            await _purge_oauth2_tokens_if_needed(
+                dao=dao,
+                database=db,
+                new_encrypted_extra=new_encrypted_extra,
+            )
+
+        # -----------------------------------------------------------------
+        # SSH tunnel CRUD — mirrors UpdateDatabaseCommand._handle_ssh_tunnel.
+        # Only runs when the request body included an `ssh_tunnel` key.
+        # -----------------------------------------------------------------
+        tunnel: Any | None = None
+        if ssh_tunnel_in_body and ssh_tunnel_payload is not msgspec.UNSET:
+            try:
+                tunnel = await _sync_ssh_tunnel(
+                    dao=dao,
+                    database=db,
+                    payload=ssh_tunnel_payload,
+                )
+            except Exception as _ssh_exc:  # noqa: BLE001
+                _log.warning(
+                    "Failed to sync SSH tunnel for database %s: %s",
+                    pk,
+                    _ssh_exc,
+                )
+                raise
+
         await event_logger.alog_with_context(
             "database.update",
             object_ref=f"database:{pk}",
             user_id=current_user.id,
         )
+        result = _build_database_result(db)
+        # Echo masked SSH tunnel in response when it was provided, matching
+        # original lines 554-555.
+        if tunnel is not None:
+            result.ssh_tunnel = _serialise_ssh_tunnel(tunnel) or None
         return DatabaseGetResponse(
             id=int(db.id),
-            result=_build_database_result(db),
+            result=result,
         )
 
     # ------------------------------------------------------------------
@@ -610,9 +992,23 @@ class DatabaseController(Controller):
         status_code=200,
     )
     async def sync_permissions(
-        self, pk: int, dao: DatabaseDAOProtocol
+        self,
+        pk: int,
+        dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
-        cmd = SyncPermissionsCommand(dao=cast("AsyncDatabaseDAO", dao), database_id=pk)
+        # Pass security_manager via DI so SyncPermissionsCommand can
+        # call add_permission_view_menu, get_schema_perm, etc.
+        # Mirrors original superset_old/databases/api.py:sync_permissions
+        # which calls ``SyncPermissionsCommand(pk, current_username).run()``.
+        username: str | None = getattr(current_user, "username", None)
+        cmd = SyncPermissionsCommand(
+            dao=cast("AsyncDatabaseDAO", dao),
+            database_id=pk,
+            security_manager=security_manager,
+            username=username,
+        )
         result = await cmd.execute()
         await event_logger.alog_with_context("database.sync_permissions")
         return result
@@ -1253,8 +1649,11 @@ class DatabaseController(Controller):
         except SupersetSecurityException as exc:
             raise ObjectNotFoundError("Table", table_name) from exc
 
-        # SELECT * generation delegated to engine in production
-        return SelectStarResponse(result=f'SELECT *\nFROM "{table_name}"')
+        # Use engine-spec-aware SELECT * generation — matches original
+        # Database.select_star → BaseEngineSpec.select_star with dialect-
+        # correct quoting and optional partition probing.
+        sql = await _engine_select_star(database, table)
+        return SelectStarResponse(result=sql)
 
     # ------------------------------------------------------------------
     # GET /{pk}/select_star/{table_name}/{schema_name}/ — SELECT * with schema
@@ -1292,10 +1691,12 @@ class DatabaseController(Controller):
         except SupersetSecurityException as exc:
             raise ObjectNotFoundError("Table", table_name) from exc
 
-        qualified = (
-            f'"{schema_name}"."{table_name}"' if schema_name else f'"{table_name}"'
-        )
-        return SelectStarResponse(result=f"SELECT *\nFROM {qualified}")
+        # Use engine-spec-aware SELECT * generation — matches original
+        # Database.select_star → BaseEngineSpec.select_star with dialect-
+        # correct quoting and optional partition probing.
+        table_with_schema = Table(table_name, schema_name or None)
+        sql = await _engine_select_star(database, table_with_schema)
+        return SelectStarResponse(result=sql)
 
     # ------------------------------------------------------------------
     # POST /test_connection/ — test connectivity
@@ -1455,27 +1856,50 @@ class DatabaseController(Controller):
         overwrite: bool = False,
         passwords: str | None = None,
         ssh_tunnel_passwords: str | None = None,
+        ssh_tunnel_private_keys: str | None = None,
+        ssh_tunnel_private_key_passwords: str | None = None,
     ) -> dict[str, str]:
+        """Import database(s) from a ZIP bundle.
+
+        Mirrors ``superset_old/databases/api.py:import_`` (lines 1620-1662).
+        Accepts four credential maps so SSH-tunnel key-pair databases can be
+        re-imported without losing private-key credentials:
+
+        - ``passwords`` — URI passwords, keyed by ``databases/<Name>.yaml``
+        - ``ssh_tunnel_passwords`` — tunnel password, keyed by file name
+        - ``ssh_tunnel_private_keys`` — PEM private key, keyed by file name
+        - ``ssh_tunnel_private_key_passwords`` — private key passphrase
+        """
         contents = await data.read()
         buf = io.BytesIO(contents)
-        try:
-            passwords_dict: dict[str, str] = json.loads(passwords) if passwords else {}
-        except (ValueError, json.JSONDecodeError) as exc:
-            raise CommandInvalidError("Invalid JSON in 'passwords' field") from exc
-        try:
-            ssh_dict: dict[str, str] = (
-                json.loads(ssh_tunnel_passwords) if ssh_tunnel_passwords else {}
-            )
-        except (ValueError, json.JSONDecodeError) as exc:
-            raise CommandInvalidError(
-                "Invalid JSON in 'ssh_tunnel_passwords' field"
-            ) from exc
+
+        def _parse_json_field(raw: str | None, field_name: str) -> dict[str, str]:
+            if not raw:
+                return {}
+            try:
+                return json.loads(raw)
+            except (ValueError, json.JSONDecodeError) as exc:
+                raise CommandInvalidError(
+                    f"Invalid JSON in '{field_name}' field"
+                ) from exc
+
+        passwords_dict = _parse_json_field(passwords, "passwords")
+        ssh_dict = _parse_json_field(ssh_tunnel_passwords, "ssh_tunnel_passwords")
+        ssh_private_keys = _parse_json_field(
+            ssh_tunnel_private_keys, "ssh_tunnel_private_keys"
+        )
+        ssh_private_key_passwords = _parse_json_field(
+            ssh_tunnel_private_key_passwords, "ssh_tunnel_private_key_passwords"
+        )
+
         cmd = ImportDatabasesCommand(
             contents=buf,
             dao=cast("AsyncDatabaseDAO", dao),
             overwrite=overwrite,
             passwords=passwords_dict,
             ssh_tunnel_passwords=ssh_dict,
+            ssh_tunnel_private_keys=ssh_private_keys,
+            ssh_tunnel_private_key_passwords=ssh_private_key_passwords,
         )
         await cmd.execute()
         await event_logger.alog_with_context("database.import")
@@ -1492,8 +1916,20 @@ class DatabaseController(Controller):
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
-        # Function name listing delegated to engine in production
-        return {"function_names": []}
+        # Delegate to Database.function_names which calls
+        # db_engine_spec.get_function_names(database) — matches original
+        # superset_old/databases/api.py:function_names line 1826-1828.
+        names: list[str] = []
+        try:
+            raw = getattr(database, "function_names", None)
+            if callable(raw):
+                raw = raw()
+            names = list(raw) if raw is not None else []
+        except Exception:  # noqa: BLE001
+            _log.warning(
+                "Failed to get function names for database %s", pk, exc_info=True
+            )
+        return {"function_names": names}
 
     # ------------------------------------------------------------------
     # GET /available/ — available engines
@@ -1676,15 +2112,59 @@ class DatabaseController(Controller):
         self,
         pk: int,
         dao: DatabaseDAOProtocol,
-        data: UploadFile = Body(media_type=RequestEncodingType.MULTI_PART),  # noqa: B008
-        table_name: str = Parameter(query="table_name", default=""),  # noqa: B008
-        schema_name: str | None = Parameter(query="schema_name", default=None),  # noqa: B008
+        data: dict[str, Any] = Body(media_type=RequestEncodingType.MULTI_PART),  # noqa: B008
     ) -> dict[str, Any]:
-        file_contents = await data.read()
+        """Upload a CSV / Excel / Columnar file to a database table.
+
+        Mirrors ``superset_old/databases/api.py:upload`` (lines 1728-1787).
+        The original uses ``UploadPostSchema().load(request.form.to_dict())``
+        to parse and coerce all form fields.  Here we use the async-compatible
+        :func:`superset.utils.upload.parse_upload_form` which is the 1:1 port
+        of that schema.
+
+        Key changes vs the previous stub:
+        1. All 17+ ``UploadPostSchema`` fields are now read from the multipart
+           form (previously only ``table_name`` and ``schema_name`` were passed,
+           and ``schema_name`` was stored under the wrong key ``"schema_name"``
+           while ``UploadCommand.run()`` reads ``"schema"``).
+        2. ``validate_file_extension`` is called so invalid extensions are
+           rejected before any DB work is done.
+        3. ``parse_upload_form`` coerces booleans, integers, and
+           ``column_data_types`` JSON — previously all were silently dropped.
+        """
+        from superset.utils.upload import parse_upload_form, validate_file_extension
+
+        # Extract the UploadFile object from the multipart dict.
+        # Litestar puts named file fields as UploadFile instances in the dict.
+        file_field: UploadFile | None = data.get("file")  # type: ignore[assignment]
+        if file_field is None:
+            raise CommandInvalidError("'file' field is required")
+
+        filename = file_field.filename or ""
+        if not validate_file_extension(filename):
+            raise CommandInvalidError(
+                f"Invalid file extension for '{filename}'. "
+                "Allowed: csv, tsv, xls, xlsx, parquet, zip"
+            )
+
+        file_contents = await file_field.read()
+
+        # Build a plain str→str dict of the non-file form fields so
+        # parse_upload_form can coerce them the same way Marshmallow did.
+        form_dict: dict[str, Any] = {
+            k: v for k, v in data.items() if k != "file"
+        }
+
+        # parse_upload_form mirrors UploadPostSchema field-by-field:
+        # bools, ints, delimited lists, column_data_types JSON.
+        # The canonical field name for the target schema is "schema"
+        # (UploadPostSchema line 1122 in superset_old/databases/schemas.py).
+        parsed = parse_upload_form(form_dict)
+
         cmd = UploadCommand(
             dao=cast("AsyncDatabaseDAO", dao),
             database_id=pk,
-            data={"table_name": table_name, "schema_name": schema_name},
+            data=parsed,
             file_contents=file_contents,
         )
         result = await cmd.execute()

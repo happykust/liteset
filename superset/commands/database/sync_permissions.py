@@ -147,19 +147,47 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
         }
 
     async def _get_catalog_names(self) -> set[str | None]:
-        """Get all catalog names from the database."""
+        """Get all catalog names from the database.
+
+        The new ``Database`` model does not expose ``get_all_catalog_names``
+        or ``get_all_schema_names`` — those live only on the superset_old
+        model.  We replicate the logic inline using ``get_inspector`` (which
+        is present on the new model) wrapped in ``asyncio.to_thread`` so the
+        blocking SQLAlchemy call does not stall the event loop.
+
+        Mirrors ``superset_old/commands/database/sync_permissions.py:
+        _get_catalog_names`` (lines 195-222).
+        """
+        import asyncio
+
         if not getattr(self._database.db_engine_spec, "supports_catalog", False):
             return {None}
 
         try:
-            # If the database doesn't support cross-catalog queries or
-            # multi-catalog is not enabled, only use the default catalog
-            if getattr(
-                self._database.db_engine_spec, "supports_cross_catalog_queries", False
-            ) or getattr(self._database, "allow_multi_catalog", False):
-                return self._database.get_all_catalog_names(force=True)
-            else:
-                return {self._database.get_default_catalog()}
+            # If the database does not support cross-catalog queries and
+            # multi-catalog is not enabled, only the default catalog is
+            # relevant.  This matches the original behaviour and avoids
+            # a potentially very long inspector round-trip per catalog.
+            if not (
+                getattr(
+                    self._database.db_engine_spec,
+                    "supports_cross_catalog_queries",
+                    False,
+                )
+                or getattr(self._database, "allow_multi_catalog", False)
+            ):
+                default_catalog = await asyncio.to_thread(
+                    self._database.get_default_catalog
+                )
+                return {default_catalog}
+
+            def _fetch_catalogs() -> set[str]:
+                with self._database.get_inspector() as inspector:
+                    return self._database.db_engine_spec.get_catalog_names(
+                        self._database, inspector
+                    )
+
+            return await asyncio.to_thread(_fetch_catalogs)
         except Exception:
             logger.warning(
                 "Failed to get catalog names",
@@ -168,12 +196,20 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
             return {None}
 
     async def _get_schema_names(self, catalog: str | None) -> set[str]:
-        """Get all schema names for a catalog."""
+        """Get all schema names for a catalog.
+
+        Mirrors ``superset_old/commands/database/sync_permissions.py:
+        _get_schema_names`` (lines 224-238).  Uses ``get_inspector`` on the
+        new ``Database`` model (sync, wrapped in ``asyncio.to_thread``).
+        """
+        import asyncio
+
         try:
-            return self._database.get_all_schema_names(
-                force=True,
-                catalog=catalog,
-            )
+            def _fetch_schemas() -> set[str]:
+                with self._database.get_inspector(catalog=catalog) as inspector:
+                    return self._database.db_engine_spec.get_schema_names(inspector)
+
+            return await asyncio.to_thread(_fetch_schemas)
         except Exception:
             logger.warning(
                 "Failed to get schema names for catalog %s",

@@ -64,6 +64,32 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
 
     async def run(self) -> "Database":
         assert self._database is not None
+
+        # --- unmask_encrypted_extra ----------------------------------------
+        # The PUT request may contain ``masked_encrypted_extra`` — a version of
+        # ``encrypted_extra`` where sensitive fields (private keys, passwords,
+        # etc.) are replaced with the "XXXXXXXXXX" sentinel by the
+        # ``mask_encrypted_extra`` classmethod on the engine spec.
+        #
+        # Mirrors ``superset_old/commands/database/update.py`` lines 70-77:
+        #   if "masked_encrypted_extra" in self._properties:
+        #       self._properties["encrypted_extra"] = (
+        #           self._model.db_engine_spec.unmask_encrypted_extra(
+        #               self._model.encrypted_extra,
+        #               self._properties.pop("masked_encrypted_extra"),
+        #           )
+        #       )
+        #
+        # Without this step the masked placeholders would be written verbatim
+        # to the database, permanently destroying the real credentials.
+        if "masked_encrypted_extra" in self._data:
+            self._data["encrypted_extra"] = (
+                self._database.db_engine_spec.unmask_encrypted_extra(
+                    self._database.encrypted_extra,
+                    self._data.pop("masked_encrypted_extra"),
+                )
+            )
+
         for key, value in self._data.items():
             if hasattr(self._database, key):
                 setattr(self._database, key, value)

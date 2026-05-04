@@ -44,11 +44,15 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
         contents: io.BytesIO,
         passwords: dict[str, str] | None = None,
         ssh_tunnel_passwords: dict[str, str] | None = None,
+        ssh_tunnel_private_keys: dict[str, str] | None = None,
+        ssh_tunnel_private_key_passwords: dict[str, str] | None = None,
         overwrite: bool = False,
     ) -> None:
         self._contents = contents
         self._passwords = passwords or {}
         self._ssh_tunnel_passwords = ssh_tunnel_passwords or {}
+        self._ssh_tunnel_private_keys = ssh_tunnel_private_keys or {}
+        self._ssh_tunnel_private_key_passwords = ssh_tunnel_private_key_passwords or {}
         self._overwrite = overwrite
         self._configs: dict[str, dict[str, Any]] | None = None
 
@@ -127,7 +131,13 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
             await self._import_single(file_name, content)
 
     def _apply_password(self, content: dict[str, Any]) -> dict[str, Any]:
-        """Substitute masked passwords in database URIs."""
+        """Substitute masked passwords in database URIs and SSH tunnels.
+
+        Mirrors ``superset_old/commands/importers/v1/utils.py:load_configs``
+        lines 151-190: applies passwords, ssh_tunnel_passwords,
+        ssh_tunnel_private_keys, and ssh_tunnel_private_key_passwords
+        by file-name key or database UUID key.
+        """
         uuid = content.get("uuid", "")
         if uuid and self._passwords and uuid in self._passwords:
             uri = content.get("sqlalchemy_uri", "")
@@ -135,10 +145,25 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
                 content["sqlalchemy_uri"] = uri.replace(
                     "XXXXXXXXXX", self._passwords[uuid]
                 )
-        if uuid and self._ssh_tunnel_passwords and uuid in self._ssh_tunnel_passwords:
-            ssh = content.get("ssh_tunnel", {})
-            if ssh and "XXXXXXXXXX" in ssh.get("password", ""):
-                ssh["password"] = self._ssh_tunnel_passwords[uuid]
+        ssh = content.get("ssh_tunnel")
+        if ssh and isinstance(ssh, dict):
+            if uuid and self._ssh_tunnel_passwords and uuid in self._ssh_tunnel_passwords:
+                if "XXXXXXXXXX" in ssh.get("password", ""):
+                    ssh["password"] = self._ssh_tunnel_passwords[uuid]
+            if (
+                uuid
+                and self._ssh_tunnel_private_keys
+                and uuid in self._ssh_tunnel_private_keys
+            ):
+                ssh["private_key"] = self._ssh_tunnel_private_keys[uuid]
+            if (
+                uuid
+                and self._ssh_tunnel_private_key_passwords
+                and uuid in self._ssh_tunnel_private_key_passwords
+            ):
+                ssh["private_key_password"] = self._ssh_tunnel_private_key_passwords[
+                    uuid
+                ]
         return content
 
     @abstractmethod
