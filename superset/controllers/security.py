@@ -290,17 +290,19 @@ class SecurityController(Controller):
 
         exp_seconds: int = getattr(settings, "guest_token_jwt_exp_seconds", 3600)
 
-        # Resolve audience: GUEST_TOKEN_JWT_AUDIENCE config or request URL.
-        # Matches the original _get_guest_token_jwt_audience() logic.
+        # Resolve audience: GUEST_TOKEN_JWT_AUDIENCE config or WEBDRIVER_BASEURL.
+        # Mirrors original _get_guest_token_jwt_audience():
+        #   audience = get_conf()["GUEST_TOKEN_JWT_AUDIENCE"] or get_url_host()
+        # get_url_host() returns app.config["WEBDRIVER_BASEURL"] — a configured
+        # base URL, NOT the attacker-controllable Host request header.
         audience_setting = getattr(settings, "guest_token_jwt_audience", None)
         if audience_setting is not None:
             audience = (
                 audience_setting() if callable(audience_setting) else audience_setting
             )
         else:
-            host = request.headers.get("host", "")
-            scheme = request.scope.get("scheme", "http")
-            audience = f"{scheme}://{host}" if host else ""
+            # Fallback: WEBDRIVER_BASEURL (matches original get_url_host())
+            audience = getattr(settings, "webdriver_baseurl", "")
         audience = str(audience) if audience else ""
 
         user_dict: dict[str, Any] = {

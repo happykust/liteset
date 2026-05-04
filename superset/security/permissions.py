@@ -65,72 +65,88 @@ ACCESSIBLE_PERMS: frozenset[str] = frozenset(
     {
         "can_userinfo",
         "resetmypassword",
+        "can_recent_activity",
     }
 )
 
 ADMIN_ONLY_PERMISSIONS: frozenset[str] = frozenset(
     {
-        CAN_GRANT_ACCESS,
-        CAN_OVERRIDE_ROLE_PERMISSIONS,
-        CAN_APPROVE,
-        "can_sync_druid_source",
-        "can_this_form_post",
-        "can_this_form_get",
-        "resetpasswords",
-        "userinfoedit",
-        "all_datasource_access",
-        "all_database_access",
+        "update_roles_users",
+        "list_roles",
+        "can_update_role",
         "all_query_access",
+        "can_grant_guest_token",
+        "can_set_embedded",
         "can_warm_up_cache",
     }
 )
 
 ADMIN_ONLY_VIEW_MENUS: frozenset[str] = frozenset(
     {
-        "Security",
-        "AccessRequestsModelView",
-        "Manage",
-        "SQL Lab",
-        "Queries",
-        "RoleModelView",
-        "UserDBModelView",
-        "ResetMyPasswordView",
-        "ResetPasswordView",
-        "UserInfoEditView",
-        "SecurityRestApi",
-        # Log views (audit trail) — Admin-only in original
-        # Superset (security/manager.py:270-273)
-        "Action Log",
+        "Access Requests",
         "Action Logs",
         "Log",
+        "List Users",
+        "UsersListView",
+        "List Roles",
+        "List Groups",
+        "ResetPasswordView",
+        "RoleModelView",
+        "UserGroupModelView",
+        "Row Level Security",
+        "Row Level Security Filters",
+        "Security",
+        "SQL Lab",
+        "User Registrations",
+        "User's Statistics",
+        # Guarding all AB_ADD_SECURITY_API = True REST APIs
+        "RoleRestAPI",
+        "Group",
+        "Role",
+        "Permission",
+        "PermissionViewMenu",
+        "ViewMenu",
+        "User",
+        # USER_MODEL_VIEWS (verbatim from superset_old/security/manager.py:255-263)
+        "RegisterUserModelView",
+        "UserDBModelView",
+        "UserLDAPModelView",
+        "UserInfoEditView",
+        "UserOAuthModelView",
+        "UserOIDModelView",
+        "UserRemoteUserModelView",
     }
 )
 
 ALPHA_ONLY_PERMISSIONS: frozenset[str] = frozenset(
     {
         "muldelete",
-        "all_datasource_access",
         "all_database_access",
-        "all_query_access",
+        "all_datasource_access",
     }
 )
 
 ALPHA_ONLY_VIEW_MENUS: frozenset[str] = frozenset(
     {
-        "ReportSchedule",
+        "Alerts & Report",
+        "Annotation Layers",
         "Annotation",
-        "AnnotationLayer",
+        "CSS Templates",
+        "ColumnarToDatabaseView",
         "CssTemplate",
+        "ExcelToDatabaseView",
+        "Import dashboards",
         "ImportExportRestApi",
-        "Upload",
+        "Manage",
+        "Queries",
+        "ReportSchedule",
     }
 )
 
 # Specific (permission, view_menu) pairs that are Alpha-only
 ALPHA_ONLY_PMVS: frozenset[tuple[str, str]] = frozenset(
     {
-        ("can_write", "Dashboard"),
-        ("can_write", "Chart"),
+        ("can_upload", "Database"),
     }
 )
 
@@ -158,46 +174,62 @@ DATA_ACCESS_PERMISSIONS: frozenset[str] = frozenset(
 )
 
 # SQL-Lab-only permissions: (permission_name, view_menu_name) tuples
+# Verbatim from superset_old/security/manager.py:351-381 (29 entries)
 SQLLAB_ONLY_PERMISSIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("can_read", "SavedQuery"),
         ("can_write", "SavedQuery"),
+        ("can_export", "SavedQuery"),
         ("can_read", "Query"),
-        ("can_write", "Query"),
-        ("can_sqllab", "Superset"),
-        ("can_sqllab", "SqlLab"),
-        ("can_only_my_queries", "SqlLab"),
-        ("can_read", "SQLLab"),
-        ("can_write", "SQLLab"),
+        ("can_export_csv", "Query"),
+        ("can_get_results", "SQLLab"),
         ("can_execute_sql_query", "SQLLab"),
+        ("can_estimate_query_cost", "SQL Lab"),
+        ("can_export_csv", "SQLLab"),
+        ("can_read", "SQLLab"),
+        ("can_sqllab_history", "Superset"),
+        ("can_sqllab", "Superset"),
+        ("can_test_conn", "Superset"),  # Deprecated permission remove on 3.0.0
+        ("can_activate", "TabStateView"),
+        ("can_get", "TabStateView"),
+        ("can_delete_query", "TabStateView"),
+        ("can_post", "TabStateView"),
+        ("can_delete", "TabStateView"),
+        ("can_put", "TabStateView"),
+        ("can_migrate_query", "TabStateView"),
+        ("menu_access", "SQL Lab"),
+        ("menu_access", "SQL Editor"),
+        ("menu_access", "Saved Queries"),
+        ("menu_access", "Query Search"),
+        ("can_read", "SqlLabPermalinkRestApi"),
+        ("can_write", "SqlLabPermalinkRestApi"),
+        ("can_post", "TableSchemaView"),
+        ("can_expanded", "TableSchemaView"),
+        ("can_delete", "TableSchemaView"),
     }
 )
 
 # SQL-Lab extra permission views (assigned to sql_lab role, not only-SQL-Lab)
+# Verbatim from superset_old/security/manager.py:383-387
 SQLLAB_EXTRA_PERMISSION_VIEWS: frozenset[tuple[str, str]] = frozenset(
     {
-        ("can_csv", "Superset"),
-        ("can_read", "CsvToDatabaseView"),
-        ("can_read", "ExcelToDatabaseView"),
-        ("can_read", "ColumnarToDatabaseView"),
-        ("menu_access", "SQL Lab"),
-        ("menu_access", "Query Search"),
-        ("menu_access", "Saved Queries"),
+        ("can_csv", "Superset"),  # Deprecated permission remove on 3.0.0
+        ("can_read", "Superset"),
+        ("can_read", "Database"),
     }
 )
 
 # Read-only permission names
+# Verbatim from superset_old/security/manager.py:326-334
 READ_ONLY_PERMISSION: frozenset[str] = frozenset(
     {
-        CAN_READ,
-        "can_get",
-        "can_info",
-        "can_list",
         "can_show",
-        CAN_CSV,
-        CAN_EXPLORE,
-        CAN_SHARE_DASHBOARD,
-        CAN_SHARE_CHART,
+        "can_list",
+        "can_get",
+        "can_external_metadata",
+        "can_external_metadata_by_name",
+        "can_read",
+        "can_get_drill_info",
     }
 )
 

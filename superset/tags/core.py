@@ -283,3 +283,21 @@ async def remove_favorited_by_tag(
     if ids:
         await session.execute(sa_delete(TaggedObject).where(TaggedObject.id.in_(ids)))
         await session.flush()
+
+
+def register_sqla_event_listeners() -> None:
+    """Register synchronous SQLAlchemy event listeners for the tagging system.
+
+    Port of ``superset_old/tags/core.py::register_sqla_event_listeners``.
+    Delegates to :func:`superset.models._listeners.register` which holds
+    the full listener wiring logic (slice perms, database PVM sync, user
+    welcome-dashboard clone, and all tag updaters).
+
+    Called from :func:`superset.app.on_startup` when the ``TAGGING_SYSTEM``
+    feature flag is enabled.  Also called from
+    :mod:`superset.models.__init__` so that import-time consumers (CLI,
+    Alembic) also get listeners wired in.
+    """
+    from superset.models._listeners import register  # noqa: PLC0415
+
+    register()

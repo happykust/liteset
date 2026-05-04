@@ -118,9 +118,8 @@ def create_guest_access_token(
         "type": _GUEST_TOKEN_TYPE,
         "iat": now,
         "exp": now + exp_seconds,
+        "aud": audience,  # always encode aud; matches superset_old/security/manager.py:2717
     }
-    if audience:
-        payload["aud"] = audience
     return jwt.encode(payload, secret_key, algorithm=_GUEST_TOKEN_ALGORITHM)
 
 
