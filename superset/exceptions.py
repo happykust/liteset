@@ -63,6 +63,17 @@ class SupersetException(Exception):  # noqa: N818
     def error_type(self) -> str:
         return self._error_type or type(self).__name__
 
+    @property
+    def status(self) -> int:
+        """Backward-compat alias for ``status_code``.
+
+        The original Flask-era codebase used ``exc.status`` (the FAB / Werkzeug
+        convention). Litestar uses ``status_code``. Both are supported to avoid
+        ``AttributeError`` in Celery tasks, CLI commands, or any non-Litestar
+        code path that still reads the old attribute name.
+        """
+        return self.status_code
+
     def to_sip40(self) -> dict[str, Any]:
         """Convert to SIP-40 error dict for JSON response."""
         return {
@@ -156,7 +167,25 @@ class SupersetErrorsException(SupersetException):
 
 
 class SupersetSyntaxErrorException(SupersetErrorsException):
+    """Raised when Jinja2 template processing finds a syntax error.
+
+    Ported 1:1 from superset_old/exceptions.py::SupersetSyntaxErrorException.
+    The constructor accepts ``list[SupersetError]`` (the original API) and
+    converts each error to a dict via ``to_dict()`` so ``self.errors``
+    contains the dicts that ``to_sip40()`` expects.
+    """
+
     status_code = 422
+
+    def __init__(self, errors: list[Any]) -> None:  # list[SupersetError]
+        # Convert SupersetError dataclass instances to dicts (SIP-40 format).
+        from superset.errors import SupersetError as _SupersetError
+
+        converted: list[dict[str, Any]] = [
+            err.to_dict() if isinstance(err, _SupersetError) else err
+            for err in errors
+        ]
+        super().__init__(errors=converted, status_code=self.status_code)
 
 
 class SupersetTimeoutException(SupersetErrorFromParamsException):

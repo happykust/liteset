@@ -15,19 +15,29 @@
 # specific language governing permissions and limitations
 # under the License.
 """
-Migration-compatible shim for superset.utils.core.
+superset.utils.core — public API surface for the Liteset port.
 
-Provides ONLY the functions needed by Alembic migrations, without importing
-Flask, marshmallow, or other removed dependencies.
+All symbols from superset_old/utils/core.py that are referenced by the
+rest of the codebase are defined or re-exported here.  This module has
+NO Flask imports and NO synchronous DB calls in the request path.
 """
 
 from __future__ import annotations
 
+import logging
+import os
 import re
+import signal
+import tempfile
+import threading
 import uuid
+import zlib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import Enum, StrEnum
-from typing import Any, cast, NamedTuple, TypeVar
+from types import TracebackType
+from typing import Any, cast, NamedTuple, Optional, TypedDict, TypeVar
 
 import sqlalchemy as sa
 from sqlalchemy import Text
@@ -46,7 +56,16 @@ from superset.constants import (
 # Liteset port hoisted it to ``superset.typing`` to keep core lean.  We
 # re-export it here so legacy import paths keep working — multiple
 # subsystems (csv, excel, viz) reference ``superset.utils.core.GenericDataType``.
-from superset.utils.hashing import md5_sha_from_dict
+from superset.typing import GenericDataType  # noqa: F401
+from superset.utils.hashing import md5_sha_from_dict, md5_sha_from_str
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# JS_MAX_INTEGER — largest integer JavaScript can handle (2^53-1)
+# Ported 1:1 from superset_old/utils/core.py:126
+# ---------------------------------------------------------------------------
+JS_MAX_INTEGER = 9007199254740991  # Largest int JavaScript can handle 2^53-1
 
 # ---------------------------------------------------------------------------
 # Type aliases (originally from superset.superset_typing / superset.utils.core)
@@ -56,12 +75,27 @@ FormData = dict[str, Any]
 T = TypeVar("T")
 
 
-class AdhocFilterClause(dict[str, Any]):
-    """Minimal stand-in for the TypedDict used by filter helpers."""
+class AdhocFilterClause(TypedDict, total=False):
+    """TypedDict for adhoc filter clauses — ported 1:1 from superset_old/utils/core.py:216."""
+
+    clause: str
+    expressionType: str
+    filterOptionName: Optional[str]
+    comparator: Any
+    operator: str
+    subject: str
+    isExtra: Optional[bool]
+    sqlExpression: Optional[str]
 
 
-class QueryObjectFilterClause(dict[str, Any]):
-    """Minimal stand-in for the TypedDict used by filter helpers."""
+class QueryObjectFilterClause(TypedDict, total=False):
+    """TypedDict for query object filter clauses — ported 1:1 from superset_old/utils/core.py:227."""
+
+    col: Any
+    op: str
+    val: Any
+    grain: Optional[str]
+    isExtra: Optional[bool]
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +317,9 @@ def split_adhoc_filters_into_base_filters(
         sql_where_filters = []
         sql_having_filters = []
         for adhoc_filter in adhoc_filters:
-            expression_type = adhoc_filter.get("expressionType")
+            expression_type = adhoc_filter.get("expressionType") or adhoc_filter.get(
+                "expression_type"
+            )
             clause = adhoc_filter.get("clause")
             if expression_type == "SIMPLE":
                 if clause == "WHERE":
@@ -295,7 +331,9 @@ def split_adhoc_filters_into_base_filters(
                         }
                     )
             elif expression_type == "SQL":
-                sql_expression = adhoc_filter.get("sqlExpression")
+                sql_expression = adhoc_filter.get("sqlExpression") or adhoc_filter.get(
+                    "sql_expression"
+                )
                 # sanitize_clause is not available in the migration shim;
                 # migrations that call this function operate on already-stored
                 # data, so we pass the expression through unchanged.
@@ -733,6 +771,23 @@ def merge_extra_filters(form_data: dict[str, Any]) -> None:  # noqa: C901
         del form_data["extra_filters"]
 
 
+def merge_request_params(form_data: dict[str, Any], params: dict[str, Any]) -> None:
+    """Merge request parameters to ``url_params`` in form_data.
+
+    Only updates or appends parameters to ``form_data`` that are defined
+    in ``params``; pre-existing parameters not in ``params`` are left
+    unchanged.
+
+    1:1 port of ``superset_old/utils/core.py:merge_request_params``.
+    """
+    url_params = form_data.get("url_params", {})
+    for key, value in params.items():
+        if key in ("form_data", "r"):
+            continue
+        url_params[key] = value
+    form_data["url_params"] = url_params
+
+
 class DatasourceName(NamedTuple):
     """Tuple shape used by ``Database.get_all_table_names_in_schema``.
 
@@ -745,3 +800,268 @@ class DatasourceName(NamedTuple):
     table: str
     schema: str
     catalog: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# zlib_compress / zlib_decompress
+# Ported 1:1 from superset_old/utils/core.py:870-894
+# ---------------------------------------------------------------------------
+
+
+def zlib_compress(data: bytes | str) -> bytes:
+    """
+    Compress things in a py2/3 safe fashion
+    >>> json_str = '{"test": 1}'
+    >>> blob = zlib_compress(json_str)
+    """
+    if isinstance(data, str):
+        return zlib.compress(bytes(data, "utf-8"))
+    return zlib.compress(data)
+
+
+def zlib_decompress(blob: bytes, decode: bool | None = True) -> bytes | str:
+    """
+    Decompress things to a string in a py2/3 safe fashion
+    >>> json_str = '{"test": 1}'
+    >>> blob = zlib_compress(json_str)
+    >>> got_str = zlib_decompress(blob)
+    >>> got_str == json_str
+    True
+    """
+    if isinstance(blob, bytes):
+        decompressed = zlib.decompress(blob)
+    else:
+        decompressed = zlib.decompress(bytes(blob, "utf-8"))
+    return decompressed.decode("utf-8") if decode else decompressed
+
+
+# ---------------------------------------------------------------------------
+# override_user
+# Ported 1:1 from superset_old/utils/core.py:1332-1356, adapted for
+# Liteset ContextVar-based user context (no Flask g).
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def override_user(user: Any, force: bool = True) -> Iterator[Any]:
+    """
+    Temporarily override the current user for the running async context.
+
+    Sometimes, often in the context of async Celery tasks, it is useful to
+    switch the current user (which may be undefined) to a different one,
+    execute some SQLAlchemy tasks et al. and then revert back to the original.
+
+    Ported from superset_old/utils/core.py::override_user — adapted for
+    Liteset's ContextVar-based user (replaces Flask's ``flask.g.user``).
+
+    :param user: The override user
+    :param force: Whether to override the current user if already set
+    """
+    current = _current_user_ctx.get(None)
+    if current is not None and not force:
+        # User is already set and force=False — keep existing user
+        yield
+        return
+    token = _current_user_ctx.set(user)
+    try:
+        yield
+    finally:
+        _current_user_ctx.reset(token)
+
+
+# ---------------------------------------------------------------------------
+# parse_ssl_cert / create_ssl_cert_file
+# Ported 1:1 from superset_old/utils/core.py:1359-1395
+# The original used ``app.config["SSL_CERT_PATH"]``; we use SupersetSettings.
+# ---------------------------------------------------------------------------
+
+
+def parse_ssl_cert(certificate: str) -> Any:
+    """
+    Parses the contents of a certificate and returns a valid certificate object
+    if valid.
+
+    :param certificate: Contents of certificate file
+    :return: Valid certificate instance
+    :raises CertificateException: If certificate is not valid/unparseable
+    """
+    try:
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.x509 import load_pem_x509_certificate
+
+        return load_pem_x509_certificate(certificate.encode("utf-8"), default_backend())
+    except ValueError as ex:
+        from superset.exceptions import CertificateException
+
+        raise CertificateException("Invalid certificate") from ex
+
+
+def create_ssl_cert_file(certificate: str) -> str:
+    """
+    This creates a certificate file that can be used to validate HTTPS
+    sessions. A certificate is only written to disk once; on subsequent calls,
+    only the path of the existing certificate is returned.
+
+    :param certificate: The contents of the certificate
+    :return: The path to the certificate file
+    :raises CertificateException: If certificate is not valid/unparseable
+    """
+    filename = f"{md5_sha_from_str(certificate)}.crt"
+    try:
+        from superset.config import SupersetSettings
+
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        cert_dir = getattr(settings, "ssl_cert_path", None)
+    except Exception:  # noqa: BLE001
+        cert_dir = None
+    path = cert_dir if cert_dir else tempfile.gettempdir()
+    path = os.path.join(path, filename)
+    if not os.path.exists(path):
+        # Validate certificate prior to persisting to temporary directory
+        parse_ssl_cert(certificate)
+        with open(path, "w") as cert_file:
+            cert_file.write(certificate)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# parse_boolean_string
+# Ported 1:1 from superset_old/utils/core.py:1825-1851
+# ---------------------------------------------------------------------------
+
+
+def parse_boolean_string(bool_str: str | None) -> bool:
+    """
+    Convert a string representation of a true/false value into a boolean
+
+    >>> parse_boolean_string(None)
+    False
+    >>> parse_boolean_string('false')
+    False
+    >>> parse_boolean_string('true')
+    True
+    >>> parse_boolean_string('False')
+    False
+    >>> parse_boolean_string('True')
+    True
+    >>> parse_boolean_string('foo')
+    False
+    >>> parse_boolean_string('0')
+    False
+    >>> parse_boolean_string('1')
+    True
+
+    :param bool_str: string representation of a value that is assumed to be boolean
+    :return: parsed boolean value
+    """
+    if bool_str is None:
+        return False
+    return bool_str.lower() in ("y", "yes", "true", "t", "on", "1")
+
+
+# ---------------------------------------------------------------------------
+# markdown
+# Ported 1:1 from superset_old/utils/core.py:478-522
+# ---------------------------------------------------------------------------
+
+
+def markdown(raw: str, markup_wrap: bool | None = False) -> str:
+    import markdown as md
+    import nh3
+
+    safe_markdown_tags = {
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "b",
+        "i",
+        "strong",
+        "em",
+        "tt",
+        "p",
+        "br",
+        "span",
+        "div",
+        "blockquote",
+        "code",
+        "hr",
+        "ul",
+        "ol",
+        "li",
+        "dd",
+        "dt",
+        "img",
+        "a",
+    }
+    safe_markdown_attrs: dict[str, set[str]] = {
+        "img": {"src", "alt", "title"},
+        "a": {"href", "alt", "title"},
+    }
+    safe = md.markdown(
+        raw or "",
+        extensions=[
+            "markdown.extensions.tables",
+            "markdown.extensions.fenced_code",
+            "markdown.extensions.codehilite",
+        ],
+    )
+    safe = nh3.clean(safe, tags=safe_markdown_tags, attributes=safe_markdown_attrs)
+    if markup_wrap:
+        try:
+            from markupsafe import Markup
+
+            safe = Markup(safe)
+        except ImportError:
+            pass
+    return safe  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# SigalrmTimeout
+# Ported 1:1 from superset_old/utils/core.py:598-635
+# ---------------------------------------------------------------------------
+
+
+class SigalrmTimeout:
+    """
+    To be used in a ``with`` block and timeout its content.
+    """
+
+    def __init__(self, seconds: int = 1, error_message: str = "Timeout") -> None:
+        self.seconds = seconds
+        self.error_message = error_message
+
+    def handle_timeout(  # pylint: disable=unused-argument
+        self, signum: int, frame: Any
+    ) -> None:
+        logger.error("Process timed out", exc_info=True)
+        from superset.errors import ErrorLevel, SupersetErrorType
+        from superset.exceptions import SupersetTimeoutException
+
+        raise SupersetTimeoutException(
+            error_type=SupersetErrorType.BACKEND_TIMEOUT_ERROR,
+            message=self.error_message,
+            level=ErrorLevel.ERROR,
+            extra={"timeout": self.seconds},
+        )
+
+    def __enter__(self) -> None:
+        try:
+            if threading.current_thread() == threading.main_thread():
+                signal.signal(signal.SIGALRM, self.handle_timeout)
+                signal.alarm(self.seconds)
+        except ValueError as ex:
+            logger.warning("timeout can't be used in the current context")
+            logger.exception(ex)
+
+    def __exit__(  # pylint: disable=redefined-outer-name,redefined-builtin
+        self, type: Any, value: Any, traceback: TracebackType
+    ) -> None:
+        try:
+            signal.alarm(0)
+        except ValueError as ex:
+            logger.warning("timeout can't be used in the current context")
+            logger.exception(ex)

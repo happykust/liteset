@@ -25,8 +25,11 @@ the concrete DAO classes (which would pull in the Flask import chain).
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from enum import IntEnum
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Optional, Protocol, runtime_checkable, TypedDict, Union
+
+from sqlalchemy.sql.type_api import TypeEngine
 
 
 class GenericDataType(IntEnum):
@@ -36,6 +39,111 @@ class GenericDataType(IntEnum):
     STRING = 1
     TEMPORAL = 2
     BOOLEAN = 3
+
+
+# ---------------------------------------------------------------------------
+# Type aliases ported from superset_old/superset_typing.py
+# These are re-exported here so ``from superset.typing import X`` keeps working
+# for all callers that previously used ``from superset.superset_typing import X``.
+# ---------------------------------------------------------------------------
+
+SQLType = Union[TypeEngine, type[TypeEngine]]
+
+
+class LegacyMetric(TypedDict):
+    label: Optional[str]
+
+
+class AdhocMetricColumn(TypedDict, total=False):
+    column_name: Optional[str]
+    description: Optional[str]
+    expression: Optional[str]
+    filterable: bool
+    groupby: bool
+    id: int
+    is_dttm: bool
+    python_date_format: Optional[str]
+    type: str
+    type_generic: "GenericDataType"
+    verbose_name: Optional[str]
+
+
+class AdhocMetric(TypedDict, total=False):
+    aggregate: str
+    column: Optional[AdhocMetricColumn]
+    expressionType: Literal["SIMPLE", "SQL"]
+    hasCustomLabel: Optional[bool]
+    label: Optional[str]
+    sqlExpression: Optional[str]
+
+
+class AdhocColumn(TypedDict, total=False):
+    hasCustomLabel: Optional[bool]
+    label: str
+    sqlExpression: str
+    isColumnReference: Optional[bool]
+    columnType: Optional[Literal["BASE_AXIS", "SERIES"]]
+    timeGrain: Optional[str]
+
+
+CacheConfig = dict[str, Any]
+
+DbapiDescriptionRow = tuple[
+    Union[str, bytes],
+    str,
+    Optional[str],
+    Optional[str],
+    Optional[int],
+    Optional[int],
+    bool,
+]
+DbapiDescription = Union[list[DbapiDescriptionRow], tuple[DbapiDescriptionRow, ...]]
+DbapiResult = Sequence[Union[list[Any], tuple[Any, ...]]]
+
+FilterValue = Union[bool, datetime, float, int, str]
+FilterValues = Union[FilterValue, list[FilterValue], tuple[FilterValue, ...]]
+
+FormData = dict[str, Any]
+Granularity = Union[str, dict[str, Union[str, float]]]
+
+Column = Union[AdhocColumn, str]
+Metric = Union[AdhocMetric, str]
+OrderBy = tuple[Union[Metric, Column], bool]
+
+QueryObjectDict = dict[str, Any]
+VizData = Optional[Union[list[Any], dict[Any, Any]]]
+VizPayload = dict[str, Any]
+
+
+class OAuth2ClientConfig(TypedDict):
+    """Configuration for an OAuth2 client."""
+
+    id: str
+    secret: str
+    scope: str
+    redirect_uri: str
+    authorization_request_uri: str
+    token_request_uri: str
+    request_content_type: str
+
+
+class OAuth2TokenResponse(TypedDict, total=False):
+    """Type for an OAuth2 response when exchanging or refreshing tokens."""
+
+    access_token: str
+    expires_in: int
+    scope: str
+    token_type: str
+    refresh_token: str
+
+
+class OAuth2State(TypedDict):
+    """Type for the state passed during OAuth2."""
+
+    database_id: int
+    user_id: int
+    default_redirect_uri: str
+    tab_id: str
 
 
 @runtime_checkable

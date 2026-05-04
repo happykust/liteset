@@ -231,16 +231,18 @@ class ExtraCache:
         """
         Return row level security rules for the current user and dataset.
 
-        Original Superset calls security_manager.get_rls_filters(table) and
-        security_manager.get_guest_rls_filters(table). In Liteset, RLS is
-        handled by AsyncSecurityManager. Since template rendering is synchronous,
-        we use a sync fallback: read from the rls_rules context var that should
-        be set by the controller before rendering.
+        Ported 1:1 from superset_old/jinja_context.py::ExtraCache.current_user_rls_rules.
+        The original called security_manager.get_rls_filters(self.table) (sync,
+        because the original Flask SM was sync). In Liteset we reproduce the
+        same query synchronously via _sync_get_rls_rules which uses a cached
+        sync SQLAlchemy engine — acceptable since Jinja rendering is sync.
         """
         if not self.table:
             return None
-        rls_rules = getattr(self, "_rls_rules", None)
-        if rls_rules is None:
+        user = get_current_user()
+        try:
+            rls_rules = _sync_get_rls_rules(self.table, user)
+        except Exception:  # noqa: BLE001
             return None
         if not rls_rules:
             return None
@@ -307,8 +309,11 @@ class ExtraCache:
         for flt in form_data.get("adhoc_filters", []):
             val: Union[Any, list[Any]] = flt.get("comparator")
             op: str = flt["operator"].upper() if flt.get("operator") else None  # type: ignore
+            # Support both camelCase and snake_case payload conventions
+            # (msgspec ``rename="camel"`` decoded structs use snake_case).
+            expression_type = flt.get("expressionType") or flt.get("expression_type")
             if (
-                flt.get("expressionType") == "SIMPLE"
+                expression_type == "SIMPLE"
                 and flt.get("clause") == "WHERE"
                 and flt.get("subject") == column
                 and (
@@ -571,7 +576,7 @@ class BaseTemplateProcessor:
                 },
             )
 
-            raise SupersetSyntaxErrorException([error]) from ex  # type: ignore[list-item]
+            raise SupersetSyntaxErrorException([error]) from ex
         except Exception as ex:
             error_msg = str(ex)
             exception_type = type(ex).__name__
@@ -793,25 +798,160 @@ def get_template_processor(
 # The original Superset uses DatasetDAO.find_by_id() which is a synchronous
 # class-method backed by Flask-SQLAlchemy. In Liteset the DAO layer is fully
 # async. For synchronous template rendering we use a direct sync query.
+#
+# P1-3 fix: cache the engine at module level (keyed by DB URI) so we create
+# at most one engine per process — avoiding per-call connection pool leaks.
 # ---------------------------------------------------------------------------
-def _sync_find_dataset(dataset_id: int) -> Any:
-    """Synchronously find a dataset by ID using the sync Alembic engine."""
+import threading as _threading
+
+_sync_engine_lock = _threading.Lock()
+_sync_engine_cache: dict[str, Any] = {}
+
+
+def _get_sync_engine() -> Any:
+    """Return (or create) the module-level sync SQLAlchemy engine.
+
+    The engine is keyed by the database URI and created at most once per
+    process, protected by a lock for thread safety in Celery workers.
+    """
+    from sqlalchemy import create_engine as _create_engine
+
     from superset.config import SupersetSettings
-    from superset.models.connectors import SqlaTable
 
     settings = SupersetSettings()  # type: ignore[call-arg]
     sync_uri = str(settings.sqlalchemy_database_uri)
 
-    from sqlalchemy import create_engine
+    if sync_uri not in _sync_engine_cache:
+        with _sync_engine_lock:
+            # Double-checked locking
+            if sync_uri not in _sync_engine_cache:
+                _sync_engine_cache[sync_uri] = _create_engine(
+                    sync_uri,
+                    pool_pre_ping=True,
+                )
+    return _sync_engine_cache[sync_uri]
+
+
+def _sync_find_dataset(dataset_id: int) -> Any:
+    """Synchronously find a dataset by ID using the shared sync engine."""
     from sqlalchemy.orm import Session
 
-    engine = create_engine(sync_uri)
+    from superset.models.connectors import SqlaTable
+
+    engine = _get_sync_engine()
     with Session(engine) as session:
         return (
             session.execute(select(SqlaTable).where(SqlaTable.id == dataset_id))
             .scalars()
             .one_or_none()
         )
+
+
+def _sync_get_rls_rules(table: Any, user: Any) -> list[str]:
+    """Synchronously retrieve RLS filter clauses for ``user`` on ``table``.
+
+    Ported 1:1 from the logic in
+    ``superset_old/security/manager.py::SupersetSecurityManager.get_rls_filters``
+    and ``get_guest_rls_filters``.  Since Jinja template rendering is
+    synchronous, we cannot ``await`` the async security manager; instead
+    we reproduce the same SQL query directly via a sync session.
+
+    Returns a sorted list of SQL clause strings (same contract as the
+    original ``ExtraCache.current_user_rls_rules``).
+    """
+    from sqlalchemy.orm import Session
+
+    from superset.models.connectors import (
+        RLSFilterRoles,
+        RLSFilterTables,
+        RowLevelSecurityFilter,
+    )
+    from superset.utils.core import RowLevelSecurityFilterType
+
+    # Guest user path: read RLS rules directly from the guest token attributes.
+    is_guest = False
+    try:
+        from superset.security.manager import AsyncSecurityManager
+
+        is_guest = AsyncSecurityManager.is_guest_user(None, user)  # static-like check
+    except Exception:  # noqa: BLE001
+        pass
+
+    if is_guest:
+        rls_rules: list[dict[str, Any]] = getattr(user, "rls_rules", [])
+        clauses = [
+            rule["clause"]
+            for rule in rls_rules
+            if rule.get("clause")
+            and (
+                not rule.get("dataset")
+                or str(rule.get("dataset")) == str(table.id)
+            )
+        ]
+        return sorted(clauses)
+
+    # Authenticated user path: query the RowLevelSecurityFilter table.
+    try:
+        user_role_ids = [r.id for r in getattr(user, "roles", []) or []]
+    except Exception:  # noqa: BLE001
+        user_role_ids = []
+
+    if not user_role_ids:
+        return []
+
+    try:
+        from sqlalchemy import and_, or_
+
+        filter_tables_sq = select(RLSFilterTables.c.rls_filter_id).where(
+            RLSFilterTables.c.table_id == table.id
+        )
+        regular_filter_roles_sq = (
+            select(RLSFilterRoles.c.rls_filter_id)
+            .join(
+                RowLevelSecurityFilter,
+                RLSFilterRoles.c.rls_filter_id == RowLevelSecurityFilter.id,
+            )
+            .where(
+                RowLevelSecurityFilter.filter_type == RowLevelSecurityFilterType.REGULAR
+            )
+            .where(RLSFilterRoles.c.role_id.in_(user_role_ids))
+        )
+        base_filter_roles_sq = (
+            select(RLSFilterRoles.c.rls_filter_id)
+            .join(
+                RowLevelSecurityFilter,
+                RLSFilterRoles.c.rls_filter_id == RowLevelSecurityFilter.id,
+            )
+            .where(
+                RowLevelSecurityFilter.filter_type == RowLevelSecurityFilterType.BASE
+            )
+            .where(RLSFilterRoles.c.role_id.in_(user_role_ids))
+        )
+        stmt = (
+            select(RowLevelSecurityFilter.clause)
+            .where(RowLevelSecurityFilter.id.in_(filter_tables_sq))
+            .where(
+                or_(
+                    and_(
+                        RowLevelSecurityFilter.filter_type
+                        == RowLevelSecurityFilterType.REGULAR,
+                        RowLevelSecurityFilter.id.in_(regular_filter_roles_sq),
+                    ),
+                    and_(
+                        RowLevelSecurityFilter.filter_type
+                        == RowLevelSecurityFilterType.BASE,
+                        RowLevelSecurityFilter.id.notin_(base_filter_roles_sq),
+                    ),
+                )
+            )
+        )
+        engine = _get_sync_engine()
+        with Session(engine) as session:
+            rows = session.execute(stmt).scalars().all()
+        return sorted(str(c) for c in rows if c)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to retrieve RLS rules for user in Jinja context")
+        return []
 
 
 def dataset_macro(
@@ -889,15 +1029,12 @@ def get_dataset_id_from_context(metric_key: str) -> int:
         # Check slice_id -> chart -> datasource_id
         slice_id = form_data.get("slice_id") or url_params.get("slice_id")
         if slice_id:
-            # Synchronous fallback for chart lookup
-            from sqlalchemy import create_engine
+            # Synchronous fallback for chart lookup — use cached engine (P1-3 fix)
             from sqlalchemy.orm import Session
 
-            from superset.config import SupersetSettings
             from superset.models.slice import Slice
 
-            settings = SupersetSettings()  # type: ignore[call-arg]
-            engine = create_engine(str(settings.sqlalchemy_database_uri))
+            engine = _get_sync_engine()
             with Session(engine) as session:
                 chart = (
                     session.execute(select(Slice).where(Slice.id == int(slice_id)))
