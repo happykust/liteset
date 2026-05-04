@@ -23,7 +23,6 @@ import pytest
 
 from superset.controllers.cache import CacheController, CacheInvalidateSchema
 
-
 # ---------------------------------------------------------------------------
 # Schema tests
 # ---------------------------------------------------------------------------

@@ -18,8 +18,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from superset.controllers.explore_form_data import ExploreFormDataController
 
 

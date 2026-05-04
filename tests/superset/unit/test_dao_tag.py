@@ -416,7 +416,7 @@ async def test_delete_tagged_object_tag_not_found(async_session: AsyncSession) -
 async def test_delete_tags(async_session: AsyncSession) -> None:
     dao = FakeTagDAO(async_session)
     t1 = await dao.create({"name": "del1"})
-    t2 = await dao.create({"name": "del2"})
+    await dao.create({"name": "del2"})
     await async_session.flush()
 
     to = FakeTaggedObject(tag_id=t1.id, object_id=1, object_type="chart")

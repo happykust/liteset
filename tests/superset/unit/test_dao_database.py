@@ -120,7 +120,7 @@ async def test_validate_uniqueness(async_session: AsyncSession) -> None:
 async def test_validate_update_uniqueness(async_session: AsyncSession) -> None:
     dao = FakeDatabaseDAO(async_session)
     d1 = await dao.create({"database_name": "db1"})
-    d2 = await dao.create({"database_name": "db2"})
+    await dao.create({"database_name": "db2"})
     await async_session.flush()
 
     assert await dao.validate_update_uniqueness(d1.id, "db1") is True

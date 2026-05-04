@@ -18,10 +18,9 @@
 
 from __future__ import annotations
 
+import pytest
 from litestar import Litestar
 from litestar.testing import AsyncTestClient
-
-import pytest
 
 from superset.controllers.legacy_api import LegacyApiController
 
@@ -52,9 +51,7 @@ async def test_deprecated_form_data(app: Litestar) -> None:
         assert "Deprecated" in data["message"]
         assert "form_data" in data["message"]
         assert response.headers.get("Deprecation") == "true"
-        assert (
-            response.headers.get("X-Deprecated-Endpoint") == "/api/v1/form_data/"
-        )
+        assert response.headers.get("X-Deprecated-Endpoint") == "/api/v1/form_data/"
 
 
 async def test_deprecated_time_range(app: Litestar) -> None:
@@ -65,7 +62,4 @@ async def test_deprecated_time_range(app: Litestar) -> None:
         data = response.json()
         assert "Deprecated" in data["message"]
         assert response.headers.get("Deprecation") == "true"
-        assert (
-            response.headers.get("X-Deprecated-Endpoint")
-            == "/api/v1/time_range/"
-        )
+        assert response.headers.get("X-Deprecated-Endpoint") == "/api/v1/time_range/"

@@ -318,7 +318,7 @@ async def test_validate_update_slug_uniqueness(async_session: AsyncSession) -> N
             "changed_on": datetime.now(),
         }
     )
-    d2 = await dao.create(
+    await dao.create(
         {
             "dashboard_title": "D2",
             "slug": "slug-b",

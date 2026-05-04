@@ -40,7 +40,7 @@ _reg_get_list = UserRegistrationsController.get_list.fn
 _reg_get_single = UserRegistrationsController.get_single.fn
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_user():
     user = MagicMock()
     type(user).id = PropertyMock(return_value=1)
@@ -126,7 +126,9 @@ async def test_update_me(mock_user: MagicMock) -> None:
     data = CurrentUserUpdateRequest(first_name="New")
     user_dao = AsyncMock()
     user_dao.find_by_id.return_value = mock_user
-    result = await _update_me(None, data=data, current_user=mock_user, user_dao=user_dao)
+    result = await _update_me(
+        None, data=data, current_user=mock_user, user_dao=user_dao
+    )
     assert result["result"]["first_name"] == "New"
     assert "last_name" not in result["result"]
 
@@ -135,7 +137,9 @@ async def test_update_me_both_fields(mock_user: MagicMock) -> None:
     data = CurrentUserUpdateRequest(first_name="New", last_name="Name")
     user_dao = AsyncMock()
     user_dao.find_by_id.return_value = mock_user
-    result = await _update_me(None, data=data, current_user=mock_user, user_dao=user_dao)
+    result = await _update_me(
+        None, data=data, current_user=mock_user, user_dao=user_dao
+    )
     assert result["result"]["first_name"] == "New"
     assert result["result"]["last_name"] == "Name"
 
@@ -143,7 +147,9 @@ async def test_update_me_both_fields(mock_user: MagicMock) -> None:
 async def test_update_me_empty(mock_user: MagicMock) -> None:
     data = CurrentUserUpdateRequest()
     user_dao = AsyncMock()
-    result = await _update_me(None, data=data, current_user=mock_user, user_dao=user_dao)
+    result = await _update_me(
+        None, data=data, current_user=mock_user, user_dao=user_dao
+    )
     assert result["result"] == {}
 
 

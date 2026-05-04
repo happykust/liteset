@@ -142,9 +142,7 @@ async def test_create_annotation_success(
 
 async def test_update_annotation_not_found(mock_dao):
     mock_dao.find_by_id = AsyncMock(return_value=None)
-    cmd = UpdateAnnotationCommand(
-        dao=mock_dao, pk=999, data={"short_descr": "updated"}
-    )
+    cmd = UpdateAnnotationCommand(dao=mock_dao, pk=999, data={"short_descr": "updated"})
     with pytest.raises(ObjectNotFoundError, match="Annotation"):
         await cmd.validate()
 
@@ -152,9 +150,7 @@ async def test_update_annotation_not_found(mock_dao):
 async def test_update_annotation_success(mock_dao, mock_annotation):
     mock_dao.find_by_id = AsyncMock(return_value=mock_annotation)
     mock_dao.update = AsyncMock(return_value=mock_annotation)
-    cmd = UpdateAnnotationCommand(
-        dao=mock_dao, pk=10, data={"short_descr": "updated"}
-    )
+    cmd = UpdateAnnotationCommand(dao=mock_dao, pk=10, data={"short_descr": "updated"})
     result = await cmd.execute()
     assert result.id == 10
     mock_dao.update.assert_awaited_once_with(

@@ -59,9 +59,7 @@ def mock_report():
 
 
 async def test_create_report_validates_name_required(mock_dao):
-    cmd = CreateReportScheduleCommand(
-        dao=mock_dao, data={"type": "Report"}, user_id=1
-    )
+    cmd = CreateReportScheduleCommand(dao=mock_dao, data={"type": "Report"}, user_id=1)
     with pytest.raises(CommandInvalidError, match="name is required"):
         await cmd.validate()
 
@@ -77,9 +75,7 @@ async def test_create_report_validates_empty_name(mock_dao):
 
 
 async def test_create_report_validates_type_required(mock_dao):
-    cmd = CreateReportScheduleCommand(
-        dao=mock_dao, data={"name": "Test"}, user_id=1
-    )
+    cmd = CreateReportScheduleCommand(dao=mock_dao, data={"name": "Test"}, user_id=1)
     with pytest.raises(CommandInvalidError, match="type is required"):
         await cmd.validate()
 
@@ -158,9 +154,7 @@ async def test_update_report_success(mock_dao, mock_report):
     mock_dao.find_by_id = AsyncMock(return_value=mock_report)
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
     mock_dao.update = AsyncMock(return_value=mock_report)
-    cmd = UpdateReportScheduleCommand(
-        dao=mock_dao, pk=1, data={"name": "Updated Name"}
-    )
+    cmd = UpdateReportScheduleCommand(dao=mock_dao, pk=1, data={"name": "Updated Name"})
     await cmd.validate()
     result = await cmd.run()
     assert result.id == 1

@@ -135,7 +135,7 @@ async def test_get_by_id_or_uuid_by_id(async_session: AsyncSession) -> None:
 async def test_get_by_id_or_uuid_by_uuid(async_session: AsyncSession) -> None:
     dao = FakeChartDAO(async_session)
     chart_uuid = str(uuid.uuid4())
-    chart = await dao.create({"slice_name": "UUID Chart", "uuid": chart_uuid})
+    await dao.create({"slice_name": "UUID Chart", "uuid": chart_uuid})
     await async_session.flush()
 
     found = await dao.get_by_id_or_uuid(chart_uuid)

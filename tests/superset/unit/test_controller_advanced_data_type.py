@@ -64,9 +64,7 @@ async def test_convert_success() -> None:
         values=["192.168.1.1"],
     )
     result = await _convert(self=None, data=request_data, state=state)  # type: ignore[arg-type]
-    assert result == {
-        "result": [{"value": "192.168.1.1", "type": "internet_address"}]
-    }
+    assert result == {"result": [{"value": "192.168.1.1", "type": "internet_address"}]}
 
 
 @pytest.mark.asyncio

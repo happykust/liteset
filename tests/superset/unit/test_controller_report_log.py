@@ -31,7 +31,9 @@ from superset.exceptions import ObjectNotFoundError
 
 
 def _get_raw_method(controller_cls: type, method_name: str):  # type: ignore[type-arg]
-    """Return the underlying async function from a Litestar-decorated controller method."""
+    """Return the underlying async function from a Litestar-decorated controller
+    method.
+    """
     handler = getattr(controller_cls, method_name)
     if hasattr(handler, "fn"):
         return handler.fn
@@ -70,9 +72,7 @@ async def test_get_list(
 ) -> None:
     mock_dao.find_all.return_value = [MagicMock(), MagicMock()]
     mock_dao.count.return_value = 2
-    result = await _get_list(
-        controller, report_pk=1, dao=mock_dao, rison_params=None
-    )
+    result = await _get_list(controller, report_pk=1, dao=mock_dao, rison_params=None)
     assert result["count"] == 2
     assert len(result["result"]) == 2
     mock_dao.find_all.assert_awaited_once()
@@ -101,9 +101,7 @@ async def test_get_list_empty(
 ) -> None:
     mock_dao.find_all.return_value = []
     mock_dao.count.return_value = 0
-    result = await _get_list(
-        controller, report_pk=99, dao=mock_dao, rison_params=None
-    )
+    result = await _get_list(controller, report_pk=99, dao=mock_dao, rison_params=None)
     assert result["count"] == 0
     assert result["result"] == []
 

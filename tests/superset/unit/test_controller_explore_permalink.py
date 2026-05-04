@@ -29,7 +29,6 @@ from superset.controllers.explore_permalink import (
     ExplorePermalinkCreateSchema,
 )
 
-
 # ---------------------------------------------------------------------------
 # Controller metadata
 # ---------------------------------------------------------------------------
@@ -57,7 +56,11 @@ def test_create_body_defaults():
 
 def test_create_body_with_values():
     body = msgspec.convert(
-        {"chart_id": 42, "form_data": {"viz_type": "table"}, "url_params": {"foo": "bar"}},
+        {
+            "chart_id": 42,
+            "form_data": {"viz_type": "table"},
+            "url_params": {"foo": "bar"},
+        },
         ExplorePermalinkCreateSchema,
     )
     assert body.chart_id == 42

@@ -71,18 +71,14 @@ async def test_create_layer_validates_empty_name(mock_dao):
 
 async def test_create_layer_validates_uniqueness(mock_dao):
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=False)
-    cmd = CreateAnnotationLayerCommand(
-        dao=mock_dao, data={"name": "Duplicate"}
-    )
+    cmd = CreateAnnotationLayerCommand(dao=mock_dao, data={"name": "Duplicate"})
     with pytest.raises(CommandInvalidError, match="already exists"):
         await cmd.validate()
 
 
 async def test_create_layer_validates_success(mock_dao):
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
-    cmd = CreateAnnotationLayerCommand(
-        dao=mock_dao, data={"name": "New Layer"}
-    )
+    cmd = CreateAnnotationLayerCommand(dao=mock_dao, data={"name": "New Layer"})
     await cmd.validate()  # should not raise
 
 
@@ -106,9 +102,7 @@ async def test_create_layer_run(mock_dao, mock_layer):
 
 async def test_update_layer_not_found(mock_dao):
     mock_dao.find_by_id = AsyncMock(return_value=None)
-    cmd = UpdateAnnotationLayerCommand(
-        dao=mock_dao, pk=999, data={"name": "Updated"}
-    )
+    cmd = UpdateAnnotationLayerCommand(dao=mock_dao, pk=999, data={"name": "Updated"})
     with pytest.raises(ObjectNotFoundError):
         await cmd.validate()
 
@@ -116,9 +110,7 @@ async def test_update_layer_not_found(mock_dao):
 async def test_update_layer_uniqueness_conflict(mock_dao, mock_layer):
     mock_dao.find_by_id = AsyncMock(return_value=mock_layer)
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=False)
-    cmd = UpdateAnnotationLayerCommand(
-        dao=mock_dao, pk=1, data={"name": "Duplicate"}
-    )
+    cmd = UpdateAnnotationLayerCommand(dao=mock_dao, pk=1, data={"name": "Duplicate"})
     with pytest.raises(CommandInvalidError, match="already exists"):
         await cmd.validate()
 
@@ -127,9 +119,7 @@ async def test_update_layer_success(mock_dao, mock_layer):
     mock_dao.find_by_id = AsyncMock(return_value=mock_layer)
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
     mock_dao.update = AsyncMock(return_value=mock_layer)
-    cmd = UpdateAnnotationLayerCommand(
-        dao=mock_dao, pk=1, data={"name": "Updated"}
-    )
+    cmd = UpdateAnnotationLayerCommand(dao=mock_dao, pk=1, data={"name": "Updated"})
     result = await cmd.execute()
     assert result.id == 1
     mock_dao.update.assert_awaited_once_with(mock_layer, {"name": "Updated"})
@@ -139,9 +129,7 @@ async def test_update_layer_no_name_skips_uniqueness(mock_dao, mock_layer):
     """When name is not in data, uniqueness check should be skipped."""
     mock_dao.find_by_id = AsyncMock(return_value=mock_layer)
     mock_dao.update = AsyncMock(return_value=mock_layer)
-    cmd = UpdateAnnotationLayerCommand(
-        dao=mock_dao, pk=1, data={"descr": "new desc"}
-    )
+    cmd = UpdateAnnotationLayerCommand(dao=mock_dao, pk=1, data={"descr": "new desc"})
     result = await cmd.execute()
     assert result.id == 1
     mock_dao.validate_update_uniqueness.assert_not_awaited()

@@ -25,14 +25,15 @@ import pytest
 from superset.controllers.log import LogController
 from superset.exceptions import ObjectNotFoundError
 
-
 # ---------------------------------------------------------------------------
 # Helpers — Litestar decorators wrap methods; access the raw fn for unit tests.
 # ---------------------------------------------------------------------------
 
 
 def _get_raw_method(controller_cls: type, method_name: str):
-    """Return the underlying async function from a Litestar-decorated controller method."""
+    """Return the underlying async function from a Litestar-decorated controller
+    method.
+    """
     handler = getattr(controller_cls, method_name)
     if hasattr(handler, "fn"):
         return handler.fn
