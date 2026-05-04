@@ -223,6 +223,8 @@ class AsyncSSHTunnelDAO:
     Does not inherit BaseAsyncDAO because the SSHTunnel model may not be
     available (optional superset dependency). Uses direct session queries
     with graceful ImportError fallback.
+
+    Mirrors ``superset_old/daos/database.py::SSHTunnelDAO``.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -235,6 +237,52 @@ class AsyncSSHTunnelDAO:
         stmt = select(SSHTunnel).where(SSHTunnel.database_id == database_id)
         result = await self.session.execute(stmt)
         return result.scalars().one_or_none()
+
+    async def create(self, attributes: dict[str, Any]) -> Any:
+        """Create a new SSHTunnel row.
+
+        Port of ``BaseDAO.create`` specialised for SSHTunnel.
+        """
+        from superset.models.ssh_tunnel import SSHTunnel
+
+        tunnel = SSHTunnel(**attributes)
+        self.session.add(tunnel)
+        await self.session.flush()
+        return tunnel
+
+    async def update(
+        self,
+        item: Any,
+        attributes: dict[str, Any],
+    ) -> Any:
+        """Update an SSHTunnel, unmasking credential fields before persisting.
+
+        When a database is edited the user sees masked values for
+        ``password``, ``private_key``, and ``private_key_password`` (the
+        ``PASSWORD_MASK`` sentinel).  Before writing we replace any mask
+        sentinels with the values already stored on the model so the real
+        secrets are not overwritten.
+
+        Port of ``superset_old/daos/database.py::SSHTunnelDAO.update``.
+        """
+        from superset.utils.ssh_tunnel import unmask_password_info
+
+        # ID cannot be updated — matches the original.
+        attributes.pop("id", None)
+        attributes = unmask_password_info(attributes, item)
+
+        for key, value in attributes.items():
+            setattr(item, key, value)
+        await self.session.flush()
+        return item
+
+    async def delete(self, item: Any) -> None:
+        """Delete an SSHTunnel row.
+
+        Port of ``BaseDAO.delete`` specialised for SSHTunnel.
+        """
+        await self.session.delete(item)
+        await self.session.flush()
 
 
 class AsyncDatabaseUserOAuth2TokensDAO:
