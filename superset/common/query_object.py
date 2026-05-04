@@ -253,7 +253,12 @@ class AsyncQueryObject:
         labels: list[str] = []
         for col in self.columns:
             if isinstance(col, dict):
-                label = col.get("label") or col.get("sqlExpression") or str(col)
+                label = (
+                    col.get("label")
+                    or col.get("sqlExpression")
+                    or col.get("sql_expression")
+                    or str(col)
+                )
             else:
                 label = str(col)
             labels.append(label)
@@ -298,7 +303,12 @@ class AsyncQueryObject:
         col_labels: set[str] = set()
         for col in self.columns:
             if isinstance(col, dict):
-                col_labels.add(col.get("label") or col.get("sqlExpression") or str(col))
+                col_labels.add(
+                    col.get("label")
+                    or col.get("sqlExpression")
+                    or col.get("sql_expression")
+                    or str(col)
+                )
             else:
                 col_labels.add(str(col))
         for sc in self.series_columns:

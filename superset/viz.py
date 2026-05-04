@@ -211,8 +211,12 @@ def merge_extra_filters(form_data: dict[str, Any]) -> None:  # noqa: C901
 
     existing_filters: dict[str, Any] = {}
     for existing in adhoc_filters:
+        # Support both camelCase and snake_case payload conventions.
+        expression_type = existing.get("expressionType") or existing.get(
+            "expression_type"
+        )
         if (
-            existing.get("expressionType") == "SIMPLE"
+            expression_type == "SIMPLE"
             and existing.get("comparator") is not None
             and existing.get("subject") is not None
         ):
@@ -388,6 +392,13 @@ class BaseViz:
         self.from_dttm: datetime | None = None
         self.to_dttm: datetime | None = None
         self._extra_chart_data: list[tuple[str, pd.DataFrame]] = []
+
+        # RLS cache key — set externally by the controller/processor after
+        # ``await security_manager.get_rls_cache_key(datasource, user=user)``
+        # so that ``cache_key()`` (a sync method) can include the RLS
+        # component without entering the event loop.  Defaults to [] which
+        # matches the non-RLS behaviour (safe but cache is not RLS-aware).
+        self._rls_cache_key: list[str] = []
 
         self.process_metrics()
         self.applied_filters: list[dict[str, str]] = []
@@ -596,9 +607,11 @@ class BaseViz:
                 query_obj
             )
         cache_dict["changed_on"] = str(getattr(self.datasource, "changed_on", ""))
-        # RLS cache key placeholder — actual RLS requires security_manager
-        # which is not available in viz context.
-        cache_dict["rls"] = []
+        # RLS cache key — populated externally before cache_key() is called
+        # via ``viz._rls_cache_key = await security_manager.get_rls_cache_key(...)``.
+        # Mirrors ``security_manager.get_rls_cache_key(self.datasource)`` from
+        # the original ``superset_old/viz.py`` line 471.
+        cache_dict["rls"] = self._rls_cache_key
         json_data = self.json_dumps(cache_dict, sort_keys=True)
         return md5_sha_from_str(json_data)
 

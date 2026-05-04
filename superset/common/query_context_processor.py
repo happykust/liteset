@@ -772,7 +772,10 @@ class AsyncQueryContextProcessor:
             and len(query_object.columns) > 0
             and isinstance(query_object.columns[0], dict)
         ):
-            return query_object.columns[0].get("timeGrain")
+            # Support both camelCase and snake_case payload conventions.
+            return query_object.columns[0].get("timeGrain") or query_object.columns[
+                0
+            ].get("time_grain")
         return query_object.extras.get("time_grain_sqla")
 
     def _get_cache_timeout(self) -> int:

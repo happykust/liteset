@@ -81,8 +81,11 @@ def _check_filter_dict(filter_dict: dict[str, Any]) -> None:
     if not isinstance(filter_dict, dict):
         return
 
-    # Check the sqlExpression field for custom SQL filters
-    if sql_expression := filter_dict.get("sqlExpression"):
+    # Check the sqlExpression field for custom SQL filters.
+    # Accept both camelCase and snake_case payload conventions.
+    if sql_expression := (
+        filter_dict.get("sqlExpression") or filter_dict.get("sql_expression")
+    ):
         _check_filter_sql_expression(sql_expression)
 
     # Check the clause field (for WHERE clauses)

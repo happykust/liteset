@@ -41,7 +41,9 @@ from superset.commands.chart.data.get_data_command import (
 )
 from superset.commands.chart.delete import BulkDeleteChartsCommand, DeleteChartCommand
 from superset.commands.chart.export import ExportChartsCommand
+from superset.commands.chart.fave import AddFavoriteChartCommand
 from superset.commands.chart.importers.v1 import ImportChartsCommand
+from superset.commands.chart.unfave import RemoveFavoriteChartCommand
 from superset.commands.chart.update import UpdateChartCommand
 from superset.commands.chart.warm_up_cache import WarmUpChartCacheCommand
 from superset.common.query_context import AsyncQueryContext
@@ -141,10 +143,97 @@ def _chart_custom_filters(current_user: Any) -> dict[str, Any]:
             model_cls.datasource_id.in_(table_subq),
         )
 
+    def _chart_tag_name(model_cls: Any, value: Any) -> Any:
+        """1:1 with ``superset_old/charts/filters.py::ChartTagNameFilter``.
+
+        Resolves the slice via ``TaggedObject(object_type='chart',
+        tag_id=<Tag.id WHERE Tag.name == value>)``.
+        """
+        if not value:
+            return None
+        from sqlalchemy import select as sa_select
+
+        from superset.models.tags import Tag, TaggedObject
+
+        tag_id_subq = sa_select(Tag.id).where(Tag.name == value)
+        tagged_subq = sa_select(TaggedObject.object_id).where(
+            TaggedObject.object_type == "chart",
+            TaggedObject.tag_id.in_(tag_id_subq),
+        )
+        return model_cls.id.in_(tagged_subq)
+
+    def _chart_tag_id(model_cls: Any, value: Any) -> Any:
+        """1:1 with ``superset_old/charts/filters.py::ChartTagIdFilter``."""
+        if value is None:
+            return None
+        from sqlalchemy import select as sa_select
+
+        from superset.models.tags import TaggedObject
+
+        try:
+            tag_id_int = int(value)
+        except (TypeError, ValueError):
+            return None
+        tagged_subq = sa_select(TaggedObject.object_id).where(
+            TaggedObject.object_type == "chart",
+            TaggedObject.tag_id == tag_id_int,
+        )
+        return model_cls.id.in_(tagged_subq)
+
+    def _chart_has_created_by(model_cls: Any, value: Any) -> Any:
+        """1:1 with ``ChartHasCreatedByFilter``."""
+        if value is True:
+            return model_cls.created_by_fk.isnot(None)
+        if value is False:
+            return model_cls.created_by_fk.is_(None)
+        return None
+
+    def _chart_created_by_me(model_cls: Any, value: Any) -> Any:
+        """1:1 with ``ChartCreatedByMeFilter``."""
+        from sqlalchemy import or_
+
+        user_id = getattr(current_user, "id", None)
+        if user_id is None:
+            return None
+        return or_(
+            model_cls.created_by_fk == user_id,
+            model_cls.changed_by_fk == user_id,
+        )
+
+    def _chart_owned_created_favored_by_me(model_cls: Any, value: Any) -> Any:
+        """1:1 with ``ChartOwnedCreatedFavoredByMeFilter``."""
+        from sqlalchemy import or_, select as sa_select
+
+        from superset.models.core import FavStar
+
+        user_id = getattr(current_user, "id", None)
+        if user_id is None:
+            return None
+        owner_subq = sa_select(model_cls.id).where(
+            model_cls.owners.any(id=user_id)
+        )
+        fav_subq = sa_select(FavStar.obj_id).where(
+            FavStar.class_name == "slice",
+            FavStar.user_id == user_id,
+        )
+        return or_(
+            model_cls.id.in_(owner_subq),
+            model_cls.created_by_fk == user_id,
+            model_cls.changed_by_fk == user_id,
+            model_cls.id.in_(fav_subq),
+        )
+
     return {
         "chart_is_favorite": _chart_is_favorite,
         "chart_is_certified": _chart_is_certified,
         "chart_all_text": _chart_all_text,
+        # 1:1 ports of the missing filters reported in
+        # docs/audit_2026-05-04/01-charts-explore-dashboards.md.
+        "chart_tags": _chart_tag_name,
+        "chart_tag_id": _chart_tag_id,
+        "chart_has_created_by": _chart_has_created_by,
+        "chart_created_by_me": _chart_created_by_me,
+        "chart_owned_created_favored_by_me": _chart_owned_created_favored_by_me,
     }
 
 
@@ -680,29 +769,81 @@ class ChartController(Controller):
         pk: int,
         dao: ChartDAOProtocol,
         state: State,
+        current_user: UserProtocol,
         rison_params: dict[str, Any] | None,
-    ) -> ChartCacheScreenshotResponse | Response[Any]:
-        # BL-C1: Gate on THUMBNAILS feature flag
+    ) -> Response[Any]:
+        """Compute and cache a chart screenshot.
+
+        1:1 port of ``superset_old/charts/api.py:cache_screenshot``.
+        Returns 200 when the existing cache payload is still valid;
+        returns 202 and dispatches the Celery task when a new screenshot
+        must be generated.
+        """
+        import asyncio
+
+        # Gate on THUMBNAILS feature flag
         feature_flags = getattr(state.settings, "feature_flags", {})
         if not feature_flags.get("THUMBNAILS", False):
             return Response(content={"message": "Not found"}, status_code=404)
+
+        from superset.utils.screenshots import (
+            ChartScreenshot,
+            ScreenshotCachePayload,
+        )
+
         chart = await dao.find_by_id(pk)
         if not chart:
             raise ObjectNotFoundError("Chart", pk)
+
         # Extract optional rison query params (mirrors screenshot_query_schema)
         rison_dict: dict[str, Any] = rison_params or {}
-        _force: bool = bool(rison_dict.get("force", False))  # noqa: F841
-        _window_size: tuple[int, int] | None = rison_dict.get("window_size")  # noqa: F841
-        _thumb_size: tuple[int, int] | None = rison_dict.get("thumb_size")  # noqa: F841
-        # Trigger Celery screenshot task (actual dispatch happens in thumbnails module)
-        cache_key = f"chart_{pk}_screenshot"
-        return ChartCacheScreenshotResponse(
-            cache_key=cache_key,
-            chart_url=f"/explore/?slice_id={pk}",
-            image_url=f"/api/v1/chart/{pk}/screenshot/{cache_key}/",
-            task_status="not_available",
-            task_updated_at=None,
+        force: bool = bool(rison_dict.get("force", False))
+        window_size = rison_dict.get("window_size") or (800, 600)
+        # Don't shrink the image if thumb_size is not specified
+        thumb_size = rison_dict.get("thumb_size") or window_size
+
+        chart_url = f"/explore/?slice_id={pk}"
+        chart_digest = getattr(chart, "digest", None) or str(pk)
+        screenshot_obj = ChartScreenshot(chart_url, chart_digest)
+        cache_key = await asyncio.to_thread(
+            screenshot_obj.get_cache_key, window_size, thumb_size
         )
+        cache_payload = (
+            await asyncio.to_thread(ChartScreenshot.get_from_cache_key, cache_key)
+            or ScreenshotCachePayload()
+        )
+        image_url = f"/api/v1/chart/{pk}/screenshot/{cache_key}/"
+
+        def _build_response(status_code: int) -> Response[Any]:
+            return Response(
+                content={
+                    "cache_key": cache_key,
+                    "chart_url": chart_url,
+                    "image_url": image_url,
+                    "task_updated_at": cache_payload.get_timestamp(),
+                    "task_status": cache_payload.get_status(),
+                },
+                status_code=status_code,
+                media_type="application/json",
+            )
+
+        if cache_payload.should_trigger_task(force):
+            await asyncio.to_thread(
+                screenshot_obj.cache.set,
+                cache_key,
+                ScreenshotCachePayload().to_dict(),
+            )
+            from superset.tasks.thumbnails import cache_chart_thumbnail
+
+            cache_chart_thumbnail.delay(
+                current_user=getattr(current_user, "username", None),
+                chart_id=str(chart.id),
+                window_size=window_size,
+                thumb_size=thumb_size,
+                force=force,
+            )
+            return _build_response(202)
+        return _build_response(200)
 
     @get(
         "/{pk:int}/screenshot/{digest:str}/",
@@ -888,12 +1029,22 @@ class ChartController(Controller):
         status_code=200,
     )
     async def add_favorite(
-        self, pk: int, dao: ChartDAOProtocol, current_user: UserProtocol
+        self,
+        pk: int,
+        dao: ChartDAOProtocol,
+        current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
-        chart = await dao.find_by_id(pk)
-        if not chart:
-            raise ObjectNotFoundError("Chart", pk)
-        await dao.add_favorite(pk, current_user.id)
+        # 1:1 with original: route through AddFavoriteChartCommand which calls
+        # security_manager.raise_for_ownership to verify ownership before favoriting.
+        cmd = AddFavoriteChartCommand(
+            dao=cast("AsyncChartDAO", dao),
+            chart_id=pk,
+            user_id=current_user.id,
+            security_manager=security_manager,
+            user=current_user,
+        )
+        await cmd.execute()
         await event_logger.alog_with_context(
             "chart.add_favorite",
             object_ref=f"chart:{pk}",
@@ -907,12 +1058,22 @@ class ChartController(Controller):
         status_code=200,
     )
     async def remove_favorite(
-        self, pk: int, dao: ChartDAOProtocol, current_user: UserProtocol
+        self,
+        pk: int,
+        dao: ChartDAOProtocol,
+        current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
-        chart = await dao.find_by_id(pk)
-        if not chart:
-            raise ObjectNotFoundError("Chart", pk)
-        await dao.remove_favorite(pk, current_user.id)
+        # 1:1 with original: route through RemoveFavoriteChartCommand which calls
+        # security_manager.raise_for_ownership to verify ownership before unfavoriting.
+        cmd = RemoveFavoriteChartCommand(
+            dao=cast("AsyncChartDAO", dao),
+            chart_id=pk,
+            user_id=current_user.id,
+            security_manager=security_manager,
+            user=current_user,
+        )
+        await cmd.execute()
         await event_logger.alog_with_context(
             "chart.remove_favorite",
             object_ref=f"chart:{pk}",
@@ -925,13 +1086,19 @@ class ChartController(Controller):
         guards=[require_permission("can_write", "Chart")],
     )
     async def warm_up_cache(
-        self, data: ChartCacheWarmUpRequest, dao: ChartDAOProtocol
+        self,
+        data: ChartCacheWarmUpRequest,
+        dao: ChartDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
         cmd = WarmUpChartCacheCommand(
             dao=cast("AsyncChartDAO", dao),
             chart_id=data.chart_id,
             dashboard_id=data.dashboard_id,
             extra_filters=data.extra_filters,
+            security_manager=security_manager,
+            current_user=current_user,
         )
         result = await cmd.execute()
         await event_logger.alog_with_context(
@@ -1230,44 +1397,66 @@ class ChartController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
         state: State,
-        data: ChartDataQueryContext | None = None,
     ) -> Response[Any]:
         """POST /api/v1/chart/data — execute ad-hoc chart data query.
 
         Accepts either a JSON body or a ``form_data`` multipart field
         containing a JSON string (used by CSV export in Superset).
+
+        Body is parsed manually rather than via the typed-parameter
+        injection so Litestar does not attempt to JSON-decode
+        ``application/x-www-form-urlencoded`` / ``multipart`` bodies as
+        JSON (which raises ``invalid character (byte 5)`` on the URL-encoded
+        ``form_data=...`` payload that Apache Superset's CSV export
+        button submits).
         """
+        import contextlib as _contextlib
+
         import msgspec as _msgspec
 
-        # BL-H5: Fallback to form_data multipart field when JSON body is absent
-        if data is None:
-            form_data_str: str | None = None
-            content_type_str = request.content_type[0] if request.content_type else ""
-            if "multipart" in content_type_str or "form" in content_type_str:
+        # 1:1 with superset_old/charts/data/api.py:226-234.
+        # Litestar's typed-parameter injection cannot be used here because
+        # Apache Superset's CSV-export button submits the body as
+        # ``application/x-www-form-urlencoded`` with the JSON wrapped in a
+        # ``form_data=`` field — Litestar would attempt to decode the URL-
+        # encoded payload as JSON and fail at the first ``=`` (byte 5).
+        data: ChartDataQueryContext | None = None
+        json_bytes: bytes | None = None
+        content_type_str = request.content_type[0] if request.content_type else ""
+        is_json = "json" in content_type_str
+
+        if is_json:
+            body = await request.body()
+            if body:
+                json_bytes = body
+        else:
+            # CSV export submits regular form data — match the
+            # ``request.form.get("form_data")`` branch of the original.
+            with _contextlib.suppress(Exception):
                 form = await request.form()
                 form_data_str = form.get("form_data")
-            if form_data_str is None:
-                # Also try raw body as JSON
-                body = await request.body()
-                if body:
-                    form_data_str = body.decode("utf-8")
-            if not form_data_str:
-                return Response(
-                    content={"message": "Request is not JSON"},
-                    status_code=400,
-                )
-            try:
-                data = _msgspec.json.decode(
-                    form_data_str
-                    if isinstance(form_data_str, bytes)
-                    else form_data_str.encode(),
-                    type=ChartDataQueryContext,
-                )
-            except (_msgspec.ValidationError, _msgspec.DecodeError) as exc:
-                return Response(
-                    content={"message": f"Invalid form_data JSON: {exc}"},
-                    status_code=400,
-                )
+                if form_data_str:
+                    json_bytes = (
+                        form_data_str
+                        if isinstance(form_data_str, bytes)
+                        else form_data_str.encode()
+                    )
+
+        if json_bytes is None:
+            return Response(
+                content={"message": "Request is not JSON"},
+                status_code=400,
+            )
+
+        try:
+            data = _msgspec.json.decode(json_bytes, type=ChartDataQueryContext)
+        except (_msgspec.ValidationError, _msgspec.DecodeError):
+            # Mirrors ``contextlib.suppress(TypeError, JSONDecodeError)`` +
+            # ``if json_body is None: return 400`` flow in the original.
+            return Response(
+                content={"message": "Request is not JSON"},
+                status_code=400,
+            )
 
         import numpy as np
         import pandas as pd
@@ -1516,24 +1705,68 @@ class ChartController(Controller):
                 headers={"Content-Disposition": "attachment; filename=chart_data.zip"},
             )
 
-        # --- Default JSON path (result_type: full / results / columns / etc.) ----
+        # --- post_processed branch — 1:1 with superset_old/charts/data/api.py ---
+        # When result_type is "post_processed", execute the query (full path)
+        # then apply pivot/table client-side transforms BEFORE the NaN/Decimal
+        # cleanup pass.  Used by Pivot Table v2 and Table chart email reports.
+        if result_type == "post_processed":
+            from superset.charts.post_processing import apply_client_processing
 
-        query_objects = [AsyncQueryObject.from_request(q, ds_ref) for q in data.queries]
-        query_context = AsyncQueryContext(
-            datasource=datasource,
-            queries=query_objects,
-            force=data.force,
-            result_format=result_format,
-        )
-        processor = AsyncQueryContextProcessor(
-            datasource=datasource,
-            settings=settings,
-            security_manager=security_manager,
-            user=current_user,
-            query_context=query_context,
-        )
-        cmd = ChartDataCommand(query_context=query_context, processor=processor)
-        result = await cmd.execute()
+            _pp_qobjs = [
+                AsyncQueryObject.from_request(q, ds_ref) for q in data.queries
+            ]
+            _pp_qctx = AsyncQueryContext(
+                datasource=datasource,
+                queries=_pp_qobjs,
+                force=data.force,
+                result_format=result_format,
+            )
+            _pp_proc = AsyncQueryContextProcessor(
+                datasource=datasource,
+                settings=settings,
+                security_manager=security_manager,
+                user=current_user,
+                query_context=_pp_qctx,
+            )
+            result = await ChartDataCommand(
+                query_context=_pp_qctx, processor=_pp_proc
+            ).execute()
+
+            # Build form_data dict (needed by apply_client_processing for
+            # viz_type and column config lookups).
+            _form_data: dict[str, Any] = {}
+            try:
+                import msgspec as _msgspec_inner
+
+                _form_data = _msgspec_inner.to_builtins(data)
+            except Exception:  # noqa: BLE001
+                pass
+            for _q in result.get("queries", []):
+                if isinstance(_q, dict):
+                    apply_client_processing(
+                        _q, form_data=_form_data, datasource=datasource
+                    )
+            # Fall through to shared NaN/Decimal cleanup and response below.
+
+        # --- Default JSON path (result_type: full / results / columns / etc.) ----
+        else:
+
+            query_objects = [AsyncQueryObject.from_request(q, ds_ref) for q in data.queries]
+            query_context = AsyncQueryContext(
+                datasource=datasource,
+                queries=query_objects,
+                force=data.force,
+                result_format=result_format,
+            )
+            processor = AsyncQueryContextProcessor(
+                datasource=datasource,
+                settings=settings,
+                security_manager=security_manager,
+                user=current_user,
+                query_context=query_context,
+            )
+            cmd = ChartDataCommand(query_context=query_context, processor=processor)
+            result = await cmd.execute()
 
         # Strip raw SQL from response for guest users (C3)
         if security_manager.is_guest_user(current_user):

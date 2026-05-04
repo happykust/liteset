@@ -281,6 +281,16 @@ class UpdateDashboardFiltersCommand(AsyncBaseCommand[list[dict[str, Any]]]):
                 if filter_id in filter_map
             ]
 
+        # 1:1 with the original ``DashboardJSONMetadataSchema.@pre_load
+        # remove_show_native_filters`` cleanup (apache/superset#23228) —
+        # strip the legacy ``show_native_filters`` flag from the top-level
+        # metadata blob and from each ``native_filter_configuration``
+        # entry so it never re-enters storage on a filters update.
+        metadata.pop("show_native_filters", None)
+        for filter_conf in updated_configuration:
+            if isinstance(filter_conf, dict):
+                filter_conf.pop("show_native_filters", None)
+
         metadata["native_filter_configuration"] = updated_configuration
         self._dashboard.json_metadata = json.dumps(metadata)
         await self._dao.session.flush()

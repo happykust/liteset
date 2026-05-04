@@ -645,6 +645,24 @@ class ExploreController(Controller):
                 "applied_time_extras": {},
                 "url_params": {},
             }
+
+        # Apply legacy filter migration, extra-filter merging, and URL param
+        # injection — 1:1 with superset_old/commands/explore/get.py:134-136.
+        # These transforms must run AFTER slice defaults are merged but BEFORE
+        # the response is built so the frontend always receives adhoc_filters.
+        from superset.utils.core import (
+            convert_legacy_filters_into_adhoc,
+            merge_extra_filters,
+            merge_request_params,
+        )
+
+        convert_legacy_filters_into_adhoc(form_data)
+        merge_extra_filters(form_data)
+        # Merge URL query params (excluding ``form_data`` and ``r``) into
+        # ``form_data["url_params"]`` so Jinja template context and
+        # URL-param–driven dashboards/explore links work correctly.
+        merge_request_params(form_data, dict(request.query_params))
+
         return {
             "result": {
                 "dataset": dataset_data,

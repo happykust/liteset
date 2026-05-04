@@ -39,11 +39,13 @@ from superset.commands.dashboard.delete import (
 )
 from superset.commands.dashboard.embedded.upsert import UpsertEmbeddedDashboardCommand
 from superset.commands.dashboard.export import ExportDashboardsCommand
+from superset.commands.dashboard.fave import AddFavoriteDashboardCommand
 from superset.commands.dashboard.importers.v1 import ImportDashboardsCommand
 from superset.commands.dashboard.permalink.create import (
     CreateDashboardPermalinkCommand,
 )
 from superset.commands.dashboard.permalink.get import GetDashboardPermalinkCommand
+from superset.commands.dashboard.unfave import RemoveFavoriteDashboardCommand
 from superset.commands.dashboard.update import (
     UpdateDashboardColorsCommand,
     UpdateDashboardCommand,
@@ -127,10 +129,116 @@ def _dashboard_custom_filters(current_user: Any) -> dict[str, Any]:
             return model_cls.certified_by.isnot(None)
         return model_cls.certified_by.is_(None)
 
+    # ------------------------------------------------------------------
+    # Ports of the dashboard list filters from
+    # ``superset_old/dashboards/filters.py``.
+    # ------------------------------------------------------------------
+    def _title_or_slug(model_cls: Any, value: Any) -> Any:
+        """``DashboardTitleOrSlugFilter`` (arg ``title_or_slug``)."""
+        from sqlalchemy import or_
+
+        if not value:
+            return None
+        ilike_value = f"%{value}%"
+        return or_(
+            model_cls.dashboard_title.ilike(ilike_value),
+            model_cls.slug.ilike(ilike_value),
+        )
+
+    def _dashboard_created_by_me(model_cls: Any, value: Any) -> Any:
+        """``DashboardCreatedByMeFilter`` (arg ``dashboard_created_by_me``).
+
+        ``value`` is unused by the original — the filter unconditionally
+        narrows to "created or changed by me".
+        """
+        from sqlalchemy import or_
+
+        del value  # unused to match original semantics
+        user_id = getattr(current_user, "id", None)
+        if user_id is None:
+            return None
+        return or_(
+            model_cls.created_by_fk == user_id,
+            model_cls.changed_by_fk == user_id,
+        )
+
+    def _dashboard_has_created_by(model_cls: Any, value: Any) -> Any:
+        """``DashboardHasCreatedByFilter`` (arg ``dashboard_has_created_by``)."""
+        if value is True:
+            return model_cls.created_by_fk.isnot(None)
+        if value is False:
+            return model_cls.created_by_fk.is_(None)
+        return None
+
+    def _dashboard_tags(model_cls: Any, value: Any) -> Any:
+        """``DashboardTagNameFilter`` (arg ``dashboard_tags``).
+
+        Filters dashboards associated with a tag by *name*.
+        """
+        if not value:
+            return None
+        from sqlalchemy import select as sa_select
+
+        from superset.models.tags import Tag, TaggedObject
+
+        tag_subq = sa_select(TaggedObject.object_id).where(
+            TaggedObject.object_type == "dashboard",
+            TaggedObject.tag_id == Tag.id,
+            Tag.name == value,
+        )
+        return model_cls.id.in_(tag_subq)
+
+    def _dashboard_tag_id(model_cls: Any, value: Any) -> Any:
+        """``DashboardTagIdFilter`` (arg ``dashboard_tag_id``).
+
+        Filters dashboards associated with a tag by *id*.
+        """
+        if value in (None, ""):
+            return None
+        try:
+            tag_id = int(value)
+        except (TypeError, ValueError):
+            return None
+        from sqlalchemy import select as sa_select
+
+        from superset.models.tags import TaggedObject
+
+        tag_subq = sa_select(TaggedObject.object_id).where(
+            TaggedObject.object_type == "dashboard",
+            TaggedObject.tag_id == tag_id,
+        )
+        return model_cls.id.in_(tag_subq)
+
     return {
         "dashboard_is_favorite": _dashboard_is_favorite,
         "dashboard_is_certified": _dashboard_is_certified,
+        "title_or_slug": _title_or_slug,
+        "dashboard_created_by_me": _dashboard_created_by_me,
+        "dashboard_has_created_by": _dashboard_has_created_by,
+        "dashboard_tags": _dashboard_tags,
+        "dashboard_tag_id": _dashboard_tag_id,
     }
+
+
+def _get_time_grain_sqla(database: Any) -> list[list[Any]]:
+    """Return ``[(duration, label), ...]`` for the time-grain control.
+
+    1:1 with ``superset_old/connectors/sqla/models.py::SqlaTable.time_grain_sqla``
+    which calls ``self.database.grains()`` → ``db_engine_spec.get_time_grains()``.
+    The frontend's dashboard filter expects this format to hydrate the
+    granularity SelectControl correctly.
+    """
+    if database is None:
+        return []
+    try:
+        spec = database.db_engine_spec
+        grain_exprs = spec.get_time_grain_expressions()
+    except Exception:  # noqa: BLE001
+        return []
+    result: list[list[Any]] = []
+    for duration in grain_exprs:
+        result.append([duration, duration or "Original value"])
+    return result
 
 
 class DashboardController(Controller):
@@ -360,9 +468,22 @@ class DashboardController(Controller):
         await event_logger.alog_with_context(
             "dashboard.get", object_ref=f"dashboard:{id_or_slug}"
         )
+
+        result = DashboardDetailResult.from_model(dashboard)
+
+        # Scrub owner and editor identity for guest (embedded Superset) users.
+        # 1:1 with superset_old/dashboards/schemas.py::DashboardGetResponseSchema
+        # @post_dump hook (lines 244-249): strip ``owners``, ``changed_by``, and
+        # ``changed_by_name`` from the response when the current user is a guest.
+        is_guest = security_manager.is_guest_user(current_user)
+        if is_guest:
+            result.owners = []
+            result.changed_by = None
+            result.changed_by_name = None
+
         return DashboardGetResponse(
             id=dashboard.id,
-            result=DashboardDetailResult.from_model(dashboard),
+            result=result,
         )
 
     # ------------------------------------------------------------------
@@ -376,11 +497,14 @@ class DashboardController(Controller):
         self,
         id_or_slug: str,
         dao: DashboardDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
         dashboard = await dao.get_by_id_or_slug(id_or_slug)
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
         datasets = await dao.get_datasets_for_dashboard(dashboard)
+        is_guest = security_manager.is_guest_user(current_user)
 
         def _resolve_generic_type(sqla_type: Any, is_dttm: bool) -> int | None:
             """Map SQLAlchemy column type → utils.GenericDataType int.
@@ -540,7 +664,7 @@ class DashboardController(Controller):
                 "columns": cols_dicts,
                 "metrics": metrics_dicts,
                 "granularity_sqla": granularity_sqla,
-                "time_grain_sqla": [],
+                "time_grain_sqla": _get_time_grain_sqla(database),
                 "order_by_choices": order_by_choices,
                 "owners": owners_list,
                 "select_star": None,
@@ -551,7 +675,18 @@ class DashboardController(Controller):
                 "health_check_message": getattr(ds, "health_check_message", None),
             }
 
-        return {"result": [_build_dataset_dict(ds) for ds in datasets]}
+        # 1:1 with original DashboardDatasetSchema.post_dump:
+        # strip ``owners`` and ``database`` from dataset dicts when the
+        # current user is a guest (embedded Superset).
+        def _scrub_for_guest(d: dict[str, Any]) -> dict[str, Any]:
+            if is_guest:
+                d.pop("owners", None)
+                d.pop("database", None)
+            return d
+
+        return {
+            "result": [_scrub_for_guest(_build_dataset_dict(ds)) for ds in datasets]
+        }
 
     # ------------------------------------------------------------------
     # GET — tab structure
@@ -967,15 +1102,32 @@ class DashboardController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/{pk:int}/cache_dashboard_screenshot/",
-        guards=[require_permission("can_read", "Dashboard")],
+        # 1:1 with original ``superset_old/dashboards/api.py:1034`` which
+        # gates this endpoint on the granular ``can_cache_dashboard_screenshot``
+        # permission via ``method_permission_name`` mapping.
+        guards=[require_permission("can_cache_dashboard_screenshot", "Dashboard")],
     )
     async def cache_dashboard_screenshot(
         self,
         pk: int,
         data: DashboardScreenshotSchema,
         dao: DashboardDAOProtocol,
+        kv_dao: KeyValueDAOProtocol,
         state: State,
-    ) -> Response[dict[str, Any]]:
+        current_user: UserProtocol,
+        rison_params: dict[str, Any] | None,
+    ) -> Response[Any]:
+        """Compute and cache a dashboard screenshot.
+
+        1:1 port of ``superset_old/dashboards/api.py:cache_dashboard_screenshot``.
+        Mints or reuses a permalink key, computes the canonical cache key
+        (including the permalink) and dispatches the Celery screenshot task.
+        Returns 200 on cache hit, 202 when a new task is queued.
+        """
+        import asyncio
+
+        from superset.db.daos.key_value import AsyncKeyValueDAO
+
         settings = getattr(state, "settings", None)
         flags = getattr(settings, "feature_flags", {}) or {}
         if not flags.get("THUMBNAILS", False) or not flags.get(
@@ -985,19 +1137,112 @@ class DashboardController(Controller):
         dashboard = await dao.find_by_id(pk)
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", pk)
-        # Trigger Celery screenshot task (actual dispatch in thumbnails module)
-        cache_key = f"dashboard_{pk}_screenshot"
-        return Response(
-            content={
-                "cache_key": cache_key,
-                "dashboard_url": f"/superset/dashboard/{pk}/",
-                "image_url": f"/api/v1/dashboard/{pk}/screenshot/{cache_key}/",
-                "task_status": "not_available",
-                "task_updated_at": None,
-            },
-            status_code=202,
-            media_type="application/json",
+
+        # Extract rison query params (window_size, thumb_size, force)
+        rison_dict: dict[str, Any] = rison_params or {}
+        force: bool = bool(rison_dict.get("force", False))
+        window_size = rison_dict.get("window_size") or (1600, 1200)
+        # Don't shrink the image if thumb_size is not specified
+        thumb_size = rison_dict.get("thumb_size") or window_size
+
+        # Build dashboard_state from POST body (camelCase / snake_case dual support)
+        dashboard_state: dict[str, Any] = {
+            "dataMask": (
+                getattr(data, "data_mask", None)
+                or getattr(data, "dataMask", None)
+                or {}
+            ),
+            "activeTabs": (
+                getattr(data, "active_tabs", None)
+                or getattr(data, "activeTabs", None)
+                or []
+            ),
+            "anchor": getattr(data, "anchor", None) or "",
+            "urlParams": (
+                getattr(data, "url_params", None)
+                or getattr(data, "urlParams", None)
+                or []
+            ),
+        }
+
+        # If the client already has a permalink key, reuse it; otherwise mint
+        # a new one so the screenshot is tied to the correct dashboard state.
+        permalink_key = getattr(data, "permalink_key", None) or getattr(
+            data, "permalinkKey", None
         )
+        if not permalink_key:
+            # kv_dao is an AsyncKeyValueDAO instance wired via provider
+            _kv = cast("AsyncKeyValueDAO", kv_dao)
+            permalink_key = await CreateDashboardPermalinkCommand(
+                dao=_kv,
+                dashboard_id=pk,
+                state=dashboard_state,
+                dashboard_uuid=str(getattr(dashboard, "uuid", "") or ""),
+                user_id=getattr(current_user, "id", None),
+            ).run()
+
+        dashboard_url = f"/superset/dashboard/p/{permalink_key}/"
+
+        from superset.utils.screenshots import (
+            DashboardScreenshot,
+            ScreenshotCachePayload,
+        )
+
+        dashboard_digest = getattr(dashboard, "digest", None) or str(pk)
+        screenshot_obj = DashboardScreenshot(dashboard_url, dashboard_digest)
+        cache_key = await asyncio.to_thread(
+            screenshot_obj.get_cache_key, window_size, thumb_size, permalink_key
+        )
+        cache_payload = (
+            await asyncio.to_thread(
+                DashboardScreenshot.get_from_cache_key, cache_key
+            )
+            or ScreenshotCachePayload()
+        )
+        image_url = f"/api/v1/dashboard/{pk}/screenshot/{cache_key}/"
+
+        def _build_response(status_code: int) -> Response[Any]:
+            return Response(
+                content={
+                    "cache_key": cache_key,
+                    "dashboard_url": dashboard_url,
+                    "image_url": image_url,
+                    "task_updated_at": cache_payload.get_timestamp(),
+                    "task_status": cache_payload.get_status(),
+                },
+                status_code=status_code,
+                media_type="application/json",
+            )
+
+        if cache_payload.should_trigger_task(force):
+            await asyncio.to_thread(
+                screenshot_obj.cache.set,
+                cache_key,
+                ScreenshotCachePayload().to_dict(),
+            )
+            from superset.tasks.thumbnails import (
+                cache_dashboard_screenshot as _cache_dashboard_screenshot_task,
+            )
+
+            # Extract guest_token for embedded (guest user) flow
+            guest_token: dict[str, Any] | None = None
+            from superset.security.guest import GuestUser
+
+            if isinstance(current_user, GuestUser):
+                guest_token = getattr(current_user, "token_payload", None)
+
+            _cache_dashboard_screenshot_task.delay(
+                username=getattr(current_user, "username", None),
+                dashboard_id=pk,
+                dashboard_url=dashboard_url,
+                force=force,
+                cache_key=cache_key,
+                guest_token=guest_token,
+                thumb_size=thumb_size,
+                window_size=window_size,
+            )
+            return _build_response(202)
+        return _build_response(200)
 
     # ------------------------------------------------------------------
     # GET — screenshot
@@ -1205,12 +1450,19 @@ class DashboardController(Controller):
         status_code=200,
     )
     async def add_favorite(
-        self, pk: int, dao: DashboardDAOProtocol, current_user: UserProtocol
+        self,
+        pk: int,
+        dao: DashboardDAOProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, str]:
-        dashboard = await dao.find_by_id(pk)
-        if not dashboard:
-            raise ObjectNotFoundError("Dashboard", pk)
-        await dao.add_favorite(pk, current_user.id)
+        # 1:1 with original: route through AddFavoriteDashboardCommand which calls
+        # DashboardDAO.get_by_id_or_slug (access-checked) before favoriting.
+        cmd = AddFavoriteDashboardCommand(
+            dao=cast("AsyncDashboardDAO", dao),
+            dashboard_id=pk,
+            user_id=current_user.id,
+        )
+        await cmd.execute()
         await event_logger.alog_with_context(
             "dashboard.add_favorite",
             object_ref=f"dashboard:{pk}",
@@ -1227,12 +1479,19 @@ class DashboardController(Controller):
         status_code=200,
     )
     async def remove_favorite(
-        self, pk: int, dao: DashboardDAOProtocol, current_user: UserProtocol
+        self,
+        pk: int,
+        dao: DashboardDAOProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, str]:
-        dashboard = await dao.find_by_id(pk)
-        if not dashboard:
-            raise ObjectNotFoundError("Dashboard", pk)
-        await dao.remove_favorite(pk, current_user.id)
+        # 1:1 with original: route through RemoveFavoriteDashboardCommand which calls
+        # DashboardDAO.get_by_id_or_slug (access-checked) before unfavoriting.
+        cmd = RemoveFavoriteDashboardCommand(
+            dao=cast("AsyncDashboardDAO", dao),
+            dashboard_id=pk,
+            user_id=current_user.id,
+        )
+        await cmd.execute()
         await event_logger.alog_with_context(
             "dashboard.remove_favorite",
             object_ref=f"dashboard:{pk}",
@@ -1341,7 +1600,9 @@ class DashboardController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/{id_or_slug:str}/embedded",
-        guards=[require_permission("can_write", "Dashboard")],
+        # 1:1 with original ``superset_old/dashboards/api.py:1678`` — gated
+        # on the granular ``can_set_embedded`` permission.
+        guards=[require_permission("can_set_embedded", "Dashboard")],
         status_code=200,
     )
     async def create_embedded(
@@ -1380,7 +1641,9 @@ class DashboardController(Controller):
     # ------------------------------------------------------------------
     @put(
         "/{id_or_slug:str}/embedded",
-        guards=[require_permission("can_write", "Dashboard")],
+        # 1:1 with original ``superset_old/dashboards/api.py:1678`` — gated
+        # on the granular ``can_set_embedded`` permission.
+        guards=[require_permission("can_set_embedded", "Dashboard")],
         status_code=200,
     )
     async def update_embedded(
