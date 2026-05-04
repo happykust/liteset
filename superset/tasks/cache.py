@@ -153,42 +153,35 @@ def _fetch_csrf_token(headers: dict[str, str]) -> dict[str, str]:
 def _get_auth_cookies(user: Any) -> dict[str, str]:
     """Generate authentication cookies for a user.
 
-    The original used ``MachineAuthProvider.get_auth_cookies(user)`` which
-    relied on Flask's ``test_request_context`` and ``login_user``. In
-    Liteset we generate a session token using the JWT-based auth system.
+    Uses :class:`~superset.utils.machine_auth.MachineAuthProvider` — the same
+    provider used by the thumbnail Celery tasks and the webdriver helper — so
+    the minted cookie is accepted by
+    :class:`~superset.middleware.auth.SupersetAuthMiddleware`.
+
+    Falls back to the process-level factory singleton
+    (:data:`superset.extensions.machine_auth_provider_factory`) when
+    available; otherwise mints a settings-bound provider on the fly.
     """
-    # For Liteset, we use our auth middleware's session mechanism.
-    # In a Celery worker context, we create a minimal session cookie
-    # by encoding user info directly.
     try:
+        from superset.utils.machine_auth import MachineAuthProvider
+
+        # Try the process-level singleton first (set up during startup).
+        try:
+            from superset.extensions import machine_auth_provider_factory
+
+            provider = machine_auth_provider_factory.instance
+            if provider is not None:
+                return provider.get_auth_cookies(user)
+        except (ImportError, AttributeError):
+            pass
+
+        # Fall back: mint a provider bound to the current settings.
         from superset.config import SupersetSettings
 
         settings = SupersetSettings()  # type: ignore[call-arg]
-        secret_key = settings.secret_key.get_secret_value()
-
-        import hashlib
-        import hmac
-        import json
-
-        # Create a simple session payload matching the format expected
-        # by the AuthMiddleware / FlaskSessionDecoder
-        session_data = {
-            "_user_id": str(user.id),
-            "_fresh": True,
-            "_id": hashlib.sha256(str(user.id).encode()).hexdigest()[:16],
-        }
-        # Sign with HMAC for basic integrity
-        payload_bytes = json.dumps(session_data, sort_keys=True).encode()
-        signature = hmac.new(
-            secret_key.encode() if isinstance(secret_key, str) else secret_key,
-            payload_bytes,
-            hashlib.sha256,
-        ).hexdigest()
-
-        import base64
-
-        session_value = base64.b64encode(payload_bytes).decode() + "." + signature
-        return {"session": session_value}
+        provider = MachineAuthProvider()
+        provider.bind_settings(settings)
+        return provider.get_auth_cookies(user)
     except Exception:
         logger.warning("Failed to generate auth cookies", exc_info=True)
         return {}

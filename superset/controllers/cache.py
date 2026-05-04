@@ -127,10 +127,43 @@ class CacheController(Controller):
                 status_code=201,
             )
 
-        # -- 3. Delete from cache backend (best effort) ----------------
+        # -- 3. Actively evict keys from cache backend -----------------
+        # Mirrors the original Flask ``cache_manager.cache.delete_many(*cache_keys)``
+        # call in ``superset_old/cachekeys/api.py:103``.  We iterate and call
+        # ``delete`` per key because the async cache protocol exposes a single-key
+        # ``delete`` method (no ``delete_many`` batch endpoint on the protocol).
+        # Best-effort: log misses but continue to the DB cleanup step.
+        backend_deleted = 0
+        try:
+            # Try to get the async cache manager from the app state
+            _cache_manager = None
+            try:
+                # The process-wide cache_manager singleton (set up in extensions.py)
+                from superset.extensions import cache_manager as _global_cm
+
+                _cache_manager = _global_cm
+            except (ImportError, AttributeError):
+                pass
+
+            if _cache_manager is not None:
+                for cache_key in cache_keys:
+                    try:
+                        await _cache_manager.cache.delete(cache_key)
+                        backend_deleted += 1
+                    except Exception:  # noqa: BLE001
+                        logger.debug(
+                            "Cache backend delete failed for key %s", cache_key
+                        )
+            else:
+                logger.info(
+                    "Cache manager not available; backend eviction deferred to TTL"
+                )
+        except Exception:  # noqa: BLE001
+            logger.debug("Cache backend eviction failed; deferring to TTL", exc_info=True)
+
         logger.info(
-            "Cache invalidation: %d keys for %d datasources (backend eviction "
-            "deferred to TTL)",
+            "Cache invalidation: %d/%d keys evicted from backend for %d datasources",
+            backend_deleted,
             len(cache_keys),
             len(datasource_uids),
         )

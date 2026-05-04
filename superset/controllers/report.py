@@ -18,11 +18,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import msgspec
 from litestar import Controller, delete, get, post, put
 from litestar.di import Provide
+
+logger = logging.getLogger(__name__)
 
 from superset.commands.report import (
     BulkDeleteReportScheduleCommand,
@@ -49,6 +52,182 @@ from superset.schemas.report import (
 )
 from superset.typing import UserProtocol
 from superset.utils import filter_unset
+
+def _get_slack_channels(
+    search_string: str | None = None,
+    types: list[str] | None = None,
+    exact_match: bool = False,
+    force: bool = False,
+) -> list[dict[str, str]]:
+    """Fetch Slack channels from the API (with optional filtering).
+
+    1:1 port of ``superset_old/utils/slack.py:get_channels_with_search``.
+
+    The Slack API is paginated but does not support server-side search,
+    so we fetch all channels and filter client-side.  Results are cached
+    under the ``slack_conversations_list`` key via the Superset cache
+    backend (mirroring the original ``@cache_util.memoized_func`` decorator).
+
+    Returns a list of ``{"id": ..., "name": ...}`` dicts.
+    Raises :exc:`RuntimeError` / :exc:`Exception` on Slack API errors so
+    the controller can map them to HTTP 422.
+    """
+    try:
+        from slack_sdk import WebClient
+        from slack_sdk.errors import SlackApiError
+        from slack_sdk.http_retry.builtin_handlers import RateLimitErrorRetryHandler
+    except ImportError:
+        logger.warning(
+            "slack_sdk is not installed; cannot list Slack channels. "
+            "Install with: pip install slack_sdk"
+        )
+        return []
+
+    from superset.config import SupersetSettings
+
+    settings = SupersetSettings()  # type: ignore[call-arg]
+    slack_token = getattr(settings, "slack_api_token", None)
+    if not slack_token:
+        logger.info("SLACK_API_TOKEN not configured; returning empty channel list")
+        return []
+    if callable(slack_token):
+        slack_token = slack_token()
+
+    slack_proxy = getattr(settings, "slack_proxy", None) or None
+    max_retry_count = getattr(settings, "slack_api_rate_limit_retry_count", 2) or 2
+    slack_cache_timeout = getattr(settings, "slack_cache_timeout", 1800) or 1800
+
+    # ------------------------------------------------------------------
+    # Cache read (best-effort; skip on error)
+    # ------------------------------------------------------------------
+    _CACHE_KEY = "slack_conversations_list"
+    cached_channels: list[dict[str, str]] | None = None
+    if not force:
+        try:
+            from superset.extensions import cache_manager as _cm
+            import asyncio
+            import json as _json
+
+            # Run the async cache get in a new event loop (Celery / non-async context)
+            async def _aget() -> Any:
+                raw = await _cm.cache.get(_CACHE_KEY)
+                return raw
+
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    raise RuntimeError("closed loop")
+                raw = loop.run_until_complete(_aget())
+            except RuntimeError:
+                raw = asyncio.run(_aget())
+
+            if raw is not None:
+                if isinstance(raw, (bytes, bytearray)):
+                    raw = raw.decode("utf-8", errors="replace")
+                cached_channels = _json.loads(raw)
+        except Exception:  # noqa: BLE001
+            pass
+
+    if cached_channels is not None:
+        all_channels: list[dict[str, str]] = cached_channels
+    else:
+        # ------------------------------------------------------------------
+        # Fetch from Slack API
+        # ------------------------------------------------------------------
+        client = WebClient(token=slack_token, proxy=slack_proxy)
+        rate_limit_handler = RateLimitErrorRetryHandler(max_retry_count=max_retry_count)
+        client.retry_handlers.append(rate_limit_handler)
+
+        all_channels = []
+        cursor = None
+        page_count = 0
+        try:
+            while True:
+                page_count += 1
+                response = client.conversations_list(
+                    limit=999,
+                    cursor=cursor,
+                    exclude_archived=True,
+                    types="public_channel,private_channel",
+                )
+                page_channels = response.data.get("channels", [])
+                for ch in page_channels:
+                    all_channels.append({
+                        "id": ch.get("id", ""),
+                        "name": ch.get("name", ""),
+                        "is_member": ch.get("is_member", False),
+                        "is_private": ch.get("is_private", False),
+                    })
+                cursor = response.data.get("response_metadata", {}).get("next_cursor")
+                if not cursor:
+                    break
+        except SlackApiError as ex:
+            status_code = getattr(ex.response, "status_code", None)
+            if status_code == 429:
+                raise RuntimeError(
+                    f"Slack API rate limit exceeded: {ex}. "
+                    "Consider increasing SLACK_API_RATE_LIMIT_RETRY_COUNT"
+                ) from ex
+            raise RuntimeError(f"Failed to list channels: {ex}") from ex
+
+        # Cache the result (best-effort)
+        try:
+            from superset.extensions import cache_manager as _cm
+            import asyncio
+            import json as _json
+
+            serialized = _json.dumps(all_channels)
+
+            async def _aset() -> None:
+                await _cm.cache.set(_CACHE_KEY, serialized, ttl=slack_cache_timeout)
+
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    raise RuntimeError("closed loop")
+                loop.run_until_complete(_aset())
+            except RuntimeError:
+                asyncio.run(_aset())
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ------------------------------------------------------------------
+    # Client-side filtering (mirrors get_channels_with_search)
+    # ------------------------------------------------------------------
+    channels = all_channels
+
+    if types:
+        type_set = set(types)
+        filtered: list[dict[str, str]] = []
+        for ch in channels:
+            is_private = ch.get("is_private", False)
+            if "public_channel" in type_set and not is_private:
+                filtered.append(ch)
+            elif "private_channel" in type_set and is_private:
+                filtered.append(ch)
+        channels = filtered
+
+    if search_string:
+        # Support comma-separated list of channel names / ids
+        search_terms = [s.strip() for s in search_string.replace(",", " ").split() if s.strip()]
+        matched: list[dict[str, str]] = []
+        for ch in channels:
+            ch_name = (ch.get("name") or "").lower()
+            ch_id = (ch.get("id") or "").lower()
+            for term in search_terms:
+                t = term.lower()
+                if exact_match:
+                    if t == ch_name or t == ch_id:
+                        matched.append(ch)
+                        break
+                else:
+                    if t in ch_name or t in ch_id:
+                        matched.append(ch)
+                        break
+        channels = matched
+
+    return channels
+
 
 _LIST_COLUMNS = [
     "id",
@@ -293,9 +472,50 @@ class ReportScheduleController(Controller):
         "/slack_channels/",
         guards=[require_permission("can_read", "ReportSchedule")],
     )
-    async def slack_channels(self) -> dict[str, Any]:
+    async def slack_channels(
+        self,
+        search_string: str | None = None,
+        types: list[str] | None = None,
+        exact_match: bool = False,
+        force: bool = False,
+    ) -> dict[str, Any]:
         """GET /api/v1/report/slack_channels/ -- list Slack channels.
 
-        Returns an empty list when Slack integration is not configured.
+        1:1 port of ``superset_old/reports/api.py:ReportScheduleRestApi.slack_channels``.
+        Queries the Slack API for all accessible channels, applies optional
+        filtering by name/id (``search_string``), and returns a list of
+        ``{id, name}`` dicts.
+
+        Returns an empty list when Slack integration is not configured or
+        ``slack_sdk`` is not installed.
+
+        Parameters
+        ----------
+        search_string:
+            Comma-separated channel names or IDs to filter by.  Supports
+            partial matching unless ``exact_match`` is ``True``.
+        types:
+            List of channel types to include; e.g. ``["public_channel"]``,
+            ``["private_channel"]``, or both.  When ``None`` (default) all
+            channel types are returned.
+        exact_match:
+            When ``True``, only channels whose name or id matches exactly.
+        force:
+            When ``True``, bypass the cached channel list and re-fetch from
+            the Slack API.
         """
-        return {"result": []}
+        from litestar.exceptions import HTTPException
+
+        try:
+            channels = _get_slack_channels(
+                search_string=search_string,
+                types=types,
+                exact_match=exact_match,
+                force=force,
+            )
+            return {"result": channels}
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Error fetching slack channels: %s", str(exc), exc_info=True)
+            raise HTTPException(
+                status_code=422, detail=str(exc)
+            ) from exc

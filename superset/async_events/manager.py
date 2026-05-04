@@ -184,16 +184,29 @@ class AsyncEventManager:
         self,
         channel_id: str,
         last_id: str | None = None,
+        count: int | None = None,
     ) -> list[dict[str, Any]]:
         """Read events from a channel stream, optionally starting after last_id.
+
+        :param channel_id: Redis Stream key suffix for the channel.
+        :param last_id: Exclusive lower bound — only events *after* this ID
+            are returned.  Mirrors the original ``increment_id(last_id)``
+            call in ``AsyncQueryManager.read_events``.
+        :param count: Maximum number of events to return.  Defaults to
+            ``None`` (all events since ``last_id``).  The polling endpoint
+            passes ``MAX_EVENT_COUNT=100`` matching the original cap.
 
         Used by the polling REST API endpoint.
         """
         start = increment_id(last_id) if last_id else "-"
+        kwargs: dict[str, Any] = {}
+        if count is not None:
+            kwargs["count"] = count
         raw_events: list[tuple[str, dict[str, Any]]] = await self.redis.xrange(
             self._channel_key(channel_id),
             start,
             "+",
+            **kwargs,
         )
         return [parse_event(event) for event in raw_events]
 

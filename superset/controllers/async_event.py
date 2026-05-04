@@ -21,6 +21,11 @@ Preserves the existing frontend polling mechanism. The frontend calls
 for completed async query results. This controller is the async
 equivalent of Flask's ``AsyncEventsRestApi``.
 
+Channel id is read from the ``async-token`` JWT cookie (minted by
+:class:`superset.middleware.async_token.AsyncTokenMiddleware`) — this
+mirrors the original Flask implementation exactly and ensures the polling
+endpoint reads from the same Redis Stream that the Celery task wrote to.
+
 The WebSocket endpoint (superset/websocket/events.py) provides real-time
 delivery as an alternative, but this polling endpoint is preserved for
 full backward compatibility with the existing frontend.
@@ -31,13 +36,15 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from litestar import Controller, get
+from litestar import Controller, Request, get
 
 from superset.async_events.manager import AsyncEventManager
 from superset.guards.rbac import require_authentication
 from superset.typing import UserProtocol
 
 logger = logging.getLogger(__name__)
+
+MAX_EVENT_COUNT = 100
 
 
 class AsyncEventController(Controller):
@@ -48,6 +55,7 @@ class AsyncEventController(Controller):
     @get("/", guards=[require_authentication])
     async def get_events(
         self,
+        request: Request,
         event_manager: AsyncEventManager,
         current_user: UserProtocol,
         last_id: str | None = None,
@@ -58,7 +66,10 @@ class AsyncEventController(Controller):
         summary: Get async events
         description: >
             Returns async query events for the current user's channel.
-            Pass ``last_id`` to get only events after that ID.
+            The channel is identified by the ``async-token`` JWT cookie
+            that :class:`~superset.middleware.async_token.AsyncTokenMiddleware`
+            mints on every authenticated response.  Pass ``last_id`` to
+            get only events after that ID (exclusive).
         parameters:
           - name: last_id
             in: query
@@ -69,15 +80,62 @@ class AsyncEventController(Controller):
           200:
             description: List of events
         """
-        # The channel_id is derived from the user's session.
-        # In the original Flask implementation, channel_id is stored in the
-        # user's session. Here we derive it from the user ID for simplicity,
-        # matching the WebSocket channel pattern.
-        channel_id = f"user-{current_user.id}"
+        # ---------------------------------------------------------------------------
+        # Resolve channel_id from the JWT cookie — 1:1 with the original Flask path:
+        #   AsyncQueryManager.parse_channel_id_from_request(request)
+        #   → jwt.decode(cookie["async-token"])["channel"]
+        # ---------------------------------------------------------------------------
+        channel_id: str | None = None
+        try:
+            from superset.middleware.async_token import parse_channel_id_from_cookie
+
+            app = getattr(request, "app", None)
+            app_state = getattr(app, "state", None)
+            settings = getattr(app_state, "settings", None) if app_state else None
+
+            if settings is not None:
+                secret_key_obj = getattr(settings, "global_async_queries_jwt_secret", None)
+                if secret_key_obj is None:
+                    secret_key_obj = getattr(settings, "secret_key", "")
+                if hasattr(secret_key_obj, "get_secret_value"):
+                    secret_key_str = secret_key_obj.get_secret_value()
+                else:
+                    secret_key_str = str(secret_key_obj) if secret_key_obj else ""
+
+                cookie_name = getattr(
+                    settings, "global_async_queries_jwt_cookie_name", "async-token"
+                )
+
+                # Pull the raw cookie header from the ASGI scope headers.
+                raw_cookie: str | None = None
+                for header_name, header_value in request.scope.get("headers", []):
+                    if header_name == b"cookie":
+                        raw_cookie = header_value.decode("utf-8", errors="replace")
+                        break
+
+                if raw_cookie and secret_key_str:
+                    channel_id = parse_channel_id_from_cookie(
+                        raw_cookie,
+                        secret_key_str,
+                        cookie_name=cookie_name,
+                    )
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to parse async-token cookie", exc_info=True)
+
+        if not channel_id:
+            # Fallback: derive from user id so anonymous / unauthenticated callers
+            # get an empty list rather than a 500.  In practice the middleware
+            # guarantees a cookie is present for every authenticated user.
+            channel_id = f"user-{current_user.id}"
+            logger.debug(
+                "async-token cookie missing or invalid; falling back to channel %s",
+                channel_id,
+            )
 
         events = await event_manager.read_events(
             channel_id=channel_id,
             last_id=last_id,
+            count=MAX_EVENT_COUNT,
         )
 
         return {"result": events}
