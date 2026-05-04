@@ -38,3 +38,10 @@ import superset.models.slice  # noqa: F401
 import superset.models.sql_lab  # noqa: F401
 import superset.models.tags  # noqa: F401
 import superset.models.user  # noqa: F401
+
+# Wire synchronous event listeners once all model classes are registered.
+# This must come after all model imports above so mapper references
+# (Slice, Dashboard, SqlaTable, etc.) are fully resolved.
+from superset.models._listeners import register as _register_listeners  # noqa: E402
+
+_register_listeners()

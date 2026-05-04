@@ -39,6 +39,10 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+
     # --- query.limiting_factor: VARCHAR(20) → ENUM limitingfactor ---
     op.execute(
         "CREATE TYPE limitingfactor AS ENUM "
@@ -65,6 +69,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+
     # --- tag.type: ENUM → VARCHAR(20) ---
     op.execute("ALTER TABLE tag ALTER COLUMN type TYPE VARCHAR(20) USING type::text")
     op.execute("DROP TYPE IF EXISTS tagtype")

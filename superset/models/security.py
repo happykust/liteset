@@ -36,32 +36,36 @@ ab_user_role = Table(
     "ab_user_role",
     metadata,
     Column("id", Integer, primary_key=True),
-    Column("user_id", Integer, ForeignKey("ab_user.id")),
-    Column("role_id", Integer, ForeignKey("ab_role.id")),
+    Column("user_id", Integer, ForeignKey("ab_user.id", ondelete="CASCADE")),
+    Column("role_id", Integer, ForeignKey("ab_role.id", ondelete="CASCADE")),
 )
 
 ab_permission_view_role = Table(
     "ab_permission_view_role",
     metadata,
     Column("id", Integer, primary_key=True),
-    Column("permission_view_id", Integer, ForeignKey("ab_permission_view.id")),
-    Column("role_id", Integer, ForeignKey("ab_role.id")),
+    Column(
+        "permission_view_id",
+        Integer,
+        ForeignKey("ab_permission_view.id", ondelete="CASCADE"),
+    ),
+    Column("role_id", Integer, ForeignKey("ab_role.id", ondelete="CASCADE")),
 )
 
 ab_user_group = Table(
     "ab_user_group",
     metadata,
     Column("id", Integer, primary_key=True),
-    Column("user_id", Integer, ForeignKey("ab_user.id")),
-    Column("group_id", Integer, ForeignKey("ab_group.id")),
+    Column("user_id", Integer, ForeignKey("ab_user.id", ondelete="CASCADE")),
+    Column("group_id", Integer, ForeignKey("ab_group.id", ondelete="CASCADE")),
 )
 
 ab_group_role = Table(
     "ab_group_role",
     metadata,
     Column("id", Integer, primary_key=True),
-    Column("group_id", Integer, ForeignKey("ab_group.id")),
-    Column("role_id", Integer, ForeignKey("ab_role.id")),
+    Column("group_id", Integer, ForeignKey("ab_group.id", ondelete="CASCADE")),
+    Column("role_id", Integer, ForeignKey("ab_role.id", ondelete="CASCADE")),
 )
 
 

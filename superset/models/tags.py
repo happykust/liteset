@@ -85,7 +85,14 @@ class Tag(Base, AuditMixinNullable):
 
     id = Column(Integer, primary_key=True)
     name = Column(String(250), unique=True)
-    type: Any = Column(Enum(TagType))
+    # ``native_enum=False`` keeps the column as VARCHAR in the database,
+    # mirroring the production state of Apache Superset 6.0 after migration
+    # ``07f9a902af1b`` (2023-03-29) which dropped the ``tagtypes`` PG ENUM and
+    # converted the column back to VARCHAR.  Without this flag, asyncpg
+    # generates ``$1::tagtype`` casts that fail when the ENUM type doesn't
+    # exist; psycopg2 (used by Apache Superset 6.0) sent values as plain text
+    # and PG implicit-converted them.
+    type: Any = Column(Enum(TagType, native_enum=False))
     description = Column(Text)
 
     # -- relationships --------------------------------------------------------
@@ -116,7 +123,9 @@ class TaggedObject(Base, AuditMixinNullable):
     id = Column(Integer, primary_key=True)
     tag_id = Column(Integer, ForeignKey("tag.id"), nullable=True)
     object_id = Column(Integer)
-    object_type = Column(String(255))
+    # See note on ``Tag.type`` above — ``native_enum=False`` keeps the column
+    # VARCHAR in the database (Apache Superset 6.0 post-``07f9a902af1b``).
+    object_type = Column(Enum(ObjectType, native_enum=False), nullable=False)
 
     # -- relationships --------------------------------------------------------
 

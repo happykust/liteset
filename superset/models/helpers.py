@@ -1086,20 +1086,27 @@ class ExploreMixin:
         :returns: The metric defined as a sqlalchemy column
         :rtype: sqlalchemy.sql.column
         """
-        expression_type = metric.get("expressionType")
+        # Support both camelCase (frontend payload) and snake_case
+        # (msgspec ``rename="camel"`` decoded structs).
+        expression_type = metric.get("expressionType") or metric.get(
+            "expression_type"
+        )
         label = get_metric_name(metric)
 
         if expression_type == AdhocMetricExpressionType.SIMPLE:
             metric_column = metric.get("column") or {}
-            column_name = cast(str, metric_column.get("column_name"))
+            column_name = cast(
+                str,
+                metric_column.get("column_name") or metric_column.get("columnName"),
+            )
             sqla_column = sa.column(column_name)
             sqla_metric = self.sqla_aggregations[metric["aggregate"]](sqla_column)
         elif expression_type == AdhocMetricExpressionType.SQL:
-            expression = metric.get("sqlExpression")
+            expression = metric.get("sqlExpression") or metric.get("sql_expression")
 
             if not processed:
                 expression = self._process_select_expression(
-                    expression=metric["sqlExpression"],
+                    expression=expression,
                     database_id=self.database_id,
                     engine=self.database.backend,
                     schema=self.schema,
@@ -1681,9 +1688,13 @@ class ExploreMixin:
             col: Union[AdhocMetric, ColumnElement] = orig_col
             if isinstance(col, dict):
                 col = cast(AdhocMetric, col)
-                if col.get("sqlExpression"):
-                    col["sqlExpression"] = self._process_orderby_expression(
-                        expression=col["sqlExpression"],
+                # Support both camelCase and snake_case payload conventions.
+                sql_expr_key = (
+                    "sqlExpression" if col.get("sqlExpression") else "sql_expression"
+                )
+                if col.get(sql_expr_key):
+                    col[sql_expr_key] = self._process_orderby_expression(
+                        expression=col[sql_expr_key],
                         database_id=self.database_id,
                         engine=self.database.backend,
                         schema=self.schema,

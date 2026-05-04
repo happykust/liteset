@@ -24,6 +24,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import backref, relationship
 from sqlalchemy.types import Text
 
+from superset.extensions import encrypted_field_factory
 from superset.models.helpers import (
     AuditMixinNullable,
     Base,
@@ -51,14 +52,16 @@ class SSHTunnel(AuditMixinNullable, ExtraJSONMixin, ImportExportMixin, Base):
 
     server_address = sa.Column(sa.Text)
     server_port = sa.Column(sa.Integer)
-    username = sa.Column(Text)
+    username = sa.Column(encrypted_field_factory.create(Text))
 
     # basic authentication
-    password = sa.Column(Text, nullable=True)
+    password = sa.Column(encrypted_field_factory.create(Text), nullable=True)
 
     # password protected pkey authentication
-    private_key = sa.Column(Text, nullable=True)
-    private_key_password = sa.Column(Text, nullable=True)
+    private_key = sa.Column(encrypted_field_factory.create(Text), nullable=True)
+    private_key_password = sa.Column(
+        encrypted_field_factory.create(Text), nullable=True
+    )
 
     export_fields = [
         "server_address",

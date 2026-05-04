@@ -39,6 +39,7 @@ from superset.cache.manager import CacheManager
 from superset.stats_logger import StatsLoggerManager
 from superset.utils.encrypt import EncryptedFieldFactory
 from superset.utils.machine_auth import MachineAuthProviderFactory
+from superset.utils.ssh_tunnel import SSHManagerFactory
 
 # ---------------------------------------------------------------------------
 # Singletons.  All are initialised lazily; ``superset.app.on_startup``
@@ -56,10 +57,16 @@ cache_manager = CacheManager()
 
 stats_logger_manager = StatsLoggerManager()
 
+# SSH tunnel factory — initialised in ``on_startup`` from
+# ``settings.ssh_tunnel_manager_class``.  Callers that need to open
+# tunnels use ``ssh_manager_factory.instance``.
+ssh_manager_factory = SSHManagerFactory()
+
 
 __all__ = [
     "cache_manager",
     "encrypted_field_factory",
     "machine_auth_provider_factory",
+    "ssh_manager_factory",
     "stats_logger_manager",
 ]

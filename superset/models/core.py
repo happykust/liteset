@@ -50,6 +50,7 @@ from sqlalchemy.sql import expression
 from superset.constants import LRU_CACHE_MAX_SIZE, PASSWORD_MASK
 from superset.databases.utils import DatabaseInvalidError, make_url_safe
 from superset.db_engine_specs import BaseEngineSpec, get_engine_spec
+from superset.extensions import encrypted_field_factory
 from superset.models.helpers import (
     AuditMixinNullable,
     Base,
@@ -144,7 +145,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     verbose_name = Column(String(250), unique=True)
     database_name = Column(String(250), unique=True, nullable=False)
     sqlalchemy_uri = Column(String(1024), nullable=False)
-    password = Column(Text)
+    password = Column(encrypted_field_factory.create(String(1024)))
     cache_timeout = Column(Integer)
     select_as_create_table_as = Column(Boolean, default=False)
     expose_in_sqllab = Column(Boolean, default=True)
@@ -159,9 +160,9 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     allow_dml = Column(Boolean, default=False)
     force_ctas_schema = Column(String(250))
     extra = Column(Text, default="{}")
-    encrypted_extra = Column(Text, nullable=True)
+    encrypted_extra = Column(encrypted_field_factory.create(Text), nullable=True)
     impersonate_user = Column(Boolean, default=False)
-    server_cert = Column(Text, nullable=True)
+    server_cert = Column(encrypted_field_factory.create(Text), nullable=True)
     is_managed_externally = Column(Boolean, nullable=False, default=False)
     external_url = Column(Text, nullable=True)
 
@@ -1007,9 +1008,9 @@ class DatabaseUserOAuth2Tokens(AuditMixinNullable, Base):
         ForeignKey("dbs.id", ondelete="CASCADE"),
         nullable=False,
     )
-    access_token = Column(Text, nullable=True)
+    access_token = Column(encrypted_field_factory.create(Text), nullable=True)
     access_token_expiration = Column(DateTime, nullable=True)
-    refresh_token = Column(Text, nullable=True)
+    refresh_token = Column(encrypted_field_factory.create(Text), nullable=True)
 
     user = relationship(
         "User",

@@ -99,7 +99,14 @@ class Query(Base, ExtraJSONMixin):
     select_sql = Column(LongText())
     executed_sql = Column(LongText())
     limit = Column(Integer)
-    limiting_factor = Column(Enum(LimitingFactor), server_default="UNKNOWN")
+    # ``native_enum=False`` for asyncpg compatibility — see note on
+    # ``Tag.type`` / ``TaggedObject.object_type`` / ``RLSFilter.filter_type``.
+    # The metadata DB stores the column as VARCHAR (or as a native PG ENUM
+    # ``limitingfactor`` on installations that ran migration 0002); both
+    # cases work with text-based bind values.
+    limiting_factor = Column(
+        Enum(LimitingFactor, native_enum=False), server_default="UNKNOWN"
+    )
     select_as_cta = Column(Boolean)
     select_as_cta_used = Column(Boolean, default=False)
     ctas_method = Column(String(16), default="TABLE")

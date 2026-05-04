@@ -44,6 +44,7 @@ from superset.models.helpers import (
     Base,
     BinaryUUID,
     ExtraJSONMixin,
+    MediumText,
     metadata,
 )
 
@@ -141,28 +142,28 @@ class ReportSchedule(AuditMixinNullable, ExtraJSONMixin, Base):
     __table_args__ = (UniqueConstraint("name", "type"),)
 
     id = Column(Integer, primary_key=True)
-    type = Column(String(50))
+    type = Column(String(50), nullable=False)
     name = Column(String(150), nullable=False)
     description = Column(Text)
     context_markdown = Column(Text)
     active = Column(Boolean, default=True, index=True)
-    crontab = Column(String(1000))
+    crontab = Column(String(1000), nullable=False)
     creation_method = Column(
         String(255),
         server_default=ReportCreationMethod.ALERTS_REPORTS.value,
     )
-    timezone = Column(String(100), default="UTC")
+    timezone = Column(String(100), default="UTC", nullable=False)
     report_format = Column(String(50), default=ReportDataFormat.VISUALIZATION.value)
-    sql = Column(Text)
+    sql = Column(MediumText())
     chart_id = Column(Integer, ForeignKey("slices.id"), nullable=True)
     dashboard_id = Column(Integer, ForeignKey("dashboards.id"), nullable=True)
     database_id = Column(Integer, ForeignKey("dbs.id"), nullable=True)
     last_eval_dttm = Column(DateTime)
     last_state = Column(String(50))
     last_value = Column(Float)
-    last_value_row_json = Column(Text)
+    last_value_row_json = Column(MediumText())
     validator_type = Column(String(100))
-    validator_config_json = Column(Text)
+    validator_config_json = Column(MediumText())
     log_retention = Column(Integer, default=90)
     grace_period = Column(Integer, default=0)
     working_timeout = Column(Integer, default=3600)
@@ -218,7 +219,7 @@ class ReportRecipients(Base, AuditMixinNullable):
 
     id = Column(Integer, primary_key=True)
     type = Column(String(50))
-    recipient_config_json = Column(Text)
+    recipient_config_json = Column(MediumText())
     report_schedule_id = Column(
         Integer,
         ForeignKey("report_schedule.id"),
@@ -237,7 +238,7 @@ class ReportExecutionLog(Base):
     start_dttm = Column(DateTime)
     end_dttm = Column(DateTime)
     value = Column(Float)
-    value_row_json = Column(Text)
+    value_row_json = Column(MediumText())
     state = Column(String(50))
     error_message = Column(Text)
     report_schedule_id = Column(

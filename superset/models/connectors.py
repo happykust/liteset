@@ -725,10 +725,10 @@ class SqlaTable(
     )
 
     id = Column(Integer, primary_key=True)
-    table_name = Column(String(250))
+    table_name = Column(String(250), nullable=False)
     main_dttm_col = Column(String(250))
     database_id = Column(Integer, ForeignKey("dbs.id"), nullable=False)
-    fetch_values_predicate = Column(String(1000))
+    fetch_values_predicate = Column(Text)
     schema = Column(String(255))
     catalog = Column(String(256), nullable=True, default=None)
     sql = Column(MediumText())
@@ -1390,7 +1390,12 @@ class SqlaTable(
         from superset.models.helpers import AdhocMetricExpressionType
         from superset.utils.column import get_metric_name
 
-        expression_type = metric.get("expressionType")
+        # Support both camelCase (frontend payload, original Apache Superset
+        # convention) and snake_case (msgspec ``rename="camel"`` round-trips
+        # may surface either form).
+        expression_type = metric.get("expressionType") or metric.get(
+            "expression_type"
+        )
         # 1:1 with original — passes the dataset's ``verbose_map`` so
         # SIMPLE adhoc metrics that reference a TableColumn render
         # with the user-friendly verbose name when one is configured.
@@ -1398,7 +1403,10 @@ class SqlaTable(
 
         if expression_type == AdhocMetricExpressionType.SIMPLE:
             metric_column = metric.get("column") or {}
-            column_name = _cast(str, metric_column.get("column_name"))
+            column_name = _cast(
+                str,
+                metric_column.get("column_name") or metric_column.get("columnName"),
+            )
             table_column: TableColumn | None = columns_by_name.get(column_name)
             if table_column:
                 sqla_column = table_column.get_sqla_col(
@@ -1408,7 +1416,7 @@ class SqlaTable(
                 sqla_column = sa_column(column_name)
             sqla_metric = self.sqla_aggregations[metric["aggregate"]](sqla_column)
         elif expression_type == AdhocMetricExpressionType.SQL:
-            expression = metric.get("sqlExpression")
+            expression = metric.get("sqlExpression") or metric.get("sql_expression")
             if not processed:
                 try:
                     expression = self._process_select_expression(
@@ -1465,12 +1473,20 @@ class SqlaTable(
         from superset.utils.column import get_column_name
 
         label = get_column_name(col)
-        sql_expression = col["sqlExpression"]
-        time_grain = col.get("timeGrain")
-        has_timegrain = col.get("columnType") == "BASE_AXIS" and time_grain
+        # Support both camelCase (frontend payload) and snake_case
+        # (msgspec ``rename="camel"`` round-trips) — see
+        # ``adhoc_metric_to_sqla`` for the same pattern.
+        sql_expression = col.get("sqlExpression") or col.get("sql_expression")
+        if sql_expression is None:
+            sql_expression = col["sqlExpression"]  # raise the original KeyError
+        time_grain = col.get("timeGrain") or col.get("time_grain")
+        column_type = col.get("columnType") or col.get("column_type")
+        has_timegrain = column_type == "BASE_AXIS" and time_grain
         is_dttm = False
         pdf: str | None = None
-        is_column_reference = col.get("isColumnReference", False)
+        is_column_reference = col.get("isColumnReference") or col.get(
+            "is_column_reference", False
+        )
 
         # First check if this references a known TableColumn — happens
         # when the user picks a calculated column from the adhoc
@@ -2493,10 +2509,17 @@ class RowLevelSecurityFilter(Base, AuditMixinNullable):
     id = Column(Integer, primary_key=True)
     name = Column(String(255), unique=True, nullable=False)
     description = Column(Text)
+    # ``native_enum=False`` keeps the column as VARCHAR in PostgreSQL,
+    # matching the production state of Apache Superset 6.0.  Without this,
+    # asyncpg generates ``$1::filter_type_enum`` casts that fail when the
+    # ENUM type doesn't exist in the metadata DB; psycopg2 (used by upstream
+    # Apache Superset) sent values as plain text and PG implicit-converted
+    # them.  See similar reasoning on ``Tag.type`` / ``TaggedObject.object_type``.
     filter_type = Column(
         SAEnum(
             *[ft.value for ft in _RowLevelSecurityFilterType],
             name="filter_type_enum",
+            native_enum=False,
         ),
     )
     group_key = Column(String(255), nullable=True)
