@@ -40,12 +40,13 @@ def _get_registry(state: State) -> dict[str, Any]:
     ships ``port`` and ``internet_address`` plugins out of the box (see
     superset_old/config.py:2053-2056).
     """
+    from superset.advanced_data_type.plugins.internet_address import internet_address
     from superset.advanced_data_type.plugins.internet_port import internet_port
 
     user_registry: dict[str, Any] = (
         getattr(state.settings, "advanced_data_types", {}) or {}
     )
-    return {"port": internet_port, **user_registry}
+    return {"internet_address": internet_address, "port": internet_port, **user_registry}
 
 
 def _invoke_handler(handler: Any, adv_type: str, values: list[Any]) -> Any:
