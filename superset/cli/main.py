@@ -204,3 +204,49 @@ try:
     superset_cli.add_command(test_db)
 except ImportError:
     pass
+
+# Factory reset (gated by ENABLE_FACTORY_RESET_COMMAND feature flag at runtime)
+try:
+    from superset.cli.reset import factory_reset
+
+    superset_cli.add_command(factory_reset)
+except ImportError:
+    pass
+
+# OpenAPI doc regeneration
+try:
+    from superset.cli.update_api_docs import update_api_docs
+
+    superset_cli.add_command(update_api_docs)
+except ImportError:
+    pass
+
+# Legacy V0 import / export commands.  Kept for parity with upstream
+# Apache Superset; user-facing automation that hasn't migrated to the
+# V1 zip-based pipeline still wires these by name.
+try:
+    from superset.cli.legacy import (
+        legacy_export_dashboards,
+        legacy_export_datasource_schema,
+        legacy_export_datasources,
+        legacy_import_dashboards,
+        legacy_import_datasources,
+    )
+
+    superset_cli.add_command(legacy_export_dashboards)
+    superset_cli.add_command(legacy_export_datasources)
+    superset_cli.add_command(legacy_export_datasource_schema)
+    superset_cli.add_command(legacy_import_dashboards)
+    superset_cli.add_command(legacy_import_datasources)
+except ImportError:
+    pass
+
+# Chart-type migration helpers (``superset migrate-viz upgrade``,
+# ``superset migrate-viz downgrade``).  Operates on the sync metadata
+# DB via ``superset.migrations.shared.migrate_viz``.
+try:
+    from superset.cli.viz_migrations import migrate_viz
+
+    superset_cli.add_command(migrate_viz)
+except ImportError:
+    pass

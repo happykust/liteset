@@ -62,6 +62,7 @@ from superset.exceptions import (
 )
 from superset.logging import configure_logging
 from superset.middleware.auth import SupersetAuthMiddleware
+from superset.middleware.http_headers import HTTPHeadersMiddleware
 from superset.middleware.locale import LocaleMiddleware
 from superset.middleware.proxy_fix import ProxyFixMiddleware
 from superset.middleware.request_context import RequestContextMiddleware
@@ -163,15 +164,108 @@ async def readiness_probe(state: State) -> Response[dict[str, Any]]:
     return Response(body, status_code=200 if healthy else 503)
 
 
-async def on_startup(app: Litestar) -> None:
+async def on_startup(app: Litestar) -> None:  # noqa: C901
     settings: SupersetSettings = app.state.settings
+
+    # ── i18n: load translation catalogs ───────────────────────────────────
+    # Load all available language packs from ``superset/translations/`` and
+    # register them with the module-level ``i18n`` catalog so that
+    # ``gettext`` / ``lazy_gettext`` calls work from the first request.
+    try:
+        from superset.i18n import init_translations as _init_translations
+
+        _translations_root = Path(__file__).parent / "translations"
+        _catalogs: dict[str, dict[str, str]] = {}
+        if _translations_root.is_dir():
+            for _lang_dir in _translations_root.iterdir():
+                _msg_file = _lang_dir / "LC_MESSAGES" / "messages.json"
+                if _msg_file.is_file():
+                    try:
+                        _raw = json.loads(_msg_file.read_text(encoding="utf-8"))
+                        # messages.json may be in one of three shapes:
+                        #   1. jed1.x: {"domain": "superset", "locale_data":
+                        #        {"superset": {msgid: [msgstr, ...], "": {...}}}}
+                        #   2. raw po2json: {msgid: [null, msgstr, ...]}
+                        #   3. flat: {msgid: msgstr}
+                        _catalog: dict[str, str] = {}
+                        if (
+                            isinstance(_raw, dict)
+                            and "locale_data" in _raw
+                            and isinstance(_raw["locale_data"], dict)
+                        ):
+                            # jed1.x: unwrap the inner domain dict
+                            _domain_data: dict[str, Any] = {}
+                            for _domain_msgs in _raw["locale_data"].values():
+                                if isinstance(_domain_msgs, dict):
+                                    _domain_data.update(_domain_msgs)
+                            for _k, _v in _domain_data.items():
+                                if _k == "":
+                                    continue  # skip metadata entry
+                                if isinstance(_v, list) and len(_v) >= 1:
+                                    _catalog[_k] = _v[0] if _v[0] else _k
+                                elif isinstance(_v, str):
+                                    _catalog[_k] = _v
+                        else:
+                            # raw or flat format
+                            for _k, _v in _raw.items():
+                                if _k == "":
+                                    continue  # skip metadata entry
+                                if isinstance(_v, list) and len(_v) >= 2:
+                                    _catalog[_k] = _v[1] if _v[1] else _k
+                                elif isinstance(_v, str):
+                                    _catalog[_k] = _v
+                        _catalogs[_lang_dir.name] = _catalog
+                    except Exception:  # noqa: BLE001
+                        pass
+        _init_translations(_catalogs)
+        logger.info(
+            "i18n: loaded %d language catalogs: %s",
+            len(_catalogs),
+            sorted(_catalogs),
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("i18n init_translations failed", exc_info=True)
+
+    # ── Step 4: configure_logging ──────────────────────────────────────────
+    # If the user supplied a LOGGING_CONFIGURATOR callable, call it first so
+    # it can install custom handlers before structlog takes over.  Matches
+    # the original ``SupersetAppInitializer.configure_logging`` which delegates
+    # to ``self.config["LOGGING_CONFIGURATOR"].configure_logging(...)``.
+    logging_configurator = getattr(settings, "logging_configurator", None)
+    if logging_configurator is not None and callable(
+        getattr(logging_configurator, "configure_logging", None)
+    ):
+        try:
+            logging_configurator.configure_logging(
+                {
+                    "LOG_LEVEL": getattr(settings, "log_level", "INFO"),
+                    "LOG_FORMAT": getattr(settings, "log_format", ""),
+                    "ENABLE_TIME_ROTATE": getattr(settings, "enable_time_rotate", False),
+                    "TIME_ROTATE_LOG_LEVEL": getattr(settings, "time_rotate_log_level", 20),
+                    "FILENAME": getattr(settings, "log_filename", ""),
+                    "ROLLOVER": getattr(settings, "rollover", "midnight"),
+                    "INTERVAL": getattr(settings, "log_interval", 1),
+                    "BACKUP_COUNT": getattr(settings, "backup_count", 30),
+                },
+                getattr(settings, "debug", False),
+            )
+        except Exception:  # noqa: BLE001
+            pass  # fall through to structlog
+
     configure_logging(settings)
 
-    # Initialize feature flag manager from config
+    # ── Step 5: configure_feature_flags ────────────────────────────────────
     from superset.utils.feature_flags import feature_flag_manager
 
     feature_flag_manager.init_from_config(settings.feature_flags)
 
+    # ── Step 11: setup_event_logger (part A) ──────────────────────────────
+    # Resolve the EVENT_LOGGER config value now so it's ready for part B
+    # (after the session factory has been created).  The module-level
+    # singleton in superset.events is updated in part B.
+    event_logger_cfg = getattr(settings, "event_logger", None)
+
+    # ── Step 22: configure_auth_provider ───────────────────────────────────
     # Initialise the machine-auth provider factory (used by the Selenium /
     # Playwright webdriver helpers and by the Celery report task to mint
     # session cookies for headless browsers).  Must happen before any
@@ -180,9 +274,51 @@ async def on_startup(app: Litestar) -> None:
 
     machine_auth_provider_factory.init_app(app)
 
-    engine = create_db_engine(settings.sqlalchemy_database_uri)
+    # ── Step 7: setup_db ───────────────────────────────────────────────────
+    # Pass user-supplied SQLALCHEMY_ENGINE_OPTIONS to the engine factory so
+    # connection-pool tuning, pre-ping, isolation level etc. are honoured.
+    engine_options: dict[str, Any] = (
+        getattr(settings, "sqlalchemy_engine_options", {}) or {}
+    )
+    engine = create_db_engine(settings.sqlalchemy_database_uri, **engine_options)
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
+    # NOTE: isolation_level="READ COMMITTED" is applied at engine-creation
+    # time inside create_db_engine (superset/db/session.py) for PG/MySQL when
+    # not already set by SQLALCHEMY_ENGINE_OPTIONS.  No per-connection
+    # override is needed here.
+
+    # ── Step 11: setup_event_logger (part B) ──────────────────────────────
+    # Now that the session factory exists, wire the module-level
+    # ``superset.events.event_logger`` singleton.  This mirrors the original
+    # ``SupersetAppInitializer.setup_event_logger`` which stored the resolved
+    # logger in ``_event_logger["event_logger"]`` so every controller that
+    # did ``from superset.utils.log import event_logger`` got the DB-backed
+    # impl, not the debug fallback.
+    #
+    # If EVENT_LOGGER is set to a custom instance in superset_config.py we
+    # use that; otherwise we default to AsyncDBEventLogger(session_factory)
+    # which persists audit rows to the metadata DB.
+    try:
+        from superset.events import configure_event_logger, get_event_logger_from_cfg_value
+        import superset.events as _events_mod
+
+        if event_logger_cfg is not None:
+            # User supplied a custom EventLogger instance or class.
+            _resolved = get_event_logger_from_cfg_value(event_logger_cfg)
+            _events_mod.event_logger = _resolved
+            app.state.event_logger = _resolved
+            logger.info(
+                "Event logger configured from EVENT_LOGGER setting: %s",
+                type(_resolved).__name__,
+            )
+        else:
+            # Default: AsyncDBEventLogger backed by the metadata DB.
+            configure_event_logger(session_factory=app.state.session_factory)
+            app.state.event_logger = _events_mod.event_logger
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to configure event logger", exc_info=True)
+        app.state.event_logger = None
 
     # Initialize Redis for auth user cache
     if settings.redis_url:
@@ -197,10 +333,15 @@ async def on_startup(app: Litestar) -> None:
     else:
         app.state.redis = None
 
+    # ── Step 16: configure_cache ───────────────────────────────────────────
     # Initialise the multi-cache holder used by ``utils.cache.memoized_func``,
     # ``utils.cache.set_and_log_cache``, ``viz.py``, ``screenshots.py``, and
     # the ``commands.chart_data`` / ``commands.sqllab`` async pipelines.
-    from superset.extensions import cache_manager, stats_logger_manager
+    from superset.extensions import (
+        cache_manager,
+        ssh_manager_factory,
+        stats_logger_manager,
+    )
 
     cache_manager.init_app(
         redis=app.state.redis,
@@ -218,8 +359,133 @@ async def on_startup(app: Litestar) -> None:
         # behaviour identical to the original Flask Superset.
         redis_url=settings.redis_url or None,
     )
-    # Wire the configured stats logger (defaults to ``DummyStatsLogger``).
+    # ── Step 25: configure_stats_manager ───────────────────────────────────
     stats_logger_manager.configure(settings.stats_logger)
+
+    # ── Step 9: configure_celery ───────────────────────────────────────────
+    # Pass CELERY_CONFIG to the Celery app so user-provided beat schedules,
+    # broker URLs etc. take effect.  The original ``configure_celery`` also
+    # assigned ``AppContextTask`` as the base class — not needed in ASGI.
+    celery_config = getattr(settings, "celery_config", None)
+    if celery_config is not None:
+        try:
+            from superset.tasks.celery_app import app as celery_app
+
+            celery_app.config_from_object(celery_config)
+            logger.debug("Celery configured from CELERY_CONFIG setting")
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to apply CELERY_CONFIG to Celery app", exc_info=True)
+
+    # ── Step 24: configure_ssh_manager ─────────────────────────────────────
+    try:
+        ssh_manager_factory.init_app(settings)
+    except Exception:  # noqa: BLE001
+        logger.warning("SSH manager init failed", exc_info=True)
+
+    # ── Step 18: configure_sqlglot_dialects ────────────────────────────────
+    # Merge user-supplied SQLGLOT_DIALECTS_EXTENSIONS into the global dict.
+    # Mirrors ``SupersetAppInitializer.configure_sqlglot_dialects`` 1:1.
+    sqlglot_extensions = getattr(settings, "sqlglot_dialects_extensions", None) or {}
+    if sqlglot_extensions:
+        try:
+            if callable(sqlglot_extensions):
+                sqlglot_extensions = sqlglot_extensions()
+            from superset.sql.parse import SQLGLOT_DIALECTS
+
+            SQLGLOT_DIALECTS.update(sqlglot_extensions)
+            logger.debug(
+                "Registered %d sqlglot dialect extension(s)", len(sqlglot_extensions)
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to register SQLGLOT_DIALECTS_EXTENSIONS", exc_info=True
+            )
+
+    # ── Step 21: configure_data_sources ────────────────────────────────────
+    # Import datasource modules to trigger their side-effect registration.
+    # Mirrors ``SupersetAppInitializer.configure_data_sources`` 1:1.
+    module_datasource_map: dict[str, list[str]] = {
+        **getattr(settings, "default_module_ds_map", {}),
+        **getattr(settings, "additional_module_ds_map", {}),
+    }
+    for module_name, class_names in module_datasource_map.items():
+        try:
+            __import__(module_name, fromlist=[str(s) for s in class_names])
+        except ImportError:
+            logger.warning("Could not import datasource module %s", module_name)
+
+    # ── sync_config_to_db ──────────────────────────────────────────────────
+    # Seed system themes and register SQLA tagging event listeners.
+    # Async equivalent of ``SupersetApp.sync_config_to_db()``.
+    try:
+        if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+            try:
+                from superset.tags.core import register_sqla_event_listeners
+
+                register_sqla_event_listeners()
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "Could not register tagging event listeners", exc_info=True
+                )
+
+        # Seed system themes asynchronously when theme config is present.
+        theme_default = getattr(settings, "theme_default", None)
+        theme_dark = getattr(settings, "theme_dark", None)
+        theme_seeds: list[tuple[str, Any]] = []
+        if theme_default:
+            theme_seeds.append(("THEME_DEFAULT", theme_default))
+        if theme_dark:
+            theme_seeds.append(("THEME_DARK", theme_dark))
+
+        if theme_seeds:
+            try:
+                import json as _json
+
+                from sqlalchemy import select
+
+                from superset.models.core import Theme
+
+                async with app.state.session_factory() as _session:
+                    for theme_name, theme_config in theme_seeds:
+                        if callable(theme_config):
+                            theme_config = theme_config()
+                        if not isinstance(theme_config, dict):
+                            continue
+                        stmt = select(Theme).where(
+                            Theme.theme_name == theme_name,
+                            Theme.is_system.is_(True),
+                        )
+                        existing = (await _session.execute(stmt)).scalars().first()
+                        json_data = _json.dumps(theme_config)
+                        if existing:
+                            existing.json_data = json_data
+                        else:
+                            _session.add(
+                                Theme(
+                                    theme_name=theme_name,
+                                    json_data=json_data,
+                                    is_system=True,
+                                )
+                            )
+                    await _session.commit()
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "Theme seeding skipped (DB may not be migrated yet)",
+                    exc_info=True,
+                )
+    except Exception:  # noqa: BLE001
+        logger.debug("sync_config_to_db failed (non-fatal)", exc_info=True)
+
+    # ── FLASK_APP_MUTATOR ──────────────────────────────────────────────────
+    # Call the user-supplied last-mile hook with the Litestar app object.
+    # Mirrors ``SupersetAppInitializer.init_app_in_ctx`` which calls
+    # ``flask_app_mutator(self.superset_app)``.
+    flask_app_mutator = getattr(settings, "flask_app_mutator", None)
+    if callable(flask_app_mutator):
+        try:
+            flask_app_mutator(app)
+        except Exception:  # noqa: BLE001
+            logger.warning("FLASK_APP_MUTATOR raised an exception", exc_info=True)
 
     # Initialize active WebSocket connections tracker
     app.state.active_websockets = {}
@@ -240,7 +506,24 @@ async def on_startup(app: Litestar) -> None:
                 except Exception:
                     logger.exception("Error during channel cleanup")
 
-        manager = AsyncEventManager(redis=app.state.redis)
+        manager = AsyncEventManager(
+            redis=app.state.redis,
+            stream_prefix=getattr(
+                settings,
+                "global_async_queries_redis_stream_prefix",
+                "async-events-",
+            ),
+            global_stream_limit=getattr(
+                settings,
+                "global_async_queries_redis_stream_limit_firehose",
+                1_000_000,
+            ),
+            channel_stream_limit=getattr(
+                settings,
+                "global_async_queries_redis_stream_limit",
+                1_000,
+            ),
+        )
         app.state.cleanup_task = asyncio.create_task(periodic_cleanup(manager))
 
     logger.info(
@@ -303,7 +586,10 @@ def create_app(  # noqa: C901
 
     # Import datasource and role controllers (Phase 7: cleanup)
     from superset.controllers.datasource import DatasourceController
-    from superset.controllers.embedded_dashboard import EmbeddedDashboardController
+    from superset.controllers.embedded_dashboard import (
+        EmbeddedDashboardController,
+        EmbeddedSSRController,
+    )
     from superset.controllers.explore import ExploreController
     from superset.controllers.explore_form_data import ExploreFormDataController
     from superset.controllers.explore_permalink import ExplorePermalinkController
@@ -615,6 +901,7 @@ def create_app(  # noqa: C901
         TagController,
         ThemeController,
         EmbeddedDashboardController,
+        EmbeddedSSRController,
         CacheController,
         AsyncEventController,
         RLSController,
@@ -672,7 +959,25 @@ def create_app(  # noqa: C901
     from superset.async_events import manager as _aem_mod
 
     async def provide_event_manager(state: State) -> Any:
-        return _aem_mod.AsyncEventManager(redis=state.redis)
+        _settings = getattr(state, "settings", None)
+        return _aem_mod.AsyncEventManager(
+            redis=state.redis,
+            stream_prefix=getattr(
+                _settings,
+                "global_async_queries_redis_stream_prefix",
+                "async-events-",
+            ),
+            global_stream_limit=getattr(
+                _settings,
+                "global_async_queries_redis_stream_limit_firehose",
+                1_000_000,
+            ),
+            channel_stream_limit=getattr(
+                _settings,
+                "global_async_queries_redis_stream_limit",
+                1_000,
+            ),
+        )
 
     # Build CSRF middleware (session-based, Flask-WTF compatible)
     csrf_middleware = None  # Don't use Litestar built-in CSRF config
@@ -687,6 +992,36 @@ def create_app(  # noqa: C901
             if hasattr(_raw_secret, "get_secret_value")
             else str(_raw_secret)
         )
+        # Start with the hard-coded baseline exempt paths (health probes + the
+        # original 5 WTF_CSRF_EXEMPT_LIST entries from upstream config.py).
+        # Merge the user-supplied WTF_CSRF_EXEMPT_LIST on top.  The original
+        # Flask list used dotted view-function names; we translate them to URL
+        # prefixes for ASGI compatibility.
+        _baseline_exempt: list[str] = [
+            # Health probes
+            "/health",
+            "/healthcheck",
+            "/ping",
+            "/healthz",
+            # Auth forms (no token before login)
+            "/login",
+            "/logout",
+            # Original WTF_CSRF_EXEMPT_LIST view-to-path translations:
+            "/api/v1/chart/data",
+            "/api/v1/dashboard/cache_dashboard_screenshot",
+            "/superset/explore_json",
+            "/superset/log",
+            "/datasource/samples",
+        ]
+        # User-supplied WTF_CSRF_EXEMPT_LIST may be dotted view-function names
+        # (old FAB style) or plain URL paths.  We include them as-is because the
+        # CSRF middleware does prefix matching — a dotted name won't match any
+        # URL, so non-path entries are harmlessly ignored.
+        _user_exempt: list[str] = list(
+            getattr(settings, "wtf_csrf_exempt_list", []) or []
+        )
+        _all_exempt = list(dict.fromkeys(_baseline_exempt + _user_exempt))
+
         csrf_middleware = create_csrf_middleware(
             secret=secret_key,
             header_name=getattr(
@@ -694,23 +1029,8 @@ def create_app(  # noqa: C901
                 "csrf_header_name",
                 "X-CSRFToken",
             ),
-            max_age=604800,  # 1 week (WTF_CSRF_TIME_LIMIT)
-            exclude_paths=[
-                # Health probes
-                "/health",
-                "/healthcheck",
-                "/ping",
-                "/healthz",
-                # Auth forms (no token before login)
-                "/login",
-                "/logout",
-                # Original WTF_CSRF_EXEMPT_LIST:
-                "/api/v1/chart/data",
-                "/api/v1/dashboard/cache_dashboard_screenshot",
-                "/superset/explore_json",
-                "/superset/log",
-                "/datasource/samples",
-            ],
+            max_age=getattr(settings, "wtf_csrf_time_limit", 604800),
+            exclude_paths=_all_exempt,
             session_cookie_name=getattr(
                 settings,
                 "session_cookie_name",
@@ -752,6 +1072,10 @@ def create_app(  # noqa: C901
             SecurityHeadersMiddleware(),
             # RateLimitMiddleware(),  # disabled — too aggressive for dev/testing
             LocaleMiddleware(),
+            # HTTPHeadersMiddleware applies OVERRIDE_HTTP_HEADERS / HTTP_HEADERS /
+            # DEFAULT_HTTP_HEADERS from settings onto every response.  Equivalent
+            # to the original Flask ``register_request_handlers`` after-request hook.
+            HTTPHeadersMiddleware(),
             # RequestContextMiddleware must run BEFORE the auth middleware
             # so audit-logging code paths inside auth/guards (which fire
             # synchronously from controllers) can resolve the request /

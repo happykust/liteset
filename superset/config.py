@@ -327,7 +327,10 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     # ── Logging ──
     "LOGGING_CONFIGURATOR": "logging_configurator",
     "LOG_FORMAT": "log_format",
-    "LOG_LEVEL": "log_level_value",
+    # LOG_LEVEL is an int in upstream config (e.g. logging.INFO = 20).
+    # Map it to log_level (str) — the field_validator below accepts both
+    # int and str and converts int via logging.getLevelName().
+    "LOG_LEVEL": "log_level",
     "ENABLE_TIME_ROTATE": "enable_time_rotate",
     "TIME_ROTATE_LOG_LEVEL": "time_rotate_log_level",
     "FILENAME": "log_filename",
@@ -664,7 +667,7 @@ class SupersetSettings(BaseSettings):
     # Auth role names
     auth_role_public: str = "Public"
     auth_role_admin: str = "Admin"
-    guest_role_name: str = "Guest"
+    guest_role_name: str = "Public"  # matches Apache Superset 6.0.0 default; see audit 04-security-auth.md
 
     # Security headers
     content_security_policy: str = (
@@ -692,7 +695,7 @@ class SupersetSettings(BaseSettings):
     embedded_superset: bool = False
     guest_token_jwt_secret: str = ""
     guest_token_jwt_algo: str = "HS256"  # noqa: S105
-    guest_token_jwt_exp_seconds: int = 3600
+    guest_token_jwt_exp_seconds: int = 300  # matches Apache Superset 6.0.0 default; see audit 04-security-auth.md
     guest_token_header_name: str = "X-GuestToken"  # noqa: S105
     guest_token_validator_hook: Any | None = None
 
@@ -986,6 +989,10 @@ class SupersetSettings(BaseSettings):
     babel_default_folder: str = "superset/translations"
 
     # ── SSH Tunnel ──
+    # Default points at the Liteset port of SSHManager.  The original
+    # ``superset.extensions.ssh.SSHManager`` path is preserved because it
+    # actually exists in the new tree at
+    # ``superset/extensions/ssh.py:SSHManager``.
     ssh_tunnel_manager_class: str = "superset.extensions.ssh.SSHManager"
     ssh_tunnel_local_bind_address: str = "127.0.0.1"
     ssh_tunnel_timeout_sec: float = 10.0
@@ -1437,6 +1444,34 @@ class SupersetSettings(BaseSettings):
 
     # ── User agent ──
     user_agent_func: Any | None = None  # Callable[[Database, QuerySource], str] | None
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def coerce_log_level(cls, v: Any) -> str:
+        """Accept both ``int`` (e.g. ``logging.INFO = 20``) and ``str``.
+
+        The original Superset config ships ``LOG_LEVEL = logging.INFO`` (an int).
+        Pydantic-settings maps that to ``log_level`` via ``_SUPERSET_TO_LITESET``.
+        This validator converts int (or a numeric string like "20") to the
+        canonical level name so ``configure_logging`` can call
+        ``settings.log_level.upper()`` safely.
+        """
+        import logging as _std_logging
+
+        # Normalise numeric strings (env-var path: LITESET_LOG_LEVEL="20")
+        if isinstance(v, str):
+            try:
+                v = int(v)
+            except ValueError:
+                return v.upper()
+
+        if isinstance(v, int):
+            name = _std_logging.getLevelName(v)
+            # getLevelName returns "Level N" for unknown ints; fall back to WARNING
+            if name.startswith("Level "):
+                return "WARNING"
+            return name
+        return str(v).upper()
 
     @field_validator("secret_key")
     @classmethod

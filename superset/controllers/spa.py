@@ -26,11 +26,13 @@ from __future__ import annotations
 import json
 import logging as _log
 import os
+import re
+from pathlib import Path
 from typing import Any
 
 from litestar import Controller, get, post, Request
 from litestar.datastructures import State
-from litestar.response import Redirect, Template
+from litestar.response import Redirect, Response, Template
 
 from superset.commands.dashboard.create import CreateDashboardCommand
 from superset.db.daos.dashboard import AsyncDashboardDAO
@@ -62,6 +64,7 @@ SPA_ROUTE_PREFIXES: frozenset[str] = frozenset(
         "users",
         "roles",
         "list_groups",
+        "register",
         "registrations",
         "logmodelview",
     }
@@ -805,6 +808,52 @@ class SPAController(Controller):
     path = "/"
 
     @get(
+        ["/superset/language_pack/{lang:str}/", "/superset/language_pack/{lang:str}"],
+        media_type="application/json",
+        opt={"exclude_from_auth": True},
+    )
+    async def language_pack(self, lang: str) -> Response[Any]:
+        """GET /superset/language_pack/<lang>/ — serve a JSON translation pack.
+
+        Mirrors the original ``SupersetView.language_pack`` from
+        ``superset_old/views/core.py``.  Returns the ``messages.json``
+        file from ``superset/translations/<lang>/LC_MESSAGES/`` when it
+        exists, or a 404 JSON error otherwise.
+
+        Only language codes matching ``^[a-z]{2,3}(_[A-Z]{2})?$`` are
+        accepted (e.g. ``en``, ``pt_BR``) — invalid codes get a 400.
+        """
+        if not re.match(r"^[a-z]{2,3}(_[A-Z]{2})?$", lang):
+            return Response(
+                content=json.dumps({"error": "Invalid language code"}),
+                status_code=400,
+                media_type="application/json",
+            )
+
+        # Translations live next to the ``superset/`` package directory.
+        _translations_dir = Path(__file__).resolve().parent.parent / "translations"
+        messages_file = _translations_dir / lang / "LC_MESSAGES" / "messages.json"
+
+        if messages_file.is_file():
+            try:
+                content = messages_file.read_bytes()
+                return Response(
+                    content=content,
+                    status_code=200,
+                    media_type="application/json",
+                )
+            except OSError:
+                pass
+
+        return Response(
+            content=json.dumps(
+                {"error": "Language pack doesn't exist on the server"}
+            ),
+            status_code=404,
+            media_type="application/json",
+        )
+
+    @get(
         ["/dashboard/new/", "/dashboard/new"],
         guards=[],
     )
@@ -854,16 +903,26 @@ class SPAController(Controller):
         is_auth = getattr(user, "is_authenticated", False)
         has_perms = bool(getattr(user, "permissions", None))
 
-        # Unauthenticated without Public perms -> login
-        if not is_auth and not has_perms:
-            return Redirect(path="/login/")
-
-        # Authenticated on / -> redirect to welcome
         request_path = request.url.path
-        if is_auth and request_path in ("/", ""):
-            return Redirect(
-                path="/superset/welcome/",
-            )
+
+        # Root path always redirects to /superset/welcome/.
+        # Mirrors SupersetIndexView.index in
+        # superset_old/initialization/__init__.py:850-853.
+        if request_path in ("/", ""):
+            return Redirect(path="/superset/welcome/")
+
+        # /superset/welcome/ requires an authenticated user — Public role
+        # permissions do NOT bypass this gate.  Mirrors Superset.welcome in
+        # superset_old/views/core.py:923-924.
+        if request_path.rstrip("/") == "/superset/welcome":
+            if not is_auth:
+                return Redirect(path="/login/")
+
+        # Other SPA paths: anonymous users without Public perms -> login.
+        # Anonymous users with Public perms fall through and render SPA;
+        # FAB-equivalent permission checks happen at API-call time via guards.
+        elif not is_auth and not has_perms:
+            return Redirect(path="/login/")
 
         bootstrap = _build_bootstrap_data(user, settings)
 

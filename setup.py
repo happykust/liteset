@@ -58,16 +58,21 @@ setup(
     include_package_data=True,
     zip_safe=False,
     entry_points={
-        "console_scripts": ["superset=superset.cli.main:superset"],
-        # the `postgres` and `postgres+psycopg2://` schemes were removed in SQLAlchemy 1.4  # noqa: E501
-        # add an alias here to prevent breaking existing databases
+        # Canonical entry points mirror pyproject.toml [project.scripts].
+        # ``superset.cli.main:superset_cli`` is the Litestar/Click group;
+        # ``liteset`` is a convenience alias.
+        "console_scripts": [
+            "superset=superset.cli.main:superset_cli",
+            "liteset=superset.cli.main:superset_cli",
+        ],
+        # The ``postgres`` / ``postgres+psycopg2://`` scheme aliases were
+        # removed in SQLAlchemy 1.4 — keep the redirects here so existing
+        # database configs don't break.  The ``superset://`` cross-DB
+        # dialect (extensions/metadb.py) is no longer ported to Liteset;
+        # omitting it avoids an ImportError when ``pip install -e .`` is run.
         "sqlalchemy.dialects": [
             "postgres.psycopg2 = sqlalchemy.dialects.postgresql:dialect",
             "postgres = sqlalchemy.dialects.postgresql:dialect",
-            "superset = superset.extensions.metadb:SupersetAPSWDialect",
-        ],
-        "shillelagh.adapter": [
-            "superset=superset.extensions.metadb:SupersetShillelaghAdapter"
         ],
     },
     download_url="https://www.apache.org/dist/superset/" + version_string,

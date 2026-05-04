@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import create_engine as _create_sync_engine
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     AsyncEngine,
@@ -27,6 +27,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine as _create_async_engine,
 )
 from sqlalchemy.orm import Session, sessionmaker
+
+# Dialects that should default to READ COMMITTED when the caller hasn't
+# already specified ``isolation_level`` in SQLALCHEMY_ENGINE_OPTIONS.
+# This mirrors ``SupersetAppInitializer.set_db_default_isolation``.
+_READ_COMMITTED_DIALECTS: frozenset[str] = frozenset({"postgresql", "mysql"})
 
 
 def create_db_engine(
@@ -37,15 +42,42 @@ def create_db_engine(
     pool_timeout: int = 30,
     pool_recycle: int = 3600,
     pool_pre_ping: bool = True,
+    **extra_engine_options: Any,
 ) -> AsyncEngine:
+    """Create an async SQLAlchemy engine.
+
+    The named parameters represent the most common engine-creation knobs.
+    Any additional keyword arguments supplied via ``SQLALCHEMY_ENGINE_OPTIONS``
+    (e.g. ``isolation_level``, ``connect_args``, ``execution_options``) are
+    forwarded verbatim to ``create_async_engine`` via ``**extra_engine_options``.
+    Named parameters take precedence when the same key appears in both.
+
+    If ``isolation_level`` is not already present in ``extra_engine_options``
+    and the target dialect is PostgreSQL or MySQL, ``isolation_level`` is set
+    to ``"READ COMMITTED"`` at engine-creation time so that **all** connections
+    drawn from the pool use that level.  This is a 1:1 port of the original
+    ``SupersetAppInitializer.set_db_default_isolation`` which called
+    ``db.engine.execution_options(isolation_level=...)`` — setting it once on
+    the engine rather than on individual connections.
+    """
     global _engine  # noqa: PLW0603
-    kwargs: dict[str, Any] = {"echo": echo}
+    kwargs: dict[str, Any] = {"echo": echo, **extra_engine_options}
     if not url.startswith("sqlite"):
-        kwargs["pool_size"] = pool_size
-        kwargs["max_overflow"] = max_overflow
-        kwargs["pool_timeout"] = pool_timeout
-        kwargs["pool_recycle"] = pool_recycle
-        kwargs["pool_pre_ping"] = pool_pre_ping
+        kwargs.setdefault("pool_size", pool_size)
+        kwargs.setdefault("max_overflow", max_overflow)
+        kwargs.setdefault("pool_timeout", pool_timeout)
+        kwargs.setdefault("pool_recycle", pool_recycle)
+        kwargs.setdefault("pool_pre_ping", pool_pre_ping)
+
+    # Set READ COMMITTED at engine level for PG/MySQL when not already specified.
+    if "isolation_level" not in kwargs:
+        try:
+            dialect_name = make_url(url).get_dialect().name
+        except Exception:  # noqa: BLE001
+            dialect_name = ""
+        if dialect_name in _READ_COMMITTED_DIALECTS:
+            kwargs["isolation_level"] = "READ COMMITTED"
+
     engine = _create_async_engine(url, **kwargs)
     _engine = engine
     return engine
