@@ -123,6 +123,7 @@ dependencies = [
     # --------------------------
     "aiotrino>=0.3.0",
     "psycopg2-binary>=2.9.11",
+    "babel>=2.18.0",
 ]
 
 [project.optional-dependencies]
