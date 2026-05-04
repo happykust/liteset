@@ -14,7 +14,9 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""RBAC negative-path tests -- verify 403 for insufficient permissions and 401 for unauthenticated."""
+"""RBAC negative-path tests -- verify 403 for insufficient permissions and 401 for
+unauthenticated.
+"""
 
 from __future__ import annotations
 
@@ -69,7 +71,9 @@ async def test_chart_read_allowed(chart_app_limited):
 
 
 async def test_dashboard_read_returns_403(dashboard_app_limited):
-    """User with only can_read_Chart gets 403 on Dashboard read (no can_read_Dashboard)."""
+    """User with only can_read_Chart gets 403 on Dashboard read (no
+    can_read_Dashboard).
+    """
     async with AsyncTestClient(app=dashboard_app_limited) as client:
         resp = await client.get("/api/v1/dashboard/")
         assert resp.status_code == 403
@@ -221,6 +225,5 @@ async def test_unauthenticated_gets_401(
     async with AsyncTestClient(app=app) as client:
         resp = await client.get(path)
         assert resp.status_code == 401, (
-            f"{description}: expected 401 but got {resp.status_code} "
-            f"for GET {path}"
+            f"{description}: expected 401 but got {resp.status_code} for GET {path}"
         )

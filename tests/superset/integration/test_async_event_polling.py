@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """Integration tests for async event polling REST API."""
+
 from __future__ import annotations
 
 import json
@@ -23,6 +24,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from litestar import Litestar
+
+# Skip msgspec validation for DI-injected mock params
+from litestar._signature.model import (
+    _normalize_annotation as _norm_fn,
+)
 from litestar.connection import ASGIConnection
 from litestar.di import Provide
 from litestar.middleware.authentication import (
@@ -34,11 +40,6 @@ from litestar.testing import AsyncTestClient
 from superset.async_events.manager import AsyncEventManager
 from superset.controllers.async_event import AsyncEventController
 
-# Skip msgspec validation for DI-injected mock params
-from litestar._signature.model import (
-    _normalize_annotation as _norm_fn,
-)
-
 _SKIP_VALIDATION_NAMES: set[str] = _norm_fn.__globals__["SKIP_VALIDATION_NAMES"]
 _DI_PARAMS = frozenset({"event_manager", "current_user"})
 
@@ -46,7 +47,9 @@ _DI_PARAMS = frozenset({"event_manager", "current_user"})
 class _MockAuthMiddleware(AbstractAuthenticationMiddleware):
     """Minimal auth middleware that sets a mock user on every request."""
 
-    async def authenticate_request(self, connection: ASGIConnection) -> AuthenticationResult:
+    async def authenticate_request(
+        self, connection: ASGIConnection
+    ) -> AuthenticationResult:
         user = MagicMock()
         user.id = 42
         user.is_authenticated = True
@@ -65,19 +68,25 @@ def _skip_di_validation():
 @pytest.fixture
 def mock_redis() -> AsyncMock:
     redis = AsyncMock()
-    redis.xrange = AsyncMock(return_value=[
-        (
-            "1607477697866-0",
-            {"data": json.dumps({
-                "channel_id": "ch-1",
-                "job_id": "job-1",
-                "user_id": 42,
-                "status": "done",
-                "errors": [],
-                "result_url": "/api/v1/chart/data/cache-key-123",
-            })},
-        ),
-    ])
+    redis.xrange = AsyncMock(
+        return_value=[
+            (
+                "1607477697866-0",
+                {
+                    "data": json.dumps(
+                        {
+                            "channel_id": "ch-1",
+                            "job_id": "job-1",
+                            "user_id": 42,
+                            "status": "done",
+                            "errors": [],
+                            "result_url": "/api/v1/chart/data/cache-key-123",
+                        }
+                    )
+                },
+            ),
+        ]
+    )
     return redis
 
 

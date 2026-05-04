@@ -161,7 +161,9 @@ async def test_get_dashboard_charts_not_found(app):
 
 
 async def test_get_dashboard_datasets_not_found(app):
-    """GET /api/v1/dashboard/{id_or_slug}/datasets returns 404 when dashboard missing."""
+    """GET /api/v1/dashboard/{id_or_slug}/datasets returns 404 when dashboard
+    missing.
+    """
     async with AsyncTestClient(app=app) as client:
         resp = await client.get("/api/v1/dashboard/nonexistent/datasets")
         assert resp.status_code == 404

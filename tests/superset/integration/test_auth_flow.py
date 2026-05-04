@@ -349,7 +349,7 @@ async def test_csrf_token_endpoint():
 
 async def test_guest_token_flow():
     """Test guest token creation and validation via JWT."""
-    token = create_guest_access_token(
+    create_guest_access_token(
         secret_key=SECRET_KEY,
         user={"username": "embed_user", "first_name": "Embed", "last_name": "User"},
         resources=[{"type": "dashboard", "id": "dash-uuid-123"}],
@@ -486,7 +486,9 @@ async def test_redis_cache_invalidation():
 
 
 async def test_anonymous_public_user_fallback():
-    """Anonymous/public user should get Public role access when AUTH_ROLE_PUBLIC is set."""
+    """Anonymous/public user should get Public role access when AUTH_ROLE_PUBLIC is
+    set.
+    """
     from superset.security.manager import AsyncSecurityManager
 
     mock_dao = AsyncMock()

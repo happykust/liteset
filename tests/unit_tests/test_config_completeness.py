@@ -46,7 +46,9 @@ def test_mapping_count():
 
 
 def test_all_mapped_keys_have_fields():
-    """Every liteset field name in _SUPERSET_TO_LITESET must exist in SupersetSettings."""
+    """Every liteset field name in _SUPERSET_TO_LITESET must exist in
+    SupersetSettings.
+    """
     from superset.config import _SUPERSET_TO_LITESET, SupersetSettings
 
     model_fields = set(SupersetSettings.model_fields.keys())
@@ -83,7 +85,9 @@ def test_timedelta_default():
 
 
 def test_feature_flags_merge_defaults():
-    """Feature flags include all _DEFAULT_FEATURE_FLAGS even when user provides partial."""
+    """Feature flags include all _DEFAULT_FEATURE_FLAGS even when user provides
+    partial.
+    """
     from superset.config import SupersetSettings
 
     settings = SupersetSettings(
@@ -152,9 +156,7 @@ SMTP_PORT = 587
 AUTH_TYPE = 4
 FEATURE_FLAGS = {"ALERT_REPORTS": True}
 """
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False
-    ) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
         f.write(config_content)
         config_path = f.name
 

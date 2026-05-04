@@ -35,15 +35,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from litestar import Litestar
-from litestar.di import Provide
-from litestar.middleware import ASGIMiddleware
-from litestar.types import ASGIApp, Receive, Scope, Send
-
-from superset.exceptions import (
-    generic_exception_handler,
-    superset_exception_handler,
-    SupersetException,
-)
 
 # ---------------------------------------------------------------------------
 # Workaround: tell Litestar to skip msgspec validation for DI parameters.
@@ -64,10 +55,18 @@ from superset.exceptions import (
 # fields.  After the app is created the signature models are frozen, so
 # we can safely restore the original set.
 # ---------------------------------------------------------------------------
-
 # Reference to the internal set that ``_normalize_annotation`` consults.
 from litestar._signature.model import (
     _normalize_annotation as _norm_fn,  # noqa: F401 – only used to reach __globals__
+)
+from litestar.di import Provide
+from litestar.middleware import ASGIMiddleware
+from litestar.types import ASGIApp, Receive, Scope, Send
+
+from superset.exceptions import (
+    generic_exception_handler,
+    superset_exception_handler,
+    SupersetException,
 )
 
 _SKIP_VALIDATION_NAMES: set[str] = _norm_fn.__globals__["SKIP_VALIDATION_NAMES"]
@@ -342,7 +341,7 @@ def create_test_app(*controllers: Any) -> Litestar:
         originals.append((ctrl, getattr(ctrl, "dependencies", {})))
         ctrl_keys = set(getattr(ctrl, "dependencies", {}).keys())
         ctrl.dependencies = {k: v for k, v in mock_deps.items() if k in ctrl_keys}
-        # Also patch endpoint-level dependencies (e.g. rison_params on specific handlers)
+        # Also patch endpoint-level deps (e.g. rison_params on specific handlers)
         for attr_name in dir(ctrl):
             attr = getattr(ctrl, attr_name, None)
             if hasattr(attr, "fn") and hasattr(attr.fn, "dependencies"):

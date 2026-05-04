@@ -25,6 +25,7 @@ Frontend compatibility: the message format matches the format expected by
 ``superset-frontend/src/middleware/asyncEvent.ts``:
   {id, channel_id, job_id, user_id, status, errors, result_url}
 """
+
 from __future__ import annotations
 
 import json
@@ -62,25 +63,33 @@ async def test_full_job_lifecycle(manager: AsyncEventManager, mock_redis: AsyncM
     mock_redis.xrange.return_value = [
         (
             "1607477697866-0",
-            {"data": json.dumps({
-                "channel_id": channel_id,
-                "job_id": job_id,
-                "user_id": 42,
-                "status": "pending",
-                "errors": [],
-                "result_url": None,
-            })},
+            {
+                "data": json.dumps(
+                    {
+                        "channel_id": channel_id,
+                        "job_id": job_id,
+                        "user_id": 42,
+                        "status": "pending",
+                        "errors": [],
+                        "result_url": None,
+                    }
+                )
+            },
         ),
         (
             "1607477697867-0",
-            {"data": json.dumps({
-                "channel_id": channel_id,
-                "job_id": job_id,
-                "user_id": 42,
-                "status": "done",
-                "errors": [],
-                "result_url": "/api/v1/chart/data/cache-key-123",
-            })},
+            {
+                "data": json.dumps(
+                    {
+                        "channel_id": channel_id,
+                        "job_id": job_id,
+                        "user_id": 42,
+                        "status": "done",
+                        "errors": [],
+                        "result_url": "/api/v1/chart/data/cache-key-123",
+                    }
+                )
+            },
         ),
     ]
 
@@ -106,7 +115,9 @@ async def test_full_job_lifecycle(manager: AsyncEventManager, mock_redis: AsyncM
     assert events[1]["result_url"] == "/api/v1/chart/data/cache-key-123"
 
 
-async def test_message_format_frontend_compat(manager: AsyncEventManager, mock_redis: AsyncMock):
+async def test_message_format_frontend_compat(
+    manager: AsyncEventManager, mock_redis: AsyncMock
+):
     """Verify message format matches frontend expectations.
 
     The frontend (asyncEvent.ts) expects:
@@ -115,14 +126,18 @@ async def test_message_format_frontend_compat(manager: AsyncEventManager, mock_r
     mock_redis.xrange.return_value = [
         (
             "1607477697866-0",
-            {"data": json.dumps({
-                "channel_id": "ch-1",
-                "job_id": "job-1",
-                "user_id": 42,
-                "status": "done",
-                "errors": [],
-                "result_url": "/result",
-            })},
+            {
+                "data": json.dumps(
+                    {
+                        "channel_id": "ch-1",
+                        "job_id": "job-1",
+                        "user_id": 42,
+                        "status": "done",
+                        "errors": [],
+                        "result_url": "/result",
+                    }
+                )
+            },
         ),
     ]
 
@@ -130,7 +145,15 @@ async def test_message_format_frontend_compat(manager: AsyncEventManager, mock_r
     event = events[0]
 
     # All required fields present
-    required_fields = {"id", "channel_id", "job_id", "user_id", "status", "errors", "result_url"}
+    required_fields = {
+        "id",
+        "channel_id",
+        "job_id",
+        "user_id",
+        "status",
+        "errors",
+        "result_url",
+    }
     assert required_fields.issubset(set(event.keys()))
 
     # Types match frontend expectations

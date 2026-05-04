@@ -28,25 +28,27 @@ before entering the TaskGroup.
 
 Redis is mocked to avoid external dependency in CI.
 """
+
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock
 
 import jwt as pyjwt
 import pytest
 from litestar import Litestar
 from litestar.datastructures import State
+from litestar.exceptions import WebSocketException
 from litestar.testing import AsyncTestClient
 
 from superset.websocket.events import AsyncQueryWebSocket
-
 
 JWT_SECRET = "test-secret-key-that-is-32-bytes!"
 
 
 def _create_token(user_id: int = 42, channel: str = "ch-1") -> str:
-    return pyjwt.encode({"channel": channel, "sub": str(user_id)}, JWT_SECRET, algorithm="HS256")
+    return pyjwt.encode(
+        {"channel": channel, "sub": str(user_id)}, JWT_SECRET, algorithm="HS256"
+    )
 
 
 def _create_settings(**overrides: object) -> MagicMock:
@@ -76,33 +78,40 @@ def _make_app(**settings_overrides: object) -> tuple[Litestar, dict[object, int]
     mock_redis = AsyncMock()
     app = Litestar(
         route_handlers=[AsyncQueryWebSocket],
-        state=State({
-            "settings": settings,
-            "redis": mock_redis,
-            "active_websockets": active_ws,
-        }),
+        state=State(
+            {
+                "settings": settings,
+                "redis": mock_redis,
+                "active_websockets": active_ws,
+            }
+        ),
     )
     return app, active_ws
+
+
+async def _connect_and_receive(
+    client: AsyncTestClient, url: str, headers: dict[str, str] | None = None
+) -> None:
+    """Open a WebSocket and try to read one frame; raises on rejection."""
+    ws = await client.websocket_connect(url, headers=headers or {})
+    with ws:
+        ws.receive_json()
 
 
 async def test_websocket_unauthorized_no_token():
     """Test WebSocket rejection when no token is provided."""
     app, _ = _make_app()
     async with AsyncTestClient(app) as client:
-        with pytest.raises(Exception):
-            ws = await client.websocket_connect("/ws/events")
-            with ws:
-                ws.receive_json()
+        with pytest.raises(WebSocketException):
+            await _connect_and_receive(client, "/ws/events")
 
 
 async def test_websocket_unauthorized_invalid_token():
     """Test WebSocket rejection with invalid JWT."""
     app, _ = _make_app()
     async with AsyncTestClient(app) as client:
-        with pytest.raises(Exception):
-            ws = await client.websocket_connect("/ws/events?token=invalid")
-            with ws:
-                ws.receive_json()
+        with pytest.raises(WebSocketException):
+            await _connect_and_receive(client, "/ws/events?token=invalid")
 
 
 async def test_websocket_forbidden_origin():
@@ -110,13 +119,12 @@ async def test_websocket_forbidden_origin():
     app, _ = _make_app(cors_allow_origins=["https://allowed.com"])
     token = _create_token()
     async with AsyncTestClient(app) as client:
-        with pytest.raises(Exception):
-            ws = await client.websocket_connect(
+        with pytest.raises(WebSocketException):
+            await _connect_and_receive(
+                client,
                 f"/ws/events?token={token}",
                 headers={"origin": "https://evil.com"},
             )
-            with ws:
-                ws.receive_json()
 
 
 async def test_websocket_per_user_limit():
@@ -130,15 +138,15 @@ async def test_websocket_per_user_limit():
     mock_redis = AsyncMock()
     app = Litestar(
         route_handlers=[AsyncQueryWebSocket],
-        state=State({
-            "settings": settings,
-            "redis": mock_redis,
-            "active_websockets": active_ws,
-        }),
+        state=State(
+            {
+                "settings": settings,
+                "redis": mock_redis,
+                "active_websockets": active_ws,
+            }
+        ),
     )
     token = _create_token(user_id=42)
     async with AsyncTestClient(app) as client:
-        with pytest.raises(Exception):
-            ws = await client.websocket_connect(f"/ws/events?token={token}")
-            with ws:
-                ws.receive_json()
+        with pytest.raises(WebSocketException):
+            await _connect_and_receive(client, f"/ws/events?token={token}")
