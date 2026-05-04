@@ -15,11 +15,10 @@
 # specific language governing permissions and limitations
 # under the License.
 """Verify Alembic configuration for Superset migrations."""
+
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
 
 
 def test_alembic_ini_exists():

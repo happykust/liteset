@@ -33,8 +33,8 @@ from superset.commands.query import (
 )
 from superset.exceptions import (
     CommandInvalidError,
-    SupersetSecurityException,
     ObjectNotFoundError,
+    SupersetSecurityException,
 )
 
 

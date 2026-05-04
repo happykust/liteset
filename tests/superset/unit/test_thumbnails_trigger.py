@@ -29,7 +29,9 @@ async def test_compute_digest_returns_md5() -> None:
     digest = await AsyncThumbnailsDigest.compute_digest(
         url="http://localhost/chart/1", user_id=42
     )
-    expected = hashlib.md5("http://localhost/chart/1_42".encode()).hexdigest()
+    expected = hashlib.md5(  # noqa: S324  # mirrors digest impl, not crypto
+        "http://localhost/chart/1_42".encode()
+    ).hexdigest()
     assert digest == expected
 
 

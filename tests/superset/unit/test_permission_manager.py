@@ -36,7 +36,6 @@ from superset.security.permissions import (
     SCHEMA_ACCESS,
 )
 
-
 # ---------------------------------------------------------------------------
 # Permission string formatter tests
 # ---------------------------------------------------------------------------
@@ -106,9 +105,7 @@ def _make_mock_pvm(
     return pvm
 
 
-def _make_mock_database(
-    db_id: int = 1, db_name: str = "test_db"
-) -> MagicMock:
+def _make_mock_database(db_id: int = 1, db_name: str = "test_db") -> MagicMock:
     """Create a mock Database model."""
     db = MagicMock()
     db.id = db_id
@@ -338,7 +335,6 @@ class TestDelPermissionViewMenu:
 
         # Set up execute to return no_remaining for the orphan check
         execute_calls = []
-        original_execute = session.execute
 
         async def track_execute(stmt, *args, **kwargs):
             execute_calls.append(stmt)
@@ -379,9 +375,7 @@ class TestOnDatabaseCreated:
         ) as mock_add:
             await AsyncPermissionManager.on_database_created(session, database)
 
-        mock_add.assert_called_once_with(
-            session, DATABASE_ACCESS, "[analytics].(id:5)"
-        )
+        mock_add.assert_called_once_with(session, DATABASE_ACCESS, "[analytics].(id:5)")
 
 
 # ---------------------------------------------------------------------------
@@ -407,9 +401,7 @@ class TestOnDatabaseDeleted:
         ) as mock_del:
             await AsyncPermissionManager.on_database_deleted(session, database)
 
-        mock_del.assert_called_once_with(
-            session, DATABASE_ACCESS, "[analytics].(id:5)"
-        )
+        mock_del.assert_called_once_with(session, DATABASE_ACCESS, "[analytics].(id:5)")
 
 
 # ---------------------------------------------------------------------------

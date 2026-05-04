@@ -334,7 +334,9 @@ def test_get_guest_user_from_request_not_guest(manager):
 
 
 async def test_guest_denied_chart_without_dashboard(manager, mock_dao):
-    """Guest user accessing a chart not associated with any dashboard should be denied."""
+    """Guest user accessing a chart not associated with any dashboard should be
+    denied.
+    """
     from superset.exceptions import SupersetSecurityException
 
     guest = MockGuestUser(resources=[{"type": "dashboard", "id": "abc-123"}])
@@ -432,7 +434,9 @@ async def test_can_access_dashboard_non_rbac_no_datasource_access(mock_dao):
 
 
 async def test_can_access_dashboard_non_rbac_empty_datasources(mock_dao):
-    """Non-RBAC path: dashboard with no datasources is accessible to all authenticated."""
+    """Non-RBAC path: dashboard with no datasources is accessible to all
+    authenticated.
+    """
     mgr = AsyncSecurityManager(
         dao=mock_dao, admin_role_name="Admin", dashboard_rbac_enabled=False
     )

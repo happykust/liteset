@@ -36,7 +36,8 @@ from superset.schemas.chart import (
 
 def test_chart_post_body():
     body = msgspec.json.decode(
-        b'{"slice_name": "Test", "viz_type": "table", "datasource_id": 1, "datasource_type": "table"}',
+        b'{"slice_name": "Test", "viz_type": "table",'
+        b' "datasource_id": 1, "datasource_type": "table"}',
         type=ChartPostSchema,
     )
     assert body.slice_name == "Test"
@@ -46,7 +47,8 @@ def test_chart_post_body():
 def test_chart_post_body_invalid_datasource_type():
     with pytest.raises(msgspec.ValidationError):
         msgspec.json.decode(
-            b'{"slice_name": "X", "viz_type": "table", "datasource_id": 1, "datasource_type": "invalid"}',
+            b'{"slice_name": "X", "viz_type": "table",'
+            b' "datasource_id": 1, "datasource_type": "invalid"}',
             type=ChartPostSchema,
         )
 
@@ -56,7 +58,8 @@ def test_chart_post_body_empty_name():
     is caught by CreateChartCommand.validate()."""
     with pytest.raises(msgspec.ValidationError):
         msgspec.json.decode(
-            b'{"slice_name": "", "viz_type": "table", "datasource_id": 1, "datasource_type": "table"}',
+            b'{"slice_name": "", "viz_type": "table",'
+            b' "datasource_id": 1, "datasource_type": "table"}',
             type=ChartPostSchema,
         )
 
@@ -124,7 +127,8 @@ def test_chart_data_query_object_groupby():
 
 def test_annotation_layer_formula_value():
     layer = msgspec.json.decode(
-        b'{"name": "formula", "value": "sin(x)", "showLabel": true, "timeColumn": "__timestamp"}',
+        b'{"name": "formula", "value": "sin(x)",'
+        b' "showLabel": true, "timeColumn": "__timestamp"}',
         type=AnnotationLayer,
     )
     assert layer.value == "sin(x)"

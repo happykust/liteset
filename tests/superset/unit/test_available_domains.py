@@ -24,7 +24,6 @@ import pytest
 
 from superset.controllers.available_domains import AvailableDomainsController
 
-
 # Call the unbound method directly to avoid Controller.__init__ requiring an owner.
 _get = AvailableDomainsController.get_available_domains.fn
 

@@ -39,8 +39,8 @@ from superset.commands.dataset import (
 )
 from superset.exceptions import (
     CommandInvalidError,
-    SupersetSecurityException,
     ObjectNotFoundError,
+    SupersetSecurityException,
 )
 
 
@@ -508,7 +508,9 @@ async def test_duplicate_dataset_no_kind_attribute_rejected(mock_dao):
 
 
 async def test_bulk_delete_some_ids_not_found(mock_dao, mock_dataset):
-    """BulkDeleteDatasetsCommand raises ObjectNotFoundError when some IDs are missing."""
+    """BulkDeleteDatasetsCommand raises ObjectNotFoundError when some IDs are
+    missing.
+    """
     mock_dao.find_by_ids = AsyncMock(return_value=[mock_dataset])  # only id=1 found
     cmd = BulkDeleteDatasetsCommand(dao=mock_dao, dataset_ids=[1, 2, 3])
     with pytest.raises(ObjectNotFoundError):

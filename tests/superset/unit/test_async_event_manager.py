@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -54,7 +54,10 @@ def test_build_job_metadata_defaults():
 
 
 def test_parse_event():
-    raw = ("1607477697866-0", {"data": json.dumps({"channel_id": "ch-1", "status": "done"})})
+    raw = (
+        "1607477697866-0",
+        {"data": json.dumps({"channel_id": "ch-1", "status": "done"})},
+    )
     parsed = parse_event(raw)
     assert parsed["id"] == "1607477697866-0"
     assert parsed["channel_id"] == "ch-1"
@@ -122,7 +125,10 @@ async def test_read_events_empty(manager: AsyncEventManager, mock_redis: AsyncMo
 
 async def test_read_events_with_data(manager: AsyncEventManager, mock_redis: AsyncMock):
     mock_redis.xrange.return_value = [
-        ("1607477697866-0", {"data": json.dumps({"channel_id": "ch-1", "status": "done"})}),
+        (
+            "1607477697866-0",
+            {"data": json.dumps({"channel_id": "ch-1", "status": "done"})},
+        ),
     ]
     events = await manager.read_events(channel_id="ch-1", last_id=None)
     assert len(events) == 1
@@ -130,21 +136,27 @@ async def test_read_events_with_data(manager: AsyncEventManager, mock_redis: Asy
     assert events[0]["status"] == "done"
 
 
-async def test_read_events_with_last_id(manager: AsyncEventManager, mock_redis: AsyncMock):
+async def test_read_events_with_last_id(
+    manager: AsyncEventManager, mock_redis: AsyncMock
+):
     await manager.read_events(channel_id="ch-1", last_id="1607477697866-0")
     # Should call xrange with incremented last_id
     call_args = mock_redis.xrange.call_args
     assert call_args[0][1] == "1607477697866-1"  # incremented start
 
 
-async def test_cleanup_empty_channels(manager: AsyncEventManager, mock_redis: AsyncMock):
+async def test_cleanup_empty_channels(
+    manager: AsyncEventManager, mock_redis: AsyncMock
+):
     mock_redis.xlen.return_value = 0
     await manager.cleanup_channel("ch-1")
     # No trim needed for empty channel
     mock_redis.xtrim.assert_not_called()
 
 
-async def test_cleanup_oversized_channel(manager: AsyncEventManager, mock_redis: AsyncMock):
+async def test_cleanup_oversized_channel(
+    manager: AsyncEventManager, mock_redis: AsyncMock
+):
     mock_redis.xlen.return_value = 2000
     await manager.cleanup_channel("ch-1")
     mock_redis.xtrim.assert_called_once()

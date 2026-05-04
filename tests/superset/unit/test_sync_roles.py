@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import selectinload
 
@@ -13,17 +13,10 @@ from superset.models.security import (
     PermissionView,
     Role,
     ViewMenu,
-    ab_permission_view_role,
 )
 from superset.security.permissions import (
     ACCESSIBLE_PERMS,
-    ADMIN_ONLY_PERMISSIONS,
-    ADMIN_ONLY_VIEW_MENUS,
-    ALPHA_ONLY_PERMISSIONS,
-    ALPHA_ONLY_VIEW_MENUS,
     CUSTOM_PERMISSION_VIEWS,
-    OBJECT_SPEC_PERMISSIONS,
-    SQLLAB_ONLY_PERMISSIONS,
 )
 from superset.security.sync_roles import (
     _clean_perms,
@@ -269,12 +262,10 @@ async def test_clean_perms_removes_faulty(session: AsyncSession):
 
 async def test_sync_role_definitions_creates_roles(session: AsyncSession):
     """sync_role_definitions should create Admin, Alpha, Gamma, sql_lab, Public."""
-    summary = await sync_role_definitions(session)
+    await sync_role_definitions(session)
 
     for role_name in ["Admin", "Alpha", "Gamma", "sql_lab", "Public"]:
-        result = await session.execute(
-            select(Role).where(Role.name == role_name)
-        )
+        result = await session.execute(select(Role).where(Role.name == role_name))
         role = result.scalars().one_or_none()
         assert role is not None, f"Role '{role_name}' should exist"
 
@@ -293,9 +284,7 @@ async def test_sync_role_definitions_creates_custom_permissions(
             .where(Permission.name == perm_name, ViewMenu.name == vm_name)
         )
         pvm = result.scalars().one_or_none()
-        assert pvm is not None, (
-            f"Custom PVM ({perm_name}, {vm_name}) should exist"
-        )
+        assert pvm is not None, f"Custom PVM ({perm_name}, {vm_name}) should exist"
 
 
 async def test_sync_role_definitions_admin_gets_all_non_object_spec(
@@ -314,10 +303,8 @@ async def test_sync_role_definitions_admin_gets_all_non_object_spec(
         select(Role)
         .where(Role.name == "Admin")
         .options(
-            selectinload(Role.permissions)
-            .selectinload(PermissionView.permission),
-            selectinload(Role.permissions)
-            .selectinload(PermissionView.view_menu),
+            selectinload(Role.permissions).selectinload(PermissionView.permission),
+            selectinload(Role.permissions).selectinload(PermissionView.view_menu),
         )
     )
     admin = result.scalars().one()
@@ -350,16 +337,12 @@ async def test_sync_role_definitions_gamma_excludes_admin_and_alpha(
         select(Role)
         .where(Role.name == "Gamma")
         .options(
-            selectinload(Role.permissions)
-            .selectinload(PermissionView.permission),
-            selectinload(Role.permissions)
-            .selectinload(PermissionView.view_menu),
+            selectinload(Role.permissions).selectinload(PermissionView.permission),
+            selectinload(Role.permissions).selectinload(PermissionView.view_menu),
         )
     )
     gamma = result.scalars().one()
-    gamma_perms = {
-        (p.permission.name, p.view_menu.name) for p in gamma.permissions
-    }
+    gamma_perms = {(p.permission.name, p.view_menu.name) for p in gamma.permissions}
 
     assert ("can_read", "Chart") in gamma_perms
     assert ("can_warm_up_cache", "SomeView") not in gamma_perms
@@ -384,16 +367,12 @@ async def test_sync_role_definitions_sql_lab_gets_only_sqllab(
         select(Role)
         .where(Role.name == "sql_lab")
         .options(
-            selectinload(Role.permissions)
-            .selectinload(PermissionView.permission),
-            selectinload(Role.permissions)
-            .selectinload(PermissionView.view_menu),
+            selectinload(Role.permissions).selectinload(PermissionView.permission),
+            selectinload(Role.permissions).selectinload(PermissionView.view_menu),
         )
     )
     sql_lab = result.scalars().one()
-    sql_lab_perms = {
-        (p.permission.name, p.view_menu.name) for p in sql_lab.permissions
-    }
+    sql_lab_perms = {(p.permission.name, p.view_menu.name) for p in sql_lab.permissions}
 
     assert ("can_read", "SavedQuery") in sql_lab_perms
     assert ("can_csv", "Superset") in sql_lab_perms
@@ -434,9 +413,7 @@ async def test_sync_role_definitions_public_role_like(session: AsyncSession):
     await _get_or_create_pvm(session, "can_read", "Dashboard")
     await session.flush()
 
-    summary = await sync_role_definitions(
-        session, public_role_like="Gamma"
-    )
+    await sync_role_definitions(session, public_role_like="Gamma")
 
     result = await session.execute(
         select(Role)
@@ -446,9 +423,7 @@ async def test_sync_role_definitions_public_role_like(session: AsyncSession):
     public = result.scalars().one()
 
     gamma_result = await session.execute(
-        select(Role)
-        .where(Role.name == "Gamma")
-        .options(selectinload(Role.permissions))
+        select(Role).where(Role.name == "Gamma").options(selectinload(Role.permissions))
     )
     gamma = gamma_result.scalars().one()
 
@@ -475,16 +450,13 @@ async def test_sync_role_definitions_accessible_perms_in_all_roles(
             select(Role)
             .where(Role.name == role_name)
             .options(
-                selectinload(Role.permissions)
-                .selectinload(PermissionView.permission)
+                selectinload(Role.permissions).selectinload(PermissionView.permission)
             )
         )
         role = result.scalars().one()
         role_perm_names = {p.permission.name for p in role.permissions}
         for perm_name in ACCESSIBLE_PERMS:
-            assert perm_name in role_perm_names, (
-                f"{perm_name} should be in {role_name}"
-            )
+            assert perm_name in role_perm_names, f"{perm_name} should be in {role_name}"
 
 
 async def test_sync_role_definitions_alpha_excludes_sql_lab_only(
@@ -501,16 +473,12 @@ async def test_sync_role_definitions_alpha_excludes_sql_lab_only(
         select(Role)
         .where(Role.name == "Alpha")
         .options(
-            selectinload(Role.permissions)
-            .selectinload(PermissionView.permission),
-            selectinload(Role.permissions)
-            .selectinload(PermissionView.view_menu),
+            selectinload(Role.permissions).selectinload(PermissionView.permission),
+            selectinload(Role.permissions).selectinload(PermissionView.view_menu),
         )
     )
     alpha = result.scalars().one()
-    alpha_perms = {
-        (p.permission.name, p.view_menu.name) for p in alpha.permissions
-    }
+    alpha_perms = {(p.permission.name, p.view_menu.name) for p in alpha.permissions}
 
     assert ("can_read", "SavedQuery") not in alpha_perms
     assert ("can_execute_sql_query", "SQLLab") not in alpha_perms
@@ -538,16 +506,12 @@ async def test_sync_preserves_existing_data_access_on_public(
         select(Role)
         .where(Role.name == "Public")
         .options(
-            selectinload(Role.permissions)
-            .selectinload(PermissionView.permission),
-            selectinload(Role.permissions)
-            .selectinload(PermissionView.view_menu),
+            selectinload(Role.permissions).selectinload(PermissionView.permission),
+            selectinload(Role.permissions).selectinload(PermissionView.view_menu),
         )
     )
     public = result.scalars().one()
-    public_perms = {
-        (p.permission.name, p.view_menu.name) for p in public.permissions
-    }
+    public_perms = {(p.permission.name, p.view_menu.name) for p in public.permissions}
 
     # The data-access permission should be preserved
     assert ("datasource_access", "[db].[table](id:1)") in public_perms

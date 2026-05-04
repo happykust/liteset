@@ -20,17 +20,66 @@ from __future__ import annotations
 
 import io
 import zipfile
-from unittest.mock import AsyncMock
+from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import yaml
 
+from superset.importexport import manager as manager_module
 from superset.importexport.manager import AsyncFullAssetManager, ImportResult
 
 
 @pytest.fixture
 def mock_session() -> AsyncMock:
     return AsyncMock()
+
+
+class _FakeExportCommand:
+    """Stand-in for the registered export command — yields fixture tuples."""
+
+    def __init__(self, asset_type: str, ids: list[int]) -> None:
+        self._asset_type = asset_type
+        self._ids = ids
+
+    async def _export_single(self, model_id: int) -> list[tuple[str, str]]:
+        return [
+            (
+                f"{self._asset_type}/item_{model_id}.yaml",
+                yaml.safe_dump({"id": model_id}),
+            )
+        ]
+
+
+class _FakeImportCommand:
+    """Stand-in for the registered import command — records the call."""
+
+    last_kwargs: dict[str, Any] = {}
+
+    def __init__(self, **kwargs: Any) -> None:
+        type(self).last_kwargs = kwargs
+
+    async def run(self) -> None:
+        return None
+
+
+def _patch_registry(asset_type: str, ids: list[int]) -> dict[str, Any]:
+    """Build a one-entry registry for ``asset_type`` mocking export+import."""
+
+    class _DAOFactory:
+        def __init__(self, session: Any) -> None:
+            self._session = session
+
+        async def find_all_ids(self) -> list[int]:
+            return ids
+
+    return {
+        asset_type: {
+            "export_cls": lambda dao: _FakeExportCommand(asset_type, ids),
+            "import_cls": _FakeImportCommand,
+            "dao_factory": _DAOFactory,
+        }
+    }
 
 
 @pytest.fixture
@@ -40,7 +89,8 @@ def manager(mock_session: AsyncMock) -> AsyncFullAssetManager:
 
 async def test_export_creates_valid_zip(manager: AsyncFullAssetManager) -> None:
     """export_assets returns bytes that form a valid ZIP with metadata."""
-    data = await manager.export_assets()
+    with patch.object(manager_module, "_REGISTRY", _patch_registry("charts", [])):
+        data = await manager.export_assets(asset_types=["charts"])
     assert isinstance(data, bytes)
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         names = zf.namelist()
@@ -51,35 +101,79 @@ async def test_export_creates_valid_zip(manager: AsyncFullAssetManager) -> None:
         assert "timestamp" in metadata
 
 
-async def test_export_with_asset_types(manager: AsyncFullAssetManager) -> None:
-    """export_assets respects asset_types filter."""
-    data = await manager.export_assets(asset_types=["charts"])
-    assert isinstance(data, bytes)
+async def test_export_writes_per_resource_entries(
+    manager: AsyncFullAssetManager,
+) -> None:
+    """Per-resource export tuples are written into the ZIP under their
+    asset-type directory; the manager dedupes on full path."""
+
+    async def fake_export_type(asset_type: str) -> list[tuple[str, str]]:
+        if asset_type == "charts":
+            return [
+                ("charts/item_1.yaml", yaml.safe_dump({"id": 1})),
+                ("charts/item_2.yaml", yaml.safe_dump({"id": 2})),
+            ]
+        return []
+
+    with patch.object(manager, "_export_type", side_effect=fake_export_type):
+        data = await manager.export_assets(asset_types=["charts"])
+
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        # Only metadata should be present since _export_type is a placeholder
-        assert "metadata.yaml" in zf.namelist()
+        names = sorted(zf.namelist())
+        assert names == ["charts/item_1.yaml", "charts/item_2.yaml", "metadata.yaml"]
+        item = yaml.safe_load(zf.read("charts/item_1.yaml"))
+        assert item == {"id": 1}
+
+
+async def test_export_unknown_asset_type_skipped(
+    manager: AsyncFullAssetManager,
+) -> None:
+    """Unknown asset types log a warning and produce no entries (no exception)."""
+    with patch.object(manager_module, "_REGISTRY", {}):
+        data = await manager.export_assets(asset_types=["does_not_exist"])
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        assert zf.namelist() == ["metadata.yaml"]
 
 
 async def test_import_handles_bad_zip(manager: AsyncFullAssetManager) -> None:
-    """import_assets returns error for invalid ZIP content."""
+    """import_assets returns an error for invalid ZIP content."""
     result = await manager.import_assets(file_content=b"not a zip file")
     assert not result.success
     assert any("Invalid ZIP" in e for e in result.errors)
 
 
-async def test_import_valid_zip(manager: AsyncFullAssetManager) -> None:
-    """import_assets processes a valid ZIP without errors."""
+async def test_import_invokes_assets_command(
+    manager: AsyncFullAssetManager,
+) -> None:
+    """Valid bundle dispatches to ``ImportAssetsCommand`` and per-type counts
+    are populated from the parsed file groups."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
             "metadata.yaml",
-            yaml.dump({"version": "1.0.0", "type": "assets"}),
+            yaml.safe_dump({"version": "1.0.0", "type": "assets"}),
         )
-        zf.writestr("charts/chart1.yaml", yaml.dump({"name": "test_chart"}))
-    result = await manager.import_assets(file_content=buf.getvalue())
-    assert result.success
-    # Placeholder _import_type returns 0
-    assert result.imported.get("charts") == 0
+        zf.writestr("charts/c1.yaml", yaml.safe_dump({"slug": "c1", "uuid": "u-1"}))
+        zf.writestr("charts/c2.yaml", yaml.safe_dump({"slug": "c2", "uuid": "u-2"}))
+
+    captured_kwargs: dict[str, Any] = {}
+
+    class _StubAssetsCommand:
+        def __init__(self, **kwargs: Any) -> None:
+            captured_kwargs.update(kwargs)
+
+        async def execute(self) -> None:
+            return None
+
+    with patch(
+        "superset.commands.importers.v1.ImportAssetsCommand", _StubAssetsCommand
+    ):
+        result = await manager.import_assets(file_content=buf.getvalue())
+
+    assert result.success, result.errors
+    assert captured_kwargs.get("contents"), "ImportAssetsCommand received no contents"
+    assert "charts/c1.yaml" in captured_kwargs["contents"]
+    assert result.imported.get("charts") == 2
 
 
 async def test_import_result_success_no_errors() -> None:
@@ -98,22 +192,26 @@ async def test_import_result_failure_with_errors() -> None:
 
 
 async def test_import_groups_by_type(manager: AsyncFullAssetManager) -> None:
-    """import_assets groups entries by top-level directory."""
+    """Bundle entries are grouped by their top-level directory and counted
+    per asset type in :class:`ImportResult`."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("metadata.yaml", yaml.dump({"version": "1.0.0"}))
-        zf.writestr("charts/c1.yaml", yaml.dump({"name": "c1"}))
-        zf.writestr("charts/c2.yaml", yaml.dump({"name": "c2"}))
-        zf.writestr("dashboards/d1.yaml", yaml.dump({"name": "d1"}))
-    result = await manager.import_assets(file_content=buf.getvalue())
-    assert result.success
-    assert "charts" in result.imported
-    assert "dashboards" in result.imported
+        zf.writestr("metadata.yaml", yaml.safe_dump({"version": "1.0.0"}))
+        zf.writestr("charts/c1.yaml", yaml.safe_dump({"name": "c1"}))
+        zf.writestr("dashboards/d1.yaml", yaml.safe_dump({"name": "d1"}))
 
+    class _NoopAssetsCommand:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
 
-async def test_export_empty_placeholder(manager: AsyncFullAssetManager) -> None:
-    """_export_type placeholder returns empty list, so ZIP has only metadata."""
-    data = await manager.export_assets()
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        # Only metadata.yaml should be present
-        assert zf.namelist() == ["metadata.yaml"]
+        async def execute(self) -> None:
+            return None
+
+    with patch(
+        "superset.commands.importers.v1.ImportAssetsCommand", _NoopAssetsCommand
+    ):
+        result = await manager.import_assets(file_content=buf.getvalue())
+
+    assert result.success, result.errors
+    assert result.imported.get("charts") == 1
+    assert result.imported.get("dashboards") == 1

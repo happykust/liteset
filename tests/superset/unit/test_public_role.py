@@ -27,7 +27,7 @@ Verifies that:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -44,10 +44,10 @@ from superset.guards.rbac import (
     require_permission,
 )
 from superset.middleware.auth import (
-    SupersetAuthMiddleware,
-    UnauthenticatedUser,
     _PUBLIC_ROLE_CACHE_KEY,
     _PUBLIC_ROLE_CACHE_TTL,
+    SupersetAuthMiddleware,
+    UnauthenticatedUser,
 )
 
 SECRET_KEY = "test-secret-key-at-least-16-chars"
@@ -263,7 +263,6 @@ class TestBuildAnonymousUser:
         )
 
         # Mock the DAO to return permissions for Public role
-        mock_perms = {("can_read", "Dashboard"), ("can_read", "Chart")}
         with patch(
             "superset.middleware.auth.SupersetAuthMiddleware._resolve_public_permissions",
             return_value={("can_read", "Dashboard"), ("can_read", "Chart")},

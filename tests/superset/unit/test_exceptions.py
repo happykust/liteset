@@ -25,13 +25,13 @@ from superset.exceptions import (
     ForbiddenError,
     generic_exception_handler,
     ImportFailedError,
+    ObjectNotFoundError,
     superset_exception_handler,
     SupersetException,
     SupersetNotFoundError,
     SupersetSecurityException,
     SupersetTimeoutException,
     SupersetValidationException,
-    ObjectNotFoundError,
     UpdateFailedError,
 )
 

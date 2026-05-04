@@ -31,7 +31,11 @@ def test_no_tabs():
 
 
 def test_single_tab():
-    pos = '{"TAB-1": {"type": "TAB", "meta": {"text": "Tab 1"}, "parents": []}, "CHART-1": {"type": "CHART", "meta": {"chartId": 42}, "parents": ["TAB-1"]}}'
+    pos = (
+        '{"TAB-1": {"type": "TAB", "meta": {"text": "Tab 1"}, "parents": []},'
+        ' "CHART-1": {"type": "CHART", "meta": {"chartId": 42},'
+        ' "parents": ["TAB-1"]}}'
+    )
     tabs = parse_tab_structure(pos)
     assert len(tabs) == 1
     assert tabs[0]["tab_title"] == "Tab 1"

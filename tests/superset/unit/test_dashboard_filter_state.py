@@ -21,16 +21,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from superset.commands.dashboard_filter_state import (
-    CreateFilterStateCommand,
-    DeleteFilterStateCommand,
-    GetFilterStateCommand,
-    UpdateFilterStateCommand,
-)
-from superset.commands.dashboard_permalink import (
+from superset.commands.dashboard.filter_state.create import CreateFilterStateCommand
+from superset.commands.dashboard.filter_state.delete import DeleteFilterStateCommand
+from superset.commands.dashboard.filter_state.get import GetFilterStateCommand
+from superset.commands.dashboard.filter_state.update import UpdateFilterStateCommand
+from superset.commands.dashboard.permalink.create import (
     CreateDashboardPermalinkCommand,
-    GetDashboardPermalinkCommand,
 )
+from superset.commands.dashboard.permalink.get import GetDashboardPermalinkCommand
 from superset.exceptions import ForbiddenError, ObjectNotFoundError
 
 
@@ -135,7 +133,7 @@ async def test_create_dashboard_permalink_fallback_int_id(mock_kv_dao):
     cmd = CreateDashboardPermalinkCommand(
         dao=mock_kv_dao, dashboard_id=42, state={"dataMask": {}}
     )
-    key = await cmd.execute()
+    await cmd.execute()
     stored = json.loads(mock_kv_dao.set_value.call_args.kwargs["value"])
     assert stored["dashboardId"] == 42
 

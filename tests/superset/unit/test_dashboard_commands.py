@@ -38,8 +38,8 @@ from superset.commands.dashboard import (
 )
 from superset.exceptions import (
     CommandInvalidError,
-    SupersetSecurityException,
     ObjectNotFoundError,
+    SupersetSecurityException,
 )
 
 
@@ -373,7 +373,6 @@ def _make_import_zip(dashboard_title: str = "Imported") -> io.BytesIO:
 async def test_import_dashboards_success(mock_dao):
     buf = _make_import_zip("Imported Dashboard")
     cmd = ImportDashboardsCommand(contents=buf, dao=mock_dao)
-    mock_model_cls = MagicMock()
     with patch(
         "superset.commands.dashboard.ImportDashboardsCommand._import_single",
         new_callable=AsyncMock,

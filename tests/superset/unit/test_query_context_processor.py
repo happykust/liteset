@@ -213,7 +213,9 @@ async def test_get_payload_multiple_query_objects(
 
 
 async def test_cache_timeout_from_data_cache_config_override():
-    """data_cache_config CACHE_DEFAULT_TIMEOUT takes precedence over cache_default_timeout."""
+    """data_cache_config CACHE_DEFAULT_TIMEOUT takes precedence over
+    cache_default_timeout.
+    """
     settings = MagicMock()
     settings.data_cache_config = {"CACHE_DEFAULT_TIMEOUT": 999}
     settings.cache_default_timeout = 300
@@ -396,7 +398,9 @@ async def test_viz_annotation_recursion_depth(mock_settings, mock_security_manag
 
 
 async def test_ensure_totals_injects_contribution_totals(processor):
-    """_ensure_totals_available injects totals=True into contribution post-processing."""
+    """_ensure_totals_available injects totals=True into contribution
+    post-processing.
+    """
     qo = AsyncQueryObject(
         datasource={"type": "table", "id": 1},
         post_processing=[
@@ -416,7 +420,9 @@ async def test_ensure_totals_injects_contribution_totals(processor):
 async def test_invalid_column_raises_validation_error(
     mock_settings, mock_security_manager
 ):
-    """get_df_payload raises QueryObjectValidationError for columns not in datasource."""
+    """get_df_payload raises QueryObjectValidationError for columns not in
+    datasource.
+    """
     ds = MagicMock()
     ds.uid = "table__1"
     ds.type = "table"
@@ -441,7 +447,9 @@ async def test_invalid_column_raises_validation_error(
         # We need the superset imports to be available for this test
         try:
             from superset.exceptions import QueryObjectValidationError
-            from superset.utils.core import get_column_names_from_columns
+            from superset.utils.core import (
+                get_column_names_from_columns,  # noqa: F401  # availability probe
+            )
         except ImportError:
             pytest.skip("superset.utils.core not available")
 

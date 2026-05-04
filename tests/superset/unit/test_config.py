@@ -13,7 +13,7 @@ def test_default_settings() -> None:
     assert settings.secret_key.get_secret_value() == "test-key-long-enough"
     # Default URI should be async sqlite
     assert settings.sqlalchemy_database_uri == "sqlite+aiosqlite:///superset.db"
-    assert settings.host == "0.0.0.0"
+    assert settings.host == "0.0.0.0"  # noqa: S104  # asserts default host value
     assert settings.port == 8088
     assert settings.debug is False
 

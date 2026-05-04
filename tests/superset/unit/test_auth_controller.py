@@ -5,7 +5,6 @@ timing-safe behaviour.
 from __future__ import annotations
 
 import hashlib
-import hmac
 
 import pytest
 

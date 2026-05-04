@@ -147,7 +147,7 @@ async def test_import_skips_metadata_yaml() -> None:
 async def test_empty_zip_file_handling() -> None:
     """Empty ZIP file results in empty configs (no crash)."""
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
+    with zipfile.ZipFile(buf, "w"):
         pass  # empty zip
     buf.seek(0)
     cmd = SampleImportCommand(contents=buf)

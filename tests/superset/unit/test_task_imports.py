@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """Verify Celery task modules are importable from superset.tasks."""
+
 from __future__ import annotations
 
 import importlib
@@ -54,7 +55,9 @@ def test_celery_app_has_autodiscover() -> None:
     from superset.tasks.celery_app import celery_app
 
     # Verify the autodiscover packages include superset.tasks
-    assert "superset.tasks" in celery_app.conf.get("include", []) or True  # autodiscover is lazy
+    assert (
+        "superset.tasks" in celery_app.conf.get("include", []) or True
+    )  # autodiscover is lazy
 
 
 def test_register_task_aliases_callable() -> None:

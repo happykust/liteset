@@ -220,8 +220,6 @@ async def test_get_catalog_names_delegates() -> None:
 
     async def fake_run_sync(fn):
         mock_sync_conn = MagicMock()
-        mock_inspector = MagicMock()
-        # inspect() is called inside _run, we need to patch
         return fn(mock_sync_conn)
 
     mock_conn.run_sync = fake_run_sync
@@ -345,7 +343,8 @@ async def test_get_columns_type_error_fallback() -> None:
         mock_sync_conn = MagicMock()
         # Patch sqlalchemy.inspect for this context
         with patch(
-            "superset.db.engine_specs.sync_fallback.inspect", return_value=mock_inspector
+            "superset.db.engine_specs.sync_fallback.inspect",
+            return_value=mock_inspector,
         ):
             return fn(mock_sync_conn)
 

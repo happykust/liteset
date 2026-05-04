@@ -26,7 +26,6 @@ import pytest
 
 from superset.schemas.security import RoleResponse, RolesSearchResponse
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -49,7 +48,9 @@ def _make_mock_role(
 
 @pytest.fixture
 def mock_admin_role() -> MagicMock:
-    return _make_mock_role(role_id=1, name="Admin", user_ids=[1, 2], permission_ids=[10, 20])
+    return _make_mock_role(
+        role_id=1, name="Admin", user_ids=[1, 2], permission_ids=[10, 20]
+    )
 
 
 @pytest.fixture
@@ -72,7 +73,9 @@ def mock_role_dao_empty() -> AsyncMock:
 
 
 @pytest.fixture
-def mock_role_dao_multi(mock_admin_role: MagicMock, mock_gamma_role: MagicMock) -> AsyncMock:
+def mock_role_dao_multi(
+    mock_admin_role: MagicMock, mock_gamma_role: MagicMock
+) -> AsyncMock:
     dao = AsyncMock()
     dao.search = AsyncMock(return_value=([mock_admin_role, mock_gamma_role], 2))
     return dao
@@ -92,7 +95,9 @@ class TestRoleSchemas:
         assert role.permission_ids == []
 
     def test_role_response_with_ids(self) -> None:
-        role = RoleResponse(id=1, name="Admin", user_ids=[1, 2], permission_ids=[10, 20])
+        role = RoleResponse(
+            id=1, name="Admin", user_ids=[1, 2], permission_ids=[10, 20]
+        )
         assert role.user_ids == [1, 2]
         assert role.permission_ids == [10, 20]
 
@@ -126,7 +131,9 @@ class TestSearchRolesLogic:
 
     @staticmethod
     def _call_search_roles() -> Any:
-        """Return the unwrapped search_roles function, bypassing Litestar's handler wrapper."""
+        """Return the unwrapped search_roles function, bypassing Litestar's handler
+        wrapper.
+        """
         from superset.controllers.security import SecurityController
 
         return SecurityController.search_roles.fn
@@ -174,7 +181,9 @@ class TestSearchRolesLogic:
         assert result["ids"] == []
 
     @pytest.mark.asyncio
-    async def test_search_roles_with_name_filter(self, mock_role_dao: AsyncMock) -> None:
+    async def test_search_roles_with_name_filter(
+        self, mock_role_dao: AsyncMock
+    ) -> None:
         """Name filter is extracted from rison filters and passed to DAO."""
         fn = self._call_search_roles()
         rison = {

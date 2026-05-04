@@ -14,7 +14,9 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for chart data endpoints — verifies endpoints wire through ChartDataCommand."""
+"""Unit tests for chart data endpoints — verifies endpoints wire through
+ChartDataCommand.
+"""
 
 from __future__ import annotations
 
@@ -32,7 +34,9 @@ from superset.exceptions import ObjectNotFoundError
 
 
 def _get_raw_method(controller_cls: type, method_name: str):
-    """Return the underlying async function from a Litestar-decorated controller method."""
+    """Return the underlying async function from a Litestar-decorated controller
+    method.
+    """
     handler = getattr(controller_cls, method_name)
     # Litestar stores the original function in .fn
     if hasattr(handler, "fn"):
@@ -198,7 +202,7 @@ async def test_get_chart_data_datasource_not_found(
 
 @patch("superset.controllers.chart.ChartDataCommand")
 async def test_get_chart_data_executes_command(
-    MockChartDataCommand,
+    mock_chart_data_command_cls,
     controller,
     mock_chart_dao,
     mock_ds_dao,
@@ -221,7 +225,7 @@ async def test_get_chart_data_executes_command(
 
     mock_cmd = AsyncMock()
     mock_cmd.execute = AsyncMock(return_value={"queries": [{"data": [1]}]})
-    MockChartDataCommand.return_value = mock_cmd
+    mock_chart_data_command_cls.return_value = mock_cmd
 
     result = await _get_chart_data(
         controller,
@@ -233,7 +237,7 @@ async def test_get_chart_data_executes_command(
         state=mock_state,
     )
 
-    MockChartDataCommand.assert_called_once()
+    mock_chart_data_command_cls.assert_called_once()
     mock_cmd.execute.assert_awaited_once()
     assert result == {"queries": [{"data": [1]}]}
 
@@ -278,7 +282,7 @@ async def test_data_datasource_not_found(
 
 @patch("superset.controllers.chart.ChartDataCommand")
 async def test_data_executes_command(
-    MockChartDataCommand,
+    mock_chart_data_command_cls,
     controller,
     mock_chart_data_body,
     mock_ds_dao,
@@ -292,7 +296,7 @@ async def test_data_executes_command(
 
     mock_cmd = AsyncMock()
     mock_cmd.execute = AsyncMock(return_value={"queries": [{"data": [99]}]})
-    MockChartDataCommand.return_value = mock_cmd
+    mock_chart_data_command_cls.return_value = mock_cmd
 
     result = await _data(
         controller,
@@ -304,7 +308,7 @@ async def test_data_executes_command(
         state=mock_state,
     )
 
-    MockChartDataCommand.assert_called_once()
+    mock_chart_data_command_cls.assert_called_once()
     mock_cmd.execute.assert_awaited_once()
     # T2-23: endpoint now returns a Response object for CSV/XLSX support
     from litestar.response import Response as LitestarResponse

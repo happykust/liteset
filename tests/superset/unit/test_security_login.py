@@ -18,13 +18,13 @@ from litestar.datastructures import State
 from litestar.testing import AsyncTestClient
 
 from superset.controllers.security import (
+    _create_api_access_token,
+    _create_api_refresh_token,
+    _get_jwt_secret,
     LoginRequest,
     LoginResponse,
     RefreshResponse,
     SecurityController,
-    _create_api_access_token,
-    _create_api_refresh_token,
-    _get_jwt_secret,
 )
 from superset.middleware.auth import CachedUser, SupersetAuthMiddleware
 
@@ -136,9 +136,7 @@ class TestTokenCreation:
         assert payload["fresh"] is False
 
     def test_create_refresh_token_structure(self):
-        token = _create_api_refresh_token(
-            SECRET_KEY, user_id=42, expires_in=86400
-        )
+        token = _create_api_refresh_token(SECRET_KEY, user_id=42, expires_in=86400)
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
         assert payload["sub"] == "42"
         assert payload["type"] == "refresh"
@@ -213,12 +211,10 @@ class TestLoginEndpoint:
 
     async def test_login_success(self, mock_user: MockUser):
         """Successful login returns access_token and refresh_token."""
-        with patch(
-            "superset.security.dao.AsyncSecurityDAO"
-        ) as MockDAO:
+        with patch("superset.security.dao.AsyncSecurityDAO") as mock_dao_cls:
             dao_instance = AsyncMock()
             dao_instance.get_user_by_username = AsyncMock(return_value=mock_user)
-            MockDAO.return_value = dao_instance
+            mock_dao_cls.return_value = dao_instance
 
             app = _create_test_app()
             async with AsyncTestClient(app=app) as client:
@@ -253,12 +249,10 @@ class TestLoginEndpoint:
 
     async def test_login_no_refresh_token(self, mock_user: MockUser):
         """Login with refresh=False omits refresh_token."""
-        with patch(
-            "superset.security.dao.AsyncSecurityDAO"
-        ) as MockDAO:
+        with patch("superset.security.dao.AsyncSecurityDAO") as mock_dao_cls:
             dao_instance = AsyncMock()
             dao_instance.get_user_by_username = AsyncMock(return_value=mock_user)
-            MockDAO.return_value = dao_instance
+            mock_dao_cls.return_value = dao_instance
 
             app = _create_test_app()
             async with AsyncTestClient(app=app) as client:
@@ -278,12 +272,10 @@ class TestLoginEndpoint:
 
     async def test_login_wrong_password(self, mock_user: MockUser):
         """Wrong password returns 401."""
-        with patch(
-            "superset.security.dao.AsyncSecurityDAO"
-        ) as MockDAO:
+        with patch("superset.security.dao.AsyncSecurityDAO") as mock_dao_cls:
             dao_instance = AsyncMock()
             dao_instance.get_user_by_username = AsyncMock(return_value=mock_user)
-            MockDAO.return_value = dao_instance
+            mock_dao_cls.return_value = dao_instance
 
             app = _create_test_app()
             async with AsyncTestClient(app=app) as client:
@@ -299,14 +291,12 @@ class TestLoginEndpoint:
 
     async def test_login_user_not_found(self):
         """Unknown user returns 401."""
-        with patch(
-            "superset.security.dao.AsyncSecurityDAO"
-        ) as MockDAO:
+        with patch("superset.security.dao.AsyncSecurityDAO") as mock_dao_cls:
             dao_instance = AsyncMock()
             dao_instance.get_user_by_username = AsyncMock(return_value=None)
             dao_instance.get_user_by_email = AsyncMock(return_value=None)
             dao_instance.get_first_user = AsyncMock(return_value=None)
-            MockDAO.return_value = dao_instance
+            mock_dao_cls.return_value = dao_instance
 
             app = _create_test_app()
             async with AsyncTestClient(app=app) as client:
@@ -323,14 +313,12 @@ class TestLoginEndpoint:
     async def test_login_inactive_user(self, mock_user: MockUser):
         """Inactive user returns 401."""
         mock_user.active = 0
-        with patch(
-            "superset.security.dao.AsyncSecurityDAO"
-        ) as MockDAO:
+        with patch("superset.security.dao.AsyncSecurityDAO") as mock_dao_cls:
             dao_instance = AsyncMock()
             dao_instance.get_user_by_username = AsyncMock(return_value=mock_user)
             dao_instance.get_user_by_email = AsyncMock(return_value=None)
             dao_instance.get_first_user = AsyncMock(return_value=None)
-            MockDAO.return_value = dao_instance
+            mock_dao_cls.return_value = dao_instance
 
             app = _create_test_app()
             async with AsyncTestClient(app=app) as client:
@@ -431,9 +419,7 @@ class TestRefreshEndpoint:
             assert "access_token" in data
 
             # Verify the new access token is non-fresh
-            payload = jwt.decode(
-                data["access_token"], SECRET_KEY, algorithms=["HS256"]
-            )
+            payload = jwt.decode(data["access_token"], SECRET_KEY, algorithms=["HS256"])
             assert payload["sub"] == "1"
             assert payload["type"] == "access"
             assert payload["fresh"] is False

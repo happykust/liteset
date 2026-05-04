@@ -15,12 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 """Verify Flask dependency is fully removed."""
+
 from __future__ import annotations
 
 import ast
 from pathlib import Path
-
-import pytest
 
 
 def test_no_flask_imports_in_superset():

@@ -40,8 +40,8 @@ from superset.commands.database import (
 )
 from superset.exceptions import (
     CommandInvalidError,
-    SupersetSecurityException,
     ObjectNotFoundError,
+    SupersetSecurityException,
 )
 
 

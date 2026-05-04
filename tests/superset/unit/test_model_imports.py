@@ -15,12 +15,12 @@
 # specific language governing permissions and limitations
 # under the License.
 """Verify all models are importable from superset.models."""
+
 from __future__ import annotations
 
 import importlib
 
 import pytest
-
 
 # All model modules that must exist in superset/models/
 MODEL_MODULES = [
@@ -50,7 +50,7 @@ def test_model_module_importable(module_name: str):
 
 def test_core_models_importable():
     """Key model classes must be importable from superset.models.core."""
-    from superset.models.core import Database, CssTemplate, Theme, Log, FavStar
+    from superset.models.core import CssTemplate, Database, FavStar, Log, Theme
 
     assert Database is not None
     assert CssTemplate is not None
@@ -85,7 +85,7 @@ def test_sqllab_models_importable():
 
 def test_connector_models_importable():
     """Connector models must be importable."""
-    from superset.models.connectors import SqlaTable, TableColumn, SqlMetric
+    from superset.models.connectors import SqlaTable, SqlMetric, TableColumn
 
     assert SqlaTable is not None
     assert TableColumn is not None
@@ -94,7 +94,7 @@ def test_connector_models_importable():
 
 def test_report_models_importable():
     """Report models and enums must be importable."""
-    from superset.models.reports import ReportSchedule, ReportExecutionLog, ReportState
+    from superset.models.reports import ReportExecutionLog, ReportSchedule, ReportState
 
     assert ReportSchedule is not None
     assert ReportExecutionLog is not None
@@ -125,12 +125,7 @@ def test_no_flask_imports_in_daos():
         tree = ast.parse(py_file.read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
-                if node.module.startswith(
-                    ("flask", "flask_appbuilder")
-                ):
-                    violations.append(
-                        f"{py_file.name}: imports from "
-                        f"{node.module}"
-                    )
+                if node.module.startswith(("flask", "flask_appbuilder")):
+                    violations.append(f"{py_file.name}: imports from {node.module}")
 
     assert not violations, f"Flask imports in DAOs: {violations}"

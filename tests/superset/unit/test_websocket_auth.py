@@ -16,15 +16,13 @@
 # under the License.
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import jwt as pyjwt
-import pytest
 
 from superset.websocket.auth import (
     authenticate_websocket,
     validate_origin,
-    WebSocketAuthResult,
 )
 
 
@@ -40,11 +38,18 @@ def _make_socket(
 
 
 def test_validate_origin_allowed():
-    assert validate_origin("https://superset.example.com", ["https://superset.example.com"]) is True
+    assert (
+        validate_origin(
+            "https://superset.example.com", ["https://superset.example.com"]
+        )
+        is True
+    )
 
 
 def test_validate_origin_disallowed():
-    assert validate_origin("https://evil.com", ["https://superset.example.com"]) is False
+    assert (
+        validate_origin("https://evil.com", ["https://superset.example.com"]) is False
+    )
 
 
 def test_validate_origin_no_restrictions():
@@ -68,13 +73,17 @@ async def test_authenticate_websocket_jwt_query_param():
 
 async def test_authenticate_websocket_invalid_jwt():
     socket = _make_socket(query_params={"token": "invalid-token"})
-    result = await authenticate_websocket(socket, jwt_secret="some-secret-key-32-bytes-long!!")
+    result = await authenticate_websocket(
+        socket, jwt_secret="some-secret-key-32-bytes-long!!"
+    )
     assert result is None
 
 
 async def test_authenticate_websocket_no_token():
     socket = _make_socket()
-    result = await authenticate_websocket(socket, jwt_secret="some-secret-key-32-bytes-long!!")
+    result = await authenticate_websocket(
+        socket, jwt_secret="some-secret-key-32-bytes-long!!"
+    )
     assert result is None
 
 
@@ -96,6 +105,8 @@ async def test_authenticate_websocket_cookie_fallback():
     secret = "test-secret-key-that-is-32-bytes!"
     token = pyjwt.encode({"channel": "ch-1", "sub": "42"}, secret, algorithm="HS256")
     socket = _make_socket(headers={"cookie": f"async-token={token}"})
-    result = await authenticate_websocket(socket, jwt_secret=secret, cookie_name="async-token")
+    result = await authenticate_websocket(
+        socket, jwt_secret=secret, cookie_name="async-token"
+    )
     assert result is not None
     assert result.user_id == 42

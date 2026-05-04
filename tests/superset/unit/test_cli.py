@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from superset.cli.compat import superset_cli
 from superset.cli.main import superset_cli
 
 
@@ -26,9 +25,11 @@ def test_superset_version_verbose(runner):
 
 
 def test_superset_init(runner):
-    with patch("superset.config.SupersetSettings") as mock_settings_cls, \
-         patch("superset.db.session.create_db_engine") as mock_engine, \
-         patch("superset.db.session.create_session_factory") as mock_sf:
+    with (
+        patch("superset.config.SupersetSettings") as mock_settings_cls,
+        patch("superset.db.session.create_db_engine") as mock_engine,
+        patch("superset.db.session.create_session_factory") as mock_sf,
+    ):
         mock_settings = MagicMock()
         mock_settings.sqlalchemy_database_uri = "sqlite+aiosqlite:///:memory:"
         mock_settings_cls.return_value = mock_settings

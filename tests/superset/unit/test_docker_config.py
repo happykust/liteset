@@ -16,11 +16,10 @@
 #
 
 """Verify Docker configuration is updated for Superset."""
+
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
 
 
 def test_dockerfile_uses_uvicorn():

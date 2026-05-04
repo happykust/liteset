@@ -111,7 +111,11 @@ async def test_get_cached_data_cache_exception_returns_none():
 
 async def test_get_cached_data_with_result_key():
     """Cached data that already has a 'result' key is returned as-is."""
-    payload = {"result": [{"data": [1, 2, 3]}], "datasource_id": 1, "datasource_type": "table"}
+    payload = {
+        "result": [{"data": [1, 2, 3]}],
+        "datasource_id": 1,
+        "datasource_type": "table",
+    }
     cache_manager = AsyncMock()
     cache_manager.get = AsyncMock(return_value=payload)
     security_manager = MagicMock()

@@ -21,6 +21,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from litestar import Litestar
+
+# Skip msgspec validation for DI-injected mock params
+from litestar._signature.model import (
+    _normalize_annotation as _norm_fn,
+)
 from litestar.connection import ASGIConnection
 from litestar.di import Provide
 from litestar.middleware.authentication import (
@@ -31,11 +36,6 @@ from litestar.testing import AsyncTestClient
 
 from superset.controllers.async_event import AsyncEventController
 
-# Skip msgspec validation for DI-injected mock params
-from litestar._signature.model import (
-    _normalize_annotation as _norm_fn,
-)
-
 _SKIP_VALIDATION_NAMES: set[str] = _norm_fn.__globals__["SKIP_VALIDATION_NAMES"]
 _DI_PARAMS = frozenset({"event_manager", "current_user"})
 
@@ -43,7 +43,9 @@ _DI_PARAMS = frozenset({"event_manager", "current_user"})
 class _MockAuthMiddleware(AbstractAuthenticationMiddleware):
     """Minimal auth middleware that sets a mock user on every request."""
 
-    async def authenticate_request(self, connection: ASGIConnection) -> AuthenticationResult:
+    async def authenticate_request(
+        self, connection: ASGIConnection
+    ) -> AuthenticationResult:
         user = MagicMock()
         user.id = 42
         user.is_authenticated = True
@@ -62,17 +64,19 @@ def _skip_di_validation():
 @pytest.fixture
 def mock_event_manager() -> AsyncMock:
     manager = AsyncMock()
-    manager.read_events = AsyncMock(return_value=[
-        {
-            "id": "1607477697866-0",
-            "channel_id": "ch-1",
-            "job_id": "job-1",
-            "user_id": 42,
-            "status": "done",
-            "errors": [],
-            "result_url": "/api/v1/chart/data/cache-key-123",
-        }
-    ])
+    manager.read_events = AsyncMock(
+        return_value=[
+            {
+                "id": "1607477697866-0",
+                "channel_id": "ch-1",
+                "job_id": "job-1",
+                "user_id": 42,
+                "status": "done",
+                "errors": [],
+                "result_url": "/api/v1/chart/data/cache-key-123",
+            }
+        ]
+    )
     return manager
 
 
@@ -101,7 +105,9 @@ async def client(mock_event_manager: AsyncMock):
         yield tc
 
 
-async def test_get_events_no_last_id(client: AsyncTestClient, mock_event_manager: AsyncMock):
+async def test_get_events_no_last_id(
+    client: AsyncTestClient, mock_event_manager: AsyncMock
+):
     resp = await client.get("/api/v1/async_event/")
     assert resp.status_code == 200
     data = resp.json()
@@ -110,12 +116,17 @@ async def test_get_events_no_last_id(client: AsyncTestClient, mock_event_manager
     assert data["result"][0]["status"] == "done"
 
 
-async def test_get_events_with_last_id(client: AsyncTestClient, mock_event_manager: AsyncMock):
+async def test_get_events_with_last_id(
+    client: AsyncTestClient, mock_event_manager: AsyncMock
+):
     resp = await client.get("/api/v1/async_event/?last_id=1607477697866-0")
     assert resp.status_code == 200
     mock_event_manager.read_events.assert_called_once()
     call_kwargs = mock_event_manager.read_events.call_args
-    assert call_kwargs[1].get("last_id") == "1607477697866-0" or call_kwargs[0][-1] == "1607477697866-0"
+    assert (
+        call_kwargs[1].get("last_id") == "1607477697866-0"
+        or call_kwargs[0][-1] == "1607477697866-0"
+    )
 
 
 async def test_get_events_empty(client: AsyncTestClient, mock_event_manager: AsyncMock):

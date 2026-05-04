@@ -139,12 +139,15 @@ def test_time_grain_isolation_between_subclasses() -> None:
 
 
 def test_cannot_instantiate_base_directly() -> None:
-    """BaseAsyncEngineSpec cannot be instantiated without implementing abstract methods."""
-    with pytest.raises(TypeError):
-        # Attempting to create a subclass without execute/fetch_data
-        class IncompleteSpec(BaseAsyncEngineSpec):
-            pass
+    """BaseAsyncEngineSpec cannot be instantiated without implementing abstract
+    methods.
+    """
 
+    # Subclass without execute/fetch_data — instantiation must fail.
+    class IncompleteSpec(BaseAsyncEngineSpec):
+        pass
+
+    with pytest.raises(TypeError):
         IncompleteSpec()
 
 
