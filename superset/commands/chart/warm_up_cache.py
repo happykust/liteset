@@ -68,11 +68,15 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
         chart_id: int,
         dashboard_id: int | None = None,
         extra_filters: str | None = None,
+        security_manager: Any | None = None,
+        current_user: Any | None = None,
     ) -> None:
         self._dao = dao
         self._chart_id = chart_id
         self._dashboard_id = dashboard_id
         self._extra_filters = extra_filters
+        self._security_manager = security_manager
+        self._current_user = current_user
         self._chart: Any | None = None
 
     async def validate(self) -> None:
@@ -186,7 +190,11 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
     # ------------------------------------------------------------------
 
     async def _warm_up_legacy_cache(
-        self, chart: Any, form_data: dict[str, Any]
+        self,
+        chart: Any,
+        form_data: dict[str, Any],
+        security_manager: Any = None,
+        current_user: Any = None,
     ) -> tuple[Any, Any]:
         """Warm up cache for legacy visualizations.
 
@@ -196,6 +204,14 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
         :func:`superset.jinja_context.set_form_data` so downstream code
         (e.g. Jinja URL-param helpers) sees the same form_data the
         original did.
+
+        ``security_manager`` and ``current_user`` are injected so that
+        ``viz_obj._rls_cache_key`` can be populated before
+        ``viz_obj.get_payload()`` calls ``cache_key()``.  Without this
+        step two users with different RLS rules would collide on the
+        same cache entry.  Mirrors the original Flask path where
+        ``security_manager.get_rls_cache_key(self.datasource)`` was
+        called inside ``BaseViz.cache_key()`` synchronously.
         """
         from superset.jinja_context import _form_data_ctx, set_form_data
         from superset.viz import get_viz
@@ -218,6 +234,26 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
                 form_data=form_data,
                 force=True,
             )
+
+            # Populate _rls_cache_key before cache_key() is called inside
+            # get_payload().  Mirrors ``security_manager.get_rls_cache_key``
+            # which was invoked synchronously inside the original Flask
+            # BaseViz.cache_key().  Skipped when no security_manager is
+            # available (e.g. tests) — the key defaults to [] (safe but
+            # not RLS-differentiated).
+            if security_manager is not None:
+                try:
+                    viz_obj._rls_cache_key = (  # noqa: SLF001
+                        await security_manager.get_rls_cache_key(
+                            chart.datasource, user=current_user
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "Could not populate _rls_cache_key for warm-up cache",
+                        exc_info=True,
+                    )
+
             payload = await viz_obj.get_payload()
         finally:
             try:
@@ -337,7 +373,12 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
             form_data = chart.form_data
 
             if form_data.get("viz_type") in viz_types:
-                error, status = await self._warm_up_legacy_cache(chart, form_data)
+                error, status = await self._warm_up_legacy_cache(
+                    chart,
+                    form_data,
+                    security_manager=self._security_manager,
+                    current_user=self._current_user,
+                )
             else:
                 error, status = await self._warm_up_non_legacy_cache(chart)
         except Exception as ex:  # pylint: disable=broad-except

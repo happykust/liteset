@@ -85,8 +85,75 @@ def _saved_query_custom_filters(current_user: Any) -> dict[str, Any]:
             return model_cls.id.in_(fav_subq)
         return ~model_cls.id.in_(fav_subq)
 
+    def _saved_query_all_text(model_cls: Any, value: Any) -> Any:
+        """Full-text OR-search across schema, label, description and sql.
+
+        1:1 port of ``superset_old/queries/saved_queries/filters.py::
+        SavedQueryAllTextFilter``.
+        """
+        if not value:
+            return None
+        from sqlalchemy import or_
+
+        ilike_value = f"%{value}%"
+        return or_(
+            model_cls.schema.ilike(ilike_value),
+            model_cls.label.ilike(ilike_value),
+            model_cls.description.ilike(ilike_value),
+            model_cls.sql.ilike(ilike_value),
+        )
+
+    def _saved_query_tags(model_cls: Any, value: Any) -> Any:
+        """Filter saved queries by tag name (substring match).
+
+        1:1 port of ``superset_old/queries/saved_queries/filters.py::
+        SavedQueryTagNameFilter`` which used ``BaseTagNameFilter``.  The
+        original joined via ``SavedQuery.tags`` → ``Tag.name.ilike``; we
+        replicate via the ``TaggedObject`` association table so we stay
+        portable across both the legacy ``M2M via SavedQuery.tags`` and
+        the newer ``TaggedObject`` approach.
+        """
+        if not value:
+            return None
+        from sqlalchemy import select as sa_select
+
+        from superset.models.tags import Tag, TaggedObject
+
+        ilike_value = f"%{value}%"
+        tag_id_subq = sa_select(Tag.id).where(Tag.name.ilike(ilike_value))
+        tagged_subq = sa_select(TaggedObject.object_id).where(
+            TaggedObject.object_type == "query",
+            TaggedObject.tag_id.in_(tag_id_subq),
+        )
+        return model_cls.id.in_(tagged_subq)
+
+    def _saved_query_tag_id(model_cls: Any, value: Any) -> Any:
+        """Filter saved queries by tag ID.
+
+        1:1 port of ``superset_old/queries/saved_queries/filters.py::
+        SavedQueryTagIdFilter`` which used ``BaseTagIdFilter``.
+        """
+        if value is None:
+            return None
+        from sqlalchemy import select as sa_select
+
+        from superset.models.tags import TaggedObject
+
+        try:
+            tag_id_int = int(value)
+        except (TypeError, ValueError):
+            return None
+        tagged_subq = sa_select(TaggedObject.object_id).where(
+            TaggedObject.object_type == "query",
+            TaggedObject.tag_id == tag_id_int,
+        )
+        return model_cls.id.in_(tagged_subq)
+
     return {
         "saved_query_is_fav": _saved_query_is_fav,
+        "all_text": _saved_query_all_text,
+        "saved_query_tags": _saved_query_tags,
+        "saved_query_tag_id": _saved_query_tag_id,
     }
 
 
