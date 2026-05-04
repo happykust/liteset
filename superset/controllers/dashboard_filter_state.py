@@ -27,15 +27,23 @@ from superset.commands.dashboard.filter_state.get import GetFilterStateCommand
 from superset.commands.dashboard.filter_state.update import UpdateFilterStateCommand
 from superset.events import event_logger
 from superset.guards.rbac import require_permission
-from superset.providers import provide_kv_dao
+from superset.providers import provide_dashboard_dao, provide_kv_dao
 from superset.schemas.dashboard import FilterStateSchema
-from superset.typing import KeyValueDAOProtocol, SecurityManagerProtocol, UserProtocol
+from superset.typing import (
+    DashboardDAOProtocol,
+    KeyValueDAOProtocol,
+    SecurityManagerProtocol,
+    UserProtocol,
+)
 
 
 class DashboardFilterStateController(Controller):
     path = "/api/v1/dashboard/{pk:int}/filter_state"
     tags = ["Dashboard Filter State"]
-    dependencies = {"kv_dao": Provide(provide_kv_dao, sync_to_thread=False)}
+    dependencies = {
+        "kv_dao": Provide(provide_kv_dao, sync_to_thread=False),
+        "dashboard_dao": Provide(provide_dashboard_dao, sync_to_thread=False),
+    }
 
     @post(
         "/",
@@ -47,6 +55,7 @@ class DashboardFilterStateController(Controller):
         pk: int,
         data: FilterStateSchema,
         kv_dao: KeyValueDAOProtocol,
+        dashboard_dao: DashboardDAOProtocol,
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
@@ -57,6 +66,8 @@ class DashboardFilterStateController(Controller):
             user_id=current_user.id,
             tab_id=data.tab_id,
             security_manager=security_manager,
+            dashboard_dao=dashboard_dao,  # type: ignore[arg-type]
+            user=current_user,
         )
         key = await cmd.execute()
         await event_logger.alog_with_context(
@@ -76,6 +87,7 @@ class DashboardFilterStateController(Controller):
         key: str,
         data: FilterStateSchema,
         kv_dao: KeyValueDAOProtocol,
+        dashboard_dao: DashboardDAOProtocol,
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
@@ -86,6 +98,8 @@ class DashboardFilterStateController(Controller):
             value=data.value,
             user_id=current_user.id,
             security_manager=security_manager,
+            dashboard_dao=dashboard_dao,  # type: ignore[arg-type]
+            user=current_user,
         )
         result_key = await cmd.execute()
         await event_logger.alog_with_context(
@@ -104,6 +118,7 @@ class DashboardFilterStateController(Controller):
         pk: int,
         key: str,
         kv_dao: KeyValueDAOProtocol,
+        dashboard_dao: DashboardDAOProtocol,
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
@@ -113,6 +128,8 @@ class DashboardFilterStateController(Controller):
             key=key,
             security_manager=security_manager,
             user_id=current_user.id,
+            dashboard_dao=dashboard_dao,  # type: ignore[arg-type]
+            user=current_user,
         )
         value = await cmd.execute()
         await event_logger.alog_with_context(
@@ -130,6 +147,7 @@ class DashboardFilterStateController(Controller):
         pk: int,
         key: str,
         kv_dao: KeyValueDAOProtocol,
+        dashboard_dao: DashboardDAOProtocol,
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
@@ -139,6 +157,8 @@ class DashboardFilterStateController(Controller):
             key=key,
             user_id=current_user.id,
             security_manager=security_manager,
+            dashboard_dao=dashboard_dao,  # type: ignore[arg-type]
+            user=current_user,
         )
         await cmd.execute()
         await event_logger.alog_with_context(

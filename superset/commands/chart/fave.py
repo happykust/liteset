@@ -20,10 +20,10 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
-from superset.exceptions import ObjectNotFoundError
+from superset.exceptions import ForbiddenError, ObjectNotFoundError
 
 if TYPE_CHECKING:
     from superset.db.daos.chart import AsyncChartDAO
@@ -34,9 +34,10 @@ logger = logging.getLogger(__name__)
 class AddFavoriteChartCommand(AsyncBaseCommand[None]):
     """Add a chart to a user's favorites.
 
-    Ported 1:1 from superset_old/commands/chart/fave.py.
-    The original validates chart existence and ownership, then delegates
-    to ChartDAO.add_favorite.
+    1:1 port of ``superset_old/commands/chart/fave.py``.
+    The original calls ``security_manager.raise_for_ownership(chart)`` to
+    ensure the requesting user is an owner of the chart before favoriting
+    (raises 403 if not).  This check is preserved here.
     """
 
     def __init__(
@@ -44,15 +45,31 @@ class AddFavoriteChartCommand(AsyncBaseCommand[None]):
         dao: AsyncChartDAO,
         chart_id: int,
         user_id: int,
+        security_manager: Any | None = None,
+        user: Any | None = None,
     ) -> None:
         self._dao = dao
         self._chart_id = chart_id
         self._user_id = user_id
+        self._security_manager = security_manager
+        self._user = user
 
     async def validate(self) -> None:
         chart = await self._dao.find_by_id(self._chart_id)
         if not chart:
             raise ObjectNotFoundError("Chart", self._chart_id)
+
+        # 1:1 with original: security_manager.raise_for_ownership(chart)
+        # raises SupersetSecurityException → ChartForbiddenError when not owner.
+        if self._security_manager is not None and self._user is not None:
+            try:
+                await self._security_manager.raise_for_ownership(
+                    chart, user=self._user
+                )
+            except Exception as ex:  # noqa: BLE001
+                raise ForbiddenError(f"User is not an owner of chart {self._chart_id}") from ex
+
+        self._chart = chart
 
     async def run(self) -> None:
         await self._dao.add_favorite(self._chart_id, user_id=self._user_id)

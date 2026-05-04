@@ -32,6 +32,7 @@ from litestar import Controller, delete, get, post, put
 from litestar.di import Provide
 from litestar.params import Parameter
 
+from superset.commands.explore_form_data.utils import check_access
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError
 from superset.guards.rbac import (
@@ -39,8 +40,20 @@ from superset.guards.rbac import (
     require_authentication,
     require_permission,
 )
-from superset.providers import provide_kv_dao
-from superset.typing import KeyValueDAOProtocol, UserProtocol
+from superset.providers import (
+    provide_chart_dao,
+    provide_dataset_dao,
+    provide_kv_dao,
+    provide_query_dao,
+)
+from superset.typing import (
+    ChartDAOProtocol,
+    DatasetDAOProtocol,
+    KeyValueDAOProtocol,
+    QueryDAOProtocol,
+    SecurityManagerProtocol,
+    UserProtocol,
+)
 
 DatasourceType = Literal["table", "dataset", "query", "saved_query", "view"]
 
@@ -69,6 +82,9 @@ class ExploreFormDataController(Controller):
     resource = "explore_form_data"
     dependencies = {
         "kv_dao": Provide(provide_kv_dao, sync_to_thread=False),
+        "chart_dao": Provide(provide_chart_dao, sync_to_thread=False),
+        "dataset_dao": Provide(provide_dataset_dao, sync_to_thread=False),
+        "query_dao": Provide(provide_query_dao, sync_to_thread=False),
     }
 
     @get("/{key:str}", guards=[require_authentication])
@@ -76,9 +92,19 @@ class ExploreFormDataController(Controller):
         self,
         key: str,
         kv_dao: KeyValueDAOProtocol,
+        chart_dao: ChartDAOProtocol,
+        dataset_dao: DatasetDAOProtocol,
+        query_dao: QueryDAOProtocol,
+        security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        """GET /{key} — retrieve cached form_data."""
+        """GET /{key} — retrieve cached form_data.
+
+        1:1 with original GetFormDataCommand: reads stored envelope,
+        calls check_access(datasource_id, chart_id, datasource_type) to
+        ensure the requesting user still has access to the underlying
+        datasource and (optionally) the chart before returning the payload.
+        """
         raw = await kv_dao.get_value(
             resource=self.resource,
             resource_id=0,
@@ -89,10 +115,27 @@ class ExploreFormDataController(Controller):
 
         try:
             entry = json.loads(raw)
-            if isinstance(entry, dict) and "value" in entry:
-                return {"form_data": entry["value"]}
         except (json.JSONDecodeError, TypeError):
-            pass
+            entry = {}
+
+        if isinstance(entry, dict):
+            datasource_id: int = entry.get("datasource_id") or 0
+            datasource_type: str = entry.get("datasource_type") or "table"
+            chart_id: int | None = entry.get("chart_id")
+            if datasource_id:
+                await check_access(
+                    datasource_id=datasource_id,
+                    chart_id=chart_id,
+                    datasource_type=datasource_type,
+                    dataset_dao=dataset_dao,
+                    query_dao=query_dao,
+                    chart_dao=chart_dao,
+                    security_manager=security_manager,
+                    user=current_user,
+                )
+            if "value" in entry:
+                return {"form_data": entry["value"]}
+
         return {"form_data": raw}
 
     @post(
@@ -107,10 +150,29 @@ class ExploreFormDataController(Controller):
         self,
         data: FormDataPostSchema,
         kv_dao: KeyValueDAOProtocol,
+        chart_dao: ChartDAOProtocol,
+        dataset_dao: DatasetDAOProtocol,
+        query_dao: QueryDAOProtocol,
+        security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
         tab_id: int | None = Parameter(query="tab_id", default=None, required=False),
     ) -> dict[str, str]:
-        """POST / — create new cached form_data."""
+        """POST / — create new cached form_data.
+
+        1:1 with original CreateFormDataCommand: calls check_access before
+        storing so that users cannot cache form data for datasources they
+        cannot access.
+        """
+        await check_access(
+            datasource_id=data.datasource_id,
+            chart_id=data.chart_id,
+            datasource_type=data.datasource_type,
+            dataset_dao=dataset_dao,
+            query_dao=query_dao,
+            chart_dao=chart_dao,
+            security_manager=security_manager,
+            user=current_user,
+        )
         key = str(uuid.uuid4())
         envelope = json.dumps(
             {
@@ -140,10 +202,21 @@ class ExploreFormDataController(Controller):
         key: str,
         data: FormDataPutSchema,
         kv_dao: KeyValueDAOProtocol,
+        chart_dao: ChartDAOProtocol,
+        dataset_dao: DatasetDAOProtocol,
+        query_dao: QueryDAOProtocol,
+        security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
         tab_id: int | None = Parameter(query="tab_id", default=None, required=False),
     ) -> dict[str, str]:
-        """PUT /{key} — update cached form_data."""
+        """PUT /{key} — update cached form_data.
+
+        1:1 with original UpdateFormDataCommand: calls check_access for the
+        new datasource/chart being saved, then checks that the requesting
+        user is the owner of the entry before allowing the update.
+        """
+        from litestar.exceptions import PermissionDeniedException
+
         existing = await kv_dao.get_value(
             resource=self.resource,
             resource_id=0,
@@ -151,6 +224,29 @@ class ExploreFormDataController(Controller):
         )
         if existing is None:
             raise ObjectNotFoundError(self.resource, key)
+
+        # Datasource + chart access check — mirrors UpdateFormDataCommand.
+        await check_access(
+            datasource_id=data.datasource_id,
+            chart_id=data.chart_id,
+            datasource_type=data.datasource_type,
+            dataset_dao=dataset_dao,
+            query_dao=query_dao,
+            chart_dao=chart_dao,
+            security_manager=security_manager,
+            user=current_user,
+        )
+
+        # Owner check — mirrors UpdateFormDataCommand.update() in the original.
+        try:
+            entry = json.loads(existing)
+        except (json.JSONDecodeError, TypeError):
+            entry = {}
+        owner = entry.get("owner")
+        if owner is not None and owner != current_user.id:
+            raise PermissionDeniedException(
+                detail="You don't have access to this resource"
+            )
 
         envelope = json.dumps(
             {
@@ -179,9 +275,56 @@ class ExploreFormDataController(Controller):
         self,
         key: str,
         kv_dao: KeyValueDAOProtocol,
+        chart_dao: ChartDAOProtocol,
+        dataset_dao: DatasetDAOProtocol,
+        query_dao: QueryDAOProtocol,
+        security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, str]:
-        """DELETE /{key} — delete cached form_data."""
+        """DELETE /{key} — delete cached form_data.
+
+        1:1 with original DeleteFormDataCommand: reads the stored envelope
+        first to extract datasource/chart metadata, calls check_access,
+        then verifies ownership before deleting.
+        """
+        from litestar.exceptions import PermissionDeniedException
+
+        raw = await kv_dao.get_value(
+            resource=self.resource,
+            resource_id=0,
+            key=key,
+        )
+        if raw is None:
+            raise ObjectNotFoundError(self.resource, key)
+
+        try:
+            entry = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            entry = {}
+
+        if isinstance(entry, dict):
+            datasource_id: int = entry.get("datasource_id") or 0
+            datasource_type: str = entry.get("datasource_type") or "table"
+            chart_id: int | None = entry.get("chart_id")
+            if datasource_id:
+                await check_access(
+                    datasource_id=datasource_id,
+                    chart_id=chart_id,
+                    datasource_type=datasource_type,
+                    dataset_dao=dataset_dao,
+                    query_dao=query_dao,
+                    chart_dao=chart_dao,
+                    security_manager=security_manager,
+                    user=current_user,
+                )
+            # Owner check — original raises TemporaryCacheAccessDeniedError
+            # when state["owner"] != get_user_id().
+            owner = entry.get("owner")
+            if owner is not None and owner != current_user.id:
+                raise PermissionDeniedException(
+                    detail="You don't have access to this resource"
+                )
+
         deleted = await kv_dao.delete_value(
             resource=self.resource,
             resource_id=0,

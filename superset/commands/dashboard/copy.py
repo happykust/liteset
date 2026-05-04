@@ -57,6 +57,30 @@ class CopyDashboardCommand(AsyncBaseCommand["Dashboard"]):
         if not self._data.get("json_metadata"):
             raise CommandInvalidError("json_metadata is required for copy")
 
+        # 1:1 with original superset_old/commands/dashboard/copy.py:
+        # When DASHBOARD_RBAC is enabled, only owners of the original dashboard
+        # are allowed to create a copy.  Raises CommandInvalidError (→ 422) to
+        # match the original DashboardForbiddenError surface.
+        try:
+            from superset.utils.feature_flags import feature_flag_manager
+
+            if feature_flag_manager.is_feature_enabled("DASHBOARD_RBAC"):
+                if (
+                    self._security_manager is not None
+                    and self._current_user is not None
+                ):
+                    is_owner = self._security_manager.is_owner(
+                        self._dashboard, self._current_user
+                    )
+                    if not is_owner:
+                        from superset.exceptions import ForbiddenError
+
+                        raise ForbiddenError(
+                            "You are not an owner of this dashboard"
+                        )
+        except (ImportError, ModuleNotFoundError):
+            pass
+
     async def run(self) -> "Dashboard":
         assert self._dashboard is not None
         new_dash = await self._dao.copy_dashboard(

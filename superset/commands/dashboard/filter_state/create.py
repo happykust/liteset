@@ -40,6 +40,7 @@ from superset.commands.base import AsyncBaseCommand
 from superset.commands.dashboard.filter_state.utils import check_access
 
 if TYPE_CHECKING:
+    from superset.db.daos.dashboard import AsyncDashboardDAO
     from superset.db.daos.key_value import AsyncKeyValueDAO
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,8 @@ class CreateFilterStateCommand(AsyncBaseCommand[str]):
         user_id: int,
         tab_id: int | None = None,
         security_manager: Any | None = None,
+        dashboard_dao: AsyncDashboardDAO | None = None,
+        user: Any | None = None,
     ) -> None:
         self._dao = dao
         self._dashboard_id = dashboard_id
@@ -61,15 +64,19 @@ class CreateFilterStateCommand(AsyncBaseCommand[str]):
         self._user_id = user_id
         self._tab_id = tab_id
         self._security_manager = security_manager
+        self._dashboard_dao = dashboard_dao
+        self._user = user
 
     async def validate(self) -> None:
         # ``check_access`` raises ``TemporaryCacheResourceNotFoundError`` /
         # ``TemporaryCacheAccessDeniedError`` 1:1 with the original.
+        # Pass the Dashboard DAO (which has get_by_id_or_slug) — NOT the KV DAO.
+        # The real user is required so the can_access_dashboard gate is enforced.
         await check_access(
-            self._dao,
+            self._dashboard_dao,
             self._dashboard_id,
             security_manager=self._security_manager,
-            user=None,
+            user=self._user,
         )
 
     async def run(self) -> str:

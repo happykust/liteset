@@ -26,6 +26,7 @@ from superset.commands.dashboard.filter_state.utils import check_access
 from superset.exceptions import ObjectNotFoundError
 
 if TYPE_CHECKING:
+    from superset.db.daos.dashboard import AsyncDashboardDAO
     from superset.db.daos.key_value import AsyncKeyValueDAO
 
 
@@ -37,19 +38,25 @@ class GetFilterStateCommand(AsyncBaseCommand[str]):
         key: str,
         security_manager: Any | None = None,
         user_id: int | None = None,
+        dashboard_dao: AsyncDashboardDAO | None = None,
+        user: Any | None = None,
     ) -> None:
         self._dao = dao
         self._dashboard_id = dashboard_id
         self._key = key
         self._security_manager = security_manager
         self._user_id = user_id
+        self._dashboard_dao = dashboard_dao
+        self._user = user
 
     async def validate(self) -> None:
+        # Pass the Dashboard DAO (which has get_by_id_or_slug) — NOT the KV DAO.
+        # The real user is required so the can_access_dashboard gate is enforced.
         await check_access(
-            self._dao,
+            self._dashboard_dao,
             self._dashboard_id,
             security_manager=self._security_manager,
-            user=None,
+            user=self._user,
         )
 
     async def run(self) -> str:
