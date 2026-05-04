@@ -162,7 +162,7 @@ See the Liteset [quickstart guide](https://liteset.happykust.dev/docs/quickstart
 
 ## License
 
-Liteset is distributed under the [Apache License 2.0](LICENSE.txt), inherited from Apache Superset. All files carried over from Apache Superset 6.0.0 preserve their original ASF headers.
+Liteset is distributed under the [Apache License 2.0](https://apache.org/licenses/LICENSE-2.0), inherited from Apache Superset. All files carried over from Apache Superset 6.0.0 preserve their original ASF headers. See `LICENSE.txt` in the repository root.
 
 ---
 

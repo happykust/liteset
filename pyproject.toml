@@ -76,6 +76,7 @@ dependencies = [
     "cryptography>=42.0.4, <45.0.0",
     "PyJWT>=2.4.0, <3.0",
     "itsdangerous>=2.1.0",  # session cookie decoding (Flask compat)
+    "ldap3>=2.9.1, <3",  # async-friendly pure-Python LDAP client
     "paramiko>=3.4.0",
     "sshtunnel>=0.4.0, <0.5",
     # --------------------------
@@ -262,6 +263,14 @@ warn_unused_ignores = true
 module = "superset.migrations.versions.*"
 ignore_errors = true
 
+# Vendored Apache Superset 6.0.0 reference source — kept verbatim for 1:1
+# porting work; not part of the Liteset distribution and intentionally
+# unmaintained as far as the type-checker is concerned.
+[[tool.mypy.overrides]]
+module = "superset_old.*"
+ignore_errors = true
+follow_imports = "skip"
+
 [[tool.mypy.overrides]]
 module = "tests.*"
 check_untyped_defs = false
@@ -305,6 +314,9 @@ exclude = [
     "node_modules",
     "site-packages",
     "venv",
+    # Vendored Apache Superset 6.0.0 reference source — kept verbatim for
+    # 1:1 porting; not part of the Liteset distribution.
+    "superset_old",
 ]
 
 # Same as Black.
@@ -361,6 +373,16 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 "superset/**" = ["TID251"]
 "superset/config.py" = ["TID251"]
 "superset/cli/main.py" = ["E402"]  # imports after click group definition
+# Test code: hardcoded test credentials and `random` for synthetic fixtures
+# are intentional and never reach production cryptography paths.
+"tests/**" = ["S105", "S106"]
+# Vendored Apache Superset 6.0.0 integration tests use relative imports
+# throughout — porting them is a separate effort, out of scope for the
+# Liteset migration's lint cleanup.
+"tests/integration_tests/**" = ["S105", "S106", "TID252"]
+# Locust load-test scenarios are run from `tests/load_testing/` as the
+# package root; relative imports are the natural form there.
+"tests/load_testing/**" = ["S105", "S106", "S311", "TID252"]
 
 [tool.ruff.lint.isort]
 case-sensitive = false
