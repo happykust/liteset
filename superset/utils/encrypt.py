@@ -37,6 +37,9 @@ from typing import Any
 from sqlalchemy import create_engine, MetaData, text, TypeDecorator
 from sqlalchemy.engine import Connection, Dialect, Engine
 from sqlalchemy_utils import EncryptedType as SqlaEncryptedType
+from sqlalchemy_utils.types.encrypted.encrypted_type import (
+    StringEncryptedType as SqlaStringEncryptedType,
+)
 
 from superset.i18n import lazy_gettext as _
 
@@ -53,6 +56,46 @@ ENC_ADAPTER_TAG_ATTR_NAME = "__created_by_enc_field_adapter__"
 
 class EncryptedType(SqlaEncryptedType):
     cache_ok = True
+
+    def process_result_value(self, value: Any, dialect: Any) -> Any:
+        """Decrypt the stored value regardless of driver representation.
+
+        ``sqlalchemy_utils.EncryptedType.process_result_value`` only
+        decrypts when the row value comes back as ``bytes`` — it falls
+        through with the raw cipher-text whenever the driver hands us a
+        ``str``.  psycopg2 happens to return ``bytes`` for the
+        ``VARCHAR`` columns ApplyHasing.scriptaculousrset stores
+        encrypted secrets in (because ``bytea`` was bound), so the
+        original works.  asyncpg, however, decodes ``VARCHAR`` to
+        ``str`` and ships the cipher-text round-trip unchanged.
+        Without this override every async read of ``Database.password``
+        / ``encrypted_extra`` / ``server_cert`` returns the encrypted
+        blob instead of the plaintext, breaking every connection
+        attempt to user databases.
+        """
+        if value is None:
+            return None
+        if isinstance(value, (bytes, bytearray)):
+            value = bytes(value).decode("utf-8", errors="replace")
+        # Strip pg ``\x``-hex bytea prefix when the driver round-trips
+        # bytes through TEXT (older liteset rows ended up that way
+        # before the column type was normalised).  ``\x`` followed by
+        # an even number of hex chars is a clear cipher-text encoding
+        # marker — decode it back to the original cipher-text string.
+        if (
+            isinstance(value, str)
+            and value.startswith("\\x")
+            and len(value) > 2
+            and len(value) % 2 == 0
+        ):
+            try:
+                value = bytes.fromhex(value[2:]).decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                pass
+        # Skip the ``isinstance(value, bytes)`` gate of the parent class
+        # (``sqlalchemy_utils.EncryptedType``) by jumping to the
+        # cipher-aware ``StringEncryptedType.process_result_value``.
+        return SqlaStringEncryptedType.process_result_value(self, value, dialect)
 
 
 # ---------------------------------------------------------------------------

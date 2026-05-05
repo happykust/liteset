@@ -204,7 +204,15 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
 
     @property
     def sqlalchemy_uri_decrypted(self) -> str:
-        """Full URI with password unmasked."""
+        """Full URI with password unmasked.
+
+        Used by every code path that opens a connection to the user
+        database (``get_async_connection``, ``get_sqla_engine`` …).
+        SA 2.0's ``str(URL)`` masks the password as ``***`` regardless
+        of the value set on the URL object — we have to use
+        ``render_as_string(hide_password=False)`` to actually emit the
+        plaintext password from the encrypted ``password`` column.
+        """
         try:
             conn = make_url_safe(self.sqlalchemy_uri)
         except DatabaseInvalidError:
@@ -212,7 +220,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
             # (so users see 500 less often)
             return "dialect://invalid_uri"
         conn = conn.set(password=self.password)
-        return str(conn)
+        return conn.render_as_string(hide_password=False)
 
     @property
     def url_object(self) -> URL:
@@ -929,7 +937,13 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
             # do not over-write the password with the password mask
             self.password = conn.password
         conn = conn.set(password=PASSWORD_MASK if conn.password else None)
-        self.sqlalchemy_uri = str(conn)  # hides the password
+        # SA 2.0's ``str(URL)`` masks the password as ``***`` regardless
+        # of the value set on the URL object; ``render_as_string(hide_password=False)``
+        # returns the actual replacement string, which we want to be the
+        # ``XXXXXXXXXX`` PASSWORD_MASK so the original Apache Superset
+        # contract (URI stored masked, real password on the ``password``
+        # column) survives.
+        self.sqlalchemy_uri = conn.render_as_string(hide_password=False)
 
     def safe_sqlalchemy_uri(self) -> str:
         return self.sqlalchemy_uri

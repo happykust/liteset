@@ -159,7 +159,13 @@ async def get_async_connection(
 
     The connection and engine are disposed after the context exits.
     """
-    uri = getattr(database, "sqlalchemy_uri", "")
+    # Use the *decrypted* URI so the encrypted ``password`` column is
+    # merged back in.  ``sqlalchemy_uri`` is stored masked
+    # (``XXXXXXXXXX``) per the original Apache Superset contract, so
+    # connecting with it would always fail authentication.
+    uri = getattr(database, "sqlalchemy_uri_decrypted", None) or getattr(
+        database, "sqlalchemy_uri", ""
+    )
     async_uri = _to_async_uri(uri)
 
     engine_spec = get_engine_spec_for_database(database)
