@@ -102,19 +102,19 @@ def get_sync_session() -> Session:
     global _sync_engine, _sync_session_factory  # noqa: PLW0603
     if _sync_engine is None:
         if _engine is not None:
-            sync_uri = str(_engine.url)
+            # ``str(engine.url)`` masks the password in SA 2.0+, which
+            # would silently break psycopg2 auth.  Render with the
+            # password preserved.
+            sync_uri = _engine.url.render_as_string(hide_password=False)
         else:
-            import os
+            # Celery workers / CLI: no Litestar startup hook ran, so the
+            # async engine is uninitialised.  Resolve the URI via
+            # SupersetSettings to honour both LITESET_* env vars and
+            # SUPERSET_CONFIG_PATH (avoid silently falling back to
+            # sqlite when the URI lives in superset_config.py).
+            from superset.config import SupersetSettings
 
-            sync_uri = os.environ.get(
-                "LITESET_SQLALCHEMY_DATABASE_URI",
-                "",
-            )
-            if not sync_uri:
-                raise RuntimeError(
-                    "LITESET_SQLALCHEMY_DATABASE_URI environment variable is "
-                    "not set.  Celery workers require an explicit database URI."
-                )
+            sync_uri = SupersetSettings().sqlalchemy_database_uri  # type: ignore[call-arg]
         for async_prefix, sync_prefix in _ASYNC_TO_SYNC_DRIVERS.items():
             if sync_uri.startswith(async_prefix):
                 sync_uri = sync_uri.replace(async_prefix, sync_prefix, 1)

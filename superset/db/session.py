@@ -134,14 +134,20 @@ def get_sync_session() -> Session:
     global _sync_engine, _sync_session_factory  # noqa: PLW0603
     if _sync_engine is None:
         if _engine is not None:
-            sync_uri = str(_engine.url)
+            # ``str(engine.url)`` masks the password as ``***`` in SA 2.0+,
+            # so a downstream connection would silently fail auth.  Render
+            # the URL explicitly with the password preserved.
+            sync_uri = _engine.url.render_as_string(hide_password=False)
         else:
-            import os
+            # Celery workers and ``superset`` CLI invocations boot without
+            # going through the Litestar startup hook, so ``_engine`` is
+            # None.  Resolve the URI via ``SupersetSettings`` which honours
+            # both LITESET_* env vars *and* SUPERSET_CONFIG_PATH — going
+            # straight to ``os.environ`` would silently fall back to
+            # sqlite when the URI lives in superset_config.py.
+            from superset.config import SupersetSettings
 
-            sync_uri = os.environ.get(
-                "LITESET_SQLALCHEMY_DATABASE_URI",
-                "sqlite:///superset.db",
-            )
+            sync_uri = SupersetSettings().sqlalchemy_database_uri  # type: ignore[call-arg]
         for async_prefix, sync_prefix in _ASYNC_TO_SYNC_DRIVERS.items():
             if sync_uri.startswith(async_prefix):
                 sync_uri = sync_uri.replace(async_prefix, sync_prefix, 1)
