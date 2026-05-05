@@ -23,7 +23,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 import yaml
-from werkzeug.utils import secure_filename
+from superset.utils.file import secure_filename
 
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.importexport.export_base import AsyncExportModelsCommand

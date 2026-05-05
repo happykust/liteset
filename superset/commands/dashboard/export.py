@@ -27,7 +27,7 @@ from typing import Any, TYPE_CHECKING
 from uuid import UUID as _UUID
 
 import yaml  # type: ignore[import-untyped]
-from werkzeug.utils import secure_filename
+from superset.utils.file import secure_filename
 
 from superset.commands.dashboard.importers.v1.utils import (
     _append_charts,

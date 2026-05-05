@@ -35,7 +35,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 from uuid import UUID as _UUID
 
-from werkzeug.utils import secure_filename
+from superset.utils.file import secure_filename
 
 from superset.exceptions import ImportFailedError
 

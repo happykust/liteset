@@ -78,8 +78,6 @@ async def _run_factory_reset(
     exclude_roles: str | None,
 ) -> None:
     """Async entrypoint that mirrors the legacy CLI command body."""
-    from werkzeug.security import check_password_hash
-
     from superset.commands.security.reset import ResetSupersetCommand
     from superset.config import SupersetSettings
     from superset.db.session import create_db_engine, create_session_factory
@@ -112,6 +110,7 @@ async def _run_factory_reset(
 
             from superset.models.user import User
             from superset.security.manager import AsyncSecurityManager
+            from superset.utils.password import check_password_hash
 
             security_manager = AsyncSecurityManager(session=session)
             stmt = (
