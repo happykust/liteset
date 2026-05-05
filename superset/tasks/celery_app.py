@@ -35,6 +35,37 @@ logger = logging.getLogger(__name__)
 celery_app = Celery("superset")
 celery_app.autodiscover_tasks(["superset.tasks"])
 
+
+def _apply_celery_config() -> None:
+    """Apply CELERY_CONFIG from SupersetSettings at module-load time.
+
+    Workers start via ``celery -A superset.tasks.celery_app:app worker``
+    and never run the Litestar app's ``on_startup`` hook, so the broker
+    URL / beat schedule / imports must be wired here for the worker
+    process to see them.  Mirrors the original Apache Superset wiring
+    where ``celery_app = app.extensions['celery']`` was already
+    pre-configured before workers booted.
+    """
+    try:
+        from superset.config import SupersetSettings
+
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        celery_config = getattr(settings, "celery_config", None)
+        if celery_config is not None:
+            celery_app.config_from_object(celery_config)
+            logger.info(
+                "Celery configured from CELERY_CONFIG (broker=%s)",
+                celery_app.conf.broker_url or "<default>",
+            )
+    except Exception:  # noqa: BLE001
+        # Settings may fail to load in CI/testing where SECRET_KEY etc.
+        # aren't set; fall back to Celery defaults so module-import never
+        # crashes the worker.
+        logger.warning("Failed to apply CELERY_CONFIG", exc_info=True)
+
+
+_apply_celery_config()
+
 # Export the celery app globally for Celery (as run on the cmd line) to find
 app = celery_app
 
