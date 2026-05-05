@@ -31,7 +31,8 @@ PORT=${PORT:-8088}
 if [ "$CYPRESS_CONFIG" == "true" ]; then
     export SUPERSET_TESTENV=true
     export POSTGRES_DB=superset_cypress
-    export SUPERSET__SQLALCHEMY_DATABASE_URI=postgresql+psycopg2://superset:superset@db:5432/superset_cypress
+    # Async runtime URI (asyncpg).  Migration CLI converts to sync internally.
+    export LITESET_SQLALCHEMY_DATABASE_URI=postgresql+asyncpg://superset:superset@db:5432/superset_cypress
     PORT=8081
 fi
 if [[ "$DATABASE_DIALECT" == postgres* ]] && [ "$(whoami)" = "root" ]; then
@@ -39,10 +40,10 @@ if [[ "$DATABASE_DIALECT" == postgres* ]] && [ "$(whoami)" = "root" ]; then
     echo "Installing postgres requirements"
     if command -v uv > /dev/null 2>&1; then
         # Use uv in newer images
-        uv pip install -e .[postgres]
+        uv pip install -e ".[postgres]"
     else
         # Use pip in older images
-        pip install -e .[postgres]
+        pip install -e ".[postgres]"
     fi
 fi
 #
@@ -59,7 +60,7 @@ else
   echo "Skipping local overrides"
 fi
 
-case "${1}" in
+case "${1:-}" in
   worker)
     echo "Starting Celery worker..."
     # setting up only 2 workers by default to contain memory usage in dev environments
@@ -71,14 +72,27 @@ case "${1}" in
     celery --app=superset.tasks.celery_app:app beat --pidfile /tmp/celerybeat.pid -l INFO -s "${SUPERSET_HOME}"/celerybeat-schedule
     ;;
   app)
-    echo "Starting web app (using development server)..."
-    flask run -p $PORT --with-threads --reload --debugger --host=0.0.0.0
+    echo "Starting Litestar dev server (uvicorn --reload)..."
+    exec uvicorn superset.app:create_app \
+        --factory \
+        --host 0.0.0.0 \
+        --port "$PORT" \
+        --reload \
+        --reload-dir /app/superset \
+        --loop uvloop \
+        --log-level "${SUPERSET_LOG_LEVEL:-info}"
     ;;
-  app-gunicorn)
-    echo "Starting web app..."
-    /usr/bin/run-server.sh
+  app-uvicorn|app-gunicorn)
+    echo "Starting Litestar production server (uvicorn workers)..."
+    exec /usr/bin/run-server.sh
+    ;;
+  "")
+    # No subcommand: docker-init.sh invokes this script just to apply
+    # postgres + local pip overrides.  Nothing else to do — exit cleanly.
+    echo "Bootstrap overrides applied."
     ;;
   *)
-    echo "Unknown Operation!!!"
+    echo "Unknown Operation: ${1}"
+    exit 1
     ;;
 esac

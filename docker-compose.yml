@@ -29,7 +29,6 @@ x-superset-volumes: &superset-volumes
   # /app/pythonpath_docker will be appended to the PYTHONPATH in the final container
   - ./docker:/app/docker
   - ./superset:/app/superset
-  - ./liteset:/app/liteset
   - ./superset-frontend:/app/superset-frontend
   - superset_home:/app/superset_home
   - ./tests:/app/tests
@@ -95,7 +94,10 @@ services:
     build:
       <<: *common-build
     container_name: superset_app
-    command: ["uvicorn", "liteset.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8088", "--workers", "4", "--loop", "uvloop", "--reload"]
+    # In dev mode we run a single worker so --reload picks up edits without
+    # spawning multiple uvicorn child processes.  For production builds use
+    # the lean Dockerfile target (no --reload, multiple workers).
+    command: ["uvicorn", "superset.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8088", "--reload", "--reload-dir", "/app/superset", "--loop", "uvloop"]
     restart: unless-stopped
     ports:
       - 8088:8088
@@ -106,8 +108,9 @@ services:
       superset-init:
         condition: service_completed_successfully
     volumes: *superset-volumes
-    environment:
-      LITESET_SQLALCHEMY_DATABASE_URI: postgresql+asyncpg://superset:superset@db:5432/superset
+    # All env (DATABASE_*, REDIS_*, LITESET_*, SUPERSET_CONFIG_PATH) comes
+    # from docker/.env / docker/.env-local; superset_config.py builds the
+    # final URIs from those.
 
   superset-init:
     build:
@@ -179,7 +182,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD-SHELL", "celery -A liteset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME"]
+      test: ["CMD-SHELL", "celery -A superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME"]
     # Bump memory limit if processing selenium / thumbnails on superset-worker
     # mem_limit: 2038m
     # mem_reservation: 128M
@@ -228,7 +231,7 @@ services:
     user: *superset-user
     volumes: *superset-volumes
     healthcheck:
-      test: ["CMD-SHELL", "celery inspect ping -A superset.tasks.celery_app:app -d celery@$$HOSTNAME"]
+      test: ["CMD-SHELL", "celery -A superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME"]
 
 volumes:
   superset_home:

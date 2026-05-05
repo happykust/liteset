@@ -148,8 +148,7 @@ FROM python-base AS python-common
 ENV SUPERSET_HOME="/app/superset_home" \
     HOME="/app/superset_home" \
     SUPERSET_ENV="production" \
-    FLASK_APP="superset.app:create_app()" \
-    LITESET_APP="liteset.app:create_app" \
+    SUPERSET_APP="superset.app:create_app" \
     PYTHONPATH="/app/pythonpath" \
     SUPERSET_PORT="8088"
 
@@ -202,16 +201,15 @@ COPY --from=superset-node /app/superset/static/assets superset/static/assets
 
 # TODO, when the next version comes out, use --exclude superset/translations
 COPY superset superset
-COPY liteset liteset
 # TODO in the meantime, remove the .po files
-RUN rm superset/translations/*/*/*.po
+RUN rm -f superset/translations/*/*/*.po
 
 # Merging translations from backend and frontend stages
 COPY --from=superset-node /app/superset/translations superset/translations
 COPY --from=python-translation-compiler /app/translations_mo superset/translations
 
 HEALTHCHECK CMD /app/docker/docker-healthcheck.sh
-CMD ["uvicorn", "liteset.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8088", "--workers", "4", "--loop", "uvloop"]
+CMD ["uvicorn", "superset.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8088", "--workers", "4", "--loop", "uvloop"]
 EXPOSE ${SUPERSET_PORT}
 
 ######################################################################

@@ -17,20 +17,19 @@
 # specific language governing permissions and limitations
 # under the License.
 #
-HYPHEN_SYMBOL='-'
+# Production-grade uvicorn launcher for the async Superset (Litestar) app.
+# Replaces the legacy gunicorn launcher used by the Flask version.
 
-gunicorn \
-    --bind "${SUPERSET_BIND_ADDRESS:-0.0.0.0}:${SUPERSET_PORT:-8088}" \
-    --access-logfile "${ACCESS_LOG_FILE:-$HYPHEN_SYMBOL}" \
-    --error-logfile "${ERROR_LOG_FILE:-$HYPHEN_SYMBOL}" \
-    --workers ${SERVER_WORKER_AMOUNT:-1} \
-    --worker-class ${SERVER_WORKER_CLASS:-gthread} \
-    --threads ${SERVER_THREADS_AMOUNT:-20} \
-    --log-level "${GUNICORN_LOGLEVEL:-info}" \
-    --timeout ${GUNICORN_TIMEOUT:-60} \
-    --keep-alive ${GUNICORN_KEEPALIVE:-2} \
-    --max-requests ${WORKER_MAX_REQUESTS:-0} \
-    --max-requests-jitter ${WORKER_MAX_REQUESTS_JITTER:-0} \
-    --limit-request-line ${SERVER_LIMIT_REQUEST_LINE:-0} \
-    --limit-request-field_size ${SERVER_LIMIT_REQUEST_FIELD_SIZE:-0} \
-    "${FLASK_APP}"
+SUPERSET_APP="${SUPERSET_APP:-superset.app:create_app}"
+
+exec uvicorn "${SUPERSET_APP}" \
+    --factory \
+    --host "${SUPERSET_BIND_ADDRESS:-0.0.0.0}" \
+    --port "${SUPERSET_PORT:-8088}" \
+    --workers "${SERVER_WORKER_AMOUNT:-4}" \
+    --loop "${UVICORN_LOOP:-uvloop}" \
+    --http "${UVICORN_HTTP:-httptools}" \
+    --log-level "${UVICORN_LOGLEVEL:-info}" \
+    --timeout-keep-alive "${UVICORN_KEEPALIVE:-5}" \
+    --proxy-headers \
+    --forwarded-allow-ips="${UVICORN_FORWARDED_ALLOW_IPS:-*}"

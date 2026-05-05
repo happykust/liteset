@@ -15,15 +15,14 @@
 # specific language governing permissions and limitations
 # under the License.
 #
-# Configuration for docker-compose-light.yml - disables Redis and uses minimal services
+# Configuration for docker-compose-light.yml — disables Redis and Celery,
+# uses in-memory cache.  Imports the full default docker config first.
 
-# Import all settings from the main config first
-from flask_caching.backends.filesystemcache import FileSystemCache
 from superset_config import *  # noqa: F403
 
-# Override caching to use simple in-memory cache instead of Redis
-RESULTS_BACKEND = FileSystemCache("/app/superset_home/sqllab")
-
+# Override caching to use in-memory simple cache (no Redis dependency).
+# superset.cache.manager understands the legacy Flask-Caching CACHE_TYPE
+# strings; "SimpleCache" maps to an in-process dict-backed implementation.
 CACHE_CONFIG = {
     "CACHE_TYPE": "SimpleCache",
     "CACHE_DEFAULT_TIMEOUT": 300,
@@ -31,7 +30,6 @@ CACHE_CONFIG = {
 }
 DATA_CACHE_CONFIG = CACHE_CONFIG
 THUMBNAIL_CACHE_CONFIG = CACHE_CONFIG
-
 
 # Disable Celery entirely for lightweight mode
 CELERY_CONFIG = None  # type: ignore[assignment,misc]
