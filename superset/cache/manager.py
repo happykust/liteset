@@ -51,7 +51,9 @@ import logging
 import threading
 import time
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta
 from typing import Any, Protocol, TypeVar
+from uuid import UUID, uuid3
 
 from superset.utils.core import DatasourceType
 
@@ -461,6 +463,136 @@ class SyncRedisCacheAdapter:
             logger.warning("Sync cache close failed", exc_info=True)
 
 
+class MetastoreSyncCacheManager:
+    """Sync sibling of :class:`MetastoreAsyncCacheManager`.
+
+    Used by Celery tasks / Selenium / Playwright code paths that need to
+    read or write the metadata-DB-backed cache from a sync context.
+    Opens a fresh sync Session via :func:`superset.db.session.get_sync_session`
+    on each operation so the caller's transaction lifecycle is not
+    coupled to any other Celery task running in the same worker.
+    """
+
+    _RESOURCE = "superset_metastore_cache"
+
+    def __init__(
+        self,
+        namespace: UUID,
+        codec: Any,
+        default_ttl: int = 300,
+        refresh_timeout_on_retrieval: bool = False,
+    ) -> None:
+        self._namespace = namespace
+        self._codec = codec
+        self._default_ttl = default_ttl
+        self._refresh_timeout_on_retrieval = refresh_timeout_on_retrieval
+
+    def _key_uuid(self, key: str) -> UUID:
+        return uuid3(self._namespace, key)
+
+    def _expiry(self, ttl: int | None) -> datetime | None:
+        ttl_val = ttl if ttl is not None else self._default_ttl
+        if ttl_val and ttl_val > 0:
+            return datetime.now() + timedelta(seconds=ttl_val)
+        return None
+
+    def _open_session(self) -> Any:
+        from superset.db.session import get_sync_session
+
+        return get_sync_session()
+
+    def get(self, key: str) -> Any:
+        from sqlalchemy import or_, select
+
+        from superset.models.key_value import KeyValueEntry
+
+        key_uuid = self._key_uuid(key)
+        session = self._open_session()
+        try:
+            stmt = select(KeyValueEntry).where(
+                KeyValueEntry.resource == self._RESOURCE,
+                KeyValueEntry.uuid == key_uuid,
+                or_(
+                    KeyValueEntry.expires_on.is_(None),
+                    KeyValueEntry.expires_on > datetime.now(),
+                ),
+            )
+            entry = session.execute(stmt).scalars().one_or_none()
+            if entry is None:
+                return None
+            try:
+                value = self._codec.decode(entry.value)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Metastore sync cache: failed to decode entry for key %r",
+                    key,
+                    exc_info=True,
+                )
+                return None
+            if self._refresh_timeout_on_retrieval and self._default_ttl > 0:
+                entry.expires_on = self._expiry(None)
+                session.commit()
+            return value
+        finally:
+            session.close()
+
+    def set(self, key: str, value: Any, ttl: int | None = None) -> None:
+        from sqlalchemy import select
+
+        from superset.models.key_value import KeyValueEntry
+
+        key_uuid = self._key_uuid(key)
+        encoded = self._codec.encode(value)
+        session = self._open_session()
+        try:
+            stmt = select(KeyValueEntry).where(
+                KeyValueEntry.resource == self._RESOURCE,
+                KeyValueEntry.uuid == key_uuid,
+            )
+            existing = session.execute(stmt).scalars().one_or_none()
+            if existing is not None:
+                existing.value = encoded
+                existing.expires_on = self._expiry(ttl)
+            else:
+                session.add(
+                    KeyValueEntry(
+                        resource=self._RESOURCE,
+                        uuid=key_uuid,
+                        value=encoded,
+                        created_on=datetime.now(),
+                        expires_on=self._expiry(ttl),
+                    )
+                )
+            session.commit()
+        finally:
+            session.close()
+
+    def delete(self, key: str) -> None:
+        from sqlalchemy import select
+
+        from superset.models.key_value import KeyValueEntry
+
+        key_uuid = self._key_uuid(key)
+        session = self._open_session()
+        try:
+            stmt = select(KeyValueEntry).where(
+                KeyValueEntry.resource == self._RESOURCE,
+                KeyValueEntry.uuid == key_uuid,
+            )
+            entry = session.execute(stmt).scalars().one_or_none()
+            if entry is not None:
+                session.delete(entry)
+                session.commit()
+        finally:
+            session.close()
+
+    def has(self, key: str) -> bool:
+        return self.get(key) is not None
+
+    def close(self) -> None:
+        return None
+
+
 def _build_sync_redis_from_config(
     cache_config: dict[str, Any] | None,
     default_sync_redis: Any | None,
@@ -570,6 +702,31 @@ def _build_sync_cache_for_slot(
                 cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)
             ),
             threshold=threshold,
+        )
+
+    if cache_type in _METASTORE_CACHE_TYPES:
+        seed = cfg.get("CACHE_KEY_PREFIX", "") or ""
+        try:
+            from superset.key_value.utils import get_uuid_namespace
+
+            namespace = get_uuid_namespace(seed)
+        except Exception:  # noqa: BLE001
+            namespace = uuid3(UUID("ee0e7df5-4ce8-4d0a-9b69-3018ea8c2e0c"), seed)
+        codec = cfg.get("CODEC")
+        if codec is None or not (
+            hasattr(codec, "encode") and hasattr(codec, "decode")
+        ):
+            from superset.key_value.manager import JsonCodec
+
+            codec = JsonCodec()
+        refresh = bool(cfg.get("REFRESH_TIMEOUT_ON_RETRIEVAL", False))
+        return MetastoreSyncCacheManager(
+            namespace=namespace,
+            codec=codec,
+            default_ttl=int(
+                cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)
+            ),
+            refresh_timeout_on_retrieval=refresh,
         )
 
     logger.warning(
@@ -711,6 +868,115 @@ class AsyncCacheManager:
 # ---------------------------------------------------------------------------
 
 
+class MetastoreAsyncCacheManager:
+    """Async port of ``superset.extensions.metastore_cache.SupersetMetastoreCache``.
+
+    Stores cache entries in the metadata DB ``key_value`` table, keyed
+    by a deterministic UUID3 (``namespace`` ⊕ ``user_supplied_key``).
+    Used as the default backend for ``FILTER_STATE_CACHE_CONFIG`` and
+    ``EXPLORE_FORM_DATA_CACHE_CONFIG`` — the original Apache Superset
+    requires it to operate correctly even when no Redis is configured.
+
+    Each method opens a dedicated AsyncSession via ``session_factory``
+    and commits once the DAO call returns; this matches the original
+    Flask version's ``db.session.commit()`` after every set/delete.
+    Storing a long-lived session on the manager would cross event-loop
+    boundaries on shared Litestar workers and lead to overlapping
+    transactions.
+    """
+
+    # Resource name written to the ``key_value`` row's ``resource``
+    # column — must match the original ``KeyValueResource.METASTORE_CACHE``
+    # value so existing rows survive an upgrade from upstream Superset.
+    _RESOURCE = "superset_metastore_cache"
+
+    def __init__(
+        self,
+        session_factory: Callable[[], Any],
+        namespace: UUID,
+        codec: Any,
+        default_ttl: int = 300,
+        refresh_timeout_on_retrieval: bool = False,
+    ) -> None:
+        self._session_factory = session_factory
+        self._namespace = namespace
+        self._codec = codec
+        self._default_ttl = default_ttl
+        self._refresh_timeout_on_retrieval = refresh_timeout_on_retrieval
+
+    def _key_uuid(self, key: str) -> UUID:
+        """Derive the deterministic UUID used in the DB row.
+
+        Mirrors ``SupersetMetastoreCache.get_key`` (uuid3(namespace, key)).
+        """
+        return uuid3(self._namespace, key)
+
+    def _expiry(self, ttl: int | None) -> datetime | None:
+        ttl_val = ttl if ttl is not None else self._default_ttl
+        if ttl_val and ttl_val > 0:
+            return datetime.now() + timedelta(seconds=ttl_val)
+        return None
+
+    async def get(self, key: str) -> Any:
+        from superset.db.daos.key_value import AsyncKeyValueDAO
+
+        key_uuid = self._key_uuid(key)
+        async with self._session_factory() as session:
+            dao = AsyncKeyValueDAO(session)
+            entry = await dao.get_entry_by_key(self._RESOURCE, key_uuid)
+            if entry is None:
+                return None
+            try:
+                value = self._codec.decode(entry.value)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Metastore cache: failed to decode entry for key %r", key,
+                    exc_info=True,
+                )
+                return None
+            if self._refresh_timeout_on_retrieval and self._default_ttl > 0:
+                # Mirrors the original
+                # ``REFRESH_TIMEOUT_ON_RETRIEVAL`` knob: every read
+                # extends the entry's TTL by ``default_timeout``.
+                entry.expires_on = self._expiry(None)  # type: ignore[assignment]
+                await session.commit()
+            return value
+
+    async def set(self, key: str, value: Any, ttl: int | None = None) -> None:
+        from superset.db.daos.key_value import AsyncKeyValueDAO
+
+        key_uuid = self._key_uuid(key)
+        encoded = self._codec.encode(value)
+        async with self._session_factory() as session:
+            dao = AsyncKeyValueDAO(session)
+            existing = await dao.get_entry_by_key(self._RESOURCE, key_uuid)
+            if existing is not None:
+                existing.value = encoded  # type: ignore[assignment]
+                existing.expires_on = self._expiry(ttl)  # type: ignore[assignment]
+            else:
+                await dao.create_entry(
+                    resource=self._RESOURCE,
+                    value=encoded,
+                    key=key_uuid,
+                    expires_on=self._expiry(ttl),
+                )
+            await session.commit()
+
+    async def delete(self, key: str) -> None:
+        from superset.db.daos.key_value import AsyncKeyValueDAO
+
+        key_uuid = self._key_uuid(key)
+        async with self._session_factory() as session:
+            dao = AsyncKeyValueDAO(session)
+            entry = await dao.get_entry_by_key(self._RESOURCE, key_uuid)
+            if entry is not None:
+                await session.delete(entry)
+                await session.commit()
+
+    async def has(self, key: str) -> bool:
+        return (await self.get(key)) is not None
+
+
 class ExploreFormDataCache:
     """Wrapper that rewrites legacy explore-form-data cache entries.
 
@@ -777,6 +1043,18 @@ _SIMPLE_CACHE_TYPES = frozenset(
     }
 )
 
+# Recognised ``CACHE_TYPE`` values that map to the metadata-DB-backed
+# cache used by ``FILTER_STATE_CACHE_CONFIG`` /
+# ``EXPLORE_FORM_DATA_CACHE_CONFIG``.  Mirrors the original
+# ``superset.extensions.metastore_cache.SupersetMetastoreCache``.
+_METASTORE_CACHE_TYPES = frozenset(
+    {
+        "SupersetMetastoreCache",
+        "superset.extensions.metastore_cache.SupersetMetastoreCache",
+        "MetastoreCache",
+    }
+)
+
 
 def _build_async_redis_from_config(
     cache_config: dict[str, Any],
@@ -827,12 +1105,65 @@ def _build_async_redis_from_config(
     return default_redis
 
 
+def _build_metastore_cache_from_config(
+    cfg: dict[str, Any],
+    session_factory: Callable[[], Any] | None,
+    fallback_default_ttl: int,
+) -> AsyncCacheProtocol:
+    """Construct a :class:`MetastoreAsyncCacheManager` for a slot.
+
+    Falls back to :class:`NullAsyncCacheManager` (with a warning) when
+    ``session_factory`` is not yet wired — e.g. an ``alembic`` invocation
+    that imports the cache manager before the Litestar app has run its
+    startup hook.  Mirrors the original behaviour where the metastore
+    cache is unusable without a metadata DB session.
+    """
+    if session_factory is None:
+        logger.warning(
+            "CACHE_TYPE='SupersetMetastoreCache' requires a session "
+            "factory; falling back to NullAsyncCacheManager."
+        )
+        return NullAsyncCacheManager(
+            default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl))
+        )
+
+    seed = cfg.get("CACHE_KEY_PREFIX", "") or ""
+    try:
+        from superset.key_value.utils import get_uuid_namespace
+
+        namespace = get_uuid_namespace(seed)
+    except Exception:  # noqa: BLE001
+        namespace = uuid3(UUID("ee0e7df5-4ce8-4d0a-9b69-3018ea8c2e0c"), seed)
+
+    # Honour a user-supplied ``CODEC`` if it exposes encode()/decode().
+    # Default to JSON — original Apache Superset configures
+    # ``JsonKeyValueCodec`` for both filter_state and explore_form_data,
+    # which is the safe choice for untrusted payloads.
+    codec = cfg.get("CODEC")
+    if codec is None or not (
+        hasattr(codec, "encode") and hasattr(codec, "decode")
+    ):
+        from superset.key_value.manager import JsonCodec
+
+        codec = JsonCodec()
+
+    refresh = bool(cfg.get("REFRESH_TIMEOUT_ON_RETRIEVAL", False))
+    return MetastoreAsyncCacheManager(
+        session_factory=session_factory,
+        namespace=namespace,
+        codec=codec,
+        default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)),
+        refresh_timeout_on_retrieval=refresh,
+    )
+
+
 def _build_cache_for_slot(
     cfg: dict[str, Any] | None,
     default_redis: Any | None,
     *,
     is_explore_form_data: bool = False,
     fallback_default_ttl: int = 300,
+    session_factory: Callable[[], Any] | None = None,
 ) -> AsyncCacheProtocol:
     """Wire a single cache slot from a Flask-Caching-style config dict.
 
@@ -902,6 +1233,14 @@ def _build_cache_for_slot(
                 cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)
             ),
             threshold=threshold,
+        )
+        return ExploreFormDataCache(inner) if is_explore_form_data else inner
+
+    if cache_type in _METASTORE_CACHE_TYPES:
+        inner = _build_metastore_cache_from_config(
+            cfg=cfg,
+            session_factory=session_factory,
+            fallback_default_ttl=fallback_default_ttl,
         )
         return ExploreFormDataCache(inner) if is_explore_form_data else inner
 
@@ -990,6 +1329,7 @@ class CacheManager:
         explore_form_data_cache_config: dict[str, Any] | None = None,
         sync_redis: Any | None = None,
         redis_url: str | None = None,
+        session_factory: Callable[[], Any] | None = None,
     ) -> None:
         """Initialise all five cache slots (async + sync siblings).
 
@@ -1014,32 +1354,44 @@ class CacheManager:
         Pass ``redis=None``, ``sync_redis=None`` and no per-slot
         configs to disable caching entirely.
         """
+        # Stash the metadata-DB session factory so any slot using
+        # ``CACHE_TYPE='SupersetMetastoreCache'`` can open per-call
+        # AsyncSessions on demand.  Held on the manager so reset via a
+        # second ``init_app`` call (e.g. tests) updates downstream slots
+        # next time they are rebuilt.
+        self._session_factory = session_factory
+
         # ---- Async slots ----
         self._cache = _build_cache_for_slot(
             cache_config,
             redis,
             fallback_default_ttl=cache_default_timeout,
+            session_factory=session_factory,
         )
         self._data_cache = _build_cache_for_slot(
             data_cache_config,
             redis,
             fallback_default_ttl=cache_default_timeout,
+            session_factory=session_factory,
         )
         self._thumbnail_cache = _build_cache_for_slot(
             thumbnail_cache_config,
             redis,
             fallback_default_ttl=cache_default_timeout,
+            session_factory=session_factory,
         )
         self._filter_state_cache = _build_cache_for_slot(
             filter_state_cache_config,
             redis,
             fallback_default_ttl=cache_default_timeout,
+            session_factory=session_factory,
         )
         self._explore_form_data_cache = _build_cache_for_slot(
             explore_form_data_cache_config,
             redis,
             is_explore_form_data=True,
             fallback_default_ttl=cache_default_timeout,
+            session_factory=session_factory,
         )
 
         # ---- Sync siblings ----
