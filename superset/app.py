@@ -358,6 +358,11 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
         # clients pointing at the same Redis cluster keep keyspace
         # behaviour identical to the original Flask Superset.
         redis_url=settings.redis_url or None,
+        # Required for ``CACHE_TYPE='SupersetMetastoreCache'`` (the
+        # default for FILTER_STATE / EXPLORE_FORM_DATA in upstream
+        # config.py).  The metastore cache opens a dedicated session per
+        # operation against the metadata DB ``key_value`` table.
+        session_factory=app.state.session_factory,
     )
     # ── Step 25: configure_stats_manager ───────────────────────────────────
     stats_logger_manager.configure(settings.stats_logger)
@@ -1050,19 +1055,25 @@ def create_app(  # noqa: C901
             "security_manager": Provide(provide_security_manager),
             "event_manager": Provide(provide_event_manager),
         },
-        type_decoders=[
-            # Protocol types (UserProtocol, SecurityManagerProtocol, etc.)
-            # are used as DI parameter annotations in controllers.
-            # msgspec cannot convert concrete instances to Protocol types,
-            # so we pass them through as-is.
-            # _is_protocol is set by the Protocol metaclass on all Protocol
-            # subclasses — safer than issubclass() which requires
-            # @runtime_checkable.
-            (
-                lambda t: getattr(t, "_is_protocol", False),
-                lambda t, v: v,
-            ),
-        ],
+        # NOTE: do NOT register a type_decoder for Protocol classes here.
+        # Litestar's signature builder reacts to a matching type_decoder by
+        # doing ``setattr(annotation, "_decoder", decoder)`` (see
+        # ``litestar/_signature/model.py::_create_annotation`` — flagged
+        # as a temporary hack against ``jcrist/msgspec#497``).  When the
+        # annotation is a ``@runtime_checkable`` Protocol that ``setattr``
+        # injects ``_decoder`` into the Protocol's structural attribute
+        # set, which then makes every ``isinstance(obj, ThatProtocol)``
+        # check fail (the value lacks ``_decoder``) — and msgspec's
+        # validation falls over with::
+        #
+        #   ValidationError: Expected ``UserProtocol``, got ``CachedUser``
+        #
+        # Without our type_decoder, ``_get_decoder_for_type`` returns
+        # ``None``, no ``_decoder`` is grafted onto the Protocol, and
+        # msgspec uses ``runtime_checkable`` ``__instancecheck__`` as
+        # intended — concrete dataclass / ORM instances pass through
+        # cleanly because they expose the structural attributes.
+        type_decoders=[],
         middleware=[
             *(
                 [ProxyFixMiddleware(**settings.proxy_fix_config)]
