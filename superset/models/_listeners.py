@@ -685,14 +685,15 @@ def _ensure_permission(connection: Connection, name: str) -> int:
     ).first()
     if row is not None:
         return int(row.id)
-    result = connection.execute(
+    # ``text("INSERT ...")`` returns a CursorResult whose
+    # ``inserted_primary_key`` raises ``InvalidRequestError`` because
+    # the executable isn't a Core ``insert()`` construct.  The
+    # post-insert SELECT works on every supported backend (PG / MySQL /
+    # SQLite) and matches the lookup the caller would do anyway.
+    connection.execute(
         text("INSERT INTO ab_permission (name) VALUES (:name)"),
         {"name": name},
     )
-    pk = result.inserted_primary_key
-    if pk is not None and pk[0] is not None:
-        return int(pk[0])
-    # SQLite/MySQL fallback when ``inserted_primary_key`` is unavailable.
     row = connection.execute(
         text("SELECT id FROM ab_permission WHERE name = :name"),
         {"name": name},
@@ -707,13 +708,10 @@ def _ensure_view_menu(connection: Connection, name: str) -> int:
     ).first()
     if row is not None:
         return int(row.id)
-    result = connection.execute(
+    connection.execute(
         text("INSERT INTO ab_view_menu (name) VALUES (:name)"),
         {"name": name},
     )
-    pk = result.inserted_primary_key
-    if pk is not None and pk[0] is not None:
-        return int(pk[0])
     row = connection.execute(
         text("SELECT id FROM ab_view_menu WHERE name = :name"),
         {"name": name},

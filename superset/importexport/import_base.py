@@ -57,7 +57,20 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
         self._configs: dict[str, dict[str, Any]] | None = None
 
     def _parse_zip(self) -> dict[str, dict[str, Any]]:
-        """Parse ZIP file into {filename: parsed_yaml_dict}."""
+        """Parse ZIP file into ``{filename: parsed_yaml_dict}``.
+
+        Mirrors the original ``commands.importers.v1.utils.get_contents_from_bundle``:
+
+        * Skip system files (names starting with ``.`` or ``_``) and any
+          entry that isn't a ``.yaml`` / ``.yml`` file — the original
+          ``is_valid_config`` rule.
+        * Strip the top-level export directory from every path
+          (``dashboard_export_20240101T123000/metadata.yaml`` →
+          ``metadata.yaml``), matching ``remove_root``.  Without this
+          ``self._configs.get("metadata.yaml")`` always misses and we
+          return the bogus "Missing metadata.yaml" error even though the
+          bundle contains it under the export folder.
+        """
         configs: dict[str, dict[str, Any]] = {}
         with zipfile.ZipFile(self._contents) as zf:
             entries = [n for n in zf.namelist() if not n.endswith("/")]
@@ -67,18 +80,37 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
                     f"({len(entries)} > {MAX_ZIP_ENTRIES})"
                 )
             for name in entries:
-                # Sanitize path — prevent directory traversal
+                # Path-traversal guard first — reject any segment that
+                # tries to escape the bundle root.  Done before the
+                # ``remove_root`` strip so a malicious "../etc/passwd"
+                # entry can't slip through by being placed at the top.
                 parts = PurePosixPath(name).parts
-                safe_name = str(
-                    PurePosixPath(*[p for p in parts if p not in ("..", "/")])
-                )
+                safe_parts = tuple(p for p in parts if p not in ("..", "/"))
+                if not safe_parts:
+                    continue
+                # ``is_valid_config``: skip dotfiles / underscore-prefixed
+                # entries and anything that isn't YAML.
+                leaf = PurePosixPath(*safe_parts).name
+                if leaf.startswith(".") or leaf.startswith("_"):
+                    continue
+                if PurePosixPath(leaf).suffix.lower() not in (".yaml", ".yml"):
+                    continue
+                # ``remove_root``: drop the first segment (the export
+                # bundle directory).  When the entry was already at the
+                # top level the result becomes empty — fall back to the
+                # leaf name to keep ``metadata.yaml`` reachable either
+                # way.
+                if len(safe_parts) > 1:
+                    rel_path = str(PurePosixPath(*safe_parts[1:]))
+                else:
+                    rel_path = safe_parts[0]
                 raw = zf.read(name)
                 if len(raw) > MAX_ENTRY_SIZE:
                     raise ValueError(
                         f"ZIP entry '{name}' too large "
                         f"({len(raw)} > {MAX_ENTRY_SIZE} bytes)"
                     )
-                configs[safe_name] = yaml.safe_load(raw)
+                configs[rel_path] = yaml.safe_load(raw)
         return configs
 
     async def validate(self) -> None:
