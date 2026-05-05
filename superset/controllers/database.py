@@ -700,40 +700,58 @@ class DatabaseController(Controller):
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
-        return DatabaseConnectionResponse(
-            id=database.id,
-            result={
-                "sqlalchemy_uri": mask_uri_password(
-                    getattr(database, "sqlalchemy_uri", "")
-                ),
-                "backend": getattr(database, "backend", ""),
-                "allow_ctas": getattr(database, "allow_ctas", False),
-                "allow_cvas": getattr(database, "allow_cvas", False),
-                "allow_dml": getattr(database, "allow_dml", False),
-                "allow_run_async": getattr(database, "allow_run_async", False),
-                "allow_file_upload": getattr(database, "allow_file_upload", False),
-                "cache_timeout": getattr(database, "cache_timeout", None),
-                "configuration_method": getattr(database, "configuration_method", None),
-                "database_name": getattr(database, "database_name", ""),
-                "driver": getattr(database, "driver", None),
-                "expose_in_sqllab": getattr(database, "expose_in_sqllab", True),
-                "extra": getattr(database, "extra", None),
-                "force_ctas_schema": getattr(database, "force_ctas_schema", None),
-                "impersonate_user": getattr(database, "impersonate_user", False),
-                "is_managed_externally": getattr(
-                    database, "is_managed_externally", False
-                ),
-                "masked_encrypted_extra": getattr(
-                    database, "masked_encrypted_extra", None
-                ),
-                "parameters": getattr(database, "parameters", None) or {},
-                "server_cert": getattr(database, "server_cert", None),
-                "ssh_tunnel": getattr(database, "ssh_tunnel", None),
-                "uuid": (
-                    str(database.uuid) if getattr(database, "uuid", None) else None
-                ),
-            },
-        )
+        # Mirrors ``DatabaseConnectionSchema`` from
+        # ``superset_old.databases.schemas`` (via
+        # ``DatabaseRestApi.get_connection``).  Fields ``id``,
+        # ``engine_information`` and ``parameters_schema`` are required
+        # for the frontend's edit modal — without ``id`` it falls back
+        # to POST and trips the duplicate-name validator; without
+        # ``parameters_schema`` the dynamic-form connector renders empty.
+        result: dict[str, Any] = {
+            "id": database.id,
+            "sqlalchemy_uri": mask_uri_password(
+                getattr(database, "sqlalchemy_uri", "")
+            ),
+            "backend": getattr(database, "backend", ""),
+            "allow_ctas": getattr(database, "allow_ctas", False),
+            "allow_cvas": getattr(database, "allow_cvas", False),
+            "allow_dml": getattr(database, "allow_dml", False),
+            "allow_run_async": getattr(database, "allow_run_async", False),
+            "allow_file_upload": getattr(database, "allow_file_upload", False),
+            "cache_timeout": getattr(database, "cache_timeout", None),
+            "configuration_method": getattr(database, "configuration_method", None),
+            "database_name": getattr(database, "database_name", ""),
+            "driver": getattr(database, "driver", None),
+            "engine_information": getattr(database, "engine_information", None) or {},
+            "expose_in_sqllab": getattr(database, "expose_in_sqllab", True),
+            "extra": getattr(database, "extra", None),
+            "force_ctas_schema": getattr(database, "force_ctas_schema", None),
+            "impersonate_user": getattr(database, "impersonate_user", False),
+            "is_managed_externally": getattr(
+                database, "is_managed_externally", False
+            ),
+            # Original returns ``""`` (empty string) when no encrypted
+            # extra is set, not ``null`` — the form's JSON-editor binds
+            # to a string and chokes on null.
+            "masked_encrypted_extra": (
+                getattr(database, "masked_encrypted_extra", None) or ""
+            ),
+            "parameters": getattr(database, "parameters", None) or {},
+            "parameters_schema": getattr(database, "parameters_schema", None) or {},
+            "server_cert": getattr(database, "server_cert", None),
+            "uuid": (
+                str(database.uuid) if getattr(database, "uuid", None) else None
+            ),
+        }
+        # ssh_tunnel is added separately — original
+        # ``superset_old/databases/api.py:get_connection`` calls
+        # ``DatabaseDAO.get_ssh_tunnel(pk)`` and only attaches the field
+        # when a tunnel exists.  Mirror that conditional behaviour so
+        # the response has the same shape for both connector states.
+        tunnel = await dao.get_ssh_tunnel(pk)
+        if tunnel is not None:
+            result["ssh_tunnel"] = _serialise_ssh_tunnel(tunnel) or None
+        return DatabaseConnectionResponse(id=database.id, result=result)
 
     # ------------------------------------------------------------------
     # GET /{pk} — get database

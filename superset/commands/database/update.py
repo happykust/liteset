@@ -62,8 +62,52 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
                     f'A database with the name "{new_name}" already exists'
                 )
 
-    async def run(self) -> "Database":
+    async def run(self) -> "Database":  # noqa: C901
         assert self._database is not None
+
+        # --- build_sqlalchemy_uri --------------------------------------------
+        # Mirrors the ``@pre_load`` hook on
+        # ``DatabaseParametersSchemaMixin.build_sqlalchemy_uri`` from
+        # ``superset_old.databases.schemas``: when the request uses
+        # ``configuration_method == 'dynamic_form'`` the engine spec
+        # composes the SQLAlchemy URI from ``{engine, driver, parameters,
+        # masked_encrypted_extra}`` and the model only stores
+        # ``sqlalchemy_uri``.  ``engine`` / ``driver`` / ``parameters``
+        # are derived/read-only on ``Database`` (no setter) so they must
+        # be popped here before the ``setattr`` loop below — otherwise
+        # we'd raise ``AttributeError: property 'driver' has no setter``.
+        configuration_method = self._data.get("configuration_method")
+        engine = self._data.pop("engine", None)
+        driver = self._data.pop("driver", None)
+        # ``backend`` is a read-only property too — same treatment.
+        self._data.pop("backend", None)
+        parameters = self._data.pop("parameters", None)
+        if configuration_method == "dynamic_form" and engine and parameters:
+            try:
+                from superset.db_engine_specs import get_engine_spec
+
+                spec = get_engine_spec(engine, driver)
+                if hasattr(spec, "build_sqlalchemy_uri") and hasattr(
+                    spec, "parameters_schema"
+                ):
+                    masked_extra = self._data.get(
+                        "masked_encrypted_extra"
+                    ) or self._data.get("encrypted_extra") or "{}"
+                    import json as _json
+
+                    try:
+                        encrypted_extra = _json.loads(masked_extra)
+                    except (TypeError, _json.JSONDecodeError):
+                        encrypted_extra = {}
+                    self._data["sqlalchemy_uri"] = spec.build_sqlalchemy_uri(
+                        parameters,
+                        encrypted_extra,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Failed to build sqlalchemy_uri from parameters",
+                    exc_info=True,
+                )
 
         # --- unmask_encrypted_extra ----------------------------------------
         # The PUT request may contain ``masked_encrypted_extra`` — a version of
@@ -90,9 +134,26 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
                 )
             )
 
+        # ``hasattr`` matches read-only properties too (e.g. ``backend``
+        # / ``driver``); fall through to ``setattr`` raises in that case.
+        # The build_sqlalchemy_uri block above already popped the known
+        # read-only keys, but we still guard each setattr with a setter
+        # check so future schema additions can't crash this hot path.
         for key, value in self._data.items():
+            attr = getattr(type(self._database), key, None)
+            if isinstance(attr, property) and attr.fset is None:
+                continue
             if hasattr(self._database, key):
                 setattr(self._database, key, value)
+        # Mirror ``superset_old.commands.database.update.UpdateDatabaseCommand.run``
+        # line 97: ``database.set_sqlalchemy_uri(database.sqlalchemy_uri)``.
+        # Required so a freshly-set URI containing the real password is
+        # masked (PASSWORD_MASK in ``sqlalchemy_uri`` column, real
+        # secret moved to the ``password`` column).
+        if "sqlalchemy_uri" in self._data and hasattr(
+            self._database, "set_sqlalchemy_uri"
+        ):
+            self._database.set_sqlalchemy_uri(self._database.sqlalchemy_uri)
         if self._user_id is not None:
             self._database.changed_by_fk = self._user_id
         await self._dao.session.flush()

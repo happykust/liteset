@@ -335,8 +335,16 @@ class EngineInformationRef(msgspec.Struct, omit_defaults=True):
 
 
 class DatabaseDetailResult(ModelStruct):
-    """Full database detail returned by GET /api/v1/database/{pk}."""
+    """Full database detail returned by GET /api/v1/database/{pk}.
 
+    Mirrors ``superset_old.databases.api.DatabaseRestApi.show_columns``
+    which lists ``id`` first.  The frontend's edit modal reads
+    ``response.result.id`` to decide between PUT (update) and POST
+    (create); omitting ``id`` here makes "Save" silently fall back to
+    POST and trip the duplicate-name validator with a generic 422.
+    """
+
+    id: int | None = None
     database_name: str = ""
     backend: str = ""
     expose_in_sqllab: bool = True
