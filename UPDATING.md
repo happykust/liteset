@@ -22,6 +22,25 @@ under the License.
 This file documents any backwards-incompatible changes in Superset and
 assists people when migrating to a new version.
 
+## Production Docker (May 2026)
+
+- `docker-compose-non-dev.yml` now builds `target=lean` (production image:
+  uvicorn, non-root `USER superset`, baked assets, no source mounts).
+- All services launch the `superset.*` package (the legacy `liteset.*`
+  command references that never had a backing package have been removed).
+- Postgres and Redis services now have proper TCP healthchecks; dependent
+  services use `condition: service_healthy` instead of `service_started`.
+- The `superset` service exposes a `/health` container healthcheck.
+- `docker-compose-image-tag.yml` is documented as DEPRECATED (pulls
+  upstream `apache/superset` Flask images that are incompatible with
+  Liteset runtime).
+- Helm chart (`helm/superset/`) adapted: `flask_caching` import removed
+  from `superset_config.py`, plain `postgresql://` URI (Liteset rewrites
+  the driver itself), `RESULTS_BACKEND` now uses Liteset-native
+  `SyncRedisCacheAdapter`.
+- See [docs/deployment/production-docker.md](docs/deployment/production-docker.md)
+  for the full runbook.
+
 ## Liteset Migration (Flask -> Litestar)
 
 ### Breaking Changes

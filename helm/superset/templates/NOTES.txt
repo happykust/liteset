@@ -17,6 +17,19 @@
 
 */}}
 
+Liteset (Litestar + asyncpg port of Apache Superset) has been deployed.
+
+The chart renders ``superset_config.py`` against Liteset's runtime — see
+``templates/_helpers.tpl`` (define "superset-config"). Notable differences vs
+upstream apache/superset:
+  * SQLALCHEMY_DATABASE_URI uses ``postgresql://`` — Liteset's
+    SupersetSettings.convert_to_async_driver rewrites it to ``+asyncpg`` for
+    runtime and ``superset.cli.db`` rewrites it back to ``+psycopg2`` for
+    Alembic migrations (init-job).
+  * RESULTS_BACKEND is a ``SyncRedisCacheAdapter`` (from
+    ``superset.cache.manager``) — Liteset no longer depends on flask_caching.
+  * Web pods run uvicorn (uvloop) via ``/usr/bin/run-server.sh``, not gunicorn.
+
 1. Get the application URL by running these commands:
 {{- if .Values.ingress.enabled }}
   {{- range .Values.ingress.hosts }}

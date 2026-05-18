@@ -48,12 +48,15 @@ serviceAccount:
   create: false
   annotations: {}
 
-# -- Install additional packages and do any other bootstrap configuration in this script
-# For production clusters it's recommended to build own image with this step done in CI
+# -- Install additional packages and do any other bootstrap configuration in this script.
+# Sourced by every pod before the main command runs (web/worker/beat/init).
+# For production clusters it's recommended to bake any extra pip packages into a
+# custom image (``FROM liteset:latest`` + ``RUN pip install ...``) so pods start
+# faster and don't need PyPI at runtime.
 # @default -- see `values.yaml`
 bootstrapScript: |
   #!/bin/bash
-  if [ ! -f ~/bootstrap ]; then echo "Running Superset with uid {{ .Values.runAsUser }}" > ~/bootstrap; fi
+  if [ ! -f ~/bootstrap ]; then echo "Running Liteset with uid {{ .Values.runAsUser }}" > ~/bootstrap; fi
 
 # -- The name of the secret which we will use to generate a superset_config.py file
 # Note: this secret must have the key superset_config.py in it and can include other files as well
@@ -66,22 +69,24 @@ envFromSecret: '{{ template "superset.fullname" . }}-env'
 envFromSecrets: []
 
 # -- Extra environment variables that will be passed into pods
-extraEnv: {}
-  # Different gunicorn settings, refer to the gunicorn documentation
-  # https://docs.gunicorn.org/en/stable/settings.html#
-  # These variables are used as Flags at the gunicorn startup
-  # https://github.com/apache/superset/blob/master/docker/run-server.sh#L22
-  # Extend timeout to allow long running queries.
-  # GUNICORN_TIMEOUT: 300
-  # Increase the gunicorn worker amount, can improve performance drastically
-  # See: https://docs.gunicorn.org/en/stable/design.html#how-many-workers
+extraEnv:
+  # Liteset's pydantic-settings (``SupersetSettings``) reads its config
+  # from ``SUPERSET_CONFIG_PATH`` — the rendered ``superset_config.py``
+  # is mounted at ``{{ .Values.configMountPath }}/superset_config.py``.
+  # Without this env, the app/worker/init pods cannot resolve
+  # ``SQLALCHEMY_DATABASE_URI`` and fail to start.
+  SUPERSET_CONFIG_PATH: "/app/pythonpath/superset_config.py"
+  # Liteset runs uvicorn (uvloop) via /usr/bin/run-server.sh — NOT gunicorn.
+  # The following env vars are honoured by docker/entrypoints/run-server.sh
+  # (worker amount / threads are mapped to uvicorn --workers / --limit-concurrency).
   # SERVER_WORKER_AMOUNT: 4
-  # WORKER_MAX_REQUESTS: 0
-  # WORKER_MAX_REQUESTS_JITTER: 0
   # SERVER_THREADS_AMOUNT: 20
-  # GUNICORN_KEEPALIVE: 2
-  # SERVER_LIMIT_REQUEST_LINE: 0
-  # SERVER_LIMIT_REQUEST_FIELD_SIZE: 0
+  # SUPERSET_LOG_LEVEL: info
+  #
+  # Legacy gunicorn-only knobs (GUNICORN_TIMEOUT, WORKER_MAX_REQUESTS,
+  # WORKER_MAX_REQUESTS_JITTER, GUNICORN_KEEPALIVE, SERVER_LIMIT_REQUEST_LINE,
+  # SERVER_LIMIT_REQUEST_FIELD_SIZE) are DEPRECATED — Liteset/uvicorn ignores
+  # them. Remove them from your overrides.
 
   # OAUTH_HOME_DOMAIN: ..
   # # If a whitelist is not set, any address that can use your OAuth2 endpoint will be able to login.
@@ -188,13 +193,20 @@ configMountPath: "/app/pythonpath"
 extraConfigMountPath: "/app/configs"
 
 image:
-  repository: apachesuperset.docker.scarf.sh/apache/superset
-  tag: ~
+  # -- Liteset image: build locally via `docker build --target lean -t liteset:latest .`
+  # or push to your own registry. The upstream apache/superset image is NOT
+  # compatible with this chart (Liteset uses uvicorn + asyncpg, not gunicorn + psycopg2).
+  repository: liteset
+  tag: latest
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 
 initImage:
+  # -- A small image providing the ``dockerize`` binary, used only by init
+  # containers to wait for Postgres/Redis TCP readiness. ``apache/superset:dockerize``
+  # is the publicly-available image — safe to reuse as-is since we only call
+  # ``/usr/local/bin/dockerize`` from it.
   repository: apache/superset
   tag: dockerize
   pullPolicy: IfNotPresent
@@ -516,9 +528,10 @@ supersetCeleryBeat:
   priorityClassName: ~
 
 supersetCeleryFlower:
-  # -- Enables a Celery flower deployment (management UI to monitor celery jobs)
-  # WARNING: on superset 1.x, this requires a Superset image that has `flower<1.0.0` installed (which is NOT the case of the default images)
-  # flower>=1.0.0 requires Celery 5+ which Superset 1.5 does not support
+  # -- Enables a Celery flower deployment (management UI to monitor celery jobs).
+  # WARNING: the Liteset ``lean`` image does NOT ship ``flower``. Either bake it
+  # into a custom image (``pip install flower`` on top of ``liteset:latest``)
+  # or override ``supersetCeleryFlower.command`` to install it on startup.
   enabled: false
   replicaCount: 1
   # -- Sets the [pod disruption budget](https://kubernetes.io/docs/tasks/run-application/configure-pdb/) for supersetCeleryFlower pods
