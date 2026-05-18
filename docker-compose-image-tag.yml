@@ -16,13 +16,12 @@
 #
 
 # -----------------------------------------------------------------------
-# We don't support docker compose for production environments.
-# If you choose to use this type of deployment make sure to
-# create you own docker environment file (docker/.env) with your own
-# unique random secure passwords and SECRET_KEY.
-#
-# For verbose logging during development:
-# - Set SUPERSET_LOG_LEVEL=debug in docker/.env-local for detailed Superset logs
+# DEPRECATED for Liteset.
+# This compose pulls the upstream apache/superset image (Flask + gunicorn),
+# NOT the asynchronous Litestar-based Liteset image. It is kept only for
+# reference / backward-compatibility with the original Apache Superset
+# docker workflow. For Liteset production, use docker-compose-non-dev.yml
+# (target=lean, uvicorn, asyncpg) instead.
 # -----------------------------------------------------------------------
 x-superset-image: &superset-image apachesuperset.docker.scarf.sh/apache/superset:${TAG:-latest-dev}
 x-superset-volumes:

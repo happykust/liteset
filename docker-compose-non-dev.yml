@@ -24,15 +24,29 @@
 # For verbose logging during development:
 # - Set SUPERSET_LOG_LEVEL=debug in docker/.env-local for detailed Superset logs
 # -----------------------------------------------------------------------
+# -----------------------------------------------------------------------
+# Production-like (non-dev) stack:
+#   * target=lean image (assets baked, no source mount)
+#   * USER superset (non-root)
+#   * uvicorn via /usr/bin/run-server.sh (4 workers, uvloop)
+#   * SECRET_KEY MUST be overridden via docker/.env-local
+# Build:  docker compose -f docker-compose-non-dev.yml build
+# Run:    docker compose -f docker-compose-non-dev.yml up -d
+# -----------------------------------------------------------------------
 x-superset-volumes:
-  &superset-volumes # /app/pythonpath_docker will be appended to the PYTHONPATH in the final container
-  - ./docker:/app/docker
-  - ./liteset:/app/liteset
+  &superset-volumes
+  # In production mode the application source is baked into the image.
+  # We only mount writable runtime data and (read-only) docker scripts so
+  # operators can override entrypoint/init logic without rebuilding.
+  - ./docker:/app/docker:ro
   - superset_home:/app/superset_home
 
 x-common-build: &common-build
   context: .
-  target: dev
+  target: lean
+  args:
+    DEV_MODE: "false"
+    BUILD_TRANSLATIONS: "false"
   cache_from:
     - apache/superset-cache:3.10-slim-bookworm
 
@@ -43,6 +57,12 @@ services:
     restart: unless-stopped
     volumes:
       - redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
 
   db:
     env_file:
@@ -56,6 +76,14 @@ services:
     volumes:
       - db_home:/var/lib/postgresql/data
       - ./docker/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "pg_isready -h 127.0.0.1 -p 5432 -U $${POSTGRES_USER:-superset} -d $${POSTGRES_DB:-superset}"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
 
   superset:
     env_file:
@@ -66,8 +94,7 @@ services:
     build:
       <<: *common-build
     container_name: superset_app
-    command: ["uvicorn", "liteset.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8088", "--workers", "4", "--loop", "uvloop"]
-    user: "root"
+    command: ["/usr/bin/run-server.sh"]
     restart: unless-stopped
     ports:
       - 8088:8088
@@ -75,8 +102,12 @@ services:
       superset-init:
         condition: service_completed_successfully
     volumes: *superset-volumes
-    environment:
-      LITESET_SQLALCHEMY_DATABASE_URI: postgresql+asyncpg://superset:superset@db:5432/superset
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8088/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   superset-init:
     container_name: superset_init
@@ -90,10 +121,9 @@ services:
         required: false
     depends_on:
       db:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
-    user: "root"
+        condition: service_healthy
     volumes: *superset-volumes
     healthcheck:
       disable: true
@@ -112,13 +142,12 @@ services:
     depends_on:
       superset-init:
         condition: service_completed_successfully
-    user: "root"
     volumes: *superset-volumes
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "celery -A liteset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME",
+          "celery -A superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME",
         ]
 
   superset-worker-beat:
@@ -135,7 +164,6 @@ services:
     depends_on:
       superset-init:
         condition: service_completed_successfully
-    user: "root"
     volumes: *superset-volumes
     healthcheck:
       disable: true
