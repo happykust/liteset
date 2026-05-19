@@ -4,30 +4,30 @@ hide_title: true
 sidebar_position: 12
 version: 1
 ---
-# Theming Superset
+# Theming Liteset
 
 :::note
-apache-superset>=6.0
+liteset>=0.1
 :::
 
-Superset now rides on **Ant Design v5's token-based theming**.
-Every Antd token works, plus a handful of Superset-specific ones for charts and dashboard chrome.
+Liteset rides on **Ant Design v5's token-based theming**.
+Every Antd token works, plus a handful of Liteset-specific ones for charts and dashboard chrome.
 
 ## Managing Themes via UI
 
-Superset includes a built-in **Theme Management** interface accessible from the admin menu under **Settings > Themes**.
+Liteset includes a built-in **Theme Management** interface accessible from the admin menu under **Settings > Themes**.
 
 ### Creating a New Theme
 
-1. Navigate to **Settings > Themes** in the Superset interface
+1. Navigate to **Settings > Themes** in the Liteset interface
 2. Click **+ Theme** to create a new theme
 3. Use the [Ant Design Theme Editor](https://ant.design/theme-editor) to design your theme:
    - Design your palette, typography, and component overrides
    - Open the `CONFIG` modal and copy the JSON configuration
-4. Paste the JSON into the theme definition field in Superset
+4. Paste the JSON into the theme definition field in Liteset
 5. Give your theme a descriptive name and save
 
-You can also extend with Superset-specific tokens (documented in the default theme object) before you import.
+You can also extend with Liteset-specific tokens (documented in the default theme object) before you import.
 
 ### System Theme Administration
 
@@ -36,7 +36,7 @@ When `ENABLE_UI_THEME_ADMINISTRATION = True` is configured, administrators can m
 #### Setting System Themes
 - **System Default Theme**: Click the sun icon on any theme to set it as the system-wide default
 - **System Dark Theme**: Click the moon icon on any theme to set it as the system dark mode theme
-- **Automatic OS Detection**: When both default and dark themes are set, Superset automatically detects and applies the appropriate theme based on OS preferences
+- **Automatic OS Detection**: When both default and dark themes are set, Liteset automatically detects and applies the appropriate theme based on OS preferences
 
 #### Managing System Themes
 - System themes are indicated with special badges in the theme list
@@ -90,7 +90,7 @@ When `ENABLE_UI_THEME_ADMINISTRATION = True`:
 
 1. System themes set via the UI take precedence over configuration file settings
 2. The UI shows which themes are currently set as system defaults
-3. Administrators can change system themes without restarting Superset
+3. Administrators can change system themes without restarting Liteset
 4. Configuration file themes serve as fallbacks when no UI themes are set
 
 ### Copying Themes Between Systems
@@ -99,18 +99,18 @@ To export a theme for use in configuration files or another instance:
 
 1. Navigate to **Settings > Themes** and click the export icon on your desired theme
 2. Extract the JSON configuration from the exported YAML file
-3. Use this JSON in your `superset_config.py` or import it into another Superset instance
+3. Use this JSON in your `superset_config.py` or import it into another Liteset instance
 
 ## Theme Development Workflow
 
 1. **Design**: Use the [Ant Design Theme Editor](https://ant.design/theme-editor) to iterate on your design
-2. **Test**: Create themes in Superset's CRUD interface for testing
+2. **Test**: Create themes in Liteset's CRUD interface for testing
 3. **Apply**: Assign themes to specific dashboards or configure instance-wide
 4. **Iterate**: Modify theme JSON directly in the CRUD interface or re-import from the theme editor
 
 ## Custom Fonts
 
-Superset supports custom fonts through runtime configuration, allowing you to use branded or custom typefaces without rebuilding the application.
+Liteset supports custom fonts through runtime configuration, allowing you to use branded or custom typefaces without rebuilding the application.
 
 ### Configuring Custom Fonts
 
@@ -169,14 +169,14 @@ This feature works with the stock Docker image - no custom build required!
 
 - **System Themes**: Manage system-wide default and dark themes via UI or configuration
 - **Per-Dashboard Theming**: Each dashboard can have its own visual identity
-- **JSON Editor**: Edit theme configurations directly within Superset's interface
+- **JSON Editor**: Edit theme configurations directly within Liteset's interface
 - **Custom Fonts**: Load external fonts via configuration without rebuilding
 - **OS Dark Mode Detection**: Automatically switches themes based on system preferences
 - **Theme Import/Export**: Share themes between instances via YAML files
 
 ## API Access
 
-For programmatic theme management, Superset provides REST endpoints:
+For programmatic theme management, Liteset provides REST endpoints:
 
 - `GET /api/v1/theme/` - List all themes
 - `POST /api/v1/theme/` - Create a new theme

@@ -11,15 +11,15 @@ version: 1
 
 On large analytic databases, it’s common to run queries that execute for minutes or hours. To enable
 support for long running queries that execute beyond the typical web request’s timeout (30-60
-seconds), it is necessary to configure an asynchronous backend for Superset which consists of:
+seconds), it is necessary to configure an asynchronous backend for Liteset which consists of:
 
-- one or many Superset workers (which is implemented as a Celery worker), and can be started with
+- one or many Liteset workers (which is implemented as a Celery worker), and can be started with
   the `celery worker` command, run `celery worker --help` to view the related options.
 - a celery broker (message queue) for which we recommend using Redis or RabbitMQ
 - a results backend that defines where the worker will persist the query results
 
 Configuring Celery requires defining a `CELERY_CONFIG` in your `superset_config.py`. Both the worker
-and web server processes should have the same configuration.
+and ASGI server processes should have the same configuration.
 
 ```python
 class CeleryConfig(object):
@@ -52,23 +52,29 @@ To start a job which schedules periodic background jobs, run the following comma
 celery --app=superset.tasks.celery_app:app beat
 ```
 
-To setup a result backend, you need to pass an instance of a derivative of from
-from flask_caching.backends.base import BaseCache to the RESULTS_BACKEND configuration key in your superset_config.py. You can
-use Memcached, Redis, S3 (https://pypi.python.org/pypi/s3werkzeugcache), memory or the file system
-(in a single server-type setup or for testing), or to write your own caching interface. Your
-`superset_config.py` may look something like:
+To set up a result backend, point `RESULTS_BACKEND` in your `superset_config.py` at any object that
+implements Liteset's `SyncCacheProtocol` (defined in `superset.cache.manager`). Liteset ships a
+production-grade Redis adapter (`SyncRedisCacheAdapter`) that the SQL Lab worker can use directly —
+no Flask-Caching wiring needed. You can also implement your own adapter (S3, memcached, etc.) by
+exposing the same `get/set/delete/clear` interface. Your `superset_config.py` may look something
+like:
 
 ```python
-# On S3
-from s3cache.s3cache import S3Cache
+# On Redis (recommended)
+from redis import Redis
+from superset.cache.manager import SyncRedisCacheAdapter
+
+RESULTS_BACKEND = SyncRedisCacheAdapter(
+    Redis.from_url("redis://localhost:6379/0"),
+    default_ttl=86400,
+    key_prefix="superset_results_",
+)
+
+# On S3 — bring your own adapter that satisfies SyncCacheProtocol
+from s3cache.s3cache import S3Cache  # third-party
 S3_CACHE_BUCKET = 'foobar-superset'
 S3_CACHE_KEY_PREFIX = 'sql_lab_result'
 RESULTS_BACKEND = S3Cache(S3_CACHE_BUCKET, S3_CACHE_KEY_PREFIX)
-
-# On Redis
-from flask_caching.backends.rediscache import RedisCache
-RESULTS_BACKEND = RedisCache(
-    host='localhost', port=6379, key_prefix='superset_results')
 ```
 
 For performance gains, [MessagePack](https://github.com/msgpack/msgpack-python) and
@@ -78,7 +84,7 @@ issues arise. Please clear your existing results cache store when upgrading an e
 
 **Important Notes**
 
-- It is important that all the worker nodes and web servers in the Superset cluster _share a common
+- It is important that all the worker nodes and ASGI servers in the Liteset cluster _share a common
   metadata database_. This means that SQLite will not work in this context since it has limited
   support for concurrency and typically lives on the local file system.
 

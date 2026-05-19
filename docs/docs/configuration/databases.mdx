@@ -6,15 +6,15 @@ version: 1
 ---
 # Connecting to Databases
 
-Superset does not ship bundled with connectivity to databases. The main step in connecting
-Superset to a database is to **install the proper database driver(s)**
+Liteset does not ship bundled with connectivity to databases. The main step in connecting
+Liteset to a database is to **install the proper database driver(s)**
 in your environment.
 
 :::note
 You’ll need to install the required packages for the database you want to use as your metadata database
-as well as the packages needed to connect to the databases you want to access through Superset.
-For information about setting up Superset's metadata database, please refer to
-installation documentations ([Docker Compose](/docs/installation/docker-compose), [Kubernetes](/docs/installation/kubernetes))
+as well as the packages needed to connect to the databases you want to access through Liteset.
+For information about setting up Liteset's metadata database, please refer to
+installation documentations ([Docker Compose](/docs/installation/docker-compose), [Kubernetes](/docs/installation/kubernetes)).
 :::
 
 This documentation tries to keep pointer to the different drivers for commonly used database
@@ -22,18 +22,18 @@ engine.
 
 ## Installing Database Drivers
 
-Superset requires a Python [DB-API database driver](https://peps.python.org/pep-0249/)
+Liteset requires a Python [DB-API database driver](https://peps.python.org/pep-0249/)
 and a [SQLAlchemy dialect](https://docs.sqlalchemy.org/en/20/dialects/) to be installed for
 each database engine you want to connect to.
 
 You can read more [here](/docs/configuration/databases#installing-drivers-in-docker-images) about how to
-install new database drivers into your Superset configuration.
+install new database drivers into your Liteset configuration.
 
 ### Supported Databases and Dependencies
 
 Some of the recommended packages are shown below. Please refer to
 [pyproject.toml](https://github.com/happykust/liteset/blob/main/pyproject.toml) for the versions that
-are compatible with Superset.
+are compatible with Liteset.
 
 | <div style={{width: '150px'}}>Database</div>                   | PyPI package                                                                       | Connection String                                                                                                                                      |
 | --------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -96,12 +96,13 @@ exists, please file an issue on the
 [Superset GitHub repo](https://github.com/apache/superset/issues), so we can work on documenting and
 supporting it.
 
-If you'd like to build a database connector for Superset integration,
-read the [following tutorial](https://preset.io/blog/building-database-connector/).
+If you'd like to build a database connector for Liteset integration,
+read the [following tutorial](https://preset.io/blog/building-database-connector/) (originally
+written for Apache Superset — the connector contract is unchanged).
 
 ### Installing Drivers in Docker Images
 
-Superset requires a Python database driver to be installed for each additional
+Liteset requires a Python database driver to be installed for each additional
 type of database you want to connect to.
 
 In this example, we'll walk through how to install the MySQL connector library.
@@ -115,12 +116,12 @@ to a MySQL database, so we'll need the `mysqlclient` connector library.
 
 #### 2. Install the driver in the container
 
-We need to get the `mysqlclient` library installed into the Superset docker container
+We need to get the `mysqlclient` library installed into the Liteset docker container
 (it doesn't matter if it's installed on the host machine). We could enter the running
 container with `docker exec -it <container_name> bash` and run `pip install mysqlclient`
 there, but that wouldn't persist permanently.
 
-To address this, the Superset `docker compose` deployment uses the convention
+To address this, the Liteset `docker compose` deployment uses the convention
 of a `requirements-local.txt` file. All packages listed in this file will be installed
 into the container from PyPI at runtime. This file will be ignored by Git for
 the purposes of local development.
@@ -140,8 +141,8 @@ it from the command line like:
 echo "mysqlclient" >> ./docker/requirements-local.txt
 ```
 
-**If you are running a stock (non-customized) Superset image**, you are done.
-Launch Superset with `docker compose -f docker-compose-non-dev.yml up` and
+**If you are running a stock (non-customized) Liteset image**, you are done.
+Launch Liteset with `docker compose -f docker-compose-non-dev.yml up` and
 the driver should be present.
 
 You can check its presence by entering the running container with
@@ -155,19 +156,19 @@ driver baked in:
 docker compose build --force-rm
 ```
 
-After the rebuild of the Docker images is complete, relaunch Superset by
+After the rebuild of the Docker images is complete, relaunch Liteset by
 running `docker compose up`.
 
 #### 3. Connect to MySQL
 
 Now that you've got a MySQL driver installed in your container, you should be able to connect
-to your database via the Superset web UI.
+to your database via the Liteset web UI.
 
 As an admin user, go to Settings -> Data: Database Connections and click the +DATABASE button.
 From there, follow the steps on the
 [Using Database Connection UI page](/docs/configuration/databases#connecting-through-the-ui).
 
-Consult the page for your specific database type in the Superset documentation to determine
+Consult the page for your specific database type in the Liteset documentation to determine
 the connection string and any other parameters you need to input.  For instance,
 on the [MySQL page](/docs/configuration/databases#mysql), we see that the connection string
 to a local MySQL database differs depending on whether the setup is running on Linux or Mac.
@@ -177,13 +178,13 @@ Click the “Test Connection” button, which should result in a popup message s
 
 #### 4. Troubleshooting
 
-If the test fails, review your docker logs for error messages.  Superset uses SQLAlchemy
+If the test fails, review your docker logs for error messages.  Liteset uses SQLAlchemy
 to connect to databases; to troubleshoot the connection string for your database, you might
-start Python in the Superset application container or host environment and try to connect
-directly to the desired database and fetch data. This eliminates Superset for the
+start Python in the Liteset application container or host environment and try to connect
+directly to the desired database and fetch data. This eliminates Liteset for the
 purposes of isolating the problem.
 
-Repeat this process for each type of database you want Superset to connect to.
+Repeat this process for each type of database you want Liteset to connect to.
 
 ### Database-specific Instructions
 
@@ -244,7 +245,7 @@ following connection string:
 awsathena+rest://{aws_access_key_id}:{aws_secret_access_key}@athena.{region_name}.amazonaws.com/{schema_name}?s3_staging_dir={s3_staging_dir}&...
 ```
 
-The PyAthena library also allows to assume a specific IAM role which you can define by adding following parameters in Superset's Athena database connection UI under ADVANCED --> Other --> ENGINE PARAMETERS.
+The PyAthena library also allows to assume a specific IAM role which you can define by adding following parameters in Liteset's Athena database connection UI under ADVANCED --> Other --> ENGINE PARAMETERS.
 
 ```json
 {
@@ -305,7 +306,7 @@ redshift+redshift_connector://<userName>:<DBPassword>@<AWS End Point>:5439/<Data
 
 Your superset app's [IAM role should have permissions](https://docs.aws.amazon.com/redshift/latest/mgmt/generating-iam-credentials-role-permissions.html) to call the `redshift:GetClusterCredentials` operation.
 
-You have to define the following arguments in Superset's redshift database connection UI under ADVANCED --> Others --> ENGINE PARAMETERS.
+You have to define the following arguments in Liteset's redshift database connection UI under ADVANCED --> Others --> ENGINE PARAMETERS.
 
 ```
 {"connect_args":{"iam":true,"database":"<database>","cluster_identifier":"<cluster_identifier>","db_user":"<db_user>"}}
@@ -319,7 +320,7 @@ and SQLALCHEMY URI should be set to `redshift+redshift_connector://`
 
 Your superset app's IAM role should have `redshift-serverless:GetCredentials` and `redshift-serverless:GetWorkgroup` permissions on Redshift serverless workgroup.
 
-You have to define the following arguments in Superset's redshift database connection UI under ADVANCED --> Others --> ENGINE PARAMETERS.
+You have to define the following arguments in Liteset's redshift database connection UI under ADVANCED --> Others --> ENGINE PARAMETERS.
 
 ```
 {"connect_args":{"iam":true,"is_serverless":true,"serverless_acct_id":"<aws account number>","serverless_work_group":"<redshift work group>","database":"<database>","user":"IAMR:<superset iam role name>"}}
@@ -327,9 +328,9 @@ You have to define the following arguments in Superset's redshift database conne
 
 #### ClickHouse
 
-To use ClickHouse with Superset, you will need to install the `clickhouse-connect` Python library:
+To use ClickHouse with Liteset, you will need to install the `clickhouse-connect` Python library:
 
-If running Superset using Docker Compose, add the following to your `./docker/requirements-local.txt` file:
+If running Liteset using Docker Compose, add the following to your `./docker/requirements-local.txt` file:
 
 ```
 clickhouse-connect>=0.6.8
@@ -480,7 +481,7 @@ There are two ways to connect to Databricks when using `databricks-dbapi`: using
 
 #### Hive
 
-To connect to a Hive cluster add a database of type "Databricks Interactive Cluster" in Superset, and use the following SQLAlchemy URI:
+To connect to a Hive cluster add a database of type "Databricks Interactive Cluster" in Liteset, and use the following SQLAlchemy URI:
 
 ```
 databricks+pyhive://token:{access_token}@{server_hostname}:{port}/{database_name}
@@ -791,12 +792,12 @@ echo "sqlalchemy-bigquery" >> ./docker/requirements-local.txt
 
 ##### Connecting to BigQuery
 
-When adding a new BigQuery connection in Superset, you'll need to add the GCP Service Account
+When adding a new BigQuery connection in Liteset, you'll need to add the GCP Service Account
 credentials file (as a JSON).
 
 1. Create your Service Account via the Google Cloud Platform control panel, provide it access to the
    appropriate BigQuery datasets, and download the JSON configuration file for the service account.
-2. In Superset, you can either upload that JSON or add the JSON blob in the following format (this should be the content of your credential JSON file):
+2. In Liteset, you can either upload that JSON or add the JSON blob in the following format (this should be the content of your credential JSON file):
 
 ```json
 {
@@ -855,11 +856,13 @@ You should then be able to connect to your BigQuery datasets.
 
 ![CleanShot 2021-10-22 at 04 47 08](https://user-images.githubusercontent.com/52086618/138354340-df57f477-d3e5-42d4-b032-d901c69d2213.gif)
 
-To be able to upload CSV or Excel files to BigQuery in Superset, you'll need to also add the
+To be able to upload CSV or Excel files to BigQuery in Liteset, you'll need to also add the
 [pandas_gbq](https://github.com/pydata/pandas-gbq) library.
 
-Currently, the Google BigQuery Python SDK is not compatible with `gevent`, due to some dynamic monkeypatching on python core library by `gevent`.
-So, when you deploy Superset with `gunicorn` server, you have to use worker type except `gevent`.
+Liteset runs Uvicorn (asyncio + uvloop) instead of gunicorn — there is no monkey-patching of the
+Python standard library on the hot path. The historical Apache Superset caveat about the Google
+BigQuery Python SDK being incompatible with `gevent` workers therefore does **not** apply to
+Liteset; connection pooling, retries, and the `google.cloud` SDKs all work natively under asyncio.
 
 #### Google Sheets
 
@@ -1087,7 +1090,7 @@ Add below argument while creating database connection in Advanced -> Other -> EN
 #### Postgres
 
 Note that, if you're using docker compose, the Postgres connector library [psycopg2](https://www.psycopg.org/docs/)
-comes out of the box with Superset.
+comes out of the box with Liteset (it is also required for Alembic metastore migrations).
 
 Postgres sample connection parameters:
 
@@ -1368,7 +1371,7 @@ We recommend using the first library because of the
 [TimescaleDB](https://www.timescale.com) is the open-source relational database for time-series and analytics to build powerful data-intensive applications.
 TimescaleDB is a PostgreSQL extension, and you can use the standard PostgreSQL connector library, [psycopg2](https://www.psycopg.org/docs/), to connect to the database.
 
-If you're using docker compose, psycopg2 comes out of the box with Superset.
+If you're using docker compose, psycopg2 comes out of the box with Liteset.
 
 TimescaleDB sample connection parameters:
 
@@ -1491,7 +1494,7 @@ Config `auth_method` and provide token in `Secure Extra` field
 ###### 5. Custom Authentication
 
 To use custom authentication, first you need to add it into
-`ALLOWED_EXTRA_AUTHENTICATIONS` allow list in Superset config file:
+`ALLOWED_EXTRA_AUTHENTICATIONS` allow list in the Liteset config file:
 
 ```python
 from your.module import AuthClass
@@ -1627,7 +1630,7 @@ To use Service Account Credentials, you should provide `service_account_json` in
 
 Note that, if you're using docker compose, the
 Postgres connector library [psycopg2](https://www.psycopg.org/docs/)
-comes out of the box with Superset.
+comes out of the box with Liteset.
 
 The connection string looks like:
 
@@ -1668,7 +1671,7 @@ PREFERRED_DATABASES: list[str] = [
 ]
 ```
 
-For copyright reasons the logos for each database are not distributed with Superset.
+For copyright reasons the logos for each database are not distributed with Liteset.
 
 ##### Setting images
 
@@ -1726,8 +1729,8 @@ the **Edit Tables** form (Sources > Tables > Edit record).
 
 ##### External Password Store for SQLAlchemy Connections
 
-Superset can be configured to use an external store for database passwords. This is useful if you a
-running a custom secret distribution framework and do not wish to store secrets in Superset’s meta
+Liteset can be configured to use an external store for database passwords. This is useful if you are
+running a custom secret distribution framework and do not wish to store secrets in Liteset’s meta
 database.
 
 Example: Write a function that takes a single argument of type `sqla.engine.url` and returns the

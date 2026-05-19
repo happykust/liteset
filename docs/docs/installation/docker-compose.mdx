@@ -44,8 +44,10 @@ Note that there are 4 major ways we support to run `docker compose`:
   pre-built images from docker-hub. For `docker compose` to work along with the
   Postgres image it boots up, you'll want to point to a `-dev`-suffixed TAG, as in
   `export TAG=6.0.0-dev` or `export TAG=5.0.0-dev`, with `latest-dev` being the default.
-  The `dev` builds include the `psycopg2-binary` required to connect
-  to the Postgres database launched as part of the `docker compose` builds.
+  All Liteset images ship `asyncpg` (used at runtime by the async ASGI app) and
+  `psycopg2-binary` (used by Alembic migrations) — both are listed in
+  `requirements/base.txt`, so no extra driver layering is needed to connect to the
+  bundled Postgres metadata database.
 
 More on these approaches after setting up the requirements for either.
 
@@ -85,14 +87,14 @@ docker compose up --build
 :::tip
 When running in development mode the `superset-node`
 container needs to finish building assets in order for the UI to render properly. If you would just
-like to try out Superset without making any code changes follow the steps documented for
+like to try out Liteset without making any code changes follow the steps documented for
 `production` or a specific version below.
 :::
 
 :::tip
 By default, we mount the local superset-frontend folder here and run `npm install` as well
 as `npm run dev` which triggers webpack to compile/bundle the frontend code. Depending
-on your local setup, especially if you have less than 16GB of memory,  it may be very slow to
+on your local setup, especially if you have less than 16GB of memory, it may be very slow to
 perform those operations. In this case, we recommend you set the env var
 `BUILD_SUPERSET_FRONTEND_IN_DOCKER` to `false`, and to run this locally instead in a terminal.
 Simply trigger `npm i && npm run dev`, this should be MUCH faster.
@@ -122,7 +124,7 @@ NODE_PORT=9003 docker compose -p superset-3 -f docker-compose-light.yml up
 
 This configuration includes:
 - PostgreSQL database (internal network only)
-- Superset application server
+- Liteset application server
 - Frontend development server with webpack hot reloading
 - In-memory caching (no Redis)
 - Isolated volumes and networks per instance
@@ -164,8 +166,8 @@ looking to fire up.
 ## `docker compose` tips & configuration
 
 :::caution
-All of the content belonging to a Superset instance - charts, dashboards, users, etc. - is stored in
-its metadata database. In production, this database should be backed up.  The default installation
+All of the content belonging to a Liteset instance - charts, dashboards, users, etc. - is stored in
+its metadata database. In production, this database should be backed up. The default installation
 with docker compose will store that data in a PostgreSQL database contained in a Docker
 [volume](https://docs.docker.com/storage/volumes/), which is not backed up.
 
@@ -174,12 +176,12 @@ Again, **THE DOCKER-COMPOSE INSTALLATION IS NOT PRODUCTION-READY OUT OF THE BOX.
 :::
 
 You should see a stream of logging output from the containers being launched on your machine. Once
-this output slows, you should have a running instance of Superset on your local machine!  To avoid
+this output slows, you should have a running instance of Liteset on your local machine! To avoid
 the wall of text on future runs, add the `-d` option to the end of the `docker compose up` command.
 
 ### Configuring Further
 
-The following is for users who want to configure how Superset runs in Docker Compose; otherwise, you
+The following is for users who want to configure how Liteset runs in Docker Compose; otherwise, you
 can skip to the next section.
 
 You can install additional python packages and apply config overrides by following the steps
@@ -192,7 +194,7 @@ preventing developers from risking committing potentially sensitive configuratio
 
 One important variable is `SUPERSET_LOAD_EXAMPLES` which determines whether the `superset_init`
 container will populate example data and visualizations into the metadata database. These examples
-are helpful for learning and testing out Superset but unnecessary for experienced users and
+are helpful for learning and testing out Liteset but unnecessary for experienced users and
 production deployments. The loading process can sometimes take a few minutes and a good amount of
 CPU, so you may want to disable it on a resource-constrained device.
 
@@ -204,33 +206,18 @@ The mechanics of this are in `docker/pythonpath_dev/superset_config.py` where yo
 that the logic runs a `from superset_config_docker import *`
 
 :::note
-Users often want to connect to other databases from Superset. Currently, the easiest way to
+Users often want to connect to other databases from Liteset. Currently, the easiest way to
 do this is to modify the `docker-compose-non-dev.yml` file and add your database as a service that
 the other services depend on (via `x-superset-depends-on`). Others have attempted to set
-`network_mode: host` on the Superset services, but these generally break the installation,
+`network_mode: host` on the Liteset services, but these generally break the installation,
 because the configuration requires use of the Docker Compose DNS resolver for the service names.
 If you have a good solution for this, let us know!
 :::
 
-:::note
-Superset uses [Scarf Gateway](https://about.scarf.sh/scarf-gateway) to collect telemetry
-data. Knowing the installation counts for different Superset versions informs the project's
-decisions about patching and long-term support. Scarf purges personally identifiable information
-(PII) and provides only aggregated statistics.
+## 3. Log in to Liteset
 
-To opt-out of this data collection for packages downloaded through the Scarf Gateway by your docker
-compose based installation, edit the `x-superset-image:` line in your `docker-compose.yml` and
-`docker-compose-non-dev.yml` files, replacing `apachesuperset.docker.scarf.sh/apache/superset` with
-`apache/superset` to pull the image directly from Docker Hub.
-
-To disable the Scarf telemetry pixel, set the `SCARF_ANALYTICS` environment variable to `False` in
-your terminal and/or in your `docker/.env` file.
-:::
-
-## 3. Log in to Superset
-
-Your local Superset instance also includes a Postgres server to store your data and is already
-pre-loaded with some example datasets that ship with Superset. You can access Superset now via your
+Your local Liteset instance also includes a Postgres server to store your data and is already
+pre-loaded with some example datasets that ship with Liteset. You can access Liteset now via your
 web browser by visiting `http://localhost:8088`. Note that many browsers now default to `https` - if
 yours is one of them, please make sure it uses `http`.
 
@@ -244,17 +231,17 @@ username: admin
 password: admin
 ```
 
-## 4. Connecting Superset to your local database instance
+## 4. Connecting Liteset to your local database instance
 
-When running Superset using `docker` or `docker compose` it runs in its own docker container, as if
-the Superset was running in a separate machine entirely. Therefore attempts to connect to your local
+When running Liteset using `docker` or `docker compose` it runs in its own docker container, as if
+Liteset was running in a separate machine entirely. Therefore attempts to connect to your local
 database with the hostname `localhost` won't work as `localhost` refers to the docker container
-Superset is running in, and not your actual host machine. Fortunately, docker provides an easy way
+Liteset is running in, and not your actual host machine. Fortunately, docker provides an easy way
 to access network resources in the host machine from inside a container, and we will leverage this
 capability to connect to our local database instance.
 
 Here the instructions are for connecting to postgresql (which is running on your host machine) from
-Superset (which is running in its docker container). Other databases may have slightly different
+Liteset (which is running in its docker container). Other databases may have slightly different
 configurations but gist would be same and boils down to 2 steps -
 
 1. **(Mac users may skip this step)** Configuring the local postgresql/database instance to accept

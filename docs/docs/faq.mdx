@@ -24,32 +24,33 @@ Stop Apache Superset, start Liteset against the same database — users keep wor
 
 The full methodology, workloads and benchmark results live under [Benchmarks](/docs/benchmarks/results).
 
-## How big of a dataset can Superset handle?
+## How big of a dataset can Liteset handle?
 
-Superset can work with even gigantic databases! Superset acts as a thin layer above your underlying
-databases or data engines, which do all the processing.  Superset simply visualizes the results of
+Liteset can work with even gigantic databases! Liteset acts as a thin layer above your underlying
+databases or data engines, which do all the processing.  Liteset simply visualizes the results of
 the query.
 
-The key to achieving acceptable performance in Superset is whether your database can execute queries
+The key to achieving acceptable performance in Liteset is whether your database can execute queries
 and return results at a speed that is acceptable to your users. If you experience slow performance with
-Superset, benchmark and tune your data warehouse.
+Liteset, benchmark and tune your data warehouse.
 
-## What are the computing specifications required to run Superset?
+## What are the computing specifications required to run Liteset?
 
-The specs of your Superset installation depend on how many users you have and what their activity is, not
+The specs of your Liteset installation depend on how many users you have and what their activity is, not
 on the size of your data.  Superset admins in the community have reported 8GB RAM, 2vCPUs as adequate to
-run a moderately-sized instance. To develop Superset, e.g., compile code or build images, you may
+run a moderately-sized instance; Liteset's async stack typically lowers the resident-memory floor
+versus a Gunicorn pre-fork model. To develop Liteset, e.g., compile code or build images, you may
 need more power.
 
-Monitor your resource usage and increase or decrease as needed. Note that Superset usage has a tendency
+Monitor your resource usage and increase or decrease as needed. Note that Liteset usage has a tendency
 to occur in spikes, e.g., if everyone in a meeting loads the same dashboard at once.
 
-Superset's application metadata does not require a very large database to store it, though
+Liteset's application metadata does not require a very large database to store it, though
 the log file grows over time.
 
 ## Can I join / query multiple tables at one time?
 
-Not in the Explore or Visualization UI. A Superset SQLAlchemy datasource can only be a single table
+Not in the Explore or Visualization UI. A Liteset SQLAlchemy datasource can only be a single table
 or a view.
 
 When working with tables, the solution would be to create a table that contains all the fields
@@ -57,13 +58,13 @@ needed for your analysis, most likely through some scheduled batch process.
 
 A view is a simple logical layer that abstracts an arbitrary SQL queries as a virtual table. This can
 allow you to join and union multiple tables and to apply some transformation using arbitrary SQL
-expressions. The limitation there is your database performance, as Superset effectively will run a
+expressions. The limitation there is your database performance, as Liteset effectively will run a
 query on top of your query (view). A good practice may be to limit yourself to joining your main
-large table to one or many small tables only, and avoid using _GROUP BY_ where possible as Superset
+large table to one or many small tables only, and avoid using _GROUP BY_ where possible as Liteset
 will do its own _GROUP BY_ and doing the work twice might slow down performance.
 
 Whether you use a table or a view, performance depends on how fast your database can deliver
-the result to users interacting with Superset.
+the result to users interacting with Liteset.
 
 However, if you are using SQL Lab, there is no such limitation. You can write SQL queries to join
 multiple tables as long as your database account has access to the tables.
@@ -82,7 +83,7 @@ how to enable and use CSV upload.
 
 There are many possible causes for why a long-running query might time out.
 
-For running long query from Sql Lab, by default Superset allows it run as long as 6 hours before it
+For running long query from Sql Lab, by default Liteset allows it run as long as 6 hours before it
 being killed by celery. If you want to increase the time for running query, you can specify the
 timeout in configuration. For example:
 
@@ -92,9 +93,9 @@ SQLLAB_ASYNC_TIME_LIMIT_SEC = 60 * 60 * 6
 
 If you are seeing timeouts (504 Gateway Time-out) when loading dashboard or explore slice, you are
 probably behind gateway or proxy server (such as Nginx). If it did not receive a timely response
-from Superset server (which is processing long queries), these web servers will send 504 status code
-to clients directly. Superset has a client-side timeout limit to address this issue. If query didn’t
-come back within client-side timeout (60 seconds by default), Superset will display warning message
+from the Liteset server (which is processing long queries), these web servers will send 504 status code
+to clients directly. Liteset has a client-side timeout limit to address this issue. If query didn’t
+come back within client-side timeout (60 seconds by default), Liteset will display warning message
 to avoid gateway timeout message. If you have a longer gateway timeout limit, you can change the
 timeout settings in **superset_config.py**:
 
@@ -145,51 +146,57 @@ value in milliseconds in the JSON Metadata field:
 Here, the entire dashboard will refresh at once if periodic refresh is on. The stagger time of 2.5
 seconds is ignored.
 
-**Why does ‘flask fab’ or superset freeze/hang/not responding when started (my home directory is
+**Why does Liteset freeze/hang/not respond when started (my home directory is
 NFS mounted)?**
 
-By default, Superset creates and uses an SQLite database at `~/.superset/superset.db`. SQLite is
+By default, Liteset creates and uses an SQLite database at `~/.superset/superset.db`. SQLite is
 known to [not work well if used on NFS](https://www.sqlite.org/lockingv3.html) due to broken file
 locking implementation on NFS.
 
 You can override this path using the **SUPERSET_HOME** environment variable.
 
-Another workaround is to change where superset stores the sqlite database by adding the following in
+Another workaround is to change where Liteset stores the sqlite database by adding the following in
 `superset_config.py`:
 
 ```python
 SQLALCHEMY_DATABASE_URI = 'sqlite:////new/location/superset.db?check_same_thread=false'
 ```
 
-You can read more about customizing Superset using the configuration file
+You can read more about customizing Liteset using the configuration file
 [here](/docs/configuration/configuring-superset).
 
 ## What if the table schema changed?
 
-Table schemas evolve, and Superset needs to reflect that. It’s pretty common in the life cycle of a
-dashboard to want to add a new dimension or metric. To get Superset to discover your new columns,
+Table schemas evolve, and Liteset needs to reflect that. It’s pretty common in the life cycle of a
+dashboard to want to add a new dimension or metric. To get Liteset to discover your new columns,
 all you have to do is to go to **Data -> Datasets**, click the edit icon next to the dataset
 whose schema has changed, and hit **Sync columns from source** from the **Columns** tab.
 Behind the scene, the new columns will get merged. Following this, you may want to re-edit the
 table afterwards to configure the Columns tab, check the appropriate boxes and save again.
 
-## What database engine can I use as a backend for Superset?
+## What database engine can I use as a backend for Liteset?
 
-To clarify, the database backend is an OLTP database used by Superset to store its internal
-information like your list of users and dashboard definitions. While Superset supports a
+To clarify, the database backend is an OLTP database used by Liteset to store its internal
+information like your list of users and dashboard definitions. While Liteset supports a
 [variety of databases as data _sources_](/docs/configuration/databases#installing-database-drivers),
 only a few database engines are supported for use as the OLTP backend / metadata store.
 
-Superset is tested using MySQL, PostgreSQL, and SQLite backends. It’s recommended you install
-Superset on one of these database servers for production.  Installation on other OLTP databases
-may work but isn’t tested.  It has been reported that [Microsoft SQL Server does _not_
+Liteset targets PostgreSQL as its primary metadata backend (the async runtime uses asyncpg).
+SQLite is supported for local development. MySQL is inherited from the Apache Superset surface
+but is not exercised by the Liteset async driver matrix.
+It has been reported that [Microsoft SQL Server does _not_
 work as a Superset backend](https://github.com/apache/superset/issues/18961). Column-store,
 non-OLTP databases are not designed for this type of workload.
 
 ## How can I configure OAuth authentication and authorization?
 
-You can take a look at this Flask-AppBuilder
-[configuration example](https://github.com/dpgaspar/Flask-AppBuilder/blob/master/examples/oauth/config.py).
+Liteset ports Flask-AppBuilder's auth model to `AsyncSecurityManager`, so OAuth provider
+configuration keys (`OAUTH_PROVIDERS`, `AUTH_TYPE = AUTH_OAUTH`, `AUTH_USER_REGISTRATION`,
+`AUTH_USER_REGISTRATION_ROLE`, etc.) are honoured as-is in `superset_config.py`.
+See the OAuth section of [Configuring Liteset](/docs/configuration/configuring-superset) for the
+full list of supported settings. The original Flask-AppBuilder
+[configuration example](https://github.com/dpgaspar/Flask-AppBuilder/blob/master/examples/oauth/config.py)
+remains a useful reference for the provider dictionary shape.
 
 ## Is there a way to force the dashboard to use specific colors?
 
@@ -208,29 +215,33 @@ second etc). Example:
 }
 ```
 
-## Does Superset work with [insert database engine here]?
+## Does Liteset work with [insert database engine here]?
 
 The [Connecting to Databases section](/docs/configuration/databases) provides the best
 overview for supported databases. Database engines not listed on that page may work too. We rely on
 the community to contribute to this knowledge base.
 
-For a database engine to be supported in Superset through the SQLAlchemy connector, it requires
+For a database engine to be supported in Liteset through the SQLAlchemy connector, it requires
 having a Python compliant [SQLAlchemy dialect](https://docs.sqlalchemy.org/en/13/dialects/) as well
 as a [DBAPI driver](https://www.python.org/dev/peps/pep-0249/) defined. Database that have limited
 SQL support may work as well. For instance it’s possible to connect to Druid through the SQLAlchemy
 connector even though Druid does not support joins and subqueries. Another key element for a
-database to be supported is through the Superset Database Engine Specification interface. This
+database to be supported is through the Liteset Database Engine Specification interface. This
 interface allows for defining database-specific configurations and logic that go beyond the
 SQLAlchemy and DBAPI scope. This includes features like:
 
-- date-related SQL function that allow Superset to fetch different time granularities when running
+- date-related SQL function that allow Liteset to fetch different time granularities when running
   time-series queries
-- whether the engine supports subqueries. If false, Superset may run 2-phase queries to compensate
+- whether the engine supports subqueries. If false, Liteset may run 2-phase queries to compensate
   for the limitation
 - methods around processing logs and inferring the percentage of completion of a query
 - technicalities as to how to handle cursors and connections if the driver is not standard DBAPI
 
-Beyond the SQLAlchemy connector, it’s also possible, though much more involved, to extend Superset
+Liteset also ships a set of native async engine specs (`postgres.py` via asyncpg, `mysql.py`
+via asyncmy, `clickhouse.py` via aiochclient, `trino.py` via aiotrino) plus a `sync_fallback.py`
+wrapper that runs any sync SQLAlchemy dialect on a thread executor.
+
+Beyond the SQLAlchemy connector, it’s also possible, though much more involved, to extend Liteset
 and write your own connector. The only example of this at the moment is the Druid connector, which
 is getting superseded by Druid’s growing SQL support and the recent availability of a DBAPI and
 SQLAlchemy driver. If the database you are considering integrating has any kind of SQL support,
@@ -243,35 +254,30 @@ are typical in basic SQL:
 - apply HAVING-type filters
 - be schema-aware, expose columns and types
 
-## Does Superset offer a public API?
+## Does Liteset offer a public API?
 
 Yes, a public REST API, and the surface of that API formal is expanding steadily. You can read more about this API and
 interact with it using Swagger [here](/docs/api).
 
 Some of the
-original vision for the collection of endpoints under **/api/v1** was originally specified in
-[SIP-17](https://github.com/apache/superset/issues/7259) and constant progress has been
-made to cover more and more use cases.
+original vision for the collection of endpoints under **/api/v1** was originally specified in upstream
+[SIP-17](https://github.com/apache/superset/issues/7259); Liteset reproduces that contract 1:1
+across its 37+ async controllers.
 
-The API available is documented using [Swagger](https://swagger.io/) and the documentation can be
-made available under **/swagger/v1** by enabling the following flag in `superset_config.py`:
+The API is documented using [Swagger](https://swagger.io/) and is auto-generated by Litestar
+from the controller handlers and msgspec DTOs. It is exposed at **/swagger/v1**.
 
-```python
-FAB_API_SWAGGER_UI = True
-```
-
-There are other undocumented [private] ways to interact with Superset programmatically that offer no
+There are other undocumented [private] ways to interact with Liteset programmatically that offer no
 guarantees and are not recommended but may fit your use case temporarily:
 
-- using the ORM (SQLAlchemy) directly
-- using the internal FAB ModelView API (to be deprecated in Superset)
+- using the ORM (SQLAlchemy 2.0 async) directly
 - altering the source code in your fork
 
 ## How can I see usage statistics (e.g., monthly active users)?
 
-This functionality is not included with Superset, but you can extract and analyze Superset's application
+This functionality is not included with Liteset, but you can extract and analyze Liteset's application
 metadata to see what actions have occurred.  By default, user activities are logged in the `logs` table
-in Superset's metadata database.  One company has published a write-up of [how they analyzed Superset
+in Liteset's metadata database.  One company has published a write-up of [how they analyzed Superset
 usage, including example queries](https://engineering.hometogo.com/monitor-superset-usage-via-superset-c7f9fba79525).
 
 ## What Does Hours Offset in the Edit Dataset view do?
@@ -280,26 +286,28 @@ In the Edit Dataset view, you can specify a time offset. This field lets you con
 number of hours to be added or subtracted from the time column.
 This can be used, for example, to convert UTC time to local time.
 
-## Does Superset collect any telemetry data?
+## Does Liteset collect any telemetry data?
 
-Superset uses [Scarf](https://about.scarf.sh/) by default to collect basic telemetry data upon installing and/or running Superset. This data helps the maintainers of Superset better understand which versions of Superset are being used, in order to prioritize patch/minor releases and security fixes.
-We use the [Scarf Gateway](https://docs.scarf.sh/gateway/) to sit in front of container registries, the [scarf-js](https://about.scarf.sh/package-sdks) package to track `npm` installations, and a Scarf pixel to gather anonymous analytics on Superset page views.
-Scarf purges PII and provides aggregated statistics. Superset users can easily opt out of analytics in various ways documented [here](https://docs.scarf.sh/gateway/#do-not-track) and [here](https://docs.scarf.sh/package-analytics/#as-a-user-of-a-package-using-scarf-js-how-can-i-opt-out-of-analytics).
-Superset maintainers can also opt out of telemetry data collection by setting the `SCARF_ANALYTICS` environment variable to `false` in the Superset container (or anywhere Superset/webpack are run).
-Additional opt-out instructions for Docker users are available on the [Docker Installation](/docs/installation/docker-compose) page.
+No. Liteset does not ship a telemetry pixel, does not call out to Scarf, and does not publish
+images to the `apache/superset` registry. Container images built from this repository are
+push-only to the operator's own registry and contain no third-party analytics hooks.
 
-## Does Superset have an archive panel or trash bin from which a user can recover deleted assets?
+## Does Liteset have an archive panel or trash bin from which a user can recover deleted assets?
 
-No. Currently, there is no way to recover a deleted Superset dashboard/chart/dataset/database from the UI. However, there is an [ongoing discussion](https://github.com/apache/superset/discussions/18386) about implementing such a feature.
+No. Currently, there is no way to recover a deleted Liteset dashboard/chart/dataset/database from the UI. The upstream Apache Superset project has an [ongoing discussion](https://github.com/apache/superset/discussions/18386) about implementing such a feature.
 
-Hence, it is recommended to take periodic backups of the metadata database. For recovery, you can launch a recovery instance of a Superset server with the backed-up copy of the DB attached and use the Export Dashboard button in the Superset UI (or the `superset export-dashboards` CLI command). Then, take the .zip file and import it into the current Superset instance.
+Hence, it is recommended to take periodic backups of the metadata database. For recovery, you can launch a recovery instance of a Liteset server with the backed-up copy of the DB attached and use the Export Dashboard button in the Liteset UI (or the `superset export-dashboards` CLI command). Then, take the .zip file and import it into the current Liteset instance.
 
 Alternatively, you can programmatically take regular exports of the assets as a backup.
 
-## I ran a security scan of the Superset container image and it showed dozens of "high" and "critical" vulnerabilities! Can you release a version of Superset without these?
+## I ran a security scan of the Liteset container image and it showed dozens of "high" and "critical" vulnerabilities! Can you release a version of Liteset without these?
 
-You are talking about dependency CVEs: identified vulnerabilities in software that Superset uses. Most of these CVEs are in the Linux kernel or Python, both of which have many other people working on their security.
+You are talking about dependency CVEs: identified vulnerabilities in software that Liteset uses. Most of these CVEs are in the Linux kernel or Python, both of which have many other people working on their security.
 
-We address these dependency CVEs as best we can by regularly updating our dependencies to newer versions. We use bots to assist with that and cheerfully welcome pull requests from humans that fix dependency CVEs.
+Liteset inherits its CVE posture from Apache Superset 6.0.0 plus the additional async stack
+(Litestar, asyncpg, uvloop). Dependencies are regularly bumped to newer versions, and pull
+requests that fix dependency CVEs are welcome.
 
-The Superset [security team](https://superset.apache.org/docs/security/#reporting-security-vulnerabilities) focuses primarily on vulnerabilities _in Superset itself_. See our [CVEs page](https://superset.apache.org/docs/security/cves) for a list of past Superset CVEs.
+For vulnerabilities _in Liteset itself_, see the [Liteset CVEs page](/docs/security/cves)
+for the list of tracked issues and reporting instructions. Inherited Apache Superset CVEs are
+also tracked at the upstream [Apache Superset CVEs page](https://superset.apache.org/docs/security/cves).

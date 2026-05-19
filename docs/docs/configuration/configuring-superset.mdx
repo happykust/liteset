@@ -9,7 +9,7 @@ version: 1
 
 ## superset_config.py
 
-Superset exposes hundreds of configurable parameters through its
+Liteset exposes hundreds of configurable parameters through its
 [config.py module](https://github.com/happykust/liteset/blob/main/superset/config.py). The
 variables and objects exposed act as a public interface of the bulk of what you may want
 to configure, alter and interface with. In this python module, you'll find all these
@@ -21,14 +21,14 @@ you'll want to define your own module (typically a file named `superset_config.p
 Add this file to your `PYTHONPATH` or create an environment variable
 `SUPERSET_CONFIG_PATH` specifying the full path of the `superset_config.py`.
 
-For example, if deploying on Superset directly on a Linux-based system where your
+For example, if deploying Liteset directly on a Linux-based system where your
 `superset_config.py` is under `/app` directory, you can run:
 
 ```bash
 export SUPERSET_CONFIG_PATH=/app/superset_config.py
 ```
 
-If you are using your own custom Dockerfile with the official Superset image as base image,
+If you are using your own custom Dockerfile with the official Liteset image as base image,
 then you can add your overrides as shown below:
 
 ```bash
@@ -43,21 +43,20 @@ for details.
 The following is an example of just a few of the parameters you can set in your `superset_config.py` file:
 
 ```
-# Superset specific config
+# Liteset-specific config
 ROW_LIMIT = 5000
 
-# Flask App Builder configuration
-# Your App secret key will be used for securely signing the session cookie
-# and encrypting sensitive information on the database
-# Make sure you are changing this key for your deployment with a strong key.
-# Alternatively you can set it with `SUPERSET_SECRET_KEY` environment variable.
+# Your app secret key will be used for securely signing the session cookie
+# and encrypting sensitive information in the metadata database.
+# Make sure you change this key for your deployment to a strong, unique value.
+# Alternatively you can set it with the `SUPERSET_SECRET_KEY` environment variable.
 # You MUST set this for production environments or the server will refuse
 # to start and you will see an error in the logs accordingly.
 SECRET_KEY = 'YOUR_OWN_RANDOM_GENERATED_SECRET_KEY'
 
 # The SQLAlchemy connection string to your database backend
 # This connection defines the path to the database that stores your
-# superset metadata (slices, connections, tables, dashboards, ...).
+# Liteset metadata (slices, connections, tables, dashboards, ...).
 # Note that the connection information to connect to the datasources
 # you want to explore are managed directly in the web UI
 # The check_same_thread=false property ensures the sqlite client does not attempt
@@ -103,7 +102,7 @@ At the very least, you'll want to change `SECRET_KEY` and `SQLALCHEMY_DATABASE_U
 
 ### Adding an initial SECRET_KEY
 
-Superset requires a user-specified SECRET_KEY to start up. This requirement was [added in version 2.1.0 to force secure configurations](https://preset.io/blog/superset-security-update-default-secret_key-vulnerability/). Add a strong SECRET_KEY to your `superset_config.py` file like:
+Liteset requires a user-specified SECRET_KEY to start up. This requirement was [added in Apache Superset 2.1.0 to force secure configurations](https://preset.io/blog/superset-security-update-default-secret_key-vulnerability/) and is enforced here too. Add a strong SECRET_KEY to your `superset_config.py` file like:
 
 ```python
 SECRET_KEY = 'YOUR_OWN_RANDOM_GENERATED_SECRET_KEY'
@@ -112,36 +111,38 @@ SECRET_KEY = 'YOUR_OWN_RANDOM_GENERATED_SECRET_KEY'
 You can generate a strong secure key with `openssl rand -base64 42`.
 
 :::caution Use a strong secret key
-This key will be used for securely signing session cookies and encrypting sensitive information stored in Superset's application metadata database.
+This key will be used for securely signing session cookies and encrypting sensitive information stored in Liteset's metadata database.
 Your deployment must use a complex, unique key.
 :::
 
 ### Rotating to a newer SECRET_KEY
 
 If you wish to change your existing SECRET_KEY, add the existing SECRET_KEY to your `superset_config.py` file as
-`PREVIOUS_SECRET_KEY =`and provide your new key as `SECRET_KEY =`. You can find your current SECRET_KEY with these
-commands - if running Superset with Docker, execute from within the Superset application container:
+`PREVIOUS_SECRET_KEY =` and provide your new key as `SECRET_KEY =`. You can read the currently-loaded
+SECRET_KEY by importing Liteset's settings object — Liteset does not ship an interactive `superset
+shell` REPL (Flask's `current_app` is not available either), so run a one-shot Python invocation
+from inside the application container:
 
-```python
-superset shell
-from flask import current_app; print(current_app.config["SECRET_KEY"])
+```bash
+python -c "from superset.config import SupersetSettings; print(SupersetSettings().secret_key)"
 ```
 
 Save your `superset_config.py` with these values and then run `superset re-encrypt-secrets`.
 
 ## Setting up a production metadata database
 
-Superset needs a database to store the information it manages, like the definitions of
+Liteset needs a database to store the information it manages, like the definitions of
 charts, dashboards, and many other things.
 
-By default, Superset is configured to use [SQLite](https://www.sqlite.org/),
+By default, Liteset is configured to use [SQLite](https://www.sqlite.org/),
 a self-contained, single-file database that offers a simple and fast way to get started
 (without requiring any installation). However, for production environments,
-using SQLite is highly discouraged due to security, scalability, and data integrity reasons.
+using SQLite is highly discouraged due to security, scalability, and data integrity reasons —
+and Liteset's async runtime is designed around PostgreSQL with `asyncpg`.
 It's important to use only the supported database engines and consider using a different
 database engine on a separate host or container.
 
-Superset supports the following database engines/versions:
+Liteset supports the following database engines/versions:
 
 | Database Engine                           | Supported Versions                       |
 | ----------------------------------------- | ---------------------------------------- |
@@ -150,10 +151,18 @@ Superset supports the following database engines/versions:
 
 Use the following database drivers and connection strings:
 
-| Database                                  | PyPI package              | Connection String                                                      |
-| ----------------------------------------- | ------------------------- | ---------------------------------------------------------------------- |
-| [PostgreSQL](https://www.postgresql.org/) | `pip install psycopg2`    | `postgresql://<UserName>:<DBPassword>@<Database Host>/<Database Name>` |
-| [MySQL](https://www.mysql.com/)           | `pip install mysqlclient` | `mysql://<UserName>:<DBPassword>@<Database Host>/<Database Name>`      |
+| Database                                  | PyPI package                              | Connection String                                                      |
+| ----------------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------- |
+| [PostgreSQL](https://www.postgresql.org/) | `asyncpg` (runtime) + `psycopg2` (Alembic migrations) — both ship in `requirements/base.txt` | `postgresql://<UserName>:<DBPassword>@<Database Host>/<Database Name>` |
+| [MySQL](https://www.mysql.com/)           | `pip install mysqlclient`                 | `mysql://<UserName>:<DBPassword>@<Database Host>/<Database Name>`      |
+
+:::note
+Liteset talks to its metadata database with **asyncpg** at runtime (the entire request path is
+async) and falls back to **psycopg2** for Alembic schema migrations, which run in a synchronous
+context. Both drivers are pre-installed in the standard Liteset images; the
+`SQLALCHEMY_DATABASE_URI` value stays in the canonical `postgresql://` form — Liteset rewrites the
+scheme internally per use-case.
+:::
 
 :::tip
 Properly setting up metadata store is beyond the scope of this documentation. We recommend
@@ -162,7 +171,7 @@ using a hosted managed service such as [Amazon RDS](https://aws.amazon.com/rds/)
 service and supporting infrastructure and backup strategy.
 :::
 
-To configure Superset metastore set `SQLALCHEMY_DATABASE_URI` config key on `superset_config`
+To configure Liteset's metastore, set the `SQLALCHEMY_DATABASE_URI` config key in `superset_config.py`
 to the appropriate connection string.
 
 ## Running on an ASGI HTTP server
@@ -227,7 +236,7 @@ RequestHeader set X-Forwarded-Proto "https"
 
 *Please be advised that this feature is in BETA.*
 
-Superset supports running the application under a non-root path. The root path
+Liteset supports running the application under a non-root path. The root path
 prefix can be specified in one of two ways:
 
 - Setting the `SUPERSET_APP_ROOT` environment variable to the desired prefix.
@@ -416,35 +425,42 @@ Note: This requires `AUTH_LDAP_SEARCH` to be set. For more details, please see t
 
 You can also use the `AUTH_ROLES_SYNC_AT_LOGIN` configuration variable to control how often Flask-AppBuilder syncs the user's roles with the LDAP/OAUTH groups. If `AUTH_ROLES_SYNC_AT_LOGIN` is set to True, Flask-AppBuilder will sync the user's roles each time they log in. If `AUTH_ROLES_SYNC_AT_LOGIN` is set to False, Flask-AppBuilder will only sync the user's roles when they first register.
 
-## Flask app Configuration Hook
+## App Mutator Hook (`FLASK_APP_MUTATOR`)
 
-`FLASK_APP_MUTATOR` is a configuration function that can be provided in your environment, receives
-the app object and can alter it in any way. For example, add `FLASK_APP_MUTATOR` into your
-`superset_config.py` to setup session cookie expiration time to 24 hours:
+`FLASK_APP_MUTATOR` is preserved in Liteset as a last-mile **compat shim** — the name and key are
+unchanged so old `superset_config.py` files keep working — but the callable now receives the
+Litestar app instance (not a Flask app). It is invoked once during app startup, after middleware,
+plugins, and route registration are complete, so it is a convenient place to register additional
+middleware, lifecycle hooks, or route handlers.
 
 ```python
-from flask import session
-from flask import Flask
-
-
-def make_session_permanent():
-    '''
-    Enable maxAge for the cookie 'session'
-    '''
-    session.permanent = True
+from datetime import timedelta
+from litestar import Litestar
+from litestar.middleware.session.client_side import CookieBackendConfig
 
 # Set up max age of session to 24 hours
 PERMANENT_SESSION_LIFETIME = timedelta(hours=24)
-def FLASK_APP_MUTATOR(app: Flask) -> None:
-    app.before_request_funcs.setdefault(None, []).append(make_session_permanent)
+
+def FLASK_APP_MUTATOR(app: Litestar) -> None:
+    # Example: tag the app for an observability backend, register an extra
+    # middleware, or attach state. Avoid touching internal Litestar plumbing
+    # that may move between releases — prefer the standard Litestar plugin
+    # surface for non-trivial integrations.
+    app.state.deployment_id = "prod-eu-1"
 ```
+
+:::tip
+For anything more than a quick tweak, prefer Litestar's first-class extension points
+(middleware, plugins, lifecycle handlers, dependency providers) over this hook. The hook stays for
+backward compatibility with existing Apache Superset configurations.
+:::
 
 ## Feature Flags
 
-To support a diverse set of users, Superset has some features that are not enabled by default. For
-example, some users have stronger security restrictions, while some others may not. So Superset
+To support a diverse set of users, Liteset has some features that are not enabled by default. For
+example, some users have stronger security restrictions, while some others may not. So Liteset
 allows users to enable or disable some features by config. For feature owners, you can add optional
-functionalities in Superset, but will be only affected by a subset of users.
+functionalities in Liteset, but will be only affected by a subset of users.
 
 You can enable or disable features with flag from `superset_config.py`:
 

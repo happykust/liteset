@@ -12,67 +12,79 @@ import useBaseUrl from "@docusaurus/useBaseUrl";
 <img src={useBaseUrl("/img/k8s.png" )} width="150" />
 <br /><br />
 
-:::warning No first-party Liteset Helm chart yet
-This page describes the **Apache Superset** Helm chart workflow, which Liteset does not redistribute. To deploy Liteset on Kubernetes today you have two options:
+Liteset ships a first-party Helm chart in this repository at [`helm/superset/`](https://github.com/happykust/liteset/tree/main/helm/superset). The chart was forked from the upstream Apache Superset chart and adjusted for the Liteset runtime — Uvicorn/uvloop launcher, `pydantic-settings`-based configuration, and the native WebSocket server (no `superset-websocket` sidecar).
 
-1. **Adapt the Apache Superset Helm chart manually.** Follow the steps below, then in your `values.yaml` override:
-   - `image.repository` → your Liteset image (e.g. a private build of `superset.app:create_app` running under Uvicorn).
-   - The container `command` → `uvicorn superset.app:create_app --factory --host 0.0.0.0 --port 8088 --proxy-headers --forwarded-allow-ips '*'` (instead of the default `gunicorn`).
-   - `supersetWebsockets.enabled: false` — Liteset serves WebSockets natively, no `superset-websocket` sidecar.
-2. **Build your own minimal manifests.** A Liteset deployment is a single Uvicorn pod (web), a Celery worker pod, Redis and Postgres. Apache Superset's Helm chart is a useful reference for liveness/readiness probes, init containers running `superset db upgrade` and a Job for `superset init`.
-
-A first-party Liteset Helm chart is on the roadmap; see [issues](https://github.com/happykust/liteset/issues) if you want to help.
+:::tip Production reference
+The Helm chart is the K8s companion to the Docker images documented in [Production Docker Deployment](https://github.com/happykust/liteset/blob/main/docs/deployment/production-docker.md). Read that page first for the required secrets, image targets (`lean` / `dev` / `ci`) and healthcheck endpoints.
 :::
-
-Running Apache Superset on Kubernetes is supported with the official [Helm](https://helm.sh/) chart found in the [Superset helm repository](https://apache.github.io/superset/index.yaml). Most of the chart structure (probes, init containers, RBAC, Celery beat, optional `node-exporter` sidecars) carries over to Liteset; only the **container command** and **WebSocket sidecar** need to change.
 
 ## Prerequisites
 
-- A Kubernetes cluster
-- Helm installed
+- A Kubernetes cluster (1.27+ recommended)
+- [Helm](https://helm.sh/) 3.10+
+- A clone of the [`liteset` repository](https://github.com/happykust/liteset) — the chart is consumed locally, it is not published to a Helm registry
 
 :::note
-For simpler, single host environments, we recommend using
-[minikube](https://minikube.sigs.k8s.io/docs/start/) which is easy to setup on many platforms
-and works fantastically well with the Helm chart referenced here.
+For single-host environments we recommend [minikube](https://minikube.sigs.k8s.io/docs/start/) or `kind`, both of which work well with this chart.
 :::
 
 ## Running
 
-1. Add the Superset helm repository
+1. Clone the repository
 
 ```sh
-helm repo add superset https://apache.github.io/superset
-"superset" has been added to your repositories
+git clone --depth=1 https://github.com/happykust/liteset.git
+cd liteset
 ```
 
-2. View charts in repo
+2. Inspect the bundled subcharts
 
-```sh
-helm search repo superset
-NAME                    CHART VERSION   APP VERSION     DESCRIPTION
-superset/superset       0.1.1           1.0             Apache Superset is a modern, enterprise-ready b...
+The Liteset Helm chart depends on the Bitnami `postgresql` and `redis` subcharts (declared in `helm/superset/Chart.yaml`). They are vendored under `helm/superset/charts/`. Run `helm dependency build helm/superset` if your local cache is missing them.
+
+:::warning Bitnami legacy images
+Recent Bitnami releases moved most container images to a paid "Bitnami Premium" registry, so a fresh `helm install` may pull `dockerhub.io/bitnamilegacy/postgresql:...` and fail to start. The chart's default `values.yaml` pins working tags; if you override the PostgreSQL or Redis image, validate the tag exists publicly. See the troubleshooting notes in [Production Docker Deployment](https://github.com/happykust/liteset/blob/main/docs/deployment/production-docker.md) for the same issue at the Docker layer.
+:::
+
+3. Configure your overrides
+
+Create a `my-values.yaml` and override at least the items below. Every key is documented in [`helm/superset/values.yaml`](https://github.com/happykust/liteset/tree/main/helm/superset/values.yaml).
+
+```yaml
+# my-values.yaml
+
+# REQUIRED: secret key used to sign session cookies and encrypt secrets.
+# Generate with:  openssl rand -base64 42
+extraSecretEnv:
+  LITESET_SECRET_KEY: "CHANGE_ME_TO_A_LONG_RANDOM_STRING"
+
+# Optional: override the image. Defaults to the lean Liteset image.
+# image:
+#   repository: ghcr.io/happykust/liteset
+#   tag: "6.0.0"
+#   pullPolicy: IfNotPresent
+
+# Default values.yaml already exports SUPERSET_CONFIG_PATH so the
+# rendered superset_config.py is picked up by pydantic-settings.
+# Only override extraEnv if you need to inject additional variables.
+extraEnv:
+  # Example: enable proxy fix behind an ingress that does TLS offloading.
+  # ENABLE_PROXY_FIX: "True"
 ```
 
-3. Configure your setting overrides
+`LITESET_SECRET_KEY` is mandatory — Liteset's `SupersetSettings` will refuse to start without it. `SUPERSET_CONFIG_PATH` is already set in the default `values.yaml` (it points at `/app/pythonpath/superset_config.py`) and almost never needs to be changed.
 
-Just like any typical Helm chart, you'll need to craft a `values.yaml` file that would define/override any of the values exposed into the default [values.yaml](https://github.com/happykust/liteset/tree/main/helm/superset/values.yaml), or from any of the dependent charts it depends on:
-
-- [bitnami/redis](https://artifacthub.io/packages/helm/bitnami/redis)
-- [bitnami/postgresql](https://artifacthub.io/packages/helm/bitnami/postgresql)
-
-More info down below on some important overrides you might need.
-
-4. Install and run
+4. Install
 
 ```sh
-helm upgrade --install --values my-values.yaml superset superset/superset
+helm install superset helm/superset \
+  --values my-values.yaml \
+  --create-namespace --namespace superset
 ```
 
-You should see various pods popping up, such as:
+After a minute or so you should see something like:
 
 ```sh
-kubectl get pods
+kubectl -n superset get pods
 NAME                                    READY   STATUS      RESTARTS   AGE
 superset-celerybeat-7cdcc9575f-k6xmc    1/1     Running     0          119s
 superset-f5c9c667-dw9lp                 1/1     Running     0          4m7s
@@ -84,123 +96,107 @@ superset-worker-75b48bbcc-jmmjr         1/1     Running     0          4m8s
 superset-worker-75b48bbcc-qrq49         1/1     Running     0          4m12s
 ```
 
-The exact list will depend on some of your specific configuration overrides but you should generally expect:
+The exact list depends on your overrides; you should generally expect:
 
-- N `superset-xxxx-yyyy` and `superset-worker-xxxx-yyyy` pods (depending on your `supersetNode.replicaCount` and `supersetWorker.replicaCount` values)
-- 1 `superset-postgresql-0` depending on your postgres settings
-- 1 `superset-redis-master-0` depending on your redis settings
-- 1 `superset-celerybeat-xxxx-yyyy` pod if you have `supersetCeleryBeat.enabled = true` in your values overrides
+- N `superset-xxxx-yyyy` (web) and `superset-worker-xxxx-yyyy` (Celery worker) pods depending on `supersetNode.replicaCount` and `supersetWorker.replicaCount`
+- 1 `superset-postgresql-0` (or your external PostgreSQL)
+- 1 `superset-redis-master-0` (or your external Redis)
+- 1 `superset-celerybeat-xxxx-yyyy` if `supersetCeleryBeat.enabled: true`
 
-1. Access it
+There is no WebSocket sidecar — Liteset serves WebSockets natively from the main `superset-xxxx-yyyy` pods.
 
-The chart will publish appropriate services to expose the Superset UI internally within your k8s cluster. To access it externally you will have to either:
+5. Access it
+
+The chart publishes Services to expose the Liteset UI within your cluster. To access it externally:
 
 - Configure the Service as a `LoadBalancer` or `NodePort`
-- Set up an `Ingress` for it - the chart includes a definition, but will need to be tuned to your needs (hostname, tls, annotations etc...)
-- Run `kubectl port-forward superset-xxxx-yyyy :8088` to directly tunnel one pod's port into your localhost
+- Set up an `Ingress` (the chart includes a template; you'll want to tune hostname, TLS and annotations)
+- Run `kubectl -n superset port-forward svc/superset 8088:8088` to tunnel locally
 
-Depending how you configured external access, the URL will vary. Once you've identified the appropriate URL you can log in with:
-
-- user: `admin`
-- password: `admin`
+Then log in with the default `admin` / `admin` credentials (override with `init.adminUser` in your values).
 
 ## Important settings
 
 ### Security settings
 
-Default security settings and passwords are included but you **MUST** update them to run `prod` instances, in particular:
+Default passwords are baked into the chart for first-boot convenience but **must** be rotated for any non-disposable environment:
 
 ```yaml
 postgresql:
-  postgresqlPassword: superset
+  postgresqlPassword: "<strong random string>"
+
+extraSecretEnv:
+  LITESET_SECRET_KEY: "<strong random string, openssl rand -base64 42>"
 ```
 
-Make sure, you set a unique strong complex alphanumeric string for your SECRET_KEY and use a tool to help you generate
-a sufficiently random sequence.
+Liteset reads `LITESET_SECRET_KEY` from the environment. If you previously deployed with a different key and need to rotate it without losing encrypted database credentials, set the old value as `PREVIOUS_SECRET_KEY` in `configOverrides` and run `superset re-encrypt-secrets` from the init pod — the same procedure as upstream Apache Superset.
 
-- To generate a good key you can run, `openssl rand -base64 42`
+### External PostgreSQL / Redis
+
+To disable the bundled subcharts and point at managed services:
 
 ```yaml
-configOverrides:
-  secret: |
-    SECRET_KEY = 'YOUR_OWN_RANDOM_GENERATED_SECRET_KEY'
+postgresql:
+  enabled: false
+
+redis:
+  enabled: false
+
+supersetNode:
+  connections:
+    db_host: "postgres.internal"
+    db_port: "5432"
+    db_user: "liteset"
+    db_pass: "..."   # use envFromSecrets in production
+    db_name: "liteset"
+    redis_host: "redis.internal"
+    redis_port: "6379"
 ```
-
-If you want to change the previous secret key then you should rotate the keys.
-Default secret key for kubernetes deployment is `thisISaSECRET_1234`
-
-```yaml
-configOverrides:
-  my_override: |
-    PREVIOUS_SECRET_KEY = 'YOUR_PREVIOUS_SECRET_KEY'
-    SECRET_KEY = 'YOUR_OWN_RANDOM_GENERATED_SECRET_KEY'
-init:
-  command:
-    - /bin/sh
-    - -c
-    - |
-      . {{ .Values.configMountPath }}/superset_bootstrap.sh
-      superset re-encrypt-secrets
-      . {{ .Values.configMountPath }}/superset_init.sh
-```
-
-:::note
-Superset uses [Scarf Gateway](https://about.scarf.sh/scarf-gateway) to collect telemetry data.  Knowing the installation counts for different Superset versions informs the  project's decisions about patching and long-term support. Scarf purges personally identifiable information (PII) and provides only aggregated statistics.
-
-To opt-out of this data collection in your Helm-based installation, edit the `repository:` line in your `helm/superset/values.yaml` file, replacing `apachesuperset.docker.scarf.sh/apache/superset` with `apache/superset` to pull the image directly from Docker Hub.
-:::
 
 ### Dependencies
 
-Install additional packages and do any other bootstrap configuration in the bootstrap script.
-For production clusters it's recommended to build own image with this step done in CI.
+Extra Python packages can be installed via `bootstrapScript` (sourced by every pod at startup). For production clusters we strongly recommend baking these into a custom image instead — pods start faster and don't depend on PyPI being reachable at boot:
 
-:::note
-
-Superset requires a Python DB-API database driver and a SQLAlchemy
-dialect to be installed for each datastore you want to connect to.
-
-See [Install Database Drivers](/docs/configuration/databases) for more information.
-It is recommended that you refer to versions listed in
-[pyproject.toml](https://github.com/happykust/liteset/blob/main/pyproject.toml)
-instead of hard-coding them in your bootstrap script, as seen below.
-
-:::
-
-The following example installs the drivers for BigQuery and Elasticsearch, allowing you to connect to these data sources within your Superset setup:
-
-```yaml
-bootstrapScript: |
-  #!/bin/bash
-  uv pip install .[postgres] \
-    .[bigquery] \
-    .[elasticsearch] &&\
-  if [ ! -f ~/bootstrap ]; then echo "Running Superset with uid {{ .Values.runAsUser }}" > ~/bootstrap; fi
+```dockerfile
+FROM ghcr.io/happykust/liteset:6.0.0
+USER root
+RUN . /app/.venv/bin/activate && uv pip install \
+    snowflake-sqlalchemy \
+    redshift-connector
+USER superset
 ```
+
+See [Production Docker Deployment](https://github.com/happykust/liteset/blob/main/docs/deployment/production-docker.md) for the full custom-image workflow.
 
 ### superset_config.py
 
-The default `superset_config.py` is fairly minimal and you will very likely need to extend it. This is done by specifying one or more key/value entries in `configOverrides`, e.g.:
+The default `superset_config.py` rendered by the chart is intentionally minimal; you'll extend it via `configOverrides`:
 
 ```yaml
 configOverrides:
   my_override: |
-    # This will make sure the redirect_uri is properly computed, even with SSL offloading
+    # Make sure the redirect_uri is properly computed when an ingress does TLS offloading
     ENABLE_PROXY_FIX = True
     FEATURE_FLAGS = {
-        "DYNAMIC_PLUGINS": True
+        "DYNAMIC_PLUGINS": True,
     }
 ```
 
-Those will be evaluated as Helm templates and therefore will be able to reference other `values.yaml` variables e.g. `{{ .Values.ingress.hosts[0] }}` will resolve to your ingress external domain.
+Each entry is rendered as a Helm template, so you can reference other `values.yaml` variables (e.g. `{{ .Values.ingress.hosts[0] }}`).
 
-The entire `superset_config.py` will be installed as a secret, so it is safe to pass sensitive parameters directly... however it might be more readable to use secret env variables for that.
+The entire `superset_config.py` is stored as a Secret in the cluster, so it is safe to put sensitive parameters directly inside `configOverrides` — though `extraSecretEnv` plus `os.environ.get("VAR")` is usually cleaner.
 
-Full python files can be provided by running `helm upgrade --install --values my-values.yaml --set-file configOverrides.oauth=set_oauth.py`
+A full Python file can be loaded with:
 
-### Environment Variables
+```sh
+helm upgrade --install --values my-values.yaml \
+    --set-file configOverrides.oauth=set_oauth.py \
+    superset helm/superset
+```
 
-Those can be passed as key/values either with `extraEnv` or `extraSecretEnv` if they're sensitive. They can then be referenced from `superset_config.py` using e.g. `os.environ.get("VAR")`.
+### Environment variables
+
+`extraEnv` (plain ConfigMap) and `extraSecretEnv` (Secret) are both passed into the web, worker, beat and init pods. They can be referenced from `superset_config.py` via `os.environ.get("VAR")`:
 
 ```yaml
 extraEnv:
@@ -214,18 +210,17 @@ extraSecretEnv:
 
 configOverrides:
   smtp: |
-    import ast
-    SMTP_HOST = os.getenv("SMTP_HOST","localhost")
-    SMTP_STARTTLS = ast.literal_eval(os.getenv("SMTP_STARTTLS", "True"))
-    SMTP_SSL = ast.literal_eval(os.getenv("SMTP_SSL", "False"))
-    SMTP_USER = os.getenv("SMTP_USER","superset")
-    SMTP_PORT = os.getenv("SMTP_PORT",25)
-    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD","superset")
+    SMTP_HOST = os.getenv("SMTP_HOST", "localhost")
+    SMTP_STARTTLS = os.getenv("SMTP_STARTTLS", "True").lower() == "true"
+    SMTP_SSL = os.getenv("SMTP_SSL", "False").lower() == "true"
+    SMTP_USER = os.getenv("SMTP_USER", "superset")
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "25"))
+    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "superset")
 ```
 
 ### System packages
 
-If new system packages are required, they can be installed before application startup by overriding the container's `command`, e.g.:
+If new system packages are required, install them by overriding the container `command`. The same pattern works for the web, worker and beat pods:
 
 ```yaml
 supersetWorker:
@@ -239,12 +234,13 @@ supersetWorker:
       apt clean
 
       # Run celery worker
-      . {{ .Values.configMountPath }}/superset_bootstrap.sh; celery --app=superset.tasks.celery_app:app worker
+      . {{ .Values.configMountPath }}/superset_bootstrap.sh
+      celery --app=superset.tasks.celery_app:app worker
 ```
 
 ### Data sources
 
-Data source definitions can be automatically declared by providing key/value yaml definitions in `extraConfigs`:
+Database connections can be declared declaratively via `extraConfigs`:
 
 ```yaml
 extraConfigs:
@@ -261,197 +257,33 @@ extraConfigs:
       tables: []
 ```
 
-Those will also be mounted as secrets and can include sensitive parameters.
+These are mounted as Secrets and may include sensitive parameters.
 
-## Configuration Examples
+## Configuration examples
 
-### Setting up OAuth
+### OAuth and SSO
 
-:::note
-
-OAuth setup requires that the [authlib](https://authlib.org/) Python library is installed. This can
-be done using `pip` by updating the `bootstrapScript`. See the [Dependencies](#dependencies) section
-for more information.
-
-:::
-
-```yaml
-extraEnv:
-  AUTH_DOMAIN: example.com
-
-extraSecretEnv:
-  GOOGLE_KEY: xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.apps.googleusercontent.com
-  GOOGLE_SECRET: xxxxxxxxxxxxxxxxxxxxxxxx
-
-configOverrides:
-  enable_oauth: |
-    # This will make sure the redirect_uri is properly computed, even with SSL offloading
-    ENABLE_PROXY_FIX = True
-
-    from flask_appbuilder.security.manager import AUTH_OAUTH
-    AUTH_TYPE = AUTH_OAUTH
-    OAUTH_PROVIDERS = [
-        {
-            "name": "google",
-            "icon": "fa-google",
-            "token_key": "access_token",
-            "remote_app": {
-                "client_id": os.getenv("GOOGLE_KEY"),
-                "client_secret": os.getenv("GOOGLE_SECRET"),
-                "api_base_url": "https://www.googleapis.com/oauth2/v2/",
-                "client_kwargs": {"scope": "email profile"},
-                "request_token_url": None,
-                "access_token_url": "https://accounts.google.com/o/oauth2/token",
-                "authorize_url": "https://accounts.google.com/o/oauth2/auth",
-                "authorize_params": {"hd": os.getenv("AUTH_DOMAIN", "")}
-            },
-        }
-    ]
-
-    # Map Authlib roles to superset roles
-    AUTH_ROLE_ADMIN = 'Admin'
-    AUTH_ROLE_PUBLIC = 'Public'
-
-    # Will allow user self registration, allowing to create Flask users from Authorized User
-    AUTH_USER_REGISTRATION = True
-
-    # The default user self registration role
-    AUTH_USER_REGISTRATION_ROLE = "Admin"
-```
+OAuth, LDAP and other authentication backends are configured the same way as upstream Apache Superset — by overriding `AUTH_TYPE`, `OAUTH_PROVIDERS` and friends in `superset_config.py`. See the OAuth section of [Configuring Liteset](/docs/configuration/configuring-superset) for the full configuration surface; copy the snippet into a `configOverrides` entry and put any client IDs/secrets in `extraSecretEnv`.
 
 ### Enable Alerts and Reports
 
-For this, as per the [Alerts and Reports doc](/docs/configuration/alerts-reports), you will need to:
+Follow the platform-agnostic [Alerts and Reports documentation](/docs/configuration/alerts-reports). On Kubernetes you will typically:
 
-#### Install a supported webdriver in the Celery worker
-
-This is done either by using a custom image that has the webdriver pre-installed, or installing at startup time by overriding the `command`. Here's a working example for `chromedriver`:
-
-```yaml
-supersetWorker:
-  command:
-    - /bin/sh
-    - -c
-    - |
-      # Install chrome webdriver
-      # See https://github.com/apache/superset/blob/4fa3b6c7185629b87c27fc2c0e5435d458f7b73d/docs/src/pages/docs/installation/email_reports.mdx
-      apt-get update
-      apt-get install -y wget
-      wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-      apt-get install -y --no-install-recommends ./google-chrome-stable_current_amd64.deb
-      wget https://chromedriver.storage.googleapis.com/88.0.4324.96/chromedriver_linux64.zip
-      apt-get install -y zip
-      unzip chromedriver_linux64.zip
-      chmod +x chromedriver
-      mv chromedriver /usr/bin
-      apt-get autoremove -yqq --purge
-      apt-get clean
-      rm -f google-chrome-stable_current_amd64.deb chromedriver_linux64.zip
-
-      # Run
-      . {{ .Values.configMountPath }}/superset_bootstrap.sh; celery --app=superset.tasks.celery_app:app worker
-```
-
-#### Run the Celery beat
-
-This pod will trigger the scheduled tasks configured in the alerts and reports UI section:
+1. Install a Playwright/Chromium-capable image for the Celery worker (either bake it into your custom image or install via `bootstrapScript`).
+2. Enable the Celery beat:
 
 ```yaml
 supersetCeleryBeat:
   enabled: true
 ```
 
-#### Configure the appropriate Celery jobs and SMTP/Slack settings
+3. Configure SMTP/Slack via `extraEnv` + `extraSecretEnv` (see the SMTP example above).
 
-```yaml
-extraEnv:
-  SMTP_HOST: smtp.gmail.com
-  SMTP_USER: user@gmail.com
-  SMTP_PORT: "587"
-  SMTP_MAIL_FROM: user@gmail.com
-
-extraSecretEnv:
-  SLACK_API_TOKEN: xoxb-xxxx-yyyy
-  SMTP_PASSWORD: xxxx-yyyy
-
-configOverrides:
-  feature_flags: |
-    import ast
-
-    FEATURE_FLAGS = {
-        "ALERT_REPORTS": True
-    }
-
-    SMTP_HOST = os.getenv("SMTP_HOST","localhost")
-    SMTP_STARTTLS = ast.literal_eval(os.getenv("SMTP_STARTTLS", "True"))
-    SMTP_SSL = ast.literal_eval(os.getenv("SMTP_SSL", "False"))
-    SMTP_USER = os.getenv("SMTP_USER","superset")
-    SMTP_PORT = os.getenv("SMTP_PORT",25)
-    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD","superset")
-    SMTP_MAIL_FROM = os.getenv("SMTP_MAIL_FROM","superset@superset.com")
-
-    SLACK_API_TOKEN = os.getenv("SLACK_API_TOKEN",None)
-  celery_conf: |
-    from celery.schedules import crontab
-
-    class CeleryConfig:
-      broker_url = f"redis://{env('REDIS_HOST')}:{env('REDIS_PORT')}/0"
-      imports = (
-          "superset.sql_lab",
-          "superset.tasks.cache",
-          "superset.tasks.scheduler",
-      )
-      result_backend = f"redis://{env('REDIS_HOST')}:{env('REDIS_PORT')}/0"
-      task_annotations = {
-          "sql_lab.get_sql_results": {
-              "rate_limit": "100/s",
-          },
-      }
-      beat_schedule = {
-          "reports.scheduler": {
-              "task": "reports.scheduler",
-              "schedule": crontab(minute="*", hour="*"),
-          },
-          "reports.prune_log": {
-              "task": "reports.prune_log",
-              'schedule': crontab(minute=0, hour=0),
-          },
-          'cache-warmup-hourly': {
-              "task": "cache-warmup",
-              "schedule": crontab(minute="*/30", hour="*"),
-              "kwargs": {
-                  "strategy_name": "top_n_dashboards",
-                  "top_n": 10,
-                  "since": "7 days ago",
-              },
-          }
-      }
-
-    CELERY_CONFIG = CeleryConfig
-  reports: |
-    EMAIL_PAGE_RENDER_WAIT = 60
-    WEBDRIVER_BASEURL = "http://{{ template "superset.fullname" . }}:{{ .Values.service.port }}/"
-    WEBDRIVER_BASEURL_USER_FRIENDLY = "https://www.example.com/"
-    WEBDRIVER_TYPE= "chrome"
-    WEBDRIVER_OPTION_ARGS = [
-        "--force-device-scale-factor=2.0",
-        "--high-dpi-support=2.0",
-        "--headless",
-        "--disable-gpu",
-        "--disable-dev-shm-usage",
-        # This is required because our process runs as root (in order to install pip packages)
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-extensions",
-    ]
-```
-
-### Load the Examples data and dashboards
-
-If you are trying Superset out and want some data and dashboards to explore, you can load some examples by creating a `my_values.yaml` and deploying it as described above in the **Configure your setting overrides** step of the **Running** section.
-To load the examples, add the following to the `my_values.yaml` file:
+### Load the example dashboards
 
 ```yaml
 init:
   loadExamples: true
 ```
+
+The `superset-init-db` Job will populate the metadata DB with example datasets and dashboards on first install.

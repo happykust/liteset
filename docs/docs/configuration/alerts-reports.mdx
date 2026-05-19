@@ -38,13 +38,13 @@ Screenshots will be taken but no messages actually sent as long as `ALERT_REPORT
 - You must install a headless browser, for taking screenshots of the charts and dashboards. Only Firefox and Chrome are currently supported.
   > If you choose Chrome, you must also change the value of `WEBDRIVER_TYPE` to `"chrome"` in your `superset_config.py`.
 
-Note: All the components required (Firefox headless browser, Redis, Postgres db, celery worker and celery beat) are present in the *dev* docker image if you are following [Installing Superset Locally](/docs/installation/docker-compose/).
+Note: All the components required (Firefox headless browser, Redis, Postgres db, celery worker and celery beat) are present in the *dev* docker image if you are following [Installing Liteset Locally](/docs/installation/docker-compose/).
 All you need to do is add the required config variables described in this guide (See `Detailed Config`).
 
-If you are running a non-dev docker image, e.g., a stable release like `apache/superset:3.1.0`, that image does not include a headless browser.  Only the `superset_worker` container needs this headless browser to browse to the target chart or dashboard.
-You can either install and configure the headless browser - see "Custom Dockerfile" section below - or when deploying via `docker compose`, modify your `docker-compose.yml` file to use a dev image for the worker container and a stable release image for the `superset_app` container.
+If you are running a non-dev Liteset image (the `liteset:lean` target or a tagged release), that image does not include a headless browser. Only the `superset_worker` container needs this headless browser to browse to the target chart or dashboard.
+You can either install and configure the headless browser - see "Custom Dockerfile" section below - or when deploying via `docker compose`, modify your `docker-compose.yml` file to use a dev image for the worker container and a lean release image for the `superset_app` container.
 
-*Note*: In this context, a "dev image" is the same application software as its corresponding non-dev image, just bundled with additional tools.  So an image like `3.1.0-dev` is identical to `3.1.0` when it comes to stability, functionality, and running in production.  The actual "in-development" versions of Superset - cutting-edge and unstable - are not tagged with version numbers on Docker Hub and will display version `0.0.0-dev` within the Superset UI.
+*Note*: In this context, a "dev image" is the same application software as its corresponding lean image, just bundled with additional tools (Firefox, geckodriver, build deps).  An image like `liteset:dev` is identical to `liteset:lean` when it comes to stability, functionality, and running in production.
 
 ### Slack integration
 
@@ -60,7 +60,7 @@ To send alerts and reports to Slack channels, you need to create a new Slack App
    - `groups:read`
 4. At the top of the "OAuth and Permissions" section, click "install to workspace".
 5. Select a default channel for your app and continue.
-   (You can post to any channel by inviting your Superset app into that channel).
+   (You can post to any channel by inviting your Liteset app into that channel).
 6. The app should now be installed in your workspace, and a "Bot User OAuth Access Token" should have been created. Copy that token in the `SLACK_API_TOKEN` variable of your `superset_config.py`.
 7. Ensure the feature flag `ALERT_REPORT_SLACK_V2` is set to True in `superset_config.py`
 8. Restart the service (or run `superset init`) to pull in the new configuration.
@@ -97,7 +97,7 @@ SLACK_API_RATE_LIMIT_RETRY_COUNT = 5
 - One or more `celery worker`
 - A single `celery beat`
 
-This process also works in a Docker swarm environment, you would just need to add `Deploy:` to the Superset, Redis and Postgres services along with your specific configs for your swarm.
+This process also works in a Docker swarm environment, you would just need to add `Deploy:` to the Liteset, Redis and Postgres services along with your specific configs for your swarm.
 
 ### Detailed config
 
@@ -107,7 +107,7 @@ You can find documentation about each field in the default `config.py` in the Gi
 
 You need to replace default values with your custom Redis, Slack and/or SMTP config.
 
-Superset uses Celery beat and Celery worker(s) to send alerts and reports.
+Liteset uses Celery beat and Celery worker(s) to send alerts and reports.
 
 - The beat is the scheduler that tells the worker when to perform its tasks. This schedule is defined when you create the alert or report.
 - The worker will process the  tasks that need to be performed when an alert or report is fired.
@@ -165,7 +165,7 @@ SMTP_SSL = False
 SMTP_USER = "your_user" # use the empty string "" if using an unauthenticated SMTP server
 SMTP_PASSWORD = "your_password" # use the empty string "" if using an unauthenticated SMTP server
 SMTP_MAIL_FROM = "noreply@youremail.com"
-EMAIL_REPORTS_SUBJECT_PREFIX = "[Superset] " # optional - overwrites default value in config.py of "[Report] "
+EMAIL_REPORTS_SUBJECT_PREFIX = "[Liteset] " # optional - overwrites default value in config.py of "[Report] "
 
 # WebDriver configuration
 # If you use Firefox, you can stick with default values
@@ -212,7 +212,7 @@ Please refer to `ExecutorType` in the codebase for other executor types.
   processes with `celery worker --pool=prefork --max-tasks-per-child=128 ...`
 - It is recommended to run separate workers for the `sql_lab` and `email_reports` tasks. This can be
   done using the `queue` field in `task_annotations`.
-- Adjust `WEBDRIVER_BASEURL` in your configuration file if celery workers can’t access Superset via
+- Adjust `WEBDRIVER_BASEURL` in your configuration file if celery workers can’t access Liteset via
   its default value of `http://0.0.0.0:8080/`.
 
 It's also possible to specify a minimum interval between each report's execution through the config file:
@@ -237,15 +237,15 @@ ALERT_MINIMUM_INTERVAL = alert_dynamic_minimal_interval
 
 ## Custom Dockerfile
 
-If you're running the dev version of a released Superset image, like `apache/superset:3.1.0-dev`, you should be set with the above.
+If you're running the dev variant of a released Liteset image (`liteset:dev` or a tagged equivalent), you should be set with the above — Firefox and geckodriver are already baked in.
 
-But if you're building your own image, or starting with a non-dev version, a webdriver (and headless browser) is needed to capture screenshots of the charts and dashboards which are then sent to the recipient.
-Here's how you can modify your Dockerfile to take the screenshots either with Firefox or Chrome.
+But if you're building your own image, or starting with the lean variant, a webdriver (and headless browser) is needed to capture screenshots of the charts and dashboards which are then sent to the recipient.
+Here's how you can modify your Dockerfile to take the screenshots either with Firefox or Chrome. Liteset publishes its own images under the `liteset` namespace — substitute your own registry path if you self-host.
 
 ### Using Firefox
 
 ```docker
-FROM apache/superset:3.1.0
+FROM liteset:lean
 
 USER root
 
@@ -266,7 +266,7 @@ USER superset
 ### Using Chrome
 
 ```docker
-FROM apache/superset:3.1.0
+FROM liteset:lean
 
 USER root
 
@@ -297,7 +297,7 @@ There are many reasons that reports might not be working.  Try these steps to ch
 
 ### Confirm feature flag is enabled and you have sufficient permissions
 
-If you don't see "Alerts & Reports" under the *Manage* section of the Settings dropdown in the Superset UI, you need to enable the `ALERT_REPORTS` feature flag (see above). Enable another feature flag and check to see that it took effect, to verify that your config file is getting loaded.
+If you don't see "Alerts & Reports" under the *Manage* section of the Settings dropdown in the Liteset UI, you need to enable the `ALERT_REPORTS` feature flag (see above). Enable another feature flag and check to see that it took effect, to verify that your config file is getting loaded.
 
 Log in as an admin user to ensure you have adequate permissions.
 
@@ -309,7 +309,7 @@ This is the best source of information about the problem.  In a docker compose d
 
 To take a screenshot, the worker visits the dashboard or chart using a headless browser, then takes a screenshot. If you are able to send a chart as CSV or text but can't send as PNG, your problem may lie with the browser.
 
-Superset docker images that have a tag ending with `-dev` have the Firefox headless browser and geckodriver already installed. You can test that these are installed and in the proper path by entering your Superset worker and running `firefox --headless` and then `geckodriver`. Both commands should start those applications.
+Liteset docker images that have a tag ending with `-dev` have the Firefox headless browser and geckodriver already installed. You can test that these are installed and in the proper path by entering your Liteset worker and running `firefox --headless` and then `geckodriver`. Both commands should start those applications.
 
 If you are handling the installation of that software on your own, or wish to use Chromium instead, do your own verification to ensure that the headless browser opens successfully in the worker environment.
 
@@ -317,7 +317,7 @@ If you are handling the installation of that software on your own, or wish to us
 
 One symptom of an invalid connection to an email server is receiving an error of `[Errno 110] Connection timed out` in your logs when the report tries to send.
 
-Confirm via testing that your outbound email configuration is correct.  Here is the simplest test, for an un-authenticated email SMTP email service running on port 25.  If you are sending over SSL, for instance, study how [Superset's codebase sends emails](https://github.com/happykust/liteset/blob/main/superset/utils/core.py#L818) and then test with those commands and arguments.
+Confirm via testing that your outbound email configuration is correct.  Here is the simplest test, for an un-authenticated email SMTP email service running on port 25.  If you are sending over SSL, for instance, study how [Liteset's codebase sends emails](https://github.com/happykust/liteset/blob/main/superset/reports/notifications/email.py) and then test with those commands and arguments.
 
 Start Python in your worker environment, replace all example values, and run:
 
@@ -352,7 +352,7 @@ The worker may be unable to reach the report. It will use the value of `WEBDRIVE
 
 Check this by attempting to `curl` the URL of a report that you see in the error logs of your worker. For instance, from the worker environment, run `curl http://superset_app:8088/superset/dashboard/1/`. You may get different responses depending on whether the dashboard exists - for example, you may need to change the `1` in that URL. If there's a URL in your logs from a failed report screenshot, that's a good place to start. The goal is to determine a valid value for `WEBDRIVER_BASEURL` and determine if an issue like HTTPS or authentication is redirecting your worker.
 
-In a deployment with authentication measures enabled like HTTPS and Single Sign-On, it may make sense to have the worker navigate directly to the Superset application running in the same location, avoiding the need to sign in.  For instance, you could use `WEBDRIVER_BASEURL="http://superset_app:8088"` for a docker compose deployment, and set `"force_https": False,` in your `TALISMAN_CONFIG`.
+In a deployment with authentication measures enabled like HTTPS and Single Sign-On, it may make sense to have the worker navigate directly to the Liteset application running in the same location, avoiding the need to sign in.  For instance, you could use `WEBDRIVER_BASEURL="http://superset_app:8088"` for a docker compose deployment, and set `"force_https": False,` in your `TALISMAN_CONFIG`.
 
 ## Scheduling Queries as Reports
 

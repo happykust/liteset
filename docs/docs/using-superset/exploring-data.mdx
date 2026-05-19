@@ -9,7 +9,7 @@ import useBaseUrl from "@docusaurus/useBaseUrl";
 
 ## Exploring Data in Superset
 
-In this tutorial, we will introduce key concepts in Apache Superset through the exploration of a
+In this tutorial, we will introduce key concepts in Liteset through the exploration of a
 real dataset which contains the flights made by employees of a UK-based organization in 2011. The
 following information about each flight is given:
 
@@ -64,7 +64,7 @@ launch an Explore workflow using this dataset.
 In this section, we'll create a table visualization
 to show the number of flights and cost per travel class.
 
-By default, Apache Superset only shows the last week of data. In our example, we want to visualize all
+By default, Liteset only shows the last week of data. In our example, we want to visualize all
 of the data in the dataset. Click the **Time ‣ Time Range** section and change
 the **Range Type** to **No Filter**.
 
@@ -135,7 +135,7 @@ away dates).
 <img src={useBaseUrl("/img/tutorial/select_dates_pivot_table.png" )} />
 
 Next, within the **Query** section, remove the default COUNT(\*) and add Cost, keeping the default
-SUM aggregate. Note that Apache Superset will indicate the type of the metric by the symbol on the
+SUM aggregate. Note that Liteset will indicate the type of the metric by the symbol on the
 left hand column of the list (ABC for string, # for number, a clock face for time, etc.).
 
 In **Group by**, select **Time**: this will automatically use the Time Column and Time Grain
@@ -252,7 +252,7 @@ appear automatically in the Tutorial Dashboard.
 
 ### Advanced Analytics
 
-In this section, we are going to explore the Advanced Analytics feature of Apache Superset that
+In this section, we are going to explore the Advanced Analytics feature of Liteset that
 allows you to apply additional transformations to your data. The three types of transformation are:
 
 **Setting up the base chart**

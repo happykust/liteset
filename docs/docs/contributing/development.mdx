@@ -306,14 +306,14 @@ degrees. It's been difficult to maintain this wide array of methods and insure t
 functioning across environments.
 :::
 
-### Flask server
+### Uvicorn dev server
 
 #### OS Dependencies
 
-Make sure your machine meets the [OS dependencies](https://superset.apache.org/docs/installation/pypi#os-dependencies) before following these steps.
+Make sure your machine meets the [OS dependencies](/docs/installation/pypi#os-dependencies) before following these steps.
 You also need to install MySQL.
 
-Ensure that you are using Python version 3.9, 3.10 or 3.11, then proceed with:
+Ensure that you are using a supported Python version (3.10 or 3.11), then proceed with:
 
 ```bash
 # Create a virtual environment and activate it (recommended)
@@ -323,10 +323,10 @@ source venv/bin/activate
 # Install external dependencies
 pip install -r requirements/development.txt
 
-# Install Superset in editable (development) mode
+# Install Liteset in editable (development) mode
 pip install -e .
 
-# Initialize the database
+# Initialize the database (Alembic runs via psycopg2; runtime uses asyncpg)
 superset db upgrade
 
 # Create an admin user in your metadata database (use `admin` as username to be able to load the examples)
@@ -339,13 +339,19 @@ superset init
 # Note: you MUST have previously created an admin user with the username `admin` for this command to work.
 superset load-examples
 
-# Start the Flask dev web server from inside your virtualenv.
+# Start the Uvicorn dev server from inside your virtualenv.
 # Note that your page may not have CSS at this point.
 # See instructions below on how to build the front-end assets.
-superset run -p 8088 --with-threads --reload --debugger --debug
+uvicorn superset.app:create_app --factory --reload --reload-dir superset --port 8088 --loop uvloop
 ```
 
-Or you can install it via our Makefile
+The CLI also exposes a thin wrapper around Uvicorn that uses the same factory:
+
+```bash
+superset runserver --reload --port 8088
+```
+
+Or you can install it via our Makefile:
 
 ```bash
 # Create a virtual environment and activate it (recommended)
@@ -355,18 +361,18 @@ $ source venv/bin/activate
 # install pip packages + pre-commit
 $ make install
 
-# Install superset pip packages and setup env only
+# Install Liteset pip packages and setup env only
 $ make superset
 
 # Setup pre-commit only
 $ make pre-commit
 ```
 
-**Note: the FLASK_APP env var should not need to be set, as it's currently controlled
-via `.flaskenv`, however, if needed, it should be set to `superset.app:create_app()`**
-
-If you have made changes to the FAB-managed templates, which are not built the same way as the newer, React-powered front-end assets, you need to start the app without the `--with-threads` argument like so:
-`superset run -p 8088 --reload --debugger --debug`
+Liteset is an ASGI app — there is no `FLASK_APP` env var and no `.flaskenv` file. The
+application factory always lives at `superset.app:create_app` and is invoked by Uvicorn
+with `--factory`. The legacy `--with-threads` / `--debugger` Flask flags do not apply
+either; reloading is handled by Uvicorn's `--reload` and structured logging by Liteset's
+`LOGGING_CONFIGURATOR_CLASS`.
 
 #### Dependencies
 
@@ -393,26 +399,19 @@ To bring all dependencies up to date as per the restrictions defined in `setup.p
 
 This should be done periodically, but it is recommended to do thorough manual testing of the application to ensure no breaking changes have been introduced that aren't caught by the unit and integration tests.
 
-#### Logging to the browser console
+#### Customizing server logging
 
-This feature is only available on Python 3. When debugging your application, you can have the server logs sent directly to the browser console using the [ConsoleLog](https://github.com/betodealmeida/consolelog) package. You need to mutate the app, by adding the following to your `config.py` or `superset_config.py`:
-
-```python
-from console_log import ConsoleLog
-
-def FLASK_APP_MUTATOR(app):
-    app.wsgi_app = ConsoleLog(app.wsgi_app, app.logger)
-```
-
-Then make sure you run your WSGI server using the right worker type:
-
-```bash
-gunicorn "superset.app:create_app()" -k "geventwebsocket.gunicorn.workers.GeventWebSocketWorker" -b 127.0.0.1:8088 --reload
-```
+Liteset runs on Litestar/Uvicorn, not WSGI, so the legacy `ConsoleLog`/`gunicorn -k geventwebsocket`
+recipe no longer applies. Instead, configure logging via the `LOGGING_CONFIGURATOR_CLASS`
+setting in `superset_config.py` — the configurator receives the Litestar `app` instance
+on startup and can install custom handlers/filters. The defaults already silence noisy
+`uvicorn.access` / `uvicorn.error` records (see `superset/logging.py`). The legacy
+`FLASK_APP_MUTATOR` hook is still honoured for backwards compatibility and now receives
+the Litestar app object.
 
 ### Frontend
 
-Frontend assets (TypeScript, JavaScript, CSS, and images) must be compiled in order to properly display the web UI. The `superset-frontend` directory contains all NPM-managed frontend assets. Note that for some legacy pages there are additional frontend assets bundled with Flask-Appbuilder (e.g. jQuery and bootstrap). These are not managed by NPM and may be phased out in the future.
+Frontend assets (TypeScript, JavaScript, CSS, and images) must be compiled in order to properly display the web UI. The `superset-frontend` directory contains all NPM-managed frontend assets. Note that for some legacy pages there are additional frontend assets bundled with Flask-AppBuilder (e.g. jQuery and bootstrap); Liteset still ships these under `superset/static/appbuilder/` for FAB template compatibility. They are not managed by NPM and may be phased out in the future.
 
 #### Prerequisite
 
@@ -516,11 +515,11 @@ The dev server by default starts at `http://localhost:9000` and proxies the back
 
 So a typical development workflow is the following:
 
-1. [run Superset locally](#flask-server) using Flask, on port `8088` — but don't access it directly,<br/>
+1. [run Liteset locally](#uvicorn-dev-server) using Uvicorn, on port `8088` — but don't access it directly,<br/>
 
    ```bash
-   # Install Superset and dependencies, plus load your virtual environment first, as detailed above.
-   superset run -p 8088 --with-threads --reload --debugger --debug
+   # Install Liteset and dependencies, plus load your virtual environment first, as detailed above.
+   uvicorn superset.app:create_app --factory --reload --reload-dir superset --port 8088 --loop uvloop
    ```
 
 2. in parallel, run the Webpack dev server locally on port `9000`,<br/>
@@ -529,7 +528,7 @@ So a typical development workflow is the following:
    npm run dev-server
    ```
 
-3. access `http://localhost:9000` (the Webpack server, _not_ Flask) in your web browser. This will use the hot-reloading front-end assets from the Webpack development server while redirecting back-end queries to Flask/Superset: your changes on Superset codebase — either front or back-end — will then be reflected live in the browser.
+3. access `http://localhost:9000` (the Webpack server, _not_ the backend) in your web browser. This will use the hot-reloading front-end assets from the Webpack development server while redirecting back-end queries to Liteset: your changes on the codebase — either front or back-end — will then be reflected live in the browser.
 
 It's possible to change the Webpack server settings:
 
@@ -540,14 +539,14 @@ npm run dev-server
 # Run the dev server on a non-default port
 npm run dev-server -- --port=9001
 
-# Proxy backend requests to a Flask server running on a non-default port
+# Proxy backend requests to a Liteset server running on a non-default port
 npm run dev-server -- --env=--supersetPort=8081
 
 # Proxy to a remote backend but serve local assets
 npm run dev-server -- --env=--superset=https://superset-dev.example.com
 ```
 
-The `--superset=` option is useful in case you want to debug a production issue or have to setup Superset behind a firewall. It allows you to run Flask server in another environment while keep assets building locally for the best developer experience.
+The `--superset=` option is useful in case you want to debug a production issue or have to setup Liteset behind a firewall. It allows you to run the backend in another environment while keep assets building locally for the best developer experience.
 
 #### Other npm commands
 
@@ -767,15 +766,22 @@ For debugging locally using VSCode, you can configure a launch configuration fil
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Python: Flask",
+      "name": "Python: Uvicorn (Liteset)",
       "type": "python",
       "request": "launch",
-      "module": "flask",
+      "module": "uvicorn",
       "env": {
-        "FLASK_APP": "superset",
         "SUPERSET_ENV": "development"
       },
-      "args": ["run", "-p 8088", "--with-threads", "--reload", "--debugger"],
+      "args": [
+        "superset.app:create_app",
+        "--factory",
+        "--host", "0.0.0.0",
+        "--port", "8088",
+        "--reload",
+        "--reload-dir", "superset",
+        "--loop", "uvloop"
+      ],
       "jinja": true,
       "justMyCode": true
     }
@@ -785,8 +791,8 @@ For debugging locally using VSCode, you can configure a launch configuration fil
 
 #### Raw Docker (without `docker compose`)
 
-Follow these instructions to debug the Flask app running inside a docker container. Note that
-this will run a barebones Superset web server,
+Follow these instructions to debug the Liteset Uvicorn app running inside a docker
+container. Note that this will run a barebones Liteset web server.
 
 First, add the following to the ./docker-compose.yaml file
 
@@ -833,18 +839,20 @@ apt install -y net-tools
 pip install debugpy
 ```
 
-Find the PID for the Flask process. Make sure to use the first PID. The Flask app will re-spawn a sub-process every time you change any of the python code. So it's important to use the first PID.
+Find the PID for the Uvicorn parent process. Use the first (parent) PID. Uvicorn
+spawns a new worker every time you change any python file when `--reload` is enabled,
+so attaching to the parent keeps your breakpoints alive across reloads.
 
 ```bash
 ps -ef
 
 UID        PID  PPID  C STIME TTY          TIME CMD
 root         1     0  0 14:09 ?        00:00:00 bash /app/docker/docker-bootstrap.sh app
-root         6     1  4 14:09 ?        00:00:04 /usr/local/bin/python /usr/bin/flask run -p 8088 --with-threads --reload --debugger --host=0.0.0.0
-root        10     6  7 14:09 ?        00:00:07 /usr/local/bin/python /usr/bin/flask run -p 8088 --with-threads --reload --debugger --host=0.0.0.0
+root         6     1  4 14:09 ?        00:00:04 /app/.venv/bin/python /app/.venv/bin/uvicorn superset.app:create_app --factory --host 0.0.0.0 --port 8088 --reload --reload-dir /app/superset --loop uvloop
+root        10     6  7 14:09 ?        00:00:07 /app/.venv/bin/python /app/.venv/bin/uvicorn superset.app:create_app --factory --host 0.0.0.0 --port 8088 --reload --reload-dir /app/superset --loop uvloop
 ```
 
-Inject debugpy into the running Flask process. In this case PID 6.
+Inject debugpy into the running Uvicorn parent process. In this case PID 6.
 
 ```bash
 python3 -m debugpy --listen 0.0.0.0:5678 --pid 6
@@ -886,11 +894,13 @@ You are now ready to attach a debugger to the process. Using VSCode you can conf
 }
 ```
 
-VSCode will not stop on breakpoints right away. We've attached to PID 6 however it does not yet know of any sub-processes. In order to "wake up" the debugger you need to modify a python file. This will trigger Flask to reload the code and create a new sub-process. This new sub-process will be detected by VSCode and breakpoints will be activated.
+VSCode will not stop on breakpoints right away. We've attached to PID 6 however it does not yet know of any sub-processes. In order to "wake up" the debugger you need to modify a python file. This will trigger Uvicorn to reload the code and spawn a new worker sub-process. The new sub-process will be detected by VSCode and breakpoints will be activated.
 
 ### Debugging Server App in Kubernetes Environment
 
-To debug Flask running in POD inside a kubernetes cluster, you'll need to make sure the pod runs as root and is granted the SYS_TRACE capability.These settings should not be used in production environments.
+To debug Uvicorn running in a POD inside a kubernetes cluster, you'll need to make sure
+the pod runs as root and is granted the `SYS_PTRACE` capability. These settings should
+not be used in production environments.
 
 ```yaml
   securityContext:
@@ -900,7 +910,7 @@ To debug Flask running in POD inside a kubernetes cluster, you'll need to make s
 
 See [set capabilities for a container](https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-capabilities-for-a-container) for more details.
 
-Once the pod is running as root and has the SYS_PTRACE capability it will be able to debug the Flask app.
+Once the pod is running as root and has the SYS_PTRACE capability it will be able to debug the Uvicorn app.
 
 You can follow the same instructions as in `docker compose`. Enter the pod and install the required library and packages; gdb, netstat and debugpy.
 

@@ -8,7 +8,7 @@ version: 1
 
 ## Event Logging
 
-Superset by default logs special action events in its internal database (DBEventLogger). These logs can be accessed
+Liteset by default logs special action events in its internal database (DBEventLogger). These logs can be accessed
 on the UI by navigating to **Security > Action Log**. You can freely customize these logs by
 implementing your own event log class.
 **When custom log class is enabled DBEventLogger is disabled and logs
@@ -46,12 +46,12 @@ EVENT_LOGGER = JSONStdOutEventLogger()
 
 ## StatsD Logging
 
-Superset can be configured to log events to [StatsD](https://github.com/statsd/statsd)
+Liteset can be configured to log events to [StatsD](https://github.com/statsd/statsd)
 if desired. Most endpoints hit are logged as
 well as key events like query start and end in SQL Lab.
 
 To setup StatsD logging, it’s a matter of configuring the logger in your `superset_config.py`.
-If not already present, you need to ensure that the `statsd`-package is installed in Superset's python environment.
+If not already present, you need to ensure that the `statsd` package is installed in Liteset's Python environment.
 
 ```python
 from superset.stats_logger import StatsdStatsLogger

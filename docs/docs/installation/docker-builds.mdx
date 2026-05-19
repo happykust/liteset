@@ -7,175 +7,146 @@ version: 1
 
 # Docker builds, images and tags
 
-:::info Liteset images
-This page documents the **Apache Superset** Docker build matrix and tagging conventions, since Liteset re-uses the same `Dockerfile` layout (lean / dev / py311 / ci targets, `BUILD_TRANSLATIONS`/`DEV_MODE`/`INCLUDE_CHROMIUM` ARGs, multi-arch builds). Liteset images are produced by the same workflow but pushed to a separate registry — `ghcr.io/happykust/liteset` (or your private build of the repo). For most users the practical difference is:
+This page documents the Liteset `Dockerfile` — its multi-stage build targets,
+key build-args, and tagging conventions. For a step-by-step production
+deployment workflow (compose file, healthchecks, secret bootstrap) see
+[Production Docker Deployment](https://github.com/happykust/liteset/blob/main/docs/deployment/production-docker.md).
 
-- **Apache Superset image** (`apache/superset:6.0.0`): runs Flask under Gunicorn.
-- **Liteset image** (`ghcr.io/happykust/liteset:6.0.0`): runs Litestar under Uvicorn (`uvicorn superset.app:create_app --factory ...` as the container CMD).
+:::info Liteset vs Apache Superset images
+- **Apache Superset images** (`apache/superset:6.0.0`, `apache/superset:dockerize`, etc.) are published by the upstream project and run Flask under Gunicorn.
+- **Liteset images** are built from this repository's `Dockerfile` and run Litestar/ASGI under Uvicorn (with `uvloop`). The default container CMD is `uvicorn superset.app:create_app --factory --host 0.0.0.0 --port 8088 --workers 4 --loop uvloop`.
 
-If you build your own production image (recommended — see below), copy the example Dockerfile and replace the `FROM` line with the Liteset base image.
+The upstream `apache/superset:*` runtime images are **not** compatible with Liteset's process model — build (or pull from your own registry) a Liteset-tagged image instead. The single exception is `apache/superset:dockerize`, which the Liteset Helm chart reuses as a tiny init-container only to invoke the `dockerize` binary while waiting for Postgres/Redis TCP readiness.
 :::
 
-The Apache Superset community extensively uses Docker for development, release, and productionising Superset. This page details the Docker builds and tag naming schemes inherited by Liteset.
+## Build targets
 
-Apache Superset images are built and pushed to the [Superset Docker Hub repository](https://hub.docker.com/r/apache/superset) using GitHub Actions.
-Different sets of images are built and/or published at different times:
+The `Dockerfile` defines four published build stages plus a couple of internal
+intermediates. You select one with `--target`:
 
-- **Published releases** (`release`): published using
-  tags like `6.0.0` and the `latest` tag.
-- **Pull request iterations** (`pull_request`): for each pull request, while
-  we actively build the docker to validate the build, we do
-  not publish those images for security reasons, we simply `docker build --load`
-- **Merges to the main branch** (`push`): resulting in new SHAs, with tags
-  prefixed with `master` for the latest `master` version.
+| Target | Approx. size | Purpose |
+|--------|--------------|---------|
+| `lean` | ~1.2 GB | Production runtime. Uvicorn launcher, non-root `superset` user, assets baked in, drivers in `requirements/base.txt` (includes `asyncpg` + `psycopg2-binary`). |
+| `dev`  | ~1.7 GB | Local development. Extra dev dependencies (`requirements/development.txt`), git, MySQL build deps, runs as `superset`. Use with `--reload` and a source mount. |
+| `ci`   | ~1.3 GB | Continuous integration. Built `FROM lean` plus the `[postgres]` extra; CMD is `/app/docker/entrypoints/docker-ci.sh` which runs `superset init` and then the server. |
+| `superset-node` | n/a | Internal stage producing the compiled frontend bundle. Not normally pulled directly; consumed by `lean` and `dev`. |
 
-## Build presets
+> **No `py311` / `websocket` / `dockerize` targets.** Liteset always builds on
+> `python:3.11.13-slim-bookworm` (override via `PY_VER`), serves WebSockets
+> natively from the main app (no sidecar), and reuses `apache/superset:dockerize`
+> verbatim for the Helm wait-for-Postgres init container — there is no Liteset
+> equivalent to build.
 
-We have a set of build "presets" that each represent a combination of
-parameters for the build, mostly pointing to either different target layer
-for the build, and/or base image.
+### Build commands
 
-Here are the build presets that are exposed through the `supersetbot docker` utility:
+```bash
+# Production image
+DOCKER_BUILDKIT=1 docker build --target lean -t liteset:lean .
 
-- `lean`: The default Docker image, including both frontend and backend. Tags
-  without a build_preset are lean builds (ie: `latest`, `6.0.0`, `4.1.2`, ...). `lean`
-  builds do not contain database
-  drivers, meaning you need to install your own. That applies to analytics databases **AND
-  the metadata database**. You'll likely want to layer either `mysqlclient` or `psycopg2-binary`
-  depending on the metadata database you choose for your installation, plus the required
-  drivers to connect to your analytics database(s).
-- `dev`: For development, with a headless browser, dev-related utilities and root access. This
-  includes some commonly used database drivers like `mysqlclient`, `psycopg2-binary` and
-  some other used for development/CI
-- `py311`, e.g., Py311: Similar to lean but with a different Python version (in this example, 3.11).
-- `ci`: For certain CI workloads.
-- `websocket`: For Apache Superset clusters supporting advanced features. **Not used by Liteset** — WebSockets are served by Litestar in the main container.
-- `dockerize`: Used by Helm in initContainers to wait for database dependencies to be available.
+# Dev image, with source intended to be bind-mounted at runtime
+DOCKER_BUILDKIT=1 docker build --target dev -t liteset:dev .
 
-## Key tags examples
+# CI image (used by GitHub Actions for smoke tests)
+DOCKER_BUILDKIT=1 docker build --target ci -t liteset:ci .
+```
 
-- `latest`: The latest official release build
-- `latest-dev`: the `-dev` image of the latest official release build, with a
-  headless browser and root access.
-- `master`: The latest build from the `master` branch, implicitly the lean build
-  preset
-- `master-dev`: Similar to `master` but includes a headless browser and root access.
-- `pr-5252`: The latest commit in PR 5252.
-- `30948dc401b40982cb7c0dbf6ebbe443b2748c1b-dev`: A build for
-  this specific SHA, which could be from a `master` merge, or release.
-- `websocket-latest`: The WebSocket image for use in a Superset cluster.
+Tag whatever way fits your registry (`ghcr.io/your-org/liteset:6.0.0`, etc.).
+Liteset does not publish official images to Docker Hub at this time.
 
-For insights or modifications to the build matrix and tagging conventions,
-check the [supersetbot docker](https://github.com/apache-superset/supersetbot)
-subcommand and the [docker.yml](https://github.com/happykust/liteset/blob/main/.github/workflows/docker.yml)
-GitHub action.
+## Key Dockerfile ARGs
 
-## Building your own production Docker image
+These can all be passed via `--build-arg KEY=value`:
 
-Every Superset deployment will require its own set of drivers depending on the data warehouse(s),
-etc. so we recommend that users build their own Docker image by extending the `lean` image.
+- **`PY_VER`** (default `3.11.13-slim-bookworm`) — base Python image tag. The
+  runtime is regularly tested on 3.11; CPython 3.10–3.13 are supported by
+  Liteset's `pyproject.toml`. We do not recommend bumping this unless you are
+  working on forward-/backward-compatibility.
+- **`BUILD_TRANSLATIONS`** (default `false`) — when `true`, compiles `.po` →
+  `.mo` translation files in the backend and keeps non-English locales in the
+  `moment-timezone` webpack bundle. Leave at `false` if you only need English UI
+  — saves a few hundred KB of JS and a couple of seconds on `pybabel`.
+- **`DEV_MODE`** (default `false`) — when `true`, skips the webpack production
+  build entirely. Used by `docker-compose.yml` (the interactive dev stack)
+  because the frontend is mounted from the host and rebuilt continuously by a
+  separate `superset-node` container running `npm run dev`.
+- **`INCLUDE_CHROMIUM`** (default `false`) — bake Chromium into the image for
+  Playwright-based Alerts & Reports / thumbnails.
+- **`INCLUDE_FIREFOX`** (default `false`) — same, for Firefox.
+- **`NPM_BUILD_CMD`** (default `build`) — `npm run <cmd>` invoked inside
+  `superset-node` to produce the asset bundle.
+- **`BUILDPLATFORM`** (default `amd64`) — the BuildKit platform used to compile
+  the frontend on cross-arch builds.
 
-Here's an example Dockerfile that does this. Follow the in-line comments to customize it for
-your desired Superset version and database drivers. The comments also note that a certain feature flag will
-have to be enabled in your config file.
+## Database drivers
 
-You would build the image with `docker build -t mysuperset:latest .` or `docker build -t ourcompanysuperset:6.0.0 .`
+Unlike the upstream `apache/superset:lean` image, Liteset's `lean` image ships
+**both** PostgreSQL drivers out of the box:
 
-```Dockerfile
-# change this to apache/superset:6.0.0 or whatever version you want to build from;
-# otherwise the default is the latest commit on GitHub master branch
-FROM apache/superset:master
+- `asyncpg` — used by Liteset's async SQLAlchemy session at runtime.
+- `psycopg2-binary` — used by Alembic migrations (`superset db upgrade`), which
+  still run synchronously.
+
+Both are listed in `requirements/base.txt` and installed into the venv during
+the `lean` build. No layering is required to talk to a PostgreSQL metadata DB.
+
+For analytics-database drivers (Snowflake, BigQuery, MSSQL, etc.) and for any
+extras like the Authlib OAuth client or `openpyxl` Excel uploads, derive your
+own image:
+
+```dockerfile
+# Pin the Liteset tag you want to ship.
+FROM liteset:lean
 
 USER root
 
-# Set environment variable for Playwright
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/share/playwright-browsers
 
-# Install packages using uv into the virtual environment
-# Superset started using uv after the 4.1 branch; if you are building from apache/superset:4.1.x or an older version,
-# replace the first two lines with RUN pip install \
 RUN . /app/.venv/bin/activate && \
     uv pip install \
-    # install psycopg2 for using PostgreSQL metadata store - could be a MySQL package if using that backend:
-    psycopg2-binary \
-    # add the driver(s) for your data warehouse(s), in this example we're showing for Microsoft SQL Server:
-    pymssql \
-    # package needed for using single-sign on authentication:
-    Authlib \
-    # openpyxl to be able to upload Excel files
-    openpyxl \
-    # Pillow for Alerts & Reports to generate PDFs of dashboards
-    Pillow \
-    # install Playwright for taking screenshots for Alerts & Reports. This assumes the feature flag PLAYWRIGHT_REPORTS_AND_THUMBNAILS is enabled
-    # That feature flag will default to True starting in 6.0.0
-    # Playwright works only with Chrome.
-    # If you are still using Selenium instead of Playwright, you would instead install here the selenium package and a headless browser & webdriver
-    playwright \
-    && playwright install-deps \
-    && PLAYWRIGHT_BROWSERS_PATH=/usr/local/share/playwright-browsers playwright install chromium
+      pymssql \
+      snowflake-sqlalchemy \
+      Authlib \
+      openpyxl \
+      Pillow \
+      playwright && \
+    playwright install-deps && \
+    PLAYWRIGHT_BROWSERS_PATH=/usr/local/share/playwright-browsers playwright install chromium
 
-# Switch back to the superset user
 USER superset
 
-CMD ["/app/docker/entrypoints/run-server.sh"]
+CMD ["/usr/bin/run-server.sh"]
 ```
 
-## Key ARGs in Dockerfile
-
-- `BUILD_TRANSLATIONS`: whether to build the translations into the image. For the
-  frontend build this tells webpack to strip out all locales other than `en` from
-  the `moment-timezone` library. For the backendthis skips compiling the
-  `*.po` translation files
-- `DEV_MODE`: whether to skip the frontend build, this is used by our `docker-compose` dev setup
-  where we mount the local volume and build using `webpack` in `--watch` mode, meaning as you
-  alter the code in the local file system, webpack, from within a docker image used for this
-  purpose, will constantly rebuild the frontend as you go. This ARG enables the initial
-  `docker-compose` build to take much less time and resources
-- `INCLUDE_CHROMIUM`: whether to include chromium in the backend build so that it can be
-  used as a headless browser for workloads related to "Alerts & Reports" and thumbnail generation
-- `INCLUDE_FIREFOX`: same as above, but for firefox
-- `PY_VER`: specifying the base image for the python backend, we don't recommend altering
-  this setting if you're not working on forwards or backwards compatibility
+`/usr/bin/run-server.sh` is the production launcher copied into the `lean`
+image — it sources the bootstrap script, runs Alembic migrations if requested
+and execs Uvicorn with the right `--workers` / `--loop` flags. The same script
+is the default `CMD` for the `lean` image.
 
 ## Caching
 
-To accelerate builds, we follow Docker best practices and use `apache/superset-cache`.
+The build uses BuildKit cache mounts for `uv`, `npm` and `apt` to keep
+rebuilds fast (`--mount=type=cache,target=...`). No external cache image is
+required, but `DOCKER_BUILDKIT=1` must be set (or `docker buildx build` used)
+for the mounts to take effect.
 
-## About database drivers
+## Platforms
 
-Our docker images come with little to zero database driver support since
-each environment requires different drivers, and maintaining a build with
-wide database support would be both challenging (dozens of databases,
-python drivers, and os dependencies) and inefficient (longer
-build times, larger images, lower layer cache hit rate, ...).
+The Liteset GitHub Actions build matrix currently targets **`linux/amd64`
+only**. `linux/arm64` builds are not yet validated. If you need ARM builds for
+Apple Silicon / Graviton, build the image yourself with
+`docker buildx build --platform linux/arm64`; expect them to work in practice
+(no native code besides the `cryptography` and `psycopg2` wheels) but they are
+unsupported.
 
-For production use cases, we recommend that you derive our `lean` image(s) and
-add database support for the database you need.
+### Working with Apple Silicon
 
-## On supporting different platforms (namely arm64 AND amd64)
-
-Currently all automated builds are multi-platform, supporting both `linux/arm64`
-and `linux/amd64`. This enables higher level constructs like `helm` and
-`docker compose` to point to these images and effectively be multi-platform
-as well.
-
-Pull requests and master builds
-are one-image-per-platform so that they can be parallelized and the
-build matrix for those is more sparse as we don't need to build every
-build preset on every platform, and generally can be more selective here.
-For those builds, we suffix tags with `-arm` where it applies.
-
-### Working with Apple silicon
-
-Apple's current generation of computers uses ARM-based CPUs, and Docker
-running on MACs seem to require `linux/arm64/v8` (at least one user's M2 was
-configured in that way). Setting the environment
-variable `DOCKER_DEFAULT_PLATFORM` to `linux/amd64` seems to function in
-term of leveraging, and building upon the Superset builds provided here.
+Recent Apple Macs ship ARM-based CPUs. Until the multi-arch matrix is enabled,
+you can either build locally with `--platform linux/arm64` or force the amd64
+image to run under Rosetta:
 
 ```bash
 export DOCKER_DEFAULT_PLATFORM=linux/amd64
 ```
 
-Presumably, `linux/arm64/v8` would be more optimized for this generation
-of chips, but less compatible across the ARM ecosystem.
+The amd64 image runs fine under Rosetta on M1/M2/M3 hardware; the only
+downside is slightly higher CPU usage in the container.

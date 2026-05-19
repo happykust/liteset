@@ -173,55 +173,48 @@ added to their query, which can never be true.
 
 ### User Sessions
 
-Superset uses [Flask](https://pypi.org/project/Flask/)
-and [Flask-Login](https://pypi.org/project/Flask-Login/) for user session management.
+Liteset reads and writes the same itsdangerous-signed session cookie that
+Flask/Flask-Login produced in Apache Superset, so existing browser sessions
+survive the migration without forcing users to re-login. Decoding happens
+natively in Liteset middleware — there is no Flask-Login runtime in the
+process.
 
 Session cookies are used to maintain session info and user state between requests,
 although they do not contain personal user information they serve the purpose of identifying
 a user session on the server side.
-The session cookie is encrypted with the application `SECRET_KEY` and cannot be read by the client.
-So it's very important to keep the `SECRET_KEY` secret and set to a secure unique complex random value.
+The session cookie is signed with the application `SECRET_KEY`, so it's very
+important to keep the `SECRET_KEY` secret and set to a secure unique complex
+random value (see `LITESET_SECRET_KEY`).
 
-Flask and Flask-Login offer a number of configuration options to control session behavior.
+Cookie behaviour is controlled by the same configuration keys upstream
+Superset used — Liteset honours them via `SupersetSettings`:
 
-- Relevant Flask settings:
-
-`SESSION_COOKIE_HTTPONLY`: (default: `False`): Controls if cookies should be set with the `HttpOnly` flag.
+`SESSION_COOKIE_HTTPONLY`: (default: `True`): Controls if cookies should be set with the `HttpOnly` flag.
 
 `SESSION_COOKIE_SECURE`: (default: `False`) Browsers will only send cookies with requests over
-HTTPS if the cookie is marked “secure”. The application must be served over HTTPS for this to make sense.
+HTTPS if the cookie is marked "secure". The application must be served over HTTPS for this to make sense.
 
 `SESSION_COOKIE_SAMESITE`: (default: "Lax") Prevents the browser from sending this cookie along with cross-site requests.
 
 `PERMANENT_SESSION_LIFETIME`: (default: "31 days") The lifetime of a permanent session as a `datetime.timedelta` object.
 
-#### Switching to server side sessions
+#### Server-side sessions
 
-Server side sessions offer benefits over client side sessions on security and performance.
-By enabling server side sessions, the session data is stored server side and only a session ID
-is sent to the client. When a user logs in, a session is created server side and the session ID
-is sent to the client in a cookie. The client will send the session ID with each request and the
-server will use it to retrieve the session data.
-On logout, the session is destroyed server side and the session cookie is deleted on the client side.
-This reduces the risk for replay attacks and session hijacking.
+The Apache Superset story around server-side sessions used Flask-Session.
+Liteset does not depend on Flask-Session at runtime; the existing
+`SESSION_SERVER_SIDE` / `SESSION_TYPE` / `SESSION_REDIS` configuration keys
+are read by `SupersetSettings` and resolved into the native session backend
+(Redis-backed when configured). The configuration surface stays compatible:
 
-Superset uses [Flask-Session](https://flask-session.readthedocs.io/en/latest/) to manage server side sessions.
-To enable this extension you have to set:
-
-``` python
+```python
 SESSION_SERVER_SIDE = True
-```
-
-Flask-Session offers multiple backend session interfaces for Flask, here's an example for Redis:
-
-``` python
-from redis import Redis
-
 SESSION_TYPE = "redis"
-SESSION_REDIS = Redis(host="redis", port=6379, db=0)
-# sign the session cookie sid
+SESSION_REDIS = "redis://redis:6379/0"  # URL string, not a Redis instance
 SESSION_USE_SIGNER = True
 ```
+
+Note: pass a URL string for `SESSION_REDIS` rather than a `Redis()` client
+instance — Liteset constructs the redis-asyncio client itself.
 
 ### Content Security Policy (CSP)
 
@@ -354,18 +347,20 @@ https://superset.apache.org/docs/configuration/networking-settings/#changing-fla
 
 ### Reporting Security Vulnerabilities
 
-Apache Software Foundation takes a rigorous standpoint in annihilating the security issues in its
-software projects. Apache Superset is highly sensitive and forthcoming to issues pertaining to its
-features and functionality.
+If you discover a security vulnerability or potential threat in Liteset,
+please report it privately rather than opening a public issue. Use GitHub's
+private security advisory flow on the
+[Liteset repository](https://github.com/happykust/liteset/security/advisories/new),
+which lets you describe the issue, include a proof-of-concept, and coordinate
+a fix and disclosure timeline with the maintainers.
 
-If you have apprehensions regarding Superset security or you discover vulnerability or potential
-threat, don’t hesitate to get in touch with the Apache Security Team by dropping a mail at
-security@apache.org. In the mail, specify the project name Superset with the description of the
-issue or potential threat. You are also urged to recommend the way to reproduce and replicate the
-issue. The security team and the Superset community will get back to you after assessing and
-analysing the findings.
+Because Liteset preserves Apache Superset's behavioural surface, vulnerabilities
+that affect upstream Apache Superset may also affect Liteset. For those, the
+Apache Software Foundation's security process at
+[apache.org/security](https://apache.org/security/committers.html) remains
+authoritative; Liteset will track and mitigate published Apache Superset CVEs
+where the affected code path also exists in this fork — see the
+[Superset CVEs](/docs/security/cves) page.
 
-PLEASE PAY ATTENTION to report the security issue on the security email before disclosing it on
-public domain. The ASF Security Team maintains a page with the description of how vulnerabilities
-and potential threats are handled, check [their web page](https://apache.org/security/committers.html)
-for more details.
+Please do not disclose vulnerabilities on the public issue tracker, in chat
+rooms, or in pull requests before coordination with the maintainers.

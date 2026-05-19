@@ -23,20 +23,18 @@ The OS-level dependencies on this page apply to both packages.
 
 ## OS Dependencies
 
-Superset stores database connection information in its metadata database. For that purpose, we use
+Liteset stores database connection information in its metadata database. For that purpose, we use
 the cryptography Python library to encrypt connection passwords. Unfortunately, this library has OS
 level dependencies.
 
+Liteset officially supports CPython 3.10, 3.11, 3.12 and 3.13 (see `requires-python` in
+[`pyproject.toml`](https://github.com/happykust/liteset/blob/main/pyproject.toml)), so the default
+Python shipped by every currently-supported Ubuntu, Fedora and RHEL release will work — no
+`deadsnakes` PPA is required.
+
 **Debian and Ubuntu**
 
-Ubuntu **24.04** uses python 3.12 per default, which currently is not supported by Superset. You need to add a second python installation of 3.11 and install the required additional dependencies.
-```bash
-sudo add-apt-repository ppa:deadsnakes/ppa
-sudo apt update
-sudo apt install python3.11 python3.11-dev python3.11-venv build-essential libssl-dev libffi-dev libsasl2-dev libldap2-dev default-libmysqlclient-dev
-```
-
-In Ubuntu **20.04 and 22.04** the following command will ensure that the required dependencies are installed:
+In Ubuntu **20.04, 22.04 and 24.04** the following command will ensure that the required dependencies are installed:
 
 ```bash
 sudo apt-get install build-essential libssl-dev libffi-dev python3-dev python3-pip libsasl2-dev libldap2-dev default-libmysqlclient-dev
@@ -108,7 +106,7 @@ These will now be available when pip installing requirements.
 
 ## Python Virtual Environment
 
-We highly recommend installing Superset inside of a virtual environment.
+We highly recommend installing Liteset inside of a virtual environment.
 
 You can create and activate a virtual environment using the following commands. Ensure you are using a compatible version of python. You might have to explicitly use for example `python3.11` instead of `python3`.
 
@@ -139,13 +137,18 @@ First, start by installing `liteset`:
 pip install liteset
 ```
 
-Then, define mandatory configurations, SECRET_KEY and FLASK_APP:
+Then, define the mandatory secret key. Liteset is configured via `pydantic-settings`, which reads
+its values from environment variables (or a `superset_config.py` on `SUPERSET_CONFIG_PATH`). Unlike
+Apache Superset, **no `FLASK_APP` variable is required** — Liteset runs on Litestar/ASGI, not
+Flask.
+
 ```bash
-export SUPERSET_SECRET_KEY=YOUR-SECRET-KEY # For production use, make sure this is a strong key, for example generated using `openssl rand -base64 42`. See https://superset.apache.org/docs/configuration/configuring-superset#specifying-a-secret_key
-export FLASK_APP=superset
+# For production, make sure this is a strong key, e.g. `openssl rand -base64 42`.
+# See /docs/configuration/configuring-superset#specifying-a-secret_key
+export LITESET_SECRET_KEY=YOUR-SECRET-KEY
 ```
 
-Then, you need to initialize the database:
+Then, initialize the database (Alembic uses the sync `psycopg2` driver, which ships with Liteset):
 
 ```bash
 superset db upgrade
@@ -163,8 +166,9 @@ superset load_examples
 # Create default roles and permissions
 superset init
 
-# To start a development web server on port 8088, use -p to bind to another port
-superset run -p 8088 --with-threads --reload --debugger
+# Start the Liteset ASGI server on port 8088 (Uvicorn + uvloop, with auto-reload for development).
+# For production use the `docker/entrypoints/run-server.sh` launcher or your own process manager.
+uvicorn superset.app:create_app --factory --host 0.0.0.0 --port 8088 --reload
 ```
 
 If everything worked, you should be able to navigate to `hostname:port` in your browser (e.g.

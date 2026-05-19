@@ -7,14 +7,16 @@ version: 1
 
 # Caching
 
-Superset uses [Flask-Caching](https://flask-caching.readthedocs.io/) for caching purposes.
-Flask-Caching supports various caching backends, including Redis (recommended), Memcached,
-SimpleCache (in-memory), or the local filesystem.
-[Custom cache backends](https://flask-caching.readthedocs.io/en/latest/#custom-cache-backends)
-are also supported.
+Liteset has moved off `flask-caching` to a native asyncio-friendly cache stack implemented in
+`superset.cache.manager` (`SyncRedisCacheAdapter`, `SimpleSyncCacheManager`,
+`MetastoreSyncCacheManager` and their async siblings). To keep configuration painless for existing
+deployments, the cache-config dictionaries still accept the **Flask-Caching-style schema** —
+`CACHE_TYPE` values such as `'RedisCache'`, `'SimpleCache'`, `'NullCache'`, and
+`'SupersetMetastoreCache'` are recognised and routed to the appropriate Liteset backend at startup.
 
-Caching can be configured by providing dictionaries in
-`superset_config.py` that comply with [the Flask-Caching config specifications](https://flask-caching.readthedocs.io/en/latest/#configuring-flask-caching).
+Caching can be configured by providing dictionaries in `superset_config.py` using the familiar
+Flask-Caching schema. The recommended backend is Redis; Memcached, in-memory, and the metastore
+fallback are also supported.
 
 The following cache configurations can be customized in this way:
 
@@ -47,7 +49,7 @@ These libraries can be installed using pip.
 ## Fallback Metastore Cache
 
 Note, that some form of Filter State and Explore caching are required. If either of these caches
-are undefined, Superset falls back to using a built-in cache that stores data in the metadata
+are undefined, Liteset falls back to using a built-in cache that stores data in the metadata
 database. While it is recommended to use a dedicated cache, the built-in cache can also be used
 to cache other data.
 
@@ -75,10 +77,9 @@ per chart, dataset or database, or by default if set in `DATA_CACHE_CONFIG`.
 Caching for SQL Lab query results is used when async queries are enabled and is configured using
 `RESULTS_BACKEND`.
 
-Note that this configuration does not use a flask-caching dictionary for its configuration, but
-instead requires a cachelib object.
-
-See [Async Queries via Celery](/docs/configuration/async-queries-celery) for details.
+Note that this configuration does not use the Flask-Caching-style dictionary; instead it expects an
+object that implements Liteset's `SyncCacheProtocol` (e.g. `SyncRedisCacheAdapter`). See
+[Async Queries via Celery](/docs/configuration/async-queries-celery) for a worked example.
 
 ## Caching Thumbnails
 
@@ -103,11 +104,11 @@ THUMBNAIL_EXECUTORS = [FixedExecutor("admin")]
 For this feature you will need a cache system and celery workers. All thumbnails are stored on cache
 and are processed asynchronously by the workers.
 
-An example config where images are stored on S3 could be:
+An example config that stores thumbnails on Redis (the recommended setup for Liteset) and another
+that demonstrates plugging in a custom S3 backend:
 
 ```python
-from flask import Flask
-from s3cache.s3cache import S3Cache
+from s3cache.s3cache import S3Cache  # third-party
 
 ...
 
@@ -124,11 +125,18 @@ class CeleryConfig(object):
 
 CELERY_CONFIG = CeleryConfig
 
-def init_thumbnail_cache(app: Flask) -> S3Cache:
-    return S3Cache("bucket_name", 'thumbs_cache/')
+# Redis (recommended) — uses Liteset's native SyncRedisCacheAdapter via the
+# standard Flask-Caching-style schema:
+THUMBNAIL_CACHE_CONFIG = {
+    "CACHE_TYPE": "RedisCache",
+    "CACHE_DEFAULT_TIMEOUT": 86400,
+    "CACHE_KEY_PREFIX": "superset_thumbnail_",
+    "CACHE_REDIS_URL": "redis://localhost:6379/0",
+}
 
-
-THUMBNAIL_CACHE_CONFIG = init_thumbnail_cache
+# S3 (custom adapter) — assign an instance that satisfies SyncCacheProtocol.
+# Liteset detects an object (vs. a dict) and uses it as-is, no Flask app required:
+# THUMBNAIL_CACHE_CONFIG = S3Cache("bucket_name", "thumbs_cache/")
 ```
 
 Using the above example cache keys for dashboards will be `superset_thumb__dashboard__{ID}`. You can
@@ -139,8 +147,10 @@ WEBDRIVER_BASEURL = "https://superset.company.com"
 ```
 
 Additional selenium web drive configuration can be set using `WEBDRIVER_CONFIGURATION`. You can
-implement a custom function to authenticate selenium. The default function uses the `flask-login`
-session cookie. Here's an example of a custom function signature:
+implement a custom function to authenticate selenium. The default function decodes Flask-Login-format
+session cookies natively (compat with existing installations) — Liteset does not run Flask-Login at
+runtime, but the cookie format is preserved end-to-end so existing alerts/reports infrastructure
+keeps working. Here's an example of a custom function signature:
 
 ```python
 def auth_driver(driver: WebDriver, user: "User") -> WebDriver:
