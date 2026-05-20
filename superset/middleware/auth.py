@@ -17,8 +17,8 @@
 """Authentication middleware for Superset.
 
 Supports cookie session (Flask itsdangerous), JWT Bearer (guest tokens),
-and API key authentication. Redis user cache with TTL 60s reduces DB
-pool pressure.
+and API key authentication. Redis user cache with TTL 300s (5 min) reduces
+DB pool pressure.
 """
 
 from __future__ import annotations
@@ -33,7 +33,9 @@ from litestar.middleware import AbstractAuthenticationMiddleware, Authentication
 
 logger = logging.getLogger(__name__)
 
-_USER_CACHE_TTL: int = 60  # seconds
+_USER_CACHE_TTL: int = 300  # 5 minutes — long enough that a bot or load
+# generator does not re-hit the DB every minute, short enough that
+# permission/role changes propagate within a reasonable window.
 _PUBLIC_ROLE_CACHE_KEY: str = "auth:public_role_perms"
 _PUBLIC_ROLE_CACHE_TTL: int = 300  # 5 minutes
 
@@ -140,8 +142,8 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
     1. Session cookie (Flask itsdangerous) -> user_id -> DB lookup
     2. JWT Bearer token (guest tokens for embedded dashboards)
 
-    Performance: Resolved users are cached in Redis (TTL 60s).
-    On Redis failure, falls back to direct DB lookup.
+    Performance: Resolved users are cached in Redis (TTL ``_USER_CACHE_TTL``,
+    300s). On Redis failure, falls back to direct DB lookup.
     """
 
     async def authenticate_request(
@@ -449,7 +451,37 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
                 logger.debug("Redis cache miss/error for access token user %d", user_id)
 
         # Resolve from DB
-        return await self._resolve_user_from_db(connection, user_id)
+        user = await self._resolve_user_from_db(connection, user_id)
+        if user is None:
+            return None
+
+        # Populate Redis cache so the next JWT-authenticated request
+        # for this user skips the DB round-trip entirely.  Mirrors the
+        # cookie-auth path (``_authenticate_session_cookie``) which has
+        # always cached on cache miss.  Without this, every Locust /
+        # bot request repeatedly drains two metadata pool connections
+        # (user lookup + permissions resolution) just on auth — the
+        # dominant pool-exhaustion source under load.
+        if redis is None:
+            logger.warning(
+                "JWT auth: app.state.redis is None — cache write skipped, "
+                "every request will hit DB twice for user %d",
+                user_id,
+            )
+        else:
+            try:
+                await self._cache_user(redis, user)
+                logger.debug("JWT auth: cached user %d in Redis", user_id)
+            except Exception:
+                # Surface the real failure instead of silently masking it.
+                # Without this, a JSON-encoding bug or a redis-client
+                # mismatch makes every request fall back to DB while the
+                # operator has no signal in logs.
+                logger.exception(
+                    "JWT auth: failed to cache user %d in Redis", user_id
+                )
+
+        return user
 
     async def _resolve_user_from_db(
         self,
@@ -721,7 +753,7 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         return user
 
     async def _cache_user(self, redis: Any, user: Any) -> None:
-        """Cache resolved user in Redis (TTL 60s).
+        """Cache resolved user in Redis (TTL ``_USER_CACHE_TTL``, 300s).
 
         Stores roles and active status so that cached users retain
         their permission context and deactivated users are rejected.
