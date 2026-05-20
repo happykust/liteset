@@ -565,12 +565,61 @@ _DEFAULT_FEATURE_FLAGS: dict[str, bool] = {
 }
 
 
+def _parse_boolean_string(bool_str: str | None) -> bool:
+    """Port of ``superset.utils.core.parse_boolean_string`` (1:1).
+
+    Inlined here (rather than imported) because ``config.py`` is loaded very
+    early — before ``superset.utils.core`` and its heavy dependencies — and we
+    must avoid an import cycle at settings-construction time.
+    """
+    if bool_str is None:
+        return False
+    return bool_str.lower() in ("y", "Y", "yes", "True", "t", "true", "On", "on", "1")
+
+
+def _cast_to_boolean(value: Any) -> bool | None:
+    """Port of ``superset.utils.core.cast_to_boolean`` (1:1)."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return False
+
+
+# Legacy (unprefixed) environment variables honored by upstream Superset's
+# ``config.py`` module body.  Pydantic-settings only reads ``LITESET_``-prefixed
+# vars, so this map preserves drop-in compatibility for existing deployments
+# (e.g. ``SUPERSET_SECRET_KEY`` injected via k8s/helm secrets).
+#
+# Each entry maps the env var name to the target settings field plus a parser
+# that mirrors the original inline expression in ``superset_old/config.py``:
+#   SECRET_KEY        = os.environ.get("SUPERSET_SECRET_KEY") or CHANGE_ME...
+#   DEBUG             = parse_boolean_string(os.environ.get("FLASK_DEBUG"))
+#   MAPBOX_API_KEY    = os.environ.get("MAPBOX_API_KEY", "")
+#   TALISMAN_ENABLED  = cast_to_boolean(os.environ.get("TALISMAN_ENABLED", True))
+#   RATELIMIT_ENABLED = os.environ.get("SUPERSET_ENV") == "production"
+_LEGACY_ENV_VARS: dict[str, tuple[str, Any]] = {
+    "SUPERSET_SECRET_KEY": ("secret_key", lambda v: v),
+    "FLASK_DEBUG": ("debug", _parse_boolean_string),
+    "MAPBOX_API_KEY": ("mapbox_api_key", lambda v: v),
+    "TALISMAN_ENABLED": ("talisman_enabled", _cast_to_boolean),
+    "SUPERSET_ENV": ("ratelimit_enabled", lambda v: v == "production"),
+}
+
+
 class SupersetConfigSettingsSource(PydanticBaseSettingsSource):
     """Read settings from superset_config.py as a Pydantic settings source.
 
-    Priority: env vars > superset_config.py > defaults.
-    Caches loaded values per config path to avoid re-executing the
-    config file on every SupersetSettings() construction.
+    Resolution order mirrors upstream Superset's ``config.py`` tail:
+      1. ``SUPERSET_CONFIG_PATH`` env var pointing at a file (``pex``-style), or
+      2. an importable ``superset_config`` module on the ``PYTHONPATH``.
+
+    Caches loaded values per config source to avoid re-executing the
+    config file on every ``SupersetSettings()`` construction.
     """
 
     def __init__(self, settings_cls: type[BaseSettings]) -> None:
@@ -580,27 +629,81 @@ class SupersetConfigSettingsSource(PydanticBaseSettingsSource):
     @staticmethod
     def _load() -> dict[str, Any]:
         path = os.environ.get("SUPERSET_CONFIG_PATH", "")
-        if not path or not Path(path).exists():
+        if path:
+            # 1) Explicit file path (useful when the app runs via pex and the
+            #    config module is not on the PYTHONPATH).
+            if not Path(path).exists():
+                return {}
+            cache_key = path
+            if cache_key in _superset_config_cache:
+                return _superset_config_cache[cache_key]
+            spec = importlib.util.spec_from_file_location("superset_config", path)
+            if spec is None or spec.loader is None:
+                return {}
+            module = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(module)
+            except Exception as exc:
+                raise ImportError(
+                    f"Failed to load superset_config.py from {path}: {exc}"
+                ) from exc
+        elif importlib.util.find_spec("superset_config") is not None:
+            # 2) ``superset_config`` importable on the PYTHONPATH.  This is the
+            #    default mechanism for existing Superset installations (docker
+            #    images and most pip/k8s deployments rely on it without setting
+            #    SUPERSET_CONFIG_PATH).  Mirrors the ``find_spec`` branch of
+            #    upstream config.py.
+            cache_key = "superset_config"
+            if cache_key in _superset_config_cache:
+                return _superset_config_cache[cache_key]
+            try:
+                import superset_config as module  # type: ignore[import-not-found]
+            except Exception as exc:
+                raise ImportError(
+                    f"Found but failed to import local superset_config: {exc}"
+                ) from exc
+        else:
             return {}
-        if path in _superset_config_cache:
-            return _superset_config_cache[path]
-        spec = importlib.util.spec_from_file_location("superset_config", path)
-        if spec is None or spec.loader is None:
-            return {}
-        module = importlib.util.module_from_spec(spec)
-        try:
-            spec.loader.exec_module(module)
-        except Exception as exc:
-            raise ImportError(
-                f"Failed to load superset_config.py from {path}: {exc}"
-            ) from exc
+
         values: dict[str, Any] = {}
         for sup_key, lit_key in _SUPERSET_TO_LITESET.items():
             val = getattr(module, sup_key, None)
             if val is not None:
                 values[lit_key] = val
-        _superset_config_cache[path] = values
+        _superset_config_cache[cache_key] = values
         return values
+
+    def get_field_value(
+        self, field: FieldInfo, field_name: str
+    ) -> tuple[Any, str, bool]:
+        if field_name in self._values:
+            return self._values[field_name], field_name, True
+        return None, field_name, False
+
+    def __call__(self) -> dict[str, Any]:
+        return self._values
+
+
+class LegacyEnvSettingsSource(PydanticBaseSettingsSource):
+    """Honor upstream Superset's unprefixed environment variables.
+
+    Apache Superset reads a handful of plain (unprefixed) env vars in its
+    ``config.py`` module body — most importantly ``SUPERSET_SECRET_KEY``.
+    Pydantic-settings only reads ``LITESET_``-prefixed vars, so this source
+    preserves drop-in compatibility for existing deployments.
+
+    Placed *below* :class:`SupersetConfigSettingsSource` so that
+    ``superset_config.py`` overrides these env vars, matching the original
+    precedence (the config module body seeds defaults from env, then
+    ``from superset_config import *`` overrides them).
+    """
+
+    def __init__(self, settings_cls: type[BaseSettings]) -> None:
+        super().__init__(settings_cls)
+        self._values: dict[str, Any] = {}
+        for env_name, (field_name, parser) in _LEGACY_ENV_VARS.items():
+            if env_name in os.environ:
+                self._values[field_name] = parser(os.environ[env_name])
 
     def get_field_value(
         self, field: FieldInfo, field_name: str
@@ -1526,11 +1629,17 @@ class SupersetSettings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Precedence (highest first):
+        #   init kwargs > LITESET_* env > .env > superset_config.py
+        #   > legacy unprefixed env (SUPERSET_SECRET_KEY, …) > file secrets.
+        # superset_config.py sits above the legacy env source to match the
+        # original behaviour (config file overrides env-seeded defaults).
         return (
             init_settings,
             env_settings,
             dotenv_settings,
             SupersetConfigSettingsSource(settings_cls),
+            LegacyEnvSettingsSource(settings_cls),
             file_secret_settings,
         )
 
