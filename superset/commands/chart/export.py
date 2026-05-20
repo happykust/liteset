@@ -108,11 +108,17 @@ class ExportChartsCommand(AsyncExportModelsCommand):
         from superset.models.slice import Slice
 
         # Eager-load relationships before going async.
+        # ``ds.export_to_dict(recursive=True)`` walks ``SqlaTable.export_children``
+        # = ["metrics", "columns"] — those collections must be preloaded or the
+        # AsyncSession lazy-load fires under no-greenlet and raises
+        # ``MissingGreenlet`` while the YAML payload is being assembled.
         stmt = (
             sa_select(Slice)
             .where(Slice.id == model_id)
             .options(
                 selectinload(Slice.table).selectinload(SqlaTable.database),
+                selectinload(Slice.table).selectinload(SqlaTable.metrics),
+                selectinload(Slice.table).selectinload(SqlaTable.columns),
             )
         )
         result = await self._dao.session.execute(stmt)

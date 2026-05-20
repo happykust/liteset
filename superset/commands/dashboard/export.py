@@ -95,6 +95,12 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
         from superset.models.slice import Slice
 
         # Eager-load relationships before going async.
+        # Each ``ds.export_to_dict(recursive=True)`` walks
+        # ``SqlaTable.export_children`` = ["metrics", "columns"]; without the
+        # selectinload below SQLAlchemy fires an implicit lazy-load on
+        # ``ds.metrics`` / ``ds.columns`` that fails with ``MissingGreenlet``.
+        # We also pre-load ``Dashboard.theme`` / ``.tags`` because the export
+        # payload references them while still inside the async event loop.
         stmt = (
             sa_select(Dashboard)
             .where(Dashboard.id == model_id)
@@ -102,6 +108,14 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
                 selectinload(Dashboard.slices)
                 .selectinload(Slice.table)
                 .selectinload(SqlaTable.database),
+                selectinload(Dashboard.slices)
+                .selectinload(Slice.table)
+                .selectinload(SqlaTable.metrics),
+                selectinload(Dashboard.slices)
+                .selectinload(Slice.table)
+                .selectinload(SqlaTable.columns),
+                selectinload(Dashboard.theme),
+                selectinload(Dashboard.tags),
             )
         )
         result = await self._dao.session.execute(stmt)

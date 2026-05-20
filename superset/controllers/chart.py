@@ -89,6 +89,127 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
+# Chart data response serialization
+# ---------------------------------------------------------------------------
+def _render_chart_data_payload(
+    result: dict[str, Any],
+    *,
+    is_guest: bool,
+) -> Response[bytes]:
+    """Serialize ``ChartDataCommand`` output as
+    ``{"result": [<query>, ...]}``.
+
+    1:1 with ``superset_old/charts/data/api.py:_send_chart_response``
+    (JSON branch). Drops ``query_context`` (which holds a non-JSON
+    ``SqlaTable`` ORM instance), converts each query's pandas
+    ``DataFrame`` to ``data``/``colnames``/``coltypes``, normalizes
+    Decimal/numpy/NaN/datetime values inside row dicts, and emits the
+    response through ``msgspec`` with the same ``json_int_dttm_ser``
+    fallback the original Flask serializer used.
+    """
+    from datetime import date as _date_t, datetime as _datetime_t
+    from decimal import Decimal
+
+    import msgspec as _msgspec
+    import numpy as np
+    import pandas as pd
+
+    from superset.typing import GenericDataType
+    from superset.utils.json import datetime_to_epoch, json_int_dttm_ser
+
+    queries = result.get("queries", []) or []
+
+    # Strip raw SQL for guest users so embedded dashboards never leak it.
+    if is_guest:
+        for q in queries:
+            if isinstance(q, dict):
+                q.pop("query", None)
+
+    # 1. df -> data/colnames/coltypes
+    for q in queries:
+        if isinstance(q, dict) and isinstance(q.get("df"), pd.DataFrame):
+            df = q.pop("df")
+            q.setdefault("data", df.to_dict(orient="records"))
+            q.setdefault("colnames", list(df.columns))
+            coltypes: list[int] = []
+            for col in df.columns:
+                dtype = df[col].dtype
+                if pd.api.types.is_bool_dtype(dtype):
+                    coltypes.append(GenericDataType.BOOLEAN)
+                elif pd.api.types.is_datetime64_any_dtype(dtype):
+                    coltypes.append(GenericDataType.TEMPORAL)
+                elif pd.api.types.is_numeric_dtype(dtype):
+                    coltypes.append(GenericDataType.NUMERIC)
+                else:
+                    sample = next(
+                        (v for v in df[col] if v is not None and v == v),  # noqa: PLR0124
+                        None,
+                    )
+                    if isinstance(sample, bool):
+                        coltypes.append(GenericDataType.BOOLEAN)
+                    elif isinstance(sample, (int, float, Decimal)):
+                        coltypes.append(GenericDataType.NUMERIC)
+                    elif isinstance(sample, (_datetime_t, _date_t)):
+                        coltypes.append(GenericDataType.TEMPORAL)
+                    else:
+                        coltypes.append(GenericDataType.STRING)
+            q["coltypes"] = coltypes
+            q.setdefault("rowcount", len(df))
+
+    # 2. NaN / Inf / numpy / datetime / Decimal cleanup inside row dicts
+    epoch_date = _datetime_t(1970, 1, 1).date()
+    for q in queries:
+        if isinstance(q, dict) and "data" in q:
+            for row in q["data"]:
+                if not isinstance(row, dict):
+                    continue
+                for key, val in row.items():
+                    if isinstance(val, float) and (
+                        math.isnan(val) or math.isinf(val)
+                    ):
+                        row[key] = None
+                    elif isinstance(val, Decimal):
+                        if val == val.to_integral_value():
+                            row[key] = int(val)
+                        else:
+                            row[key] = float(val)
+                    elif isinstance(val, np.integer):
+                        row[key] = int(val)
+                    elif isinstance(val, np.floating):
+                        row[key] = float(val) if not np.isnan(val) else None
+                    elif isinstance(val, np.bool_):
+                        row[key] = bool(val)
+                    elif isinstance(val, pd.Timestamp):
+                        row[key] = (
+                            None
+                            if pd.isna(val)
+                            else datetime_to_epoch(val.to_pydatetime())
+                        )
+                    elif isinstance(val, _datetime_t):
+                        row[key] = datetime_to_epoch(val)
+                    elif isinstance(val, _date_t):
+                        row[key] = (val - epoch_date).total_seconds() * 1000
+
+    # 3. ensure indexnames is present
+    for q in queries:
+        if isinstance(q, dict):
+            q["indexnames"] = list(range(len(q.get("data", []))))
+
+    def _enc_hook(obj: Any) -> Any:
+        if isinstance(obj, pd.Timestamp):
+            if pd.isna(obj):
+                return None
+            return datetime_to_epoch(obj.to_pydatetime())
+        try:
+            return json_int_dttm_ser(obj)
+        except TypeError:
+            return str(obj)
+
+    encoded = _msgspec.json.encode({"result": queries}, enc_hook=_enc_hook)
+    return Response(content=encoded, media_type="application/json")
+
+
+# ---------------------------------------------------------------------------
 # Custom RISON filters for charts
 # ---------------------------------------------------------------------------
 def _chart_custom_filters(current_user: Any) -> dict[str, Any]:
@@ -1372,18 +1493,15 @@ class ChartController(Controller):
         cmd = ChartDataCommand(query_context=query_context, processor=processor)
         result = await cmd.execute()
 
-        # Strip raw SQL from response for guest users (C3)
-        if security_manager.is_guest_user(current_user):
-            for q in result.get("queries", []):
-                if isinstance(q, dict):
-                    q.pop("query", None)
-
         await event_logger.alog_with_context(
             "chart.data",
             object_ref=f"chart:{pk}",
             user_id=current_user.id,
         )
-        return result
+        return _render_chart_data_payload(
+            result,
+            is_guest=security_manager.is_guest_user(current_user),
+        )
 
     @post(
         "/data",

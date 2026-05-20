@@ -58,7 +58,11 @@ async def check_access(
     so the filter-state commands surface a consistent error contract.
     """
     try:
-        dashboard = await dao.get_by_id_or_slug(str(resource_id))
+        # Eager-load the relationships ``can_access_dashboard``/``is_owner``
+        # touch (owners, roles, slices). Plain ``get_by_id_or_slug`` returns a
+        # bare row which then triggers MissingGreenlet when the security
+        # manager pokes at ``dashboard.owners`` on the AsyncSession.
+        dashboard = await dao.get_full_by_id_or_slug(str(resource_id))
         if dashboard is None:
             # The original raises ``DashboardNotFoundError`` from inside
             # ``DashboardDAO.get_by_id_or_slug`` when the row is missing;

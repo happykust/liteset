@@ -155,7 +155,16 @@ async def check_access(
     if not chart_id:
         return True
 
-    chart = await chart_dao.find_by_id(chart_id)
+    # Eager-load ``owners`` so ``security_manager.is_owner`` can read the
+    # M2M without triggering a sync lazy-load on the async session
+    # (which raises ``MissingGreenlet``).
+    from sqlalchemy.orm import selectinload
+
+    from superset.models.slice import Slice
+
+    chart = await chart_dao.find_by_id_with_options(
+        chart_id, [selectinload(Slice.owners)]
+    )
     if chart is None:
         raise ObjectNotFoundError("Chart", chart_id)
 

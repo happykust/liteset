@@ -200,13 +200,23 @@ class AsyncQueryContextProcessor:
           - "full" (default) — execute, normalize, and post-process
         """
         await self._ensure_totals_available(query_objects)
+        # Mirrors original ``QueryContextProcessor.get_payload``: ``result_type``
+        # lives on the query context, not on the query object. Fall back to the
+        # context value when the per-query override is unset.
+        ctx_result_type = (
+            getattr(self._query_context, "result_type", None)
+            if self._query_context is not None
+            else None
+        )
         query_results = []
         for qo in query_objects:
-            result_type = getattr(qo, "result_type", None) or "full"
+            result_type = (
+                getattr(qo, "result_type", None) or ctx_result_type or "full"
+            )
 
             if result_type == "query":
                 result = await self._get_query_only(qo)
-            elif result_type == "samples":
+            elif result_type in ("samples", "drill_detail"):
                 result = await self._get_samples(qo)
             elif result_type == "results":
                 result = await self.get_df_payload(
@@ -262,16 +272,31 @@ class AsyncQueryContextProcessor:
     async def _get_samples(self, query_object: AsyncQueryObject) -> dict[str, Any]:
         """Execute a simplified query for raw sample rows.
 
-        Strips metrics and filters to return raw LIMIT N rows from the
-        datasource.
+        1:1 port of ``superset_old/common/query_actions.py:_get_samples``:
+        clear metrics/post-processing/orderby, populate ``columns`` with
+        every physical column from the datasource, and drop the time
+        window. Without populating ``columns`` the resulting query has no
+        metrics and no columns, and ``get_sqla_query`` raises
+        ``QueryObjectValidationError("Empty query?")``.
         """
         sample_qo = copy.deepcopy(query_object)
-        sample_qo.metrics = []
-        sample_qo.filters = []
-        sample_qo.post_processing = []
+        sample_qo.is_timeseries = False
         sample_qo.orderby = []
+        sample_qo.metrics = None
+        sample_qo.post_processing = []
+        qry_obj_cols: list[str] = []
+        for o in getattr(self._datasource, "columns", []) or []:
+            if isinstance(o, dict):
+                col_name = o.get("column_name")
+            else:
+                col_name = getattr(o, "column_name", None)
+            if col_name:
+                qry_obj_cols.append(col_name)
+        sample_qo.columns = qry_obj_cols
+        sample_qo.from_dttm = None
+        sample_qo.to_dttm = None
         if not sample_qo.row_limit:
-            sample_qo.row_limit = getattr(self._settings, "row_limit", 1000)
+            sample_qo.row_limit = getattr(self._settings, "samples_row_limit", 1000)
 
         return await self.get_df_payload(sample_qo, skip_post_processing=True)
 

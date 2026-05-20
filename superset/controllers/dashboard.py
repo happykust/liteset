@@ -436,31 +436,14 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> DashboardGetResponse:
-        from sqlalchemy.orm import selectinload
-
         from superset.db.filters import dashboard_access_filters
-        from superset.models.dashboard import Dashboard
 
-        # Build query with eager loading for all relationships
-        id_filter = (
-            Dashboard.id == int(id_or_slug)
-            if id_or_slug.isdigit()
-            else Dashboard.slug == id_or_slug
+        access_filters = await dashboard_access_filters(
+            security_manager, current_user
         )
-        base_filters = await dashboard_access_filters(security_manager, current_user)
-        all_filters = [id_filter] + (base_filters or [])
-
-        dashboard = await dao.find_with_filters_and_options(
-            filters=all_filters,
-            options=[
-                selectinload(Dashboard.owners),
-                selectinload(Dashboard.roles),
-                selectinload(Dashboard.tags),
-                selectinload(Dashboard.changed_by),
-                selectinload(Dashboard.created_by),
-                selectinload(Dashboard.slices),
-                selectinload(Dashboard.theme),
-            ],
+        dashboard = await dao.get_full_by_id_or_slug(
+            id_or_slug,
+            extra_filters=access_filters,
         )
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
