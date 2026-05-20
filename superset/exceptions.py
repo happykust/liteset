@@ -27,9 +27,12 @@ The Litestar-specific exception handlers live at the bottom of this file.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from litestar import MediaType, Request, Response
+
+if TYPE_CHECKING:
+    from superset.errors import SupersetError
 
 logger = logging.getLogger(__name__)
 
@@ -90,72 +93,135 @@ class SupersetException(Exception):  # noqa: N818
 
 
 class SupersetErrorException(SupersetException):
-    """Exceptions with a single SupersetError-style payload."""
+    """Exceptions with a single :class:`SupersetError` payload.
+
+    Ported 1:1 from ``superset_old/exceptions.py::SupersetErrorException``:
+    accepts a ``SupersetError`` instance (the SIP-40 error dataclass) plus
+    an optional HTTP ``status`` override. The full error object is kept on
+    ``self.error`` so callers can inspect ``error_type`` / ``level`` / ``extra``,
+    matching the original behaviour.
+    """
 
     def __init__(
-        self,
-        message: str = "",
-        error_type: str | None = None,
-        extra: dict[str, Any] | None = None,
-        status_code: int | None = None,
+        self, error: SupersetError, status: int | None = None
     ) -> None:
-        super().__init__(message=message, error_type=error_type, extra=extra)
-        if status_code is not None:
-            self.status_code = status_code
+        from superset.errors import SupersetError as _SupersetError
+
+        if not isinstance(error, _SupersetError):
+            raise TypeError(
+                "SupersetErrorException requires a SupersetError instance "
+                f"(got {type(error).__name__})"
+            )
+        self.error = error
+        super().__init__(message=error.message)
+        if status is not None:
+            self.status_code = status
+
+    def to_sip40(self) -> dict[str, Any]:
+        """Return the SIP-40 error dict (mirrors original ``to_dict``).
+
+        Original ``SupersetError.to_dict`` only emits ``message``, ``error_type``
+        and ``extra`` — but every Flask response handler also surfaces ``level``,
+        so we include it explicitly for parity with the existing payloads.
+        ``ErrorLevel`` inherits from ``str``, so the JSON encoder serialises it
+        to its plain enum value (``"error"``), not the ``"ErrorLevel.ERROR"``
+        repr we'd get from ``str(...)``.
+        """
+        payload = self.error.to_dict()
+        payload.setdefault("level", self.error.level)
+        return payload
 
 
 class SupersetGenericErrorException(SupersetErrorException):
-    """Exceptions that are too generic to have their own type."""
+    """Exceptions that are too generic to have their own type.
 
-    def __init__(self, message: str, status_code: int | None = None) -> None:
+    Direct port of ``superset_old/exceptions.py::SupersetGenericErrorException``.
+    """
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+
         super().__init__(
-            message=message,
-            error_type="GENERIC_BACKEND_ERROR",
-            status_code=status_code,
+            SupersetError(
+                message=message,
+                error_type=SupersetErrorType.GENERIC_BACKEND_ERROR,
+                level=ErrorLevel.ERROR,
+            ),
+            status=status,
         )
 
 
 class SupersetErrorFromParamsException(SupersetErrorException):
-    """Exceptions that are constructed from explicit error_type / level params."""
+    """Exceptions that pass in parameters to construct a SupersetError.
+
+    Direct port of ``superset_old/exceptions.py::SupersetErrorFromParamsException``.
+    """
 
     def __init__(
         self,
-        error_type: str,
+        error_type: Any,
         message: str,
-        level: str = "error",
+        level: Any = None,
         extra: dict[str, Any] | None = None,
     ) -> None:
-        super().__init__(message=message, error_type=error_type, extra=extra)
+        from superset.errors import ErrorLevel, SupersetError
 
-    def to_sip40(self) -> dict[str, Any]:
-        payload = super().to_sip40()
-        return payload
+        super().__init__(
+            SupersetError(
+                error_type=error_type,
+                message=message,
+                level=level if level is not None else ErrorLevel.ERROR,
+                extra=extra or {},
+            )
+        )
 
 
 class SupersetErrorsException(SupersetException):
-    """Exceptions with multiple SIP-40 error payloads."""
+    """Exceptions with multiple :class:`SupersetError` payloads.
+
+    Ported 1:1 from ``superset_old/exceptions.py::SupersetErrorsException``.
+    The constructor accepts a list of ``SupersetError`` (preferred) but also
+    tolerates pre-converted dicts so existing call-sites keep working.
+    """
 
     def __init__(
         self,
-        errors: list[dict[str, Any]] | None = None,
-        status_code: int | None = None,
+        errors: list[Any] | None = None,
+        status: int | None = None,
         message: str = "",
+        # Backwards-compat alias for callers that still pass the old kwarg.
+        status_code: int | None = None,
     ) -> None:
         self.errors = errors or []
-        if status_code is not None:
-            self.status_code = status_code
+        chosen = status if status is not None else status_code
+        if chosen is not None:
+            self.status_code = chosen
         super().__init__(message=message or str(self.errors))
 
+    def _errors_as_dicts(self) -> list[dict[str, Any]]:
+        from superset.errors import SupersetError as _SupersetError
+
+        out: list[dict[str, Any]] = []
+        for err in self.errors:
+            if isinstance(err, _SupersetError):
+                payload = err.to_dict()
+                payload.setdefault("level", err.level)  # StrEnum serialises clean
+                out.append(payload)
+            else:
+                out.append(err)
+        return out
+
     def to_sip40(self) -> dict[str, Any]:
-        if self.errors:
+        dicts = self._errors_as_dicts()
+        if dicts:
             return (
-                self.errors[0]
-                if len(self.errors) == 1
+                dicts[0]
+                if len(dicts) == 1
                 else {
                     "message": self.message,
                     "error_type": self.error_type,
                     "level": "error",
-                    "extra": {"errors": self.errors},
+                    "extra": {"errors": dicts},
                 }
             )
         return super().to_sip40()
@@ -169,23 +235,13 @@ class SupersetErrorsException(SupersetException):
 class SupersetSyntaxErrorException(SupersetErrorsException):
     """Raised when Jinja2 template processing finds a syntax error.
 
-    Ported 1:1 from superset_old/exceptions.py::SupersetSyntaxErrorException.
-    The constructor accepts ``list[SupersetError]`` (the original API) and
-    converts each error to a dict via ``to_dict()`` so ``self.errors``
-    contains the dicts that ``to_sip40()`` expects.
+    Ported 1:1 from ``superset_old/exceptions.py::SupersetSyntaxErrorException``.
     """
 
     status_code = 422
 
     def __init__(self, errors: list[Any]) -> None:  # list[SupersetError]
-        # Convert SupersetError dataclass instances to dicts (SIP-40 format).
-        from superset.errors import SupersetError as _SupersetError
-
-        converted: list[dict[str, Any]] = [
-            err.to_dict() if isinstance(err, _SupersetError) else err
-            for err in errors
-        ]
-        super().__init__(errors=converted, status_code=self.status_code)
+        super().__init__(errors=errors)
 
 
 class SupersetTimeoutException(SupersetErrorFromParamsException):
@@ -198,13 +254,15 @@ class SupersetGenericDBErrorException(SupersetErrorFromParamsException):
     def __init__(
         self,
         message: str,
-        level: str = "error",
+        level: Any = None,
         extra: dict[str, Any] | None = None,
     ) -> None:
+        from superset.errors import ErrorLevel, SupersetErrorType
+
         super().__init__(
-            error_type="GENERIC_DB_ENGINE_ERROR",
+            error_type=SupersetErrorType.GENERIC_DB_ENGINE_ERROR,
             message=message,
-            level=level,
+            level=level if level is not None else ErrorLevel.ERROR,
             extra=extra,
         )
 
@@ -215,39 +273,36 @@ class SupersetTemplateParamsErrorException(SupersetErrorFromParamsException):
     def __init__(
         self,
         message: str,
-        error_type: str,
-        level: str = "error",
+        error: Any,
+        level: Any = None,
         extra: dict[str, Any] | None = None,
     ) -> None:
+        from superset.errors import ErrorLevel
+
         super().__init__(
-            error_type=error_type,
+            error_type=error,
             message=message,
-            level=level,
+            level=level if level is not None else ErrorLevel.ERROR,
             extra=extra,
         )
 
 
-class SupersetSecurityException(SupersetException):
+class SupersetSecurityException(SupersetErrorException):
+    """Security failure with an attached SIP-40 error.
+
+    Direct port of ``superset_old/exceptions.py::SupersetSecurityException``.
+    The optional ``payload`` field carries datasource/role context that
+    the original ``raise_for_access`` flow attaches.
+    """
+
     status_code = 403
     message = "Access denied"
 
     def __init__(
-        self,
-        error: Any = None,
-        message: str = "",
-        payload: dict[str, Any] | None = None,
-        **kwargs: Any,
+        self, error: SupersetError, payload: dict[str, Any] | None = None
     ) -> None:
-        from superset.errors import SupersetError as _SupersetError
-
-        self.error: _SupersetError | None = None
+        super().__init__(error)
         self.payload = payload
-
-        if isinstance(error, _SupersetError):
-            self.error = error
-            super().__init__(message=error.message or self.__class__.message, **kwargs)
-        else:
-            super().__init__(message=message or self.__class__.message, **kwargs)
 
 
 class SupersetVizException(SupersetErrorsException):
@@ -340,9 +395,14 @@ class InvalidPayloadFormatError(SupersetErrorException):
     status_code = 400
 
     def __init__(self, message: str = "Request payload has incorrect format") -> None:
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+
         super().__init__(
-            message=message,
-            error_type="INVALID_PAYLOAD_FORMAT_ERROR",
+            SupersetError(
+                message=message,
+                error_type=SupersetErrorType.INVALID_PAYLOAD_FORMAT_ERROR,
+                level=ErrorLevel.ERROR,
+            )
         )
 
 
@@ -350,10 +410,15 @@ class InvalidPayloadSchemaError(SupersetErrorException):
     status_code = 422
 
     def __init__(self, messages: dict[str, Any] | None = None) -> None:
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+
         super().__init__(
-            message="An error happened when validating the request",
-            error_type="INVALID_PAYLOAD_SCHEMA_ERROR",
-            extra={"messages": messages or {}},
+            SupersetError(
+                message="An error happened when validating the request",
+                error_type=SupersetErrorType.INVALID_PAYLOAD_SCHEMA_ERROR,
+                level=ErrorLevel.ERROR,
+                extra={"messages": messages or {}},
+            )
         )
 
 
@@ -381,10 +446,15 @@ class SupersetMarshmallowValidationError(SupersetErrorException):
         messages: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
     ) -> None:
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+
         super().__init__(
-            message="The schema of the submitted payload is invalid.",
-            error_type="MARSHMALLOW_ERROR",
-            extra={"messages": messages or {}, "payload": payload or {}},
+            SupersetError(
+                message="The schema of the submitted payload is invalid.",
+                error_type=SupersetErrorType.MARSHMALLOW_ERROR,
+                level=ErrorLevel.ERROR,
+                extra={"messages": messages or {}, "payload": payload or {}},
+            )
         )
 
 
@@ -425,46 +495,59 @@ class OAuth2RedirectError(SupersetErrorException):
     """
     Exception used to start OAuth2 dance for personal tokens.
 
-    The exception requires 3 parameters:
-
-    - The URL that starts the OAuth2 dance.
-    - The UUID of the browser tab where OAuth2 started, so that the newly
-      opened tab where OAuth2 happens can communicate with the original tab
-      to inform that OAuth2 was successful (or not).
-    - The redirect URL, so that the original tab can validate that the
-      message from the second tab is coming from a valid origin.
+    Direct port of ``superset_old/exceptions.py::OAuth2RedirectError``.
     """
 
     def __init__(self, url: str, tab_id: str, redirect_uri: str) -> None:
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+
         super().__init__(
-            message="You don't have permission to access the data.",
-            error_type="OAUTH2_REDIRECT",
-            extra={"url": url, "tab_id": tab_id, "redirect_uri": redirect_uri},
+            SupersetError(
+                message="You don't have permission to access the data.",
+                error_type=SupersetErrorType.OAUTH2_REDIRECT,
+                level=ErrorLevel.WARNING,
+                extra={"url": url, "tab_id": tab_id, "redirect_uri": redirect_uri},
+            )
         )
 
 
 class OAuth2Error(SupersetErrorException):
     """
     Exception for when OAuth2 goes wrong.
+
+    Direct port of ``superset_old/exceptions.py::OAuth2Error``.
     """
 
     def __init__(self, error: str) -> None:
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+
         super().__init__(
-            message="Something went wrong while doing OAuth2",
-            error_type="OAUTH2_REDIRECT_ERROR",
-            extra={"error": error},
+            SupersetError(
+                message="Something went wrong while doing OAuth2",
+                error_type=SupersetErrorType.OAUTH2_REDIRECT_ERROR,
+                level=ErrorLevel.ERROR,
+                extra={"error": error},
+            )
         )
 
 
 class SupersetDisallowedSQLFunctionException(SupersetErrorException):
     """
     Disallowed function found on SQL statement.
+
+    Direct port of
+    ``superset_old/exceptions.py::SupersetDisallowedSQLFunctionException``.
     """
 
     def __init__(self, functions: set[str]) -> None:
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+
         super().__init__(
-            message=f"SQL statement contains disallowed function(s): {functions}",
-            error_type="SYNTAX_ERROR",
+            SupersetError(
+                message=f"SQL statement contains disallowed function(s): {functions}",
+                error_type=SupersetErrorType.SYNTAX_ERROR,
+                level=ErrorLevel.ERROR,
+            )
         )
 
 
@@ -484,9 +567,14 @@ class DatabaseNotFoundException(SupersetErrorException):
     status_code = 404
 
     def __init__(self, message: str = "Database not found") -> None:
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+
         super().__init__(
-            message=message,
-            error_type="DATABASE_NOT_FOUND_ERROR",
+            SupersetError(
+                message=message,
+                error_type=SupersetErrorType.DATABASE_NOT_FOUND_ERROR,
+                level=ErrorLevel.ERROR,
+            )
         )
 
 
@@ -494,52 +582,77 @@ class TableNotFoundException(SupersetErrorException):
     status_code = 404
 
     def __init__(self, message: str = "Table not found") -> None:
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+
         super().__init__(
-            message=message,
-            error_type="TABLE_NOT_FOUND_ERROR",
+            SupersetError(
+                message=message,
+                error_type=SupersetErrorType.TABLE_NOT_FOUND_ERROR,
+                level=ErrorLevel.ERROR,
+            )
         )
 
 
 class SupersetDMLNotAllowedException(SupersetErrorException):
     def __init__(self) -> None:
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+
         super().__init__(
-            message=(
-                "This database does not allow for DDL/DML, but the query mutates "
-                "data. Please contact your administrator for more assistance."
-            ),
-            error_type="DML_NOT_ALLOWED_ERROR",
+            SupersetError(
+                message=(
+                    "This database does not allow for DDL/DML, but the query mutates "
+                    "data. Please contact your administrator for more assistance."
+                ),
+                error_type=SupersetErrorType.DML_NOT_ALLOWED_ERROR,
+                level=ErrorLevel.ERROR,
+            )
         )
 
 
 class SupersetInvalidCTASException(SupersetErrorException):
     def __init__(self) -> None:
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+
         super().__init__(
-            message=(
-                "CTAS (create table as select) can only be run with a query where "
-                "the last statement is a SELECT. Please make sure your query has "
-                "a SELECT as its last statement. Then, try running your query again."
-            ),
-            error_type="INVALID_CTAS_QUERY_ERROR",
+            SupersetError(
+                message=(
+                    "CTAS (create table as select) can only be run with a query where "
+                    "the last statement is a SELECT. Please make sure your query has "
+                    "a SELECT as its last statement. Then, try running your query again."
+                ),
+                error_type=SupersetErrorType.INVALID_CTAS_QUERY_ERROR,
+                level=ErrorLevel.ERROR,
+            )
         )
 
 
 class SupersetInvalidCVASException(SupersetErrorException):
     def __init__(self) -> None:
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+
         super().__init__(
-            message=(
-                "CVAS (create view as select) can only be run with a query with "
-                "a single SELECT statement. Please make sure your query has only "
-                "a SELECT statement. Then, try running your query again."
-            ),
-            error_type="INVALID_CVAS_QUERY_ERROR",
+            SupersetError(
+                message=(
+                    "CVAS (create view as select) can only be run with a query with "
+                    "a single SELECT statement. Please make sure your query has only "
+                    "a SELECT statement. Then, try running your query again."
+                ),
+                error_type=SupersetErrorType.INVALID_CVAS_QUERY_ERROR,
+                level=ErrorLevel.ERROR,
+            )
         )
 
 
 class SupersetResultsBackendNotConfigureException(SupersetErrorException):
     def __init__(self) -> None:
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+
         super().__init__(
-            message="Results backend is not configured.",
-            error_type="RESULTS_BACKEND_NOT_CONFIGURED_ERROR",
+            SupersetError(
+                message="Results backend is not configured.",
+                error_type=SupersetErrorType.RESULTS_BACKEND_NOT_CONFIGURED_ERROR,
+                level=ErrorLevel.ERROR,
+            )
         )
 
 
