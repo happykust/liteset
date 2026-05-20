@@ -207,8 +207,24 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
         catalog: str | None = None,
         schema: str | None = None,
     ) -> list[SqlaTable]:
-        """Get datasets for a database, optionally filtered."""
-        stmt = select(SqlaTable).where(SqlaTable.database_id == database_id)
+        """Get datasets for a database, optionally filtered.
+
+        Eager-loads ``metrics`` and ``columns`` because the database export
+        flow calls ``dataset.export_to_dict(recursive=True)`` on every row
+        — that method walks ``SqlaTable.export_children`` and would otherwise
+        trigger a synchronous lazy-load that crashes with ``MissingGreenlet``
+        outside the AsyncSession greenlet.
+        """
+        from sqlalchemy.orm import selectinload
+
+        stmt = (
+            select(SqlaTable)
+            .where(SqlaTable.database_id == database_id)
+            .options(
+                selectinload(SqlaTable.metrics),
+                selectinload(SqlaTable.columns),
+            )
+        )
         if catalog is not None:
             stmt = stmt.where(SqlaTable.catalog == catalog)
         if schema is not None:

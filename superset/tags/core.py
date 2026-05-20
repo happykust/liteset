@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 
 from sqlalchemy import delete as sa_delete, exists, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from superset.models.tags import ObjectType, Tag, TaggedObject, TagType
@@ -55,6 +56,22 @@ async def get_tag(
 
     Port of ``superset_old/tags/models.py::get_tag`` -- async version.
 
+    The original Flask code is the same naive read-then-insert and has the
+    same race; under the sync stack it surfaced rarely because most paths
+    served one request per process at a time.  Under async + Locust the
+    race fires on every burst:
+
+      worker A: SELECT owner:1   → not found
+      worker B: SELECT owner:1   → not found  (concurrent)
+      worker A: INSERT owner:1   → ok
+      worker B: INSERT owner:1   → UniqueViolation on tag_name_key
+
+    Without a SAVEPOINT the IntegrityError poisons the outer transaction
+    (``SAWarning: transaction already deassociated from connection``), so
+    every subsequent statement on the request's session also fails.  We
+    wrap the INSERT in a nested transaction so the conflict only rolls
+    back the savepoint and the outer transaction stays intact.
+
     :param name: Tag name (will be stripped of leading/trailing whitespace).
     :param session: An active :class:`~sqlalchemy.ext.asyncio.AsyncSession`.
     :param type_: The :class:`TagType` for the tag.
@@ -64,11 +81,21 @@ async def get_tag(
     stmt = select(Tag).where(Tag.name == tag_name, Tag.type == type_)
     result = await session.execute(stmt)
     tag = result.scalars().one_or_none()
-    if tag is None:
-        tag = Tag(name=tag_name, type=type_)
-        session.add(tag)
-        await session.flush()
-    return tag
+    if tag is not None:
+        return tag
+
+    try:
+        async with session.begin_nested():
+            tag = Tag(name=tag_name, type=type_)
+            session.add(tag)
+            await session.flush()
+            return tag
+    except IntegrityError:
+        # Another concurrent worker inserted the same tag between our
+        # SELECT and INSERT.  The savepoint already rolled back the
+        # failed insert; re-read the row that the winning worker wrote.
+        result = await session.execute(stmt)
+        return result.scalars().one()
 
 
 def get_object_type(class_name: str) -> ObjectType:
@@ -108,6 +135,11 @@ async def _add_tag_object_if_not_tagged(
     """Add a ``TaggedObject`` row if one does not already exist.
 
     Port of ``ObjectUpdater.add_tag_object_if_not_tagged``.
+
+    Wrap the INSERT in a SAVEPOINT for the same reason as ``get_tag``:
+    two concurrent workers may both pass the ``exists()`` check and both
+    INSERT, the loser hitting ``uix_tagged_object``.  Without the
+    savepoint the failure poisons the request transaction.
     """
     exists_query = exists().where(
         TaggedObject.tag_id == tag_id,
@@ -116,11 +148,20 @@ async def _add_tag_object_if_not_tagged(
     )
     result = await session.execute(select(exists_query))
     already_tagged: bool = result.scalar()  # type: ignore[assignment]
-    if not already_tagged:
-        tagged_object = TaggedObject(
-            tag_id=tag_id, object_id=object_id, object_type=object_type
-        )
-        session.add(tagged_object)
+    if already_tagged:
+        return
+    try:
+        async with session.begin_nested():
+            tagged_object = TaggedObject(
+                tag_id=tag_id, object_id=object_id, object_type=object_type
+            )
+            session.add(tagged_object)
+            await session.flush()
+    except IntegrityError:
+        # Concurrent worker inserted the same (tag_id, object_id,
+        # object_type) tuple between our exists() check and INSERT.
+        # The row is already there — nothing more to do.
+        pass
 
 
 async def add_implicit_tags_after_insert(
@@ -190,14 +231,22 @@ async def sync_owner_tags_after_update(
         tag = await get_tag(f"owner:{owner_id}", session, TagType.owner)
         new_owner_tag_ids.add(tag.id)
 
-    # Add missing tags
+    # Add missing tags — savepoint each insert so a concurrent UPDATE
+    # adding the same owner tag (race against ``existing_tags``) just
+    # rolls back the savepoint instead of poisoning the outer txn.
     for owner_tag_id in new_owner_tag_ids - existing_owner_tag_ids:
-        tagged_object = TaggedObject(
-            tag_id=owner_tag_id,
-            object_id=object_id,
-            object_type=object_type,
-        )
-        session.add(tagged_object)
+        try:
+            async with session.begin_nested():
+                tagged_object = TaggedObject(
+                    tag_id=owner_tag_id,
+                    object_id=object_id,
+                    object_type=object_type,
+                )
+                session.add(tagged_object)
+                await session.flush()
+        except IntegrityError:
+            # Tag already added by another concurrent worker.
+            pass
 
     # Remove stale tags
     for tagged_obj in existing_tags:

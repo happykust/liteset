@@ -41,29 +41,68 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
     model_cls = Dashboard
     _fav_class_name = FavStarClassName.DASHBOARD
 
+    @staticmethod
+    def _id_or_slug_filter(id_or_slug: int | str) -> Any:
+        """Build the SQL WHERE clause that resolves *id_or_slug* to a single
+        dashboard.
+
+        Mirrors :meth:`get_by_id_or_slug` dispatch (int → ``id``,
+        UUID-shaped string → ``uuid``, otherwise → ``slug``) but returns
+        the SQLAlchemy expression so callers can combine it with their
+        own filters (e.g. RBAC access filters) in a single ``WHERE``.
+        """
+        try:
+            return Dashboard.id == int(id_or_slug)
+        except (ValueError, TypeError):
+            pass
+        try:
+            return Dashboard.uuid == UUID(str(id_or_slug))
+        except ValueError:
+            return Dashboard.slug == str(id_or_slug)
+
     async def get_by_id_or_slug(
         self,
         id_or_slug: int | str,
     ) -> Dashboard | None:
         """Find a dashboard by integer ID, UUID, or slug."""
-        # Try integer ID
-        try:
-            dash_id = int(id_or_slug)
-            return await self.find_by_id(dash_id)
-        except (ValueError, TypeError):
-            pass
+        stmt = select(Dashboard).where(self._id_or_slug_filter(id_or_slug))
+        result = await self.session.execute(stmt)
+        return result.scalars().unique().one_or_none()
 
-        # Try UUID
-        try:
-            uuid_val = UUID(str(id_or_slug))
-            result = await self.find_one_or_none(uuid=uuid_val)
-            if result:
-                return result
-        except ValueError:
-            pass
+    async def get_full_by_id_or_slug(
+        self,
+        id_or_slug: int | str,
+        *,
+        extra_filters: list[Any] | None = None,
+    ) -> Dashboard | None:
+        """Fetch a single dashboard with the full set of eager-loaded
+        relationships needed by ``GET /api/v1/dashboard/{id_or_slug}``.
 
-        # Try slug
-        return await self.find_one_or_none(slug=str(id_or_slug))
+        ``extra_filters`` is intended for caller-supplied access filters
+        (e.g. RBAC scoping). Keeping the load-policy and id/uuid/slug
+        dispatch in the DAO leaves the controller free of ORM concerns
+        and prevents future drift between filter forms (the original
+        bug: a controller-side ``isdigit() else slug`` dispatch silently
+        404'd UUID lookups).
+        """
+        filters = [self._id_or_slug_filter(id_or_slug)]
+        if extra_filters:
+            filters.extend(extra_filters)
+        stmt = (
+            select(Dashboard)
+            .where(*filters)
+            .options(
+                selectinload(Dashboard.owners),
+                selectinload(Dashboard.roles),
+                selectinload(Dashboard.tags),
+                selectinload(Dashboard.changed_by),
+                selectinload(Dashboard.created_by),
+                selectinload(Dashboard.slices),
+                selectinload(Dashboard.theme),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().unique().one_or_none()
 
     async def find_with_filters_and_options(
         self,
