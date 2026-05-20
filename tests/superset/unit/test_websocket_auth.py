@@ -110,3 +110,90 @@ async def test_authenticate_websocket_cookie_fallback():
     )
     assert result is not None
     assert result.user_id == 42
+
+
+# ---------------------------------------------------------------------------
+# New tests for Task 1: GAQ JWT secret + cookie name + session fallback fixes
+# ---------------------------------------------------------------------------
+
+
+async def test_gaq_secret_differs_from_secret_key_succeeds():
+    """async-token signed with GAQ secret must be accepted when passed as jwt_secret.
+
+    This mirrors the fix in events.py: use global_async_queries_jwt_secret
+    (not secret_key) to verify the async-token cookie.
+    """
+    gaq_secret = "test-secret-change-me"  # default GAQ secret
+    secret_key = "a-completely-different-secret!!"  # different from GAQ secret
+
+    token = pyjwt.encode(
+        {"channel": "uuid-channel-1", "sub": "7"},
+        gaq_secret,
+        algorithm="HS256",
+    )
+    # Token is in the cookie, not the query param
+    socket = _make_socket(headers={"cookie": f"async-token={token}"})
+
+    # Verify with GAQ secret succeeds
+    result = await authenticate_websocket(socket, jwt_secret=gaq_secret)
+    assert result is not None
+    assert result.user_id == 7
+    assert result.channel == "uuid-channel-1"
+
+    # Verify that using wrong secret_key fails (proves the secrets really differ)
+    socket2 = _make_socket(headers={"cookie": f"async-token={token}"})
+    result2 = await authenticate_websocket(socket2, jwt_secret=secret_key)
+    assert result2 is None
+
+
+async def test_custom_cookie_name_honored():
+    """Authentication succeeds with a non-default cookie name."""
+    secret = "test-secret-key-that-is-32-bytes!"
+    custom_cookie = "my-custom-async-token"
+    token = pyjwt.encode({"channel": "ch-custom", "sub": "99"}, secret, algorithm="HS256")
+
+    # Present token under custom cookie name
+    socket = _make_socket(headers={"cookie": f"{custom_cookie}={token}"})
+    result = await authenticate_websocket(socket, jwt_secret=secret, cookie_name=custom_cookie)
+    assert result is not None
+    assert result.user_id == 99
+    assert result.channel == "ch-custom"
+
+
+async def test_custom_cookie_name_mismatch_fails():
+    """Auth fails when cookie name does not match what authenticate_websocket looks for."""
+    secret = "test-secret-key-that-is-32-bytes!"
+    token = pyjwt.encode({"channel": "ch-x", "sub": "55"}, secret, algorithm="HS256")
+
+    # Token is in "async-token" but caller says to look in "other-name"
+    socket = _make_socket(headers={"cookie": f"async-token={token}"})
+    result = await authenticate_websocket(socket, jwt_secret=secret, cookie_name="other-name")
+    # No query param, wrong cookie name → falls to session-cookie fallback
+    # Session cookie is also absent, so result is None
+    assert result is None
+
+
+async def test_session_cookie_fallback_returns_empty_channel():
+    """Session-cookie fallback must return channel='' (not 'events:{user_id}').
+
+    The real per-session channel is stored in Redis under
+    async-channels:user:{user_id}; fabricating 'events:{id}' here would
+    cause catch-up reads against a non-existent stream.
+    """
+    secret = "test-session-secret-32-bytes!!!"
+    # Mint a JWT-style session cookie with user_id claim (Liteset auth format)
+    session_token = pyjwt.encode({"user_id": 13}, secret, algorithm="HS256")
+
+    socket = _make_socket(headers={"cookie": f"session={session_token}"})
+    result = await authenticate_websocket(
+        socket,
+        jwt_secret=secret,
+        # Intentionally omit "async-token" cookie so path 1 & 2 both miss
+        cookie_name="async-token",
+        session_cookie_name="session",
+    )
+    assert result is not None
+    assert result.user_id == 13
+    # CRITICAL: channel must be empty string, NOT "events:13"
+    assert result.channel == ""
+    assert result.channel != f"events:{result.user_id}"

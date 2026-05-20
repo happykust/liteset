@@ -116,13 +116,17 @@ async def authenticate_websocket(
             logger.debug("WebSocket JWT auth failed: %s", exc)
 
     # 3. Fallback to session cookie (browser WS connections carry it)
+    # Return channel="" so the caller can resolve the real per-session channel
+    # from Redis (key: async-channels:user:{user_id}).  Fabricating a bogus
+    # "events:{user_id}" channel here would cause catch-up reads to fail because
+    # AsyncTokenMiddleware stores the real channel UUID under a different key.
     session_cookie = _extract_cookie_token(headers, session_cookie_name)
     if session_cookie:
         session_user_id = _resolve_user_id_from_session(session_cookie, jwt_secret)
         if session_user_id is not None:
             return WebSocketAuthResult(
                 user_id=session_user_id,
-                channel=f"events:{session_user_id}",
+                channel="",
             )
 
     logger.debug("WebSocket auth failed: no valid credentials")

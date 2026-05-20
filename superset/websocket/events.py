@@ -117,15 +117,29 @@ class AsyncQueryWebSocket(Controller):
             logger.warning("WebSocket rejected: forbidden origin %s", origin)
             return
 
-        # Authenticate before accepting
-        jwt_secret = settings.secret_key
-        if hasattr(jwt_secret, "get_secret_value"):
-            jwt_secret = jwt_secret.get_secret_value()
+        # Authenticate before accepting.
+        # The async-token cookie is signed with global_async_queries_jwt_secret
+        # (default "test-secret-change-me"), NOT with secret_key.  Use the same
+        # precedence as AsyncTokenMiddleware._resolve_secret_key and the polling
+        # endpoint (async_event.py): prefer global_async_queries_jwt_secret,
+        # fall back to secret_key, call .get_secret_value() if it's a SecretStr.
+        from superset.middleware.async_token import _channel_key  # noqa: PLC0415
 
+        gaq_secret = getattr(settings, "global_async_queries_jwt_secret", None)
+        if gaq_secret is None:
+            gaq_secret = getattr(settings, "secret_key", "")
+        if hasattr(gaq_secret, "get_secret_value"):
+            gaq_secret = gaq_secret.get_secret_value()
+        jwt_secret: str = str(gaq_secret) if gaq_secret else ""
+
+        cookie_name: str = getattr(
+            settings, "global_async_queries_jwt_cookie_name", "async-token"
+        )
         session_cookie_name = getattr(settings, "session_cookie_name", "session")
         auth_result = await authenticate_websocket(
             socket,
             jwt_secret=jwt_secret,
+            cookie_name=cookie_name,
             session_cookie_name=session_cookie_name,
         )
         if auth_result is None:
@@ -158,7 +172,25 @@ class AsyncQueryWebSocket(Controller):
 
             await socket.accept()
             active_ws[socket] = auth_result.user_id
-        channel = f"events:{auth_result.user_id}"
+
+        # Resolve per-session channel id.  The JWT claim ("channel") is the
+        # canonical source when present (query-param and cookie paths).  The
+        # session-cookie fallback returns channel="" so we look up the real
+        # UUID from Redis (the same key AsyncTokenMiddleware writes).
+        channel = auth_result.channel
+        if not channel:
+            redis = getattr(state, "redis", None)
+            if redis is not None:
+                try:
+                    raw = await redis.get(_channel_key(auth_result.user_id))
+                    if raw:
+                        channel = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "Redis lookup failed for channel key of user %d",
+                        auth_result.user_id,
+                        exc_info=True,
+                    )
 
         logger.info(
             "WebSocket accepted: user=%d, channel=%s",
@@ -173,7 +205,7 @@ class AsyncQueryWebSocket(Controller):
 
             event_manager = AsyncEventManager(redis=state.redis)
             missed_events = await event_manager.read_events(
-                channel_id=auth_result.channel,
+                channel_id=channel,
                 last_id=last_id,
             )
             for event in missed_events:
