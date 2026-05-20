@@ -53,25 +53,32 @@ SQLALCHEMY_EXAMPLES_URI = (
 
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = os.getenv("REDIS_PORT", "6379")
-REDIS_CELERY_DB = os.getenv("REDIS_CELERY_DB", "0")
-REDIS_RESULTS_DB = os.getenv("REDIS_RESULTS_DB", "1")
+# Dedicated logical Redis DBs per purpose so the keyspaces stay isolated:
+# flushing one (e.g. the Celery result backend) never wipes another (e.g.
+# the auth/user cache or the data cache).
+REDIS_CELERY_DB = os.getenv("REDIS_CELERY_DB", "0")  # Celery broker
+REDIS_RESULTS_DB = os.getenv("REDIS_RESULTS_DB", "1")  # Celery result backend
+REDIS_CACHE_DB = os.getenv("REDIS_CACHE_DB", "2")  # app / data / thumbnail cache
+REDIS_AUTH_DB = os.getenv("REDIS_AUTH_DB", "3")  # auth user cache + async events
 
-# Async Redis URL used by Litestar app for auth cache, async events,
-# rate limiting and the cache_manager fallback.
-REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_RESULTS_DB}"
+# Async Redis URL used by the Litestar app for the auth/user cache, async
+# query events, rate limiting and the cache_manager fallback.  Isolated on
+# its own DB (REDIS_AUTH_DB), separate from Celery and the data cache.
+REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_AUTH_DB}"
 
 # Cache configuration — superset.cache.manager understands the original
 # Flask-Caching ``CACHE_TYPE`` strings ("redis"/"RedisCache",
 # "simple"/"SimpleCache", "null"/"NullCache").  Flask-Caching itself is no
 # longer a dependency; the manager builds a redis client / in-memory dict
-# directly based on these knobs.
+# directly based on these knobs.  Lives on REDIS_CACHE_DB, separate from
+# the Celery result backend.
 CACHE_CONFIG = {
     "CACHE_TYPE": "RedisCache",
     "CACHE_DEFAULT_TIMEOUT": 300,
     "CACHE_KEY_PREFIX": "superset_",
     "CACHE_REDIS_HOST": REDIS_HOST,
     "CACHE_REDIS_PORT": REDIS_PORT,
-    "CACHE_REDIS_DB": REDIS_RESULTS_DB,
+    "CACHE_REDIS_DB": REDIS_CACHE_DB,
 }
 DATA_CACHE_CONFIG = CACHE_CONFIG
 THUMBNAIL_CACHE_CONFIG = CACHE_CONFIG
