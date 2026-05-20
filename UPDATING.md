@@ -52,8 +52,13 @@ assists people when migrating to a new version.
 2. **Configuration**: `superset_config.py` is still supported but deprecated.
    New configuration via environment variables with `LITESET_` prefix or `.env` file.
 
-3. **Docker**: `superset-websocket` service removed. WebSocket is now built into the main application.
-   Update `docker-compose.yml` to remove the `superset-websocket` service.
+3. **Docker / WebSocket sidecar removed**: The Node.js `superset-websocket` sidecar is replaced
+   by a native in-process Litestar WebSocket endpoint at **`/ws/events`**.
+   - Remove the `superset-websocket` service from `docker-compose.yml`.
+   - Operators using `GLOBAL_ASYNC_QUERIES_TRANSPORT="ws"` must update
+     `GLOBAL_ASYNC_QUERIES_WEBSOCKET_URL` to point at the app's `/ws/events` endpoint
+     (e.g. `ws://localhost:8088/ws/events`).  The historical default `ws://127.0.0.1:8080/`
+     referred to the now-removed Node.js sidecar and is no longer valid.
 
 4. **Celery**: Task paths changed from `superset.tasks.*` to `liteset.tasks.*`.
    Update `CELERYBEAT_SCHEDULE` in configuration. Both old and new paths accepted during transition.

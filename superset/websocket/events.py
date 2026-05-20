@@ -126,9 +126,12 @@ class AsyncQueryWebSocket(Controller):
     # a close frame (4401) without any data being sent.
     opt = {"exclude_from_auth": True}
 
-    @websocket("/ws")
+    @websocket("/ws/events")
     async def on_event(self, socket: WebSocket[Any, Any, Any], state: State) -> None:  # noqa: C901
-        """Handle WebSocket connection for async query events."""
+        """Handle WebSocket connection for async query events.
+
+        Path: /ws/events
+        """
         settings = state.settings
 
         # Origin validation (CORS does not apply to WebSocket upgrade)
@@ -200,7 +203,9 @@ class AsyncQueryWebSocket(Controller):
                 try:
                     raw = await redis.get(_channel_key(auth_result.user_id))
                     if raw:
-                        channel = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+                        channel = (
+                            raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+                        )
                 except Exception:  # noqa: BLE001
                     logger.debug(
                         "Redis lookup failed for channel key of user %d",

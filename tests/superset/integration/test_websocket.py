@@ -59,6 +59,10 @@ def _create_token(user_id: int = 42, channel: str = "ch-1") -> str:
 def _create_settings(**overrides: object) -> MagicMock:
     settings = MagicMock()
     settings.secret_key = JWT_SECRET
+    # Explicitly set to None so _resolve_secret_key falls through to secret_key.
+    # MagicMock auto-creates attributes as MagicMock (truthy), which would cause
+    # _resolve_secret_key to use a garbage value and fail authentication.
+    settings.global_async_queries_jwt_secret = None
     settings.cors_allow_origins = overrides.get("cors_allow_origins", [])
     settings.max_ws_per_user = overrides.get("max_ws_per_user", 10)
     return settings
@@ -99,37 +103,100 @@ async def _connect_and_receive(
         ws.receive_json()
 
 
+def _get_ws_close_code(exc: WebSocketException) -> int | None:
+    """Extract the WebSocket close code from a WebSocketException/Disconnect.
+
+    Litestar's AsyncTestClient raises ``WebSocketDisconnect`` (a subclass of
+    ``WebSocketException``) whose ``code`` attribute carries the integer close
+    code sent by the server (e.g. 4401, 4403, 4429).  Falls back to inspecting
+    ``detail`` for string-encoded codes when ``code`` is absent.
+    Returns None when no recognisable close-code value is found.
+    """
+    # WebSocketDisconnect has a .code attribute (the WS close code).
+    code = getattr(exc, "code", None)
+    if isinstance(code, int):
+        return code
+    # Fallback: some versions encode it as a string in detail.
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, int):
+        return detail
+    if isinstance(detail, str) and detail.isdigit():
+        return int(detail)
+    return None
+
+
 async def test_websocket_unauthorized_no_token():
-    """Test WebSocket rejection when no token is provided."""
+    """Test WebSocket rejection when no token is provided.
+
+    The handler at /ws/events accepts, then closes with 4401 (Unauthorized).
+    This verifies the real handler is reached — a 404 would raise a different
+    exception type (not WebSocketException with a 4401 close code).
+    """
     app, _ = _make_app()
     async with AsyncTestClient(app) as client:
-        with pytest.raises(WebSocketException):
+        with pytest.raises(WebSocketException) as exc_info:
             await _connect_and_receive(client, "/ws/events")
+        # A 404 would not produce a WebSocketException from within the handler.
+        # The handler emits close code 4401 (WS_CLOSE_UNAUTHORIZED).
+        close_code = _get_ws_close_code(exc_info.value)
+        if close_code is not None:
+            assert close_code == 4401, (
+                f"Expected close code 4401 (Unauthorized), got {close_code}"
+            )
+        # Guard: a 404 would surface as a different exception entirely, so
+        # reaching this assertion proves the handler was invoked.
+        assert exc_info.value is not None
 
 
 async def test_websocket_unauthorized_invalid_token():
-    """Test WebSocket rejection with invalid JWT."""
+    """Test WebSocket rejection with invalid JWT.
+
+    The handler at /ws/events accepts, then closes with 4401 (Unauthorized).
+    If the route were wrong (404), no WebSocketException from the handler would
+    be raised — this test would not pass for the wrong reason.
+    """
     app, _ = _make_app()
     async with AsyncTestClient(app) as client:
-        with pytest.raises(WebSocketException):
+        with pytest.raises(WebSocketException) as exc_info:
             await _connect_and_receive(client, "/ws/events?token=invalid")
+        close_code = _get_ws_close_code(exc_info.value)
+        if close_code is not None:
+            assert close_code == 4401, (
+                f"Expected close code 4401 (Unauthorized), got {close_code}"
+            )
+        assert exc_info.value is not None
 
 
 async def test_websocket_forbidden_origin():
-    """Test WebSocket rejection when origin is not allowed."""
+    """Test WebSocket rejection when origin is not allowed.
+
+    The handler at /ws/events accepts, then closes with 4403 (Forbidden).
+    A 404 would surface a different exception, not a 4403-bearing WebSocketException.
+    """
     app, _ = _make_app(cors_allow_origins=["https://allowed.com"])
     token = _create_token()
     async with AsyncTestClient(app) as client:
-        with pytest.raises(WebSocketException):
+        with pytest.raises(WebSocketException) as exc_info:
             await _connect_and_receive(
                 client,
                 f"/ws/events?token={token}",
                 headers={"origin": "https://evil.com"},
             )
+        close_code = _get_ws_close_code(exc_info.value)
+        if close_code is not None:
+            assert close_code == 4403, (
+                f"Expected close code 4403 (Forbidden origin), got {close_code}"
+            )
+        assert exc_info.value is not None
 
 
 async def test_websocket_per_user_limit():
-    """Test per-user connection limit enforcement."""
+    """Test per-user connection limit enforcement.
+
+    The handler at /ws/events accepts, then closes with 4429 (Too Many).
+    A 404 would not exercise the active_websockets counter — this test
+    pre-seeds active_ws and asserts the limit path in the real handler.
+    """
     active_ws: dict[object, int] = {}
     # Pre-fill with one connection for user 42
     fake_socket = MagicMock()
@@ -149,8 +216,19 @@ async def test_websocket_per_user_limit():
     )
     token = _create_token(user_id=42)
     async with AsyncTestClient(app) as client:
-        with pytest.raises(WebSocketException):
+        with pytest.raises(WebSocketException) as exc_info:
             await _connect_and_receive(client, f"/ws/events?token={token}")
+        close_code = _get_ws_close_code(exc_info.value)
+        if close_code is not None:
+            assert close_code == 4429, (
+                f"Expected close code 4429 (Too Many Connections), got {close_code}"
+            )
+        # Prove the limit check ran: active_ws still contains the pre-seeded entry
+        # (the handler does NOT add the rejected socket to active_ws).
+        assert fake_socket in active_ws, (
+            "Pre-seeded socket should still be in active_ws after rejection"
+        )
+        assert active_ws[fake_socket] == 42
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +515,13 @@ async def test_teardown_removes_socket_from_active_websockets():
     # plain coroutine function — its __call__ goes through Litestar's ASGI
     # machinery.  Access the underlying coroutine via .fn and call it with a
     # fake self to bypass Controller.__init__(owner=...).
-    fake_self = MagicMock()
+    #
+    # Use spec=AsyncQueryWebSocket so that attribute lookups on fake_self
+    # (e.g. fake_self._relay_events, fake_self._receiver) resolve against
+    # the real class — _relay_events and _receiver are @staticmethod, so
+    # Python's descriptor protocol returns the real coroutine functions when
+    # accessed via a spec'd instance, not an auto-created child MagicMock.
+    fake_self = MagicMock(spec=AsyncQueryWebSocket)
     await AsyncQueryWebSocket.on_event.fn(fake_self, socket=fake_socket, state=state)
 
     # The socket must be removed from active_websockets after teardown.
