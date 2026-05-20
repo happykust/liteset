@@ -77,13 +77,13 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
                         self._database.database_name,
                         catalog,
                     )
-                    existing_pvm = self._security_manager.find_permission_view_menu(
+                    existing_pvm = await self._security_manager.find_permission_view_menu(
                         "catalog_access",
                         perm,
                     )
                     if not existing_pvm:
                         # New catalog - add permission
-                        self._security_manager.add_permission_view_menu(
+                        await self._security_manager.add_permission_view_menu(
                             "catalog_access",
                             perm,
                         )
@@ -97,13 +97,13 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
                                 schema,
                             )
                             existing_schema_pvm = (
-                                self._security_manager.find_permission_view_menu(
+                                await self._security_manager.find_permission_view_menu(
                                     "schema_access",
                                     schema_perm,
                                 )
                             )
                             if not existing_schema_pvm:
-                                self._security_manager.add_permission_view_menu(
+                                await self._security_manager.add_permission_view_menu(
                                     "schema_access",
                                     schema_perm,
                                 )
@@ -118,13 +118,13 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
                         schema,
                     )
                     existing_schema_pvm = (
-                        self._security_manager.find_permission_view_menu(
+                        await self._security_manager.find_permission_view_menu(
                             "schema_access",
                             schema_perm,
                         )
                     )
                     if not existing_schema_pvm:
-                        self._security_manager.add_permission_view_menu(
+                        await self._security_manager.add_permission_view_menu(
                             "schema_access",
                             schema_perm,
                         )

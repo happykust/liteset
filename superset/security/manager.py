@@ -1624,7 +1624,19 @@ class AsyncSecurityManager:
         return False
 
     def is_owner(self, resource: Any, user: Any) -> bool:
-        """Check if user is an owner of the resource (owners M2M only)."""
+        """Check if user is an owner of the resource (owners M2M only).
+
+        Mirrors ``raise_for_ownership`` in the original Flask-AppBuilder
+        SecurityManager: admins are deemed owners of every resource and
+        skip the ``owners`` check entirely.
+
+        The ``owners`` collection must be eagerly loaded by the caller
+        (e.g. via ``selectinload(Slice.owners)``) — accessing the
+        relationship attribute on an async session without preload
+        triggers a sync lazy-load that fails with ``MissingGreenlet``.
+        """
+        if self.is_admin(user):
+            return True
         user_id: int | None
         if isinstance(user, int):
             user_id = user
@@ -1896,6 +1908,132 @@ class AsyncSecurityManager:
     def get_catalog_perm(database_name: str, catalog: str) -> str:
         """Format catalog permission string: [db_name].[catalog]."""
         return f"[{database_name}].[{catalog}]"
+
+    # --- Permission / view-menu / permission-view CRUD helpers ---
+    #
+    # Direct async ports of the corresponding methods on
+    # ``flask_appbuilder.security.sqla.manager.SecurityManager``. They are
+    # used by ``SyncPermissionsCommand`` (and any future code path that needs
+    # to materialise FAB permission rows) to look up or create the
+    # ``ab_permission`` / ``ab_view_menu`` / ``ab_permission_view`` rows that
+    # the original Flask SecurityManager would have created via SQLAlchemy
+    # session.query(...) — the AsyncSession layer cannot run those sync
+    # queries safely so we re-implement them here.
+
+    async def find_permission(self, name: str) -> Any | None:
+        """Find a row in ``ab_permission`` by name. Mirrors FAB ``find_permission``."""
+        from sqlalchemy import select
+
+        from superset.models.security import Permission
+
+        stmt = select(Permission).where(Permission.name == name)
+        result = await self.dao.session.execute(stmt)
+        return result.scalars().one_or_none()
+
+    async def find_view_menu(self, name: str) -> Any | None:
+        """Find a row in ``ab_view_menu`` by name. Mirrors FAB ``find_view_menu``."""
+        from sqlalchemy import select
+
+        from superset.models.security import ViewMenu
+
+        stmt = select(ViewMenu).where(ViewMenu.name == name)
+        result = await self.dao.session.execute(stmt)
+        return result.scalars().one_or_none()
+
+    async def find_permission_view_menu(
+        self, permission_name: str, view_menu_name: str
+    ) -> Any | None:
+        """Find a row in ``ab_permission_view`` for the given (perm, view_menu) pair.
+
+        Direct port of FAB ``find_permission_view_menu``.
+        """
+        from sqlalchemy import select
+
+        from superset.models.security import PermissionView
+
+        permission = await self.find_permission(permission_name)
+        view_menu = await self.find_view_menu(view_menu_name)
+        if not (permission and view_menu):
+            return None
+        stmt = select(PermissionView).where(
+            PermissionView.permission_id == permission.id,
+            PermissionView.view_menu_id == view_menu.id,
+        )
+        result = await self.dao.session.execute(stmt)
+        return result.scalars().one_or_none()
+
+    async def add_permission(self, name: str) -> Any | None:
+        """Insert a row into ``ab_permission`` if missing.
+
+        Direct port of FAB ``add_permission``. Returns the (possibly new)
+        :class:`Permission` instance, or ``None`` if creation fails.
+        """
+        from superset.models.security import Permission
+
+        perm = await self.find_permission(name)
+        if perm is not None:
+            return perm
+        try:
+            perm = Permission(name=name)
+            self.dao.session.add(perm)
+            await self.dao.session.flush()
+            return perm
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to add permission %s", name)
+            return None
+
+    async def add_view_menu(self, name: str) -> Any | None:
+        """Insert a row into ``ab_view_menu`` if missing.
+
+        Direct port of FAB ``add_view_menu``.
+        """
+        from superset.models.security import ViewMenu
+
+        vm = await self.find_view_menu(name)
+        if vm is not None:
+            return vm
+        try:
+            vm = ViewMenu(name=name)
+            self.dao.session.add(vm)
+            await self.dao.session.flush()
+            return vm
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to add view_menu %s", name)
+            return None
+
+    async def add_permission_view_menu(
+        self, permission_name: str, view_menu_name: str
+    ) -> Any | None:
+        """Insert a row into ``ab_permission_view`` if missing.
+
+        Direct port of FAB ``add_permission_view_menu``: idempotently
+        creates the permission, view-menu and the join row.
+        """
+        from superset.models.security import PermissionView
+
+        if not (permission_name and view_menu_name):
+            return None
+        existing = await self.find_permission_view_menu(
+            permission_name, view_menu_name
+        )
+        if existing is not None:
+            return existing
+        vm = await self.add_view_menu(view_menu_name)
+        perm = await self.add_permission(permission_name)
+        if vm is None or perm is None:
+            return None
+        try:
+            pv = PermissionView(permission_id=perm.id, view_menu_id=vm.id)
+            self.dao.session.add(pv)
+            await self.dao.session.flush()
+            return pv
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to add permission_view (%s, %s)",
+                permission_name,
+                view_menu_name,
+            )
+            return None
 
     # --- Bulk access checks ---
 

@@ -393,7 +393,7 @@ class SecurityController(Controller):
 
     @post(
         "/login",
-        opt={"exclude_from_auth": True},
+        opt={"exclude_from_auth": True, "exclude_from_csrf": True},
         status_code=200,
     )
     async def login(
@@ -505,7 +505,7 @@ class SecurityController(Controller):
 
     @post(
         "/refresh",
-        opt={"exclude_from_auth": True},
+        opt={"exclude_from_auth": True, "exclude_from_csrf": True},
         status_code=200,
     )
     async def refresh(
