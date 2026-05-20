@@ -102,10 +102,10 @@ async def test_full_job_lifecycle(manager: AsyncEventManager, mock_redis: AsyncM
         result_url="/api/v1/chart/data/cache-key-123",
     )
 
-    # Verify pub/sub notification was published (for WebSocket relay)
-    mock_redis.publish.assert_called_once()
-    pubsub_channel = mock_redis.publish.call_args[0][0]
-    assert pubsub_channel == "events:42"
+    # The WebSocket relay reads the channel stream directly via XREAD, so the
+    # update writes both streams and must NOT publish to pub/sub.
+    assert mock_redis.xadd.call_count == 4  # 2 from init_job + 2 from update_job
+    mock_redis.publish.assert_not_called()
 
     # Read events via polling
     events = await manager.read_events(channel_id=channel_id, last_id=None)

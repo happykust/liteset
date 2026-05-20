@@ -17,13 +17,13 @@
 """Async event manager using Redis Streams.
 
 Replaces superset.async_events.async_query_manager with an async-native
-implementation using redis.asyncio. Supports both polling REST API and
-WebSocket real-time delivery via Redis pub/sub notifications.
+implementation using redis.asyncio. Backs both the polling REST API and the
+WebSocket real-time relay, which reads the per-channel stream directly via
+``XREAD`` — there is no pub/sub layer.
 
 Redis data model:
 - Global stream:  ``async-events-full`` (capped at 1M entries)
 - Channel stream: ``async-events-{channel_id}`` (capped at 1K entries)
-- Pub/sub topic:  ``events:{user_id}`` (for real-time WebSocket relay)
 """
 
 from __future__ import annotations
@@ -78,8 +78,9 @@ def increment_id(entry_id: str) -> str:
 class AsyncEventManager:
     """Async event manager backed by Redis Streams.
 
-    Provides init_job, update_job, read_events for the polling REST API,
-    and publishes notifications to Redis pub/sub for WebSocket relay.
+    Provides init_job, update_job, read_events. Writes go to both the
+    per-channel stream and the global firehose stream; readers (the polling
+    REST API and the WebSocket relay) consume the per-channel stream.
     """
 
     def __init__(
@@ -144,7 +145,7 @@ class AsyncEventManager:
         errors: list[dict[str, Any]] | None = None,
         result_url: str | None = None,
     ) -> None:
-        """Update job status. Writes to streams and publishes pub/sub notification."""
+        """Update job status. Writes to the channel and global streams."""
         metadata = build_job_metadata(
             channel_id=channel_id,
             job_id=job_id,
@@ -165,13 +166,6 @@ class AsyncEventManager:
             self.global_stream_key,
             payload,  # type: ignore[arg-type]
         )
-
-        # Publish notification for WebSocket relay
-        if user_id is not None:
-            await self.redis.publish(
-                f"events:{user_id}",
-                json.dumps(metadata),
-            )
 
         logger.debug(
             "Updated job %s on channel %s: status=%s",

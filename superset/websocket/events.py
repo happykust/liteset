@@ -17,8 +17,20 @@
 """WebSocket handler for async query events.
 
 Replaces the Node.js ``superset-websocket`` module with a native Litestar
-WebSocket handler. Uses Redis pub/sub for real-time event streaming with
-backpressure via an asyncio.Queue and heartbeat via TaskGroup.
+WebSocket handler.
+
+Like the original ``superset-websocket/src/index.ts``, events are delivered
+by reading a per-channel Redis Stream via ``XREAD BLOCK`` and forwarding each
+entry — with its stream ``id`` attached — as a JSON frame.  Starting the read
+from ``increment_id(last_id)`` returns any missed backlog immediately and then
+blocks for new entries, so a single read loop handles both reconnection
+catch-up and live delivery.
+
+Keepalive is handled at the WebSocket protocol level by uvicorn's built-in
+ping/pong (``ws_ping_interval``/``ws_ping_timeout``); the server never sends
+application-level JSON frames that are not real async events, because the
+frontend (``superset-frontend/src/middleware/asyncEvent.ts``) parses *every*
+inbound frame as an ``AsyncEvent``.
 
 Custom close codes:
 - 4401: Unauthorized (JWT invalid or missing)
@@ -29,7 +41,6 @@ Custom close codes:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any
 
@@ -38,6 +49,7 @@ from litestar.connection import WebSocket
 from litestar.datastructures import State
 from litestar.exceptions import WebSocketDisconnect
 
+from superset.async_events.manager import increment_id, parse_event
 from superset.middleware.async_token import _channel_key, _resolve_secret_key
 from superset.websocket.auth import authenticate_websocket, validate_origin
 
@@ -60,9 +72,13 @@ WS_CLOSE_TOO_MANY_CONNECTIONS = 4429
 
 # Defaults (overridable via settings)
 MAX_WS_PER_USER = 10
-HEARTBEAT_INTERVAL_SECONDS = 30
-SEND_QUEUE_MAX_SIZE = 64
 REDIS_RECONNECT_DELAY_SECONDS = 1
+# Mirrors the original Node sidecar defaults (redisStreamReadBlockMs=5000,
+# redisStreamReadCount=100).
+DEFAULT_STREAM_READ_BLOCK_MS = 5000
+DEFAULT_STREAM_READ_COUNT = 100
+# Sentinel cursor meaning "only new entries from now on" (XREAD "$").
+ONLY_NEW_CURSOR = "$"
 
 # Lock protecting the check-accept-register sequence to prevent TOCTOU races
 # on the per-user connection limit.  Created lazily to avoid binding to the
@@ -95,9 +111,10 @@ class AsyncQueryWebSocket(Controller):
            When the session-cookie fallback is used (channel claim absent),
            the UUID is resolved from Redis key ``async-channels:user:{id}``
            (written by ``AsyncTokenMiddleware`` on each authenticated request).
-        4. Events are relayed from Redis pub/sub -> asyncio.Queue -> WebSocket
-        5. Heartbeat ping sent every 30s; client must respond with pong
-        6. On disconnect, Redis subscription and socket are cleaned up
+        4. Events are relayed from the per-channel Redis Stream via
+           ``XREAD BLOCK`` -> WebSocket, each carrying its stream ``id``
+        5. Keepalive is handled by uvicorn's protocol-level WebSocket ping
+        6. On disconnect, the read loop is cancelled and the socket cleaned up
     """
 
     path = "/"
@@ -195,39 +212,21 @@ class AsyncQueryWebSocket(Controller):
             channel,
         )
 
-        # --- Catch-up: deliver missed events before subscribing to live stream ---
+        # The ``last_id`` query param is appended by the frontend on
+        # reconnection.  The relay loop starts the stream read from
+        # ``increment_id(last_id)`` so the missed backlog is delivered before
+        # blocking for live entries — no separate catch-up pass is needed.
         last_id = socket.query_params.get("last_id")
-        if last_id and channel:
-            from superset.async_events.manager import AsyncEventManager
 
-            event_manager = AsyncEventManager(redis=state.redis)
-            missed_events = await event_manager.read_events(
-                channel_id=channel,
-                last_id=last_id,
-            )
-            for event in missed_events:
-                await socket.send_json(event)
-            logger.debug(
-                "Sent %d catch-up events to user %d (last_id=%s)",
-                len(missed_events),
-                auth_result.user_id,
-                last_id,
-            )
-        elif last_id and not channel:
-            logger.warning(
-                "Catch-up skipped for user %d: last_id=%r was provided but no "
-                "channel could be resolved (JWT channel claim absent and Redis "
-                "lookup returned nothing).  Live relay will proceed without "
-                "catch-up.",
-                auth_result.user_id,
-                last_id,
-            )
-
-        relay_task = asyncio.create_task(self._relay_events(socket, state, channel))
-        heartbeat_task = asyncio.create_task(self._heartbeat(socket))
+        relay_task = asyncio.create_task(
+            self._relay_events(socket, state, channel, last_id)
+        )
+        # The frontend never sends data over this socket; the receiver loop
+        # exists solely to surface client disconnects promptly.
+        receiver_task = asyncio.create_task(self._receiver(socket))
         try:
             done, pending = await asyncio.wait(
-                [relay_task, heartbeat_task],
+                [relay_task, receiver_task],
                 return_when=asyncio.FIRST_EXCEPTION,
             )
             for task in pending:
@@ -267,76 +266,106 @@ class AsyncQueryWebSocket(Controller):
             logger.info("WebSocket closed: user=%d", auth_result.user_id)
 
     @staticmethod
-    async def _relay_events(  # noqa: C901
+    async def _relay_events(
         socket: WebSocket[Any, Any, Any],
         state: State,
         channel: str,
+        last_id: str | None = None,
     ) -> None:
-        """Subscribe to Redis pub/sub and forward events to WebSocket.
+        """Read the channel Redis Stream via ``XREAD BLOCK`` and forward events.
 
-        Backpressure strategy:
-            A bounded ``asyncio.Queue(maxsize=64)`` sits between the Redis
-            subscriber (producer) and the WebSocket sender (consumer).
+        Mirrors the original Node ``subscribeToGlobalStream`` loop, but reads
+        the per-channel stream so no in-process channel registry is required.
+        Each delivered frame carries the stream entry ``id`` (via
+        :func:`~superset.async_events.manager.parse_event`), which the frontend
+        persists as ``last_async_event_id`` and replays on reconnection.
+
+        The cursor starts at ``increment_id(last_id)`` (exclusive) when a
+        ``last_id`` is supplied — delivering any missed backlog first — and at
+        ``"$"`` (only-new) otherwise.  After each delivered entry the cursor
+        advances to that entry's id.
         """
         redis = state.redis
+        settings = state.settings
 
-        send_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
-            maxsize=SEND_QUEUE_MAX_SIZE,
+        # If no channel could be resolved (rare: session-cookie fallback with
+        # no Redis channel entry), there is no stream to read.  Reading the
+        # bare ``{prefix}`` key would be wrong, so block harmlessly until the
+        # client disconnects (the receiver task tears the connection down).
+        if not channel:
+            logger.debug(
+                "No channel resolved for WebSocket; relay idle (no stream to read)"
+            )
+            await asyncio.Event().wait()
+            return
+
+        stream_prefix: str = getattr(
+            settings, "global_async_queries_redis_stream_prefix", "async-events-"
+        )
+        stream_key = f"{stream_prefix}{channel}"
+        block_ms: int = getattr(
+            settings,
+            "global_async_queries_redis_stream_read_block_ms",
+            DEFAULT_STREAM_READ_BLOCK_MS,
+        )
+        count: int = getattr(
+            settings,
+            "global_async_queries_redis_stream_read_count",
+            DEFAULT_STREAM_READ_COUNT,
         )
 
-        async def _producer() -> None:
-            while True:
-                pubsub = redis.pubsub()
-                try:
-                    await pubsub.subscribe(channel)
-                    async for message in pubsub.listen():
-                        if message["type"] != "message":
-                            continue
-                        data = message["data"]
-                        if isinstance(data, bytes):
-                            data = data.decode("utf-8")
-                        try:
-                            parsed = json.loads(data)
-                        except (json.JSONDecodeError, UnicodeDecodeError):
-                            logger.warning(
-                                "Malformed event on channel %s, skipping",
-                                channel,
-                            )
-                            continue
-                        if send_queue.full():
-                            try:
-                                send_queue.get_nowait()  # drop oldest stale event
-                            except asyncio.QueueEmpty:
-                                pass
-                        await send_queue.put(parsed)
-                except Exception:
-                    logger.debug(
-                        "Redis pub/sub connection lost for %s, reconnecting...",
-                        channel,
-                    )
-                    await asyncio.sleep(REDIS_RECONNECT_DELAY_SECONDS)
-                    continue  # re-subscribe
-                finally:
-                    try:
-                        await pubsub.unsubscribe(channel)
-                        await pubsub.close()
-                    except Exception:  # noqa: BLE001, S110
-                        pass  # Best-effort cleanup
-
-        async def _consumer() -> None:
-            while True:
-                message = await send_queue.get()
-                await socket.send_json(message)
-
-        async with asyncio.TaskGroup() as tg:
-            tg.create_task(_producer())
-            tg.create_task(_consumer())
-
-    @staticmethod
-    async def _heartbeat(socket: WebSocket[Any, Any, Any]) -> None:
-        """Send periodic ping frames to detect dead connections."""
-        import time
+        # increment_id makes the catch-up read exclusive of last_id, matching
+        # the original fetchRangeFromStream(startId=incrementId(lastId)).
+        cursor = increment_id(last_id) if last_id else ONLY_NEW_CURSOR
 
         while True:
-            await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
-            await socket.send_json({"type": "ping", "timestamp": time.time()})
+            try:
+                # redis.asyncio (decode_responses=True) returns a list shaped
+                # [[stream_key, [(entry_id, {field: value}), ...]], ...], or an
+                # empty list on block timeout.
+                response = await redis.xread(
+                    {stream_key: cursor},
+                    count=count,
+                    block=block_ms,
+                )
+            except (
+                WebSocketDisconnect,
+                ConnectionError,
+                OSError,
+                _ClientDisconnected,
+                _ConnectionClosed,
+            ):
+                # Genuine disconnect (e.g. send-side failure surfaced through
+                # the same client) — propagate so the handler tears down.
+                raise
+            except Exception:  # noqa: BLE001
+                # Transient Redis error — back off briefly and retry without
+                # killing the handler (mirrors the Node loop's catch+continue).
+                logger.debug(
+                    "Redis XREAD failed for stream %s, retrying...",
+                    stream_key,
+                    exc_info=True,
+                )
+                await asyncio.sleep(REDIS_RECONNECT_DELAY_SECONDS)
+                continue
+
+            if not response:
+                continue  # block timeout, no new entries
+
+            for _stream_key, entries in response:
+                for entry_id, fields in entries:
+                    event = parse_event((entry_id, fields))
+                    await socket.send_json(event)
+                    cursor = entry_id  # advance past last delivered id
+
+    @staticmethod
+    async def _receiver(socket: WebSocket[Any, Any, Any]) -> None:
+        """Loop on ``receive()`` solely to detect client disconnect.
+
+        The frontend never sends application data over this socket, so any
+        inbound frame is discarded.  ``receive()`` raises
+        :class:`WebSocketDisconnect` (or a connection-closed error) when the
+        client goes away, which propagates so the handler can clean up.
+        """
+        while True:
+            await socket.receive()

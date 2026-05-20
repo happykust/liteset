@@ -130,10 +130,6 @@ def _update_job(
     r.xadd(scoped_stream, payload)
     r.xadd(global_stream_key, payload)
 
-    # Publish notification for WebSocket relay
-    if user_id is not None:
-        r.publish(f"events:{user_id}", json.dumps(event))
-
     logger.debug("Updated job %s on channel %s: status=%s", job_id, channel_id, status)
 
 

@@ -112,9 +112,14 @@ async def test_update_job(manager: AsyncEventManager, mock_redis: AsyncMock):
         status="done",
         result_url="/result",
     )
-    # Should xadd to channel stream + global stream + publish notification
+    # Should xadd to channel stream + global stream — and NOT publish to
+    # pub/sub (the WebSocket relay reads the channel stream directly).
     assert mock_redis.xadd.call_count == 2
-    mock_redis.publish.assert_called_once()
+    # Channel stream then global firehose stream
+    channel_call, global_call = mock_redis.xadd.call_args_list
+    assert channel_call.args[0] == "async-events-ch-1"
+    assert global_call.args[0] == "async-events-full"
+    mock_redis.publish.assert_not_called()
 
 
 async def test_read_events_empty(manager: AsyncEventManager, mock_redis: AsyncMock):
