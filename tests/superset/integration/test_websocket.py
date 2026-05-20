@@ -326,12 +326,155 @@ async def test_relay_idle_when_no_channel():
 
 
 async def test_receiver_propagates_disconnect():
-    """_receiver raises when the client disconnects so the handler tears down."""
+    """_receiver raises when receive() RETURNS a disconnect message.
+
+    Litestar's receive() returns the first websocket.disconnect dict rather
+    than raising immediately — only the subsequent call raises.  This test
+    exercises the real semantics: the coroutine returns a disconnect dict and
+    _receiver must treat that as a disconnect without needing a second call.
+    """
     socket = MagicMock()
-    socket.receive = AsyncMock(side_effect=_disconnect())
+    # Simulate Litestar's real behaviour: first call returns a disconnect dict,
+    # second call would raise — but _receiver should raise on the first.
+    socket.receive = AsyncMock(return_value={"type": "websocket.disconnect"})
 
     with pytest.raises(WebSocketDisconnect):
         await AsyncQueryWebSocket._receiver(socket)
+
+    # Only one receive() call should have been made (detected on first message).
+    socket.receive.assert_called_once()
+
+
+async def test_relay_skips_malformed_entry_keeps_connection():
+    """A malformed stream entry (missing 'data' key) is skipped, not fatal.
+
+    Mirrors the Node sidecar's processStreamResults per-entry try/catch
+    (index.ts:271-278): a bad entry advances the cursor and the loop
+    continues — the connection is NOT dropped.
+    """
+    import json
+
+    good_entry = (
+        "200-0",
+        {"data": json.dumps({"channel_id": "ch-1", "status": "done"})},
+    )
+    bad_entry = ("100-0", {})  # missing "data" field -> KeyError in parse_event
+
+    redis = AsyncMock()
+    # First response: bad entry then good entry; second call disconnects.
+    redis.xread = AsyncMock(
+        side_effect=[
+            _stream_response("ch-1", [bad_entry, good_entry]),
+            _disconnect(),
+        ]
+    )
+    socket = MagicMock()
+    socket.send_json = AsyncMock()
+
+    with pytest.raises(WebSocketDisconnect):
+        await AsyncQueryWebSocket._relay_events(
+            socket, _relay_state(redis), "ch-1", None
+        )
+
+    # Only the good entry should have been sent; bad entry is silently skipped.
+    assert socket.send_json.call_count == 1
+    sent = socket.send_json.call_args_list[0].args[0]
+    assert sent["id"] == "200-0"
+    assert sent["status"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# Teardown test — socket removed from active_websockets on disconnect
+# ---------------------------------------------------------------------------
+
+
+async def test_teardown_removes_socket_from_active_websockets():
+    """When _receiver detects a disconnect, the relay is cancelled AND the
+    socket is removed from active_websockets.
+
+    Drives on_event directly as an unbound coroutine (bypassing Litestar's
+    Controller.__init__ which requires an ``owner``) with:
+    - a fake socket whose receive() returns a websocket.disconnect dict
+    - an idle channel so the relay idles (xread returns [])
+    - active_websockets pre-seeded with the fake socket
+    Then asserts the socket is gone from active_websockets after the handler
+    returns.
+    """
+    from litestar.datastructures import State
+
+    token = _create_token(user_id=99, channel="teardown-ch")
+
+    # Mock redis: xread always returns [] (simulating a blocking idle stream).
+    mock_redis_inst = AsyncMock()
+    mock_redis_inst.xread = AsyncMock(return_value=[])
+    mock_redis_inst.get = AsyncMock(return_value=None)
+
+    settings = _create_settings()
+    settings.secret_key = JWT_SECRET
+
+    active_ws: dict[object, int] = {}
+
+    fake_socket = MagicMock()
+    fake_socket.headers = {"origin": ""}
+    fake_socket.query_params = {"token": token}
+    fake_socket.cookies = {}
+    fake_socket.accept = AsyncMock()
+    fake_socket.close = AsyncMock()
+    fake_socket.send_json = AsyncMock()
+    # receive() returns a disconnect dict — exercises the real Litestar semantic
+    # where the first call RETURNS the disconnect message rather than raising.
+    fake_socket.receive = AsyncMock(return_value={"type": "websocket.disconnect"})
+
+    state = State(
+        {
+            "settings": settings,
+            "redis": mock_redis_inst,
+            "active_websockets": active_ws,
+        }
+    )
+
+    # AsyncQueryWebSocket.on_event is a Litestar WebsocketRouteHandler, not a
+    # plain coroutine function — its __call__ goes through Litestar's ASGI
+    # machinery.  Access the underlying coroutine via .fn and call it with a
+    # fake self to bypass Controller.__init__(owner=...).
+    fake_self = MagicMock()
+    await AsyncQueryWebSocket.on_event.fn(fake_self, socket=fake_socket, state=state)
+
+    # The socket must be removed from active_websockets after teardown.
+    assert fake_socket not in active_ws, (
+        "Socket was not removed from active_websockets after disconnect teardown"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Empty-channel cancellability test (Minor 5)
+# ---------------------------------------------------------------------------
+
+
+async def test_idle_relay_is_cancellable():
+    """The empty-channel relay (idles on asyncio.Event().wait()) can be
+    cancelled cleanly — it does not hang on task.cancel().
+
+    This locks in that the idle path tears down on disconnect.
+    """
+    redis = AsyncMock()
+    redis.xread = AsyncMock()
+    socket = MagicMock()
+    socket.send_json = AsyncMock()
+
+    task = asyncio.create_task(
+        AsyncQueryWebSocket._relay_events(socket, _relay_state(redis), "", None)
+    )
+    # Let the task start and reach the Event().wait() suspension point.
+    await asyncio.sleep(0)
+
+    task.cancel()
+    # The task should complete (raise CancelledError) promptly.
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+
+    assert task.done(), "Idle relay task did not finish after cancel()"
+    redis.xread.assert_not_called()
 
 
 async def test_no_heartbeat_method():

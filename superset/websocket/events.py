@@ -41,6 +41,8 @@ Custom close codes:
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 from typing import Any
 
@@ -231,6 +233,18 @@ class AsyncQueryWebSocket(Controller):
             )
             for task in pending:
                 task.cancel()
+            # Await each cancelled task so cancellation completes deterministically
+            # and does not leak a pending coroutine into the event loop.
+            for task in pending:
+                with contextlib.suppress(
+                    asyncio.CancelledError,
+                    WebSocketDisconnect,
+                    ConnectionError,
+                    OSError,
+                    _ClientDisconnected,
+                    _ConnectionClosed,
+                ):
+                    await task
             # Re-raise non-disconnect exceptions
             for task in done:
                 exc = task.exception()
@@ -323,6 +337,9 @@ class AsyncQueryWebSocket(Controller):
                 # redis.asyncio (decode_responses=True) returns a list shaped
                 # [[stream_key, [(entry_id, {field: value}), ...]], ...], or an
                 # empty list on block timeout.
+                # NOTE: each WebSocket holds one pooled state.redis connection
+                # for the duration of the BLOCK call (same as the prior pub/sub
+                # design; flagged for future connection-pool scale work).
                 response = await redis.xread(
                     {stream_key: cursor},
                     count=count,
@@ -354,7 +371,25 @@ class AsyncQueryWebSocket(Controller):
 
             for _stream_key, entries in response:
                 for entry_id, fields in entries:
-                    event = parse_event((entry_id, fields))
+                    try:
+                        event = parse_event((entry_id, fields))
+                    except (KeyError, json.JSONDecodeError, ValueError):
+                        # Malformed stream entry (missing "data" field or bad
+                        # JSON) — mirrors processStreamResults in the original
+                        # Node sidecar (index.ts:271-278) which try/catch-es
+                        # each item and continues.  Advance the cursor past the
+                        # bad entry so it is not re-delivered, but keep the
+                        # connection alive.
+                        logger.warning(
+                            "Skipping malformed stream entry %s on %s",
+                            entry_id,
+                            stream_key,
+                            exc_info=True,
+                        )
+                        cursor = entry_id
+                        continue
+                    # A send failure (client gone) propagates intentionally so
+                    # the handler tears down — only the parse is guarded.
                     await socket.send_json(event)
                     cursor = entry_id  # advance past last delivered id
 
@@ -363,9 +398,15 @@ class AsyncQueryWebSocket(Controller):
         """Loop on ``receive()`` solely to detect client disconnect.
 
         The frontend never sends application data over this socket, so any
-        inbound frame is discarded.  ``receive()`` raises
-        :class:`WebSocketDisconnect` (or a connection-closed error) when the
-        client goes away, which propagates so the handler can clean up.
+        inbound frame is discarded.
+
+        Litestar's ``receive()`` RETURNS the first ``websocket.disconnect``
+        message rather than raising immediately; only the *subsequent* call
+        raises :class:`WebSocketDisconnect`.  This method inspects each
+        received message so a disconnect is detected on the first call,
+        matching real Litestar/ASGI semantics.
         """
         while True:
-            await socket.receive()
+            msg = await socket.receive()
+            if msg.get("type") == "websocket.disconnect":
+                raise WebSocketDisconnect(detail="client disconnected")
