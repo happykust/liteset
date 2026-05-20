@@ -18,11 +18,12 @@
 
 Because the full on_event WebSocket handler is difficult to unit-test in
 isolation (it interacts with the Litestar WebSocket accept/close lifecycle),
-these tests exercise the secret-resolution *logic* directly by replicating
-the same resolution pattern from events.py and verifying its output.
+these tests exercise the secret-resolution logic by calling the production
+helper ``_resolve_secret_key`` from ``superset.middleware.async_token``
+directly (events.py delegates to the same function).
 
-An additional test verifies the Redis channel-lookup path by mocking
-state.redis.
+Additional tests verify the Redis channel-lookup path and graceful
+degradation when Redis is unavailable.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from unittest.mock import AsyncMock, MagicMock
 import jwt as pyjwt
 import pytest
 
-from superset.middleware.async_token import _channel_key
+from superset.middleware.async_token import _channel_key, _resolve_secret_key
 from superset.websocket.auth import authenticate_websocket
 
 
@@ -62,39 +63,29 @@ def _make_settings(
     return settings
 
 
-def _resolve_jwt_secret_from_settings(settings: MagicMock) -> str:
-    """Replicate the exact secret-resolution logic from events.py on_event."""
-    gaq_secret = getattr(settings, "global_async_queries_jwt_secret", None)
-    if gaq_secret is None:
-        gaq_secret = getattr(settings, "secret_key", "")
-    if hasattr(gaq_secret, "get_secret_value"):
-        gaq_secret = gaq_secret.get_secret_value()
-    return str(gaq_secret) if gaq_secret else ""
-
-
 # ---------------------------------------------------------------------------
-# Secret-resolution tests
+# Secret-resolution tests — exercise PRODUCTION _resolve_secret_key directly
 # ---------------------------------------------------------------------------
 
 
 def test_gaq_secret_preferred_over_secret_key():
     """global_async_queries_jwt_secret must win over secret_key."""
     settings = _make_settings(gaq_secret="gaq-secret", secret_key="main-secret")
-    resolved = _resolve_jwt_secret_from_settings(settings)
+    resolved = _resolve_secret_key(settings)
     assert resolved == "gaq-secret"
 
 
 def test_falls_back_to_secret_key_when_gaq_is_none():
     """When global_async_queries_jwt_secret is None, fall back to secret_key."""
     settings = _make_settings(gaq_secret=None, secret_key="main-secret")
-    resolved = _resolve_jwt_secret_from_settings(settings)
+    resolved = _resolve_secret_key(settings)
     assert resolved == "main-secret"
 
 
 def test_secret_key_secretstr_unwrapped():
     """get_secret_value() is called on SecretStr-like secret_key fallback."""
     settings = _make_settings(gaq_secret=None, secret_key="my-secret", use_secret_str=True)
-    resolved = _resolve_jwt_secret_from_settings(settings)
+    resolved = _resolve_secret_key(settings)
     assert resolved == "my-secret"
     settings.secret_key.get_secret_value.assert_called_once()
 
@@ -102,7 +93,7 @@ def test_secret_key_secretstr_unwrapped():
 def test_gaq_secret_not_secretstr_not_unwrapped():
     """If GAQ secret is a plain string, get_secret_value is not called."""
     settings = _make_settings(gaq_secret="plain-gaq-secret", secret_key="main-secret")
-    resolved = _resolve_jwt_secret_from_settings(settings)
+    resolved = _resolve_secret_key(settings)
     assert resolved == "plain-gaq-secret"
 
 
@@ -219,3 +210,58 @@ async def test_jwt_channel_not_overwritten_by_redis():
 
     assert channel == "jwt-given-channel"
     redis.get.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# M4: Graceful degradation — redis=None AND channel="" (catch-up guard)
+# ---------------------------------------------------------------------------
+
+
+async def test_channel_stays_empty_when_redis_is_none():
+    """When state.redis is None and auth_result.channel is empty, channel stays
+    empty and no exception is raised.
+
+    This exercises the branch:
+        redis = getattr(state, "redis", None)
+        if redis is not None:
+            ...Redis lookup...
+    which must silently skip when Redis is unavailable, leaving channel as "".
+
+    The subsequent catch-up guard (``if last_id and channel``) then correctly
+    skips the catch-up read rather than passing an empty/invalid channel id
+    to event_manager.read_events().
+
+    We test the resolution logic at the channel-resolution seam (the two
+    code blocks that together determine the final ``channel`` value) rather
+    than driving the full on_event handler, because the handler requires a
+    live Litestar WebSocket accept/close cycle that is impractical to mock.
+    """
+    from superset.websocket.auth import WebSocketAuthResult
+
+    auth_result = WebSocketAuthResult(user_id=42, channel="")
+
+    # Simulate state.redis = None
+    state = MagicMock()
+    state.redis = None
+
+    # --- channel resolution block (mirrors on_event) ---
+    channel = auth_result.channel
+    if not channel:
+        redis = getattr(state, "redis", None)
+        if redis is not None:  # <-- must NOT enter this branch
+            try:
+                raw = await redis.get(_channel_key(auth_result.user_id))
+                if raw:
+                    channel = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+            except Exception:  # noqa: BLE001
+                pass
+
+    # channel must remain "" — no exception raised, no bogus key used
+    assert channel == ""
+
+    # --- catch-up guard (mirrors on_event) ---
+    last_id = "some-last-id"
+    catch_up_would_run = bool(last_id and channel)
+    assert catch_up_would_run is False, (
+        "Catch-up must NOT run when channel is empty (guard: 'if last_id and channel')"
+    )

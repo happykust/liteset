@@ -38,6 +38,7 @@ from litestar.connection import WebSocket
 from litestar.datastructures import State
 from litestar.exceptions import WebSocketDisconnect
 
+from superset.middleware.async_token import _channel_key, _resolve_secret_key
 from superset.websocket.auth import authenticate_websocket, validate_origin
 
 # Graceful disconnect exceptions — import defensively
@@ -90,8 +91,11 @@ class AsyncQueryWebSocket(Controller):
     Event flow:
         1. Client connects with JWT containing ``{channel, sub}``
         2. Server validates JWT and origin, then accepts connection
-        3. Server subscribes to Redis pub/sub channel ``events:{user_id}``
-        4. Events are relayed from Redis -> asyncio.Queue -> WebSocket
+        3. Channel is the per-session UUID from the JWT ``channel`` claim.
+           When the session-cookie fallback is used (channel claim absent),
+           the UUID is resolved from Redis key ``async-channels:user:{id}``
+           (written by ``AsyncTokenMiddleware`` on each authenticated request).
+        4. Events are relayed from Redis pub/sub -> asyncio.Queue -> WebSocket
         5. Heartbeat ping sent every 30s; client must respond with pong
         6. On disconnect, Redis subscription and socket are cleaned up
     """
@@ -120,17 +124,10 @@ class AsyncQueryWebSocket(Controller):
         # Authenticate before accepting.
         # The async-token cookie is signed with global_async_queries_jwt_secret
         # (default "test-secret-change-me"), NOT with secret_key.  Use the same
-        # precedence as AsyncTokenMiddleware._resolve_secret_key and the polling
-        # endpoint (async_event.py): prefer global_async_queries_jwt_secret,
-        # fall back to secret_key, call .get_secret_value() if it's a SecretStr.
-        from superset.middleware.async_token import _channel_key  # noqa: PLC0415
-
-        gaq_secret = getattr(settings, "global_async_queries_jwt_secret", None)
-        if gaq_secret is None:
-            gaq_secret = getattr(settings, "secret_key", "")
-        if hasattr(gaq_secret, "get_secret_value"):
-            gaq_secret = gaq_secret.get_secret_value()
-        jwt_secret: str = str(gaq_secret) if gaq_secret else ""
+        # canonical helper as AsyncTokenMiddleware and the polling endpoint:
+        # prefer global_async_queries_jwt_secret, fall back to secret_key,
+        # unwrap SecretStr if needed.
+        jwt_secret: str = _resolve_secret_key(settings)
 
         cookie_name: str = getattr(
             settings, "global_async_queries_jwt_cookie_name", "async-token"
@@ -200,7 +197,7 @@ class AsyncQueryWebSocket(Controller):
 
         # --- Catch-up: deliver missed events before subscribing to live stream ---
         last_id = socket.query_params.get("last_id")
-        if last_id:
+        if last_id and channel:
             from superset.async_events.manager import AsyncEventManager
 
             event_manager = AsyncEventManager(redis=state.redis)
@@ -213,6 +210,15 @@ class AsyncQueryWebSocket(Controller):
             logger.debug(
                 "Sent %d catch-up events to user %d (last_id=%s)",
                 len(missed_events),
+                auth_result.user_id,
+                last_id,
+            )
+        elif last_id and not channel:
+            logger.warning(
+                "Catch-up skipped for user %d: last_id=%r was provided but no "
+                "channel could be resolved (JWT channel claim absent and Redis "
+                "lookup returned nothing).  Live relay will proceed without "
+                "catch-up.",
                 auth_result.user_id,
                 last_id,
             )
