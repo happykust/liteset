@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine as _create_async_engine,
 )
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 # Dialects that should default to READ COMMITTED when the caller hasn't
 # already specified ``isolation_level`` in SQLALCHEMY_ENGINE_OPTIONS.
@@ -101,6 +102,36 @@ def get_engine() -> AsyncEngine:
     if _engine is None:
         raise RuntimeError("No engine has been created yet")
     return _engine
+
+
+def create_worker_engine(url: str, **extra_engine_options: Any) -> AsyncEngine:
+    """Create the process-wide async engine for a Celery worker process.
+
+    Unlike :func:`create_db_engine` (used by the long-lived web process, which
+    runs a single event loop and benefits from a connection pool), Celery
+    prefork workers run async work via ``asyncio.run()`` — a **fresh event loop
+    per task**.  asyncpg connections are bound to the loop they were opened on,
+    so a *pooled* connection reused across loops raises
+    ``RuntimeError: ... attached to a different loop``.  We therefore force
+    :class:`~sqlalchemy.pool.NullPool`: every checkout opens a fresh connection
+    and closes it on return, so nothing survives between ``asyncio.run()`` calls.
+
+    Sets the module-global engine so :func:`get_engine` works inside tasks —
+    mirroring what the Litestar ``on_startup`` hook does for the web process.
+    READ COMMITTED is applied for PG/MySQL exactly as :func:`create_db_engine`.
+    """
+    global _engine  # noqa: PLW0603
+    kwargs: dict[str, Any] = {"poolclass": NullPool, **extra_engine_options}
+    if "isolation_level" not in kwargs:
+        try:
+            dialect_name = make_url(url).get_dialect().name
+        except Exception:  # noqa: BLE001
+            dialect_name = ""
+        if dialect_name in _READ_COMMITTED_DIALECTS:
+            kwargs["isolation_level"] = "READ COMMITTED"
+    engine = _create_async_engine(url, **kwargs)
+    _engine = engine
+    return engine
 
 
 async def dispose_engine(engine: AsyncEngine) -> None:

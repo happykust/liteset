@@ -24,6 +24,7 @@ manage async engine disposal in forked worker processes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Any
 
@@ -71,30 +72,51 @@ app = celery_app
 
 
 @worker_process_init.connect
-def reset_db_connection_pool(**kwargs: Any) -> None:
-    """Reset the async DB connection pool in forked worker processes.
+def init_worker_db_engine(**kwargs: Any) -> None:
+    """Create the async DB engine in each forked Celery worker process.
 
-    After :func:`os.fork` the parent's connection pool is invalid. We
-    dispose the :class:`~sqlalchemy.ext.asyncio.AsyncEngine` so that
-    each worker creates fresh connections on first use.
+    Workers start via ``celery -A superset.tasks.celery_app:app worker`` and
+    never run the Litestar ``on_startup`` hook, so the module-global async
+    engine that :func:`superset.db.session.get_engine` returns is otherwise
+    never created — async tasks (e.g. ``load_chart_data_into_cache``) then fail
+    with ``RuntimeError: No engine has been created yet``.
+
+    We create it here, once per worker process, via
+    :func:`superset.db.session.create_worker_engine`, which uses ``NullPool``
+    because tasks run async work through ``asyncio.run()`` (a new event loop
+    each time) and pooled asyncpg connections cannot cross event loops.
     """
-    # Import lazily -- the engine is only available after app bootstrap.
     try:
-        from superset.db.session import dispose_engine, get_engine  # noqa: WPS433
-
-        engine = get_engine()
-    except (ImportError, RuntimeError):
-        logger.debug("Engine not available at worker init; skipping disposal")
+        from superset.config import SupersetSettings  # noqa: WPS433
+        from superset.db.session import (  # noqa: WPS433
+            create_worker_engine,
+            dispose_engine,
+            get_engine,
+        )
+    except ImportError:
+        logger.debug("DB session module unavailable at worker init")
         return
 
+    # Defensively dispose any engine inherited across os.fork. Normally there
+    # is none (the master process never runs on_startup), but if a pooled
+    # engine was inherited its connections are invalid post-fork.
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(dispose_engine(engine))
-        else:
-            loop.run_until_complete(dispose_engine(engine))
+        inherited = get_engine()
     except RuntimeError:
-        asyncio.run(dispose_engine(engine))
+        inherited = None
+    if inherited is not None:
+        with contextlib.suppress(Exception):
+            asyncio.run(dispose_engine(inherited))
+
+    try:
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        create_worker_engine(settings.sqlalchemy_database_uri)
+        logger.info("Worker async DB engine initialized (NullPool)")
+    except Exception:  # noqa: BLE001
+        # Deliberately do not crash the worker: non-DB tasks (pure cache / HTTP)
+        # should still run, and DB-backed tasks will surface the error per-task
+        # via get_engine() rather than crash-looping the whole worker process.
+        logger.exception("Failed to initialize worker async DB engine")
 
 
 @task_postrun.connect
