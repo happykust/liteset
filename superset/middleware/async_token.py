@@ -367,7 +367,43 @@ def parse_channel_id_from_cookie(
     return str(channel) if channel else None
 
 
+def resolve_async_channel_id_from_request(
+    request: Any,
+    settings: Any,
+) -> str | None:
+    """Resolve the async-query channel id from the request's async-token cookie.
+
+    Single shared helper used by both the chart-data submit path
+    (:func:`superset.controllers.chart.ChartController.get_chart_data` and
+    ``data``) and the polling endpoint
+    (:func:`superset.controllers.async_event.AsyncEventController.get_events`).
+
+    Returns the ``channel`` claim from the JWT, or ``None`` if the cookie is
+    missing or invalid.  Callers decide what to do with ``None`` — the writer
+    raises HTTP 401; the reader falls back to ``user-{id}``.
+    """
+    try:
+        if settings is None:
+            return None
+        secret = _resolve_secret_key(settings)
+        if not secret:
+            return None
+        cookie_name = getattr(
+            settings, "global_async_queries_jwt_cookie_name", "async-token"
+        )
+        raw_cookie: str | None = None
+        for header_name, header_value in request.scope.get("headers", []):
+            if header_name == b"cookie":
+                raw_cookie = header_value.decode("utf-8", errors="replace")
+                break
+        return parse_channel_id_from_cookie(raw_cookie, secret, cookie_name=cookie_name)
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to parse async-token cookie", exc_info=True)
+        return None
+
+
 __all__ = [
     "AsyncTokenMiddleware",
     "parse_channel_id_from_cookie",
+    "resolve_async_channel_id_from_request",
 ]

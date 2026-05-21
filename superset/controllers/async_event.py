@@ -36,10 +36,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from litestar import Controller, Request, get
+from litestar import Controller, get, Request
 
 from superset.async_events.manager import AsyncEventManager
 from superset.guards.rbac import require_authentication
+from superset.middleware.async_token import resolve_async_channel_id_from_request
 from superset.typing import UserProtocol
 
 logger = logging.getLogger(__name__)
@@ -85,42 +86,13 @@ class AsyncEventController(Controller):
         #   AsyncQueryManager.parse_channel_id_from_request(request)
         #   → jwt.decode(cookie["async-token"])["channel"]
         # ---------------------------------------------------------------------------
-        channel_id: str | None = None
-        try:
-            from superset.middleware.async_token import parse_channel_id_from_cookie
+        app = getattr(request, "app", None)
+        app_state = getattr(app, "state", None)
+        settings = getattr(app_state, "settings", None) if app_state else None
 
-            app = getattr(request, "app", None)
-            app_state = getattr(app, "state", None)
-            settings = getattr(app_state, "settings", None) if app_state else None
-
-            if settings is not None:
-                secret_key_obj = getattr(settings, "global_async_queries_jwt_secret", None)
-                if secret_key_obj is None:
-                    secret_key_obj = getattr(settings, "secret_key", "")
-                if hasattr(secret_key_obj, "get_secret_value"):
-                    secret_key_str = secret_key_obj.get_secret_value()
-                else:
-                    secret_key_str = str(secret_key_obj) if secret_key_obj else ""
-
-                cookie_name = getattr(
-                    settings, "global_async_queries_jwt_cookie_name", "async-token"
-                )
-
-                # Pull the raw cookie header from the ASGI scope headers.
-                raw_cookie: str | None = None
-                for header_name, header_value in request.scope.get("headers", []):
-                    if header_name == b"cookie":
-                        raw_cookie = header_value.decode("utf-8", errors="replace")
-                        break
-
-                if raw_cookie and secret_key_str:
-                    channel_id = parse_channel_id_from_cookie(
-                        raw_cookie,
-                        secret_key_str,
-                        cookie_name=cookie_name,
-                    )
-        except Exception:  # noqa: BLE001
-            logger.debug("Failed to parse async-token cookie", exc_info=True)
+        channel_id: str | None = resolve_async_channel_id_from_request(
+            request, settings
+        )
 
         if not channel_id:
             # Fallback: derive from user id so anonymous / unauthenticated callers

@@ -219,51 +219,16 @@ def _resolve_async_channel_id(
 ) -> str | None:
     """Return the ``channel`` claim from the request's ``async-token`` cookie.
 
-    1:1 with the original Flask path
-    (``async_query_manager.parse_channel_id_from_request`` →
-    ``jwt.decode(cookie, GLOBAL_ASYNC_QUERIES_JWT_SECRET)["channel"]``).
-
-    Mirrors the secret / cookie-name resolution used by the polling
-    endpoint (:func:`superset.controllers.async_event.AsyncEventController.get_events`)
-    so the submit path writes to the SAME channel the readers (the
-    WebSocket relay and the polling endpoint) read from.  Returns
-    ``None`` when the cookie is missing or invalid — the caller maps
+    Thin wrapper around the shared
+    :func:`superset.middleware.async_token.resolve_async_channel_id_from_request`
+    helper so that all channel-resolution logic lives in one place.
+    Returns ``None`` when the cookie is missing or invalid — the caller maps
     that to HTTP 401, mirroring the original ``AsyncQueryTokenException
     → response_401``.
     """
-    from superset.middleware.async_token import parse_channel_id_from_cookie
+    from superset.middleware.async_token import resolve_async_channel_id_from_request
 
-    if settings is None:
-        return None
-
-    secret_key_obj = getattr(settings, "global_async_queries_jwt_secret", None)
-    if secret_key_obj is None:
-        secret_key_obj = getattr(settings, "secret_key", "")
-    if hasattr(secret_key_obj, "get_secret_value"):
-        secret_key_str = secret_key_obj.get_secret_value()
-    else:
-        secret_key_str = str(secret_key_obj) if secret_key_obj else ""
-
-    cookie_name = getattr(
-        settings, "global_async_queries_jwt_cookie_name", "async-token"
-    )
-
-    # Pull the raw cookie header straight from the ASGI scope headers,
-    # exactly as ``async_event.get_events`` does.
-    raw_cookie: str | None = None
-    for header_name, header_value in request.scope.get("headers", []):
-        if header_name == b"cookie":
-            raw_cookie = header_value.decode("utf-8", errors="replace")
-            break
-
-    if not raw_cookie or not secret_key_str:
-        return None
-
-    return parse_channel_id_from_cookie(
-        raw_cookie,
-        secret_key_str,
-        cookie_name=cookie_name,
-    )
+    return resolve_async_channel_id_from_request(request, settings)
 
 
 # ---------------------------------------------------------------------------
