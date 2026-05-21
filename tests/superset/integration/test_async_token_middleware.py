@@ -166,3 +166,79 @@ async def test_refresh_when_cookie_sub_mismatches_user():
         assert token, "sub mismatch must trigger a fresh cookie"
         payload = pyjwt.decode(token, JWT_SECRET, algorithms=["HS256"])
         assert payload["sub"] == "7"
+
+
+async def test_two_browsers_same_user_get_different_channels():
+    """Two requests without a cookie (simulating two different browsers) for the
+    same authenticated user must receive DIFFERENT channel ids.
+
+    This is the core per-browser property: the channel is minted fresh as a
+    uuid4 on each cookie-less request, not looked up from a shared per-user
+    Redis key.
+
+    Each browser is simulated by a separate AsyncTestClient instance so that
+    no cookies are shared between them (AsyncTestClient persists cookies
+    across requests within the same session, mimicking a real browser).
+    """
+    app = _make_app(_User(42, authed=True))
+
+    # Browser 1: fresh client, no cookie
+    async with AsyncTestClient(app) as client1:
+        resp1 = await client1.get("/ping")
+    token1 = _async_token(resp1)
+    assert token1, "browser 1 must receive an async-token cookie"
+    payload1 = pyjwt.decode(token1, JWT_SECRET, algorithms=["HS256"])
+    channel1 = payload1["channel"]
+
+    # Browser 2: separate fresh client, no cookie
+    async with AsyncTestClient(app) as client2:
+        resp2 = await client2.get("/ping")
+    token2 = _async_token(resp2)
+    assert token2, "browser 2 must receive an async-token cookie"
+    payload2 = pyjwt.decode(token2, JWT_SECRET, algorithms=["HS256"])
+    channel2 = payload2["channel"]
+
+    # Per-browser: each fresh minting produces a distinct uuid4
+    assert channel1 != channel2, (
+        f"Two browsers must get distinct channels; got {channel1!r} twice"
+    )
+    # Both belong to the same user
+    assert payload1["sub"] == "42"
+    assert payload2["sub"] == "42"
+
+
+async def test_sub_mismatch_triggers_fresh_channel():
+    """When sub mismatches (user changed), the new cookie carries a DIFFERENT
+    channel id — not the same as the old one.
+    """
+    app = _make_app(_User(7, authed=True))
+    async with AsyncTestClient(app) as client:
+        stale = pyjwt.encode(
+            {"channel": "old-channel-uuid", "sub": "42"}, JWT_SECRET, algorithm="HS256"
+        )
+        resp = await client.get("/ping", headers={"Cookie": f"async-token={stale}"})
+        token = _async_token(resp)
+        assert token, "sub mismatch must trigger a fresh cookie"
+        payload = pyjwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        assert payload["channel"] != "old-channel-uuid", (
+            "sub mismatch must mint a fresh channel, not reuse the old one"
+        )
+
+
+async def test_no_redis_needed_for_channel_minting():
+    """Channel minting works when redis=None (no Redis available).
+
+    The middleware must produce a valid channel without touching Redis —
+    the channel is just a fresh uuid4.
+    """
+    # _make_app already sets redis=None in state; just verify the cookie shape
+    app = _make_app(_User(55, authed=True))
+    async with AsyncTestClient(app) as client:
+        resp = await client.get("/ping")
+        token = _async_token(resp)
+        assert token, "cookie must be minted even with redis=None"
+        payload = pyjwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        import uuid
+        channel = payload["channel"]
+        # Must be a valid UUID string
+        uuid.UUID(channel)  # raises ValueError if not a valid UUID

@@ -53,7 +53,7 @@ from litestar.exceptions import WebSocketDisconnect
 
 from superset.async_events.manager import increment_id, parse_event
 from superset.extensions import stats_logger_manager
-from superset.middleware.async_token import _channel_key, _resolve_secret_key
+from superset.middleware.async_token import _resolve_secret_key
 from superset.websocket.auth import authenticate_websocket, validate_origin
 
 # Graceful disconnect exceptions — import defensively
@@ -110,10 +110,10 @@ class AsyncQueryWebSocket(Controller):
     Event flow:
         1. Client connects with JWT containing ``{channel, sub}``
         2. Server validates JWT and origin, then accepts connection
-        3. Channel is the per-session UUID from the JWT ``channel`` claim.
-           When the session-cookie fallback is used (channel claim absent),
-           the UUID is resolved from Redis key ``async-channels:user:{id}``
-           (written by ``AsyncTokenMiddleware`` on each authenticated request).
+        3. Channel is the per-browser UUID from the JWT ``channel`` claim
+           (set by ``AsyncTokenMiddleware`` in the ``async-token`` cookie).
+           If the channel claim is absent (rare: session-cookie-only auth),
+           the relay idles until the client disconnects.
         4. Events are relayed from the per-channel Redis Stream via
            ``XREAD BLOCK`` -> WebSocket, each carrying its stream ``id``
         5. Keepalive is handled by uvicorn's protocol-level WebSocket ping
@@ -195,26 +195,13 @@ class AsyncQueryWebSocket(Controller):
             # 1:1 with the original sidecar's statsd.increment('ws_connected_client').
             stats_logger_manager.incr("ws_connected_client")
 
-        # Resolve per-session channel id.  The JWT claim ("channel") is the
-        # canonical source when present (query-param and cookie paths).  The
-        # session-cookie fallback returns channel="" so we look up the real
-        # UUID from Redis (the same key AsyncTokenMiddleware writes).
+        # Resolve per-browser channel id.  The JWT ``channel`` claim is the
+        # canonical source — it is the uuid4 minted by AsyncTokenMiddleware
+        # when the browser first contacted the server (1:1 with the original
+        # Flask handler which stored it in the session cookie).  If the claim
+        # is absent (rare: session-cookie-only auth with no async-token cookie)
+        # the relay idles harmlessly until the client disconnects.
         channel = auth_result.channel
-        if not channel:
-            redis = getattr(state, "redis", None)
-            if redis is not None:
-                try:
-                    raw = await redis.get(_channel_key(auth_result.user_id))
-                    if raw:
-                        channel = (
-                            raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-                        )
-                except Exception:  # noqa: BLE001
-                    logger.debug(
-                        "Redis lookup failed for channel key of user %d",
-                        auth_result.user_id,
-                        exc_info=True,
-                    )
 
         logger.info(
             "WebSocket accepted: user=%d, channel=%s",

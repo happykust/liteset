@@ -33,7 +33,7 @@ from unittest.mock import AsyncMock, MagicMock
 import jwt as pyjwt
 import pytest
 
-from superset.middleware.async_token import _channel_key, _resolve_secret_key
+from superset.middleware.async_token import _resolve_secret_key
 from superset.websocket.auth import authenticate_websocket
 
 
@@ -137,131 +137,38 @@ async def test_events_secret_resolution_allows_gaq_signed_cookie():
 
 
 # ---------------------------------------------------------------------------
-# Redis channel-lookup path (simulates the empty-channel Redis resolve)
+# Channel resolution — per-browser JWT claim (no Redis lookup)
 # ---------------------------------------------------------------------------
 
 
-async def test_channel_key_format():
-    """_channel_key returns the expected Redis key pattern."""
-    assert _channel_key(42) == "async-channels:user:42"
-    assert _channel_key(0) == "async-channels:user:anonymous"
-    assert _channel_key(None) == "async-channels:user:anonymous"
+async def test_jwt_channel_is_used_directly():
+    """When auth_result has a channel claim, it is used as-is (no Redis lookup).
 
-
-async def test_channel_resolved_from_redis_when_empty():
-    """When auth_result.channel is empty, the Redis UUID is used as channel.
-
-    Simulates the resolution block added to events.py on_event.
-    """
-    # Simulate auth_result with empty channel (session-cookie fallback)
-    from superset.websocket.auth import WebSocketAuthResult
-
-    auth_result = WebSocketAuthResult(user_id=99, channel="")
-
-    # Mock redis that returns a UUID for the expected key
-    redis = AsyncMock()
-    redis.get = AsyncMock(return_value=b"some-uuid-channel-from-redis")
-
-    # Run the resolution logic (mirrors on_event code)
-    channel = auth_result.channel
-    if not channel:
-        raw = await redis.get(_channel_key(auth_result.user_id))
-        if raw:
-            channel = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-
-    assert channel == "some-uuid-channel-from-redis"
-    redis.get.assert_awaited_once_with("async-channels:user:99")
-
-
-async def test_channel_stays_empty_when_redis_returns_none():
-    """If Redis has no entry, channel stays empty (live relay still works)."""
-    from superset.websocket.auth import WebSocketAuthResult
-
-    auth_result = WebSocketAuthResult(user_id=99, channel="")
-
-    redis = AsyncMock()
-    redis.get = AsyncMock(return_value=None)
-
-    channel = auth_result.channel
-    if not channel:
-        raw = await redis.get(_channel_key(auth_result.user_id))
-        if raw:
-            channel = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-
-    assert channel == ""
-
-
-async def test_jwt_channel_not_overwritten_by_redis():
-    """When JWT already has a channel claim, Redis lookup must NOT run.
-
-    Simulates the guard: 'if not channel' — a truthy JWT channel wins.
+    The channel now always comes from the JWT ``channel`` claim set by
+    AsyncTokenMiddleware in the async-token cookie (per-browser).
     """
     from superset.websocket.auth import WebSocketAuthResult
 
     auth_result = WebSocketAuthResult(user_id=7, channel="jwt-given-channel")
 
-    redis = AsyncMock()
-
+    # No Redis interaction needed — channel is already resolved
     channel = auth_result.channel
-    if not channel:
-        raw = await redis.get(_channel_key(auth_result.user_id))
-        if raw:
-            channel = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
 
     assert channel == "jwt-given-channel"
-    redis.get.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# M4: Graceful degradation — redis=None AND channel="" (catch-up guard)
-# ---------------------------------------------------------------------------
+async def test_channel_stays_empty_when_jwt_has_no_channel():
+    """When auth_result.channel is empty (session-cookie fallback with no
+    async-token cookie), the channel stays empty and the relay idles.
 
-
-async def test_channel_stays_empty_when_redis_is_none():
-    """When state.redis is None and auth_result.channel is empty, channel stays
-    empty and no exception is raised.
-
-    This exercises the branch:
-        redis = getattr(state, "redis", None)
-        if redis is not None:
-            ...Redis lookup...
-    which must silently skip when Redis is unavailable, leaving channel as "".
-
-    The subsequent catch-up guard (``if last_id and channel``) then correctly
-    skips the catch-up read rather than passing an empty/invalid channel id
-    to event_manager.read_events().
-
-    We test the resolution logic at the channel-resolution seam (the two
-    code blocks that together determine the final ``channel`` value) rather
-    than driving the full on_event handler, because the handler requires a
-    live Litestar WebSocket accept/close cycle that is impractical to mock.
+    The per-browser Redis look-up was removed; there is nothing to fall back
+    to in this path.  The relay handles an empty channel by idling until
+    the client disconnects.
     """
     from superset.websocket.auth import WebSocketAuthResult
 
-    auth_result = WebSocketAuthResult(user_id=42, channel="")
+    auth_result = WebSocketAuthResult(user_id=99, channel="")
 
-    # Simulate state.redis = None
-    state = MagicMock()
-    state.redis = None
-
-    # --- channel resolution block (mirrors on_event) ---
     channel = auth_result.channel
-    if not channel:
-        redis = getattr(state, "redis", None)
-        if redis is not None:  # <-- must NOT enter this branch
-            try:
-                raw = await redis.get(_channel_key(auth_result.user_id))
-                if raw:
-                    channel = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-            except Exception:  # noqa: BLE001
-                pass
 
-    # channel must remain "" — no exception raised, no bogus key used
     assert channel == ""
-
-    # --- catch-up guard (mirrors on_event) ---
-    last_id = "some-last-id"
-    catch_up_would_run = bool(last_id and channel)
-    assert catch_up_would_run is False, (
-        "Catch-up must NOT run when channel is empty (guard: 'if last_id and channel')"
-    )

@@ -22,13 +22,13 @@
 
 Whenever an authenticated user makes a request, this middleware:
 
-* Looks up (or mints) a stable ``channel_id`` for the user.  In the
-  original Flask code the channel id was stashed on the Flask session;
-  here we persist it in Redis under
-  ``async-channels:user:{user_id}`` with a long TTL so that the
-  channel survives across requests / process restarts.  The first
-  request mints a fresh ``uuid4`` and stores it; subsequent requests
-  reuse the same id.
+* Mints a per-browser ``channel_id`` when needed.  In the original
+  Flask code the channel id was stashed on the Flask session (a
+  per-browser signed cookie); here the ``async-token`` cookie itself
+  (already ``HttpOnly``) persists the channel across requests for that
+  browser — exactly as the Flask session did.  A fresh ``uuid4`` is
+  minted on first contact and reused via the cookie on subsequent
+  requests; no Redis look-up is performed during minting.
 * Encodes ``{channel, sub}`` as an HS256 JWT (the same shape the
   original used; ``sub`` is the stringified user id).
 * Sets the cookie named by ``GLOBAL_ASYNC_QUERIES_JWT_COOKIE_NAME``
@@ -58,19 +58,6 @@ from litestar.middleware.base import ASGIMiddleware
 from litestar.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
-
-# Long TTL for the per-user channel id record.  The cookie itself has
-# no explicit Max-Age (matches the Flask original which let the
-# session cookie's lifetime govern it); if Redis evicts the entry, we
-# transparently mint a new channel id on the next request.
-_CHANNEL_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days
-
-
-def _channel_key(user_id: int | str | None) -> str:
-    """Redis key under which the per-user channel id is persisted."""
-    if user_id is None or user_id == 0:
-        return "async-channels:user:anonymous"
-    return f"async-channels:user:{user_id}"
 
 
 def _resolve_secret_key(settings: Any) -> str:
@@ -148,62 +135,6 @@ def _build_set_cookie(
     if domain:
         parts.append(f"Domain={domain}")
     return "; ".join(parts).encode("ascii")
-
-
-async def _resolve_channel_id(
-    app_state: Any,
-    user_id: int | str,
-) -> str:
-    """Return the stable channel id for ``user_id``, creating one if needed.
-
-    Uses the process-wide ``redis`` client on ``app.state`` when
-    available; falls back to a fresh ``uuid4`` (no persistence) if
-    Redis is unreachable.
-    """
-    redis = getattr(app_state, "redis", None)
-    if redis is None:
-        return str(uuid.uuid4())
-
-    key = _channel_key(user_id)
-    try:
-        existing = await redis.get(key)
-    except Exception:
-        logger.debug("Redis GET failed for async channel key %s", key, exc_info=True)
-        return str(uuid.uuid4())
-
-    if existing:
-        if isinstance(existing, bytes):
-            return existing.decode("utf-8", errors="replace")
-        return str(existing)
-
-    channel_id = str(uuid.uuid4())
-    try:
-        await redis.set(key, channel_id, ex=_CHANNEL_TTL_SECONDS)
-    except Exception:
-        logger.debug("Redis SET failed for async channel key %s", key, exc_info=True)
-    return channel_id
-
-
-async def _invalidate_channel_id(app_state: Any, user_id: int | str) -> str:
-    """Mint a fresh channel id and persist it, replacing any previous entry.
-
-    Called when the cookie's ``sub`` claim does not match the current
-    user (mirrors the original's "user_id != session['async_user_id']"
-    branch).
-    """
-    redis = getattr(app_state, "redis", None)
-    channel_id = str(uuid.uuid4())
-    if redis is None:
-        return channel_id
-    try:
-        await redis.set(_channel_key(user_id), channel_id, ex=_CHANNEL_TTL_SECONDS)
-    except Exception:
-        logger.debug(
-            "Redis SET failed when rotating async channel for user %s",
-            user_id,
-            exc_info=True,
-        )
-    return channel_id
 
 
 class AsyncTokenMiddleware(ASGIMiddleware):
@@ -317,11 +248,11 @@ class AsyncTokenMiddleware(ASGIMiddleware):
         if not needs_refresh:
             return None
 
-        # Resolve / rotate the per-user channel id.
-        if existing is None:
-            channel_id = await _resolve_channel_id(app_state, user_id)
-        else:
-            channel_id = await _invalidate_channel_id(app_state, user_id)
+        # Mint a fresh per-browser channel id (1:1 with the original Flask
+        # handler which stored a new uuid4 in the session on first contact).
+        # The async-token cookie itself (HttpOnly) persists the channel across
+        # requests for this browser — no Redis look-up needed here.
+        channel_id = str(uuid.uuid4())
 
         sub = str(user_id) if user_id else None
         token = pyjwt.encode(
