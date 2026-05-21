@@ -104,3 +104,34 @@ async def test_close(mock_redis):
     mgr = AsyncCacheManager(mock_redis)
     await mgr.close()
     mock_redis.aclose.assert_called_once()
+
+
+async def test_binary_cache_default_is_non_decoding():
+    """Binary cache slots must default to a non-decoding async client.
+
+    Regression: reusing the ``decode_responses=True`` auth-cache client as the
+    slot default corrupts binary reads (UnicodeDecodeError on byte 0x80 from
+    serialized DataFrames / query-context forms / thumbnail bytes).
+    """
+    from superset.cache.manager import CacheManager
+
+    auth_client = object()  # decode=True auth client stand-in — must NOT be used
+    mgr = CacheManager()
+    mgr.init_app(
+        redis=auth_client,
+        cache_default_timeout=300,
+        # RedisCache with no host/url => the slot falls back to the manager's
+        # default async client.
+        cache_config={"CACHE_TYPE": "RedisCache"},
+        redis_url="redis://localhost:6379/0",
+    )
+    default_async = mgr._default_async_redis
+    assert default_async is not None
+    assert (
+        default_async.connection_pool.connection_kwargs.get("decode_responses")
+        is False
+    )
+    # The binary cache slot uses the non-decoding default, not the auth client.
+    assert getattr(mgr._cache, "_redis", None) is default_async
+    assert getattr(mgr._cache, "_redis", None) is not auth_client
+    await mgr.close()

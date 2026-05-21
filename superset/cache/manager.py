@@ -1290,6 +1290,20 @@ def _build_cache(
     return inner
 
 
+async def _close_async_redis(client: Any | None) -> None:
+    """Close an async Redis client (``aclose`` on redis-py 5.x, ``close`` on 4.x)."""
+    if client is None:
+        return
+    try:
+        aclose = getattr(client, "aclose", None)
+        if aclose is not None:
+            await aclose()
+        else:
+            await client.close()
+    except Exception:  # noqa: BLE001
+        logger.warning("Async Redis close failed", exc_info=True)
+
+
 class CacheManager:
     """Multi-cache holder mirroring the original Flask CacheManager.
 
@@ -1330,6 +1344,11 @@ class CacheManager:
         # from ``settings.redis_url``.  Owned by this manager so
         # :meth:`close` can drop it cleanly on shutdown.
         self._default_sync_redis: Any | None = None
+        # Process-wide NON-decoding async Redis client
+        # (``decode_responses=False``) used as the default for the binary
+        # cache slots.  Built in ``init_app`` from ``redis_url`` and owned
+        # here so :meth:`close` can drop it.
+        self._default_async_redis: Any | None = None
 
     def init_app(
         self,
@@ -1375,34 +1394,61 @@ class CacheManager:
         # next time they are rebuilt.
         self._session_factory = session_factory
 
+        # The binary cache slots (chart-data DataFrames, qc- query-context
+        # forms, thumbnail image bytes) store raw bytes, so their *default*
+        # async client MUST NOT decode responses.  The caller's ``redis``
+        # handle is the auth-cache client (decode_responses=True, it stores
+        # string user records); reusing it as a slot fallback would corrupt
+        # binary reads with UnicodeDecodeError on byte 0x80.  Build a dedicated
+        # non-decoding client from ``redis_url`` when available; otherwise fall
+        # back to ``redis`` (the Celery worker already passes a non-decoding
+        # client and no ``redis_url``).
+        default_async = redis
+        self._default_async_redis = None
+        if redis_url:
+            try:
+                from redis.asyncio import Redis as AsyncRedis
+
+                default_async = AsyncRedis.from_url(redis_url, decode_responses=False)
+                self._default_async_redis = default_async
+            except ImportError:
+                logger.warning(
+                    "redis package is not installed; async caches fall back "
+                    "to the provided client."
+                )
+            except Exception:  # noqa: BLE001 — never break startup
+                logger.warning(
+                    "Failed to build default async Redis client", exc_info=True
+                )
+
         # ---- Async slots ----
         self._cache = _build_cache_for_slot(
             cache_config,
-            redis,
+            default_async,
             fallback_default_ttl=cache_default_timeout,
             session_factory=session_factory,
         )
         self._data_cache = _build_cache_for_slot(
             data_cache_config,
-            redis,
+            default_async,
             fallback_default_ttl=cache_default_timeout,
             session_factory=session_factory,
         )
         self._thumbnail_cache = _build_cache_for_slot(
             thumbnail_cache_config,
-            redis,
+            default_async,
             fallback_default_ttl=cache_default_timeout,
             session_factory=session_factory,
         )
         self._filter_state_cache = _build_cache_for_slot(
             filter_state_cache_config,
-            redis,
+            default_async,
             fallback_default_ttl=cache_default_timeout,
             session_factory=session_factory,
         )
         self._explore_form_data_cache = _build_cache_for_slot(
             explore_form_data_cache_config,
-            redis,
+            default_async,
             is_explore_form_data=True,
             fallback_default_ttl=cache_default_timeout,
             session_factory=session_factory,
@@ -1534,6 +1580,10 @@ class CacheManager:
                 await close_fn()
             except Exception:  # noqa: BLE001
                 logger.warning("Cache close failed", exc_info=True)
+
+        # Tear down the dedicated non-decoding async client we own (a slot may
+        # also hold it when it fell back to the default; closing twice is safe).
+        await _close_async_redis(self._default_async_redis)
 
         # Drop sync clients too — sync close is non-awaitable and safe
         # to call from an ``await close()`` chain because Redis sync
