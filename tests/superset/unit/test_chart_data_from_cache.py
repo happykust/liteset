@@ -28,6 +28,7 @@ Covers the unit-testable seams of ``data_from_cache``:
 from __future__ import annotations
 
 import pickle  # noqa: S403 -- verifies _cache_set's pickle round-trip
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -35,6 +36,7 @@ import pytest
 from superset.common.query_context import AsyncQueryContext
 from superset.common.query_context_processor import (
     AsyncQueryContextProcessor,
+    load_cached_explore_form,
     load_cached_query_context_form,
 )
 from superset.common.query_object import AsyncQueryObject
@@ -109,6 +111,81 @@ async def test_loader_get_failure_returns_none() -> None:
     cache_manager = MagicMock()
     cache_manager.get = AsyncMock(side_effect=RuntimeError("redis down"))
     assert await load_cached_query_context_form(cache_manager, "qc-err") is None
+
+
+# ---------------------------------------------------------------------------
+# load_cached_explore_form  (legacy /superset/explore_json/data/<cache_key>)
+# ---------------------------------------------------------------------------
+
+
+async def test_explore_loader_returns_value_on_prefixed_hit() -> None:
+    """The Celery task writes ``superset_cache:<key>`` pickle bytes; the
+    loader unpickles the prefixed key first and returns the full value."""
+    value = {
+        "form_data": {"datasource": "1__table"},
+        "response_type": "json",
+    }
+    cache_manager = MagicMock()
+
+    async def _get(key: str) -> Any:
+        if key == "superset_cache:ejr-abc":
+            return pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+        return None
+
+    cache_manager.get = AsyncMock(side_effect=_get)
+
+    result = await load_cached_explore_form(cache_manager, "ejr-abc")
+    assert result == value
+    # Prefixed key tried first.
+    assert cache_manager.get.await_args_list[0].args[0] == "superset_cache:ejr-abc"
+
+
+async def test_explore_loader_returns_value_on_bare_hit() -> None:
+    """Falls back to the bare key when the prefixed key misses."""
+    value = {"form_data": {"datasource": "1__table"}, "response_type": "json"}
+    cache_manager = MagicMock()
+
+    async def _get(key: str) -> Any:
+        return (
+            pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+            if key == "ejr-bare"
+            else None
+        )
+
+    cache_manager.get = AsyncMock(side_effect=_get)
+
+    result = await load_cached_explore_form(cache_manager, "ejr-bare")
+    assert result == value
+
+
+async def test_explore_loader_accepts_plain_dict() -> None:
+    """A non-bytes dict value (e.g. SimpleCache) is returned directly."""
+    value = {"form_data": {"datasource": "2__table"}, "response_type": "json"}
+    cache_manager = MagicMock()
+    cache_manager.get = AsyncMock(return_value=value)
+    assert await load_cached_explore_form(cache_manager, "ejr-x") == value
+
+
+async def test_explore_loader_returns_none_on_miss() -> None:
+    cache_manager = MagicMock()
+    cache_manager.get = AsyncMock(return_value=None)
+    assert await load_cached_explore_form(cache_manager, "ejr-missing") is None
+
+
+async def test_explore_loader_returns_none_for_no_cache_manager() -> None:
+    assert await load_cached_explore_form(None, "ejr-x") is None
+
+
+async def test_explore_loader_returns_none_for_empty_key() -> None:
+    cache_manager = MagicMock()
+    cache_manager.get = AsyncMock(return_value=b"x")
+    assert await load_cached_explore_form(cache_manager, "") is None
+
+
+async def test_explore_loader_returns_none_on_unpickleable_bytes() -> None:
+    cache_manager = MagicMock()
+    cache_manager.get = AsyncMock(return_value=b"not-a-pickle")
+    assert await load_cached_explore_form(cache_manager, "ejr-bad") is None
 
 
 # ---------------------------------------------------------------------------

@@ -21,14 +21,13 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from litestar import get, Litestar, Request
+from litestar import get, Litestar
 from litestar.config.compression import CompressionConfig
 from litestar.config.cors import CORSConfig
 from litestar.contrib.jinja import JinjaTemplateEngine
 from litestar.datastructures import State
 from litestar.di import Provide
 from litestar.exceptions import ValidationException as _ValidationException
-from litestar.handlers import post
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.plugins import SwaggerRenderPlugin
 from litestar.response import Response
@@ -36,7 +35,6 @@ from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError as _IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from superset.config import SupersetSettings
 from superset.controllers.auth import AuthController
@@ -632,6 +630,7 @@ def create_app(  # noqa: C901
     )
     from superset.controllers.explore import ExploreController
     from superset.controllers.explore_form_data import ExploreFormDataController
+    from superset.controllers.explore_json import ExploreJsonController
     from superset.controllers.explore_permalink import ExplorePermalinkController
     from superset.controllers.group import GroupController
     from superset.controllers.import_export import ImportExportController
@@ -667,243 +666,13 @@ def create_app(  # noqa: C901
     # Import WebSocket handler (Phase 6)
     from superset.websocket.events import AsyncQueryWebSocket
 
-    # ------------------------------------------------------------------
-    # Legacy explore_json endpoint — serves deck.gl and other legacy viz
-    # types that POST/GET form_data instead of /api/v1/chart/data.
-    # ------------------------------------------------------------------
-    async def _handle_explore_json(  # noqa: C901
-        request: Request[Any, Any, Any],
-        session: AsyncSession,
-        datasource_type: str | None = None,
-        datasource_id: int | None = None,
-    ) -> Response[Any]:
-        """Core handler for legacy explore_json requests.
-
-        Parses form_data from the request (GET query-string or POST form
-        body), resolves the datasource, builds a viz object, executes
-        the query asynchronously, and returns the JSON payload.
-        """
-        import json as _json
-
-        from sqlalchemy import select
-        from sqlalchemy.orm import selectinload
-
-        from superset.models.connectors import SqlaTable
-        from superset.viz import get_viz as make_viz
-
-        # ---- 1. Parse form_data ----
-        form_data: dict[str, Any] = {}
-
-        # Try JSON body first
-        if request.content_type and "json" in request.content_type:
-            try:
-                body = await request.json()
-                if isinstance(body, dict):
-                    # chart data API shape: {queries: [{...}]}
-                    if "queries" in body and body["queries"]:
-                        form_data.update(body["queries"][0])
-                    else:
-                        form_data.update(body)
-            except Exception:  # noqa: S110
-                pass
-
-        # Form-encoded body
-        try:
-            form = await request.form()
-            form_data_str = form.get("form_data", "")
-            if form_data_str:
-                try:
-                    parsed = _json.loads(form_data_str)
-                    if isinstance(parsed, dict):
-                        queries = parsed.get("queries")
-                        if isinstance(queries, list) and queries:
-                            form_data.update(queries[0])
-                        else:
-                            form_data.update(parsed)
-                except (ValueError, TypeError):
-                    pass
-        except Exception:  # noqa: S110
-            pass
-
-        # Query-string params can override the body
-        args_form_data = request.query_params.get("form_data", "")
-        if args_form_data:
-            try:
-                form_data.update(_json.loads(args_form_data))
-            except (ValueError, TypeError):
-                pass
-
-        if not form_data:
-            return Response(
-                content={"error": "No form_data provided"},
-                status_code=400,
-                media_type="application/json",
-            )
-
-        # ---- 1b. Filter REJECTED_FORM_DATA_KEYS ----
-        from superset.utils.feature_flags import feature_flag_manager
-
-        if not feature_flag_manager.is_feature_enabled("ENABLE_JAVASCRIPT_CONTROLS"):
-            _REJECTED_KEYS = {"js_tooltip", "js_onclick_href", "js_data_mutator"}  # noqa: N806
-            form_data = {k: v for k, v in form_data.items() if k not in _REJECTED_KEYS}
-
-        # NOTE: unlike the /api/v1/explore endpoint, the legacy
-        # /superset/explore_json endpoint must NOT merge saved slice
-        # params with the caller's form_data.  The original Flask view at
-        # ``superset_old/views/core.py::explore_json`` calls
-        # ``get_form_data()`` with the default ``use_slice_data=False``,
-        # which only merges when the incoming form_data contains ONLY
-        # slice_id/extra_filters/adhoc_filters/viz_type (a "valid slice
-        # id" payload).  Any richer payload — as Cypress tests send — is
-        # used as-is.  Merging here duplicates saved metrics on top of
-        # the user-provided ones and produces extra chart series.
-
-        # ---- 2. Resolve datasource info ----
-        # form_data.datasource = "<id>__<type>" takes precedence
-        ds_str = form_data.get("datasource", "")
-        if "__" in str(ds_str):
-            parts = str(ds_str).split("__")
-            if parts[0] and parts[0] != "None":
-                datasource_id = int(parts[0])
-                datasource_type = parts[1] if len(parts) > 1 else datasource_type
-
-        if datasource_id is None:
-            ds_id_raw = form_data.get("datasource_id")
-            if ds_id_raw is not None:
-                datasource_id = int(ds_id_raw)
-
-        if datasource_id is None:
-            return Response(
-                content={
-                    "error": "The dataset associated with this chart no longer exists"
-                },
-                status_code=400,
-                media_type="application/json",
-            )
-
-        # ---- 3. Load datasource ----
-        stmt = (
-            select(SqlaTable)
-            .where(SqlaTable.id == int(datasource_id))
-            .options(
-                selectinload(SqlaTable.database),
-                selectinload(SqlaTable.columns),
-                selectinload(SqlaTable.metrics),
-            )
-        )
-        result = await session.execute(stmt)
-        datasource = result.scalars().one_or_none()
-        if not datasource:
-            return Response(
-                content={"error": "Datasource not found"},
-                status_code=404,
-                media_type="application/json",
-            )
-
-        # ---- 4. Determine response type ----
-        response_type = "json"
-        for opt in ("csv", "json", "query", "results", "samples"):
-            if request.query_params.get(opt) == "true":
-                response_type = opt
-                break
-
-        # ---- 4b. Check CSV export permission ----
-        if response_type == "csv":
-            from superset.dependencies import provide_security_manager
-
-            sec_mgr = await provide_security_manager(session, request.app.state)
-            user = getattr(request, "user", None)
-            if not await sec_mgr.can_access("can_csv", "Superset", user=user):
-                return Response(
-                    content=_json.dumps(
-                        {"error": "You don't have the rights to download as csv"}
-                    ),
-                    status_code=403,
-                    media_type="application/json",
-                )
-
-        # ---- 5. Build viz object and execute query ----
-        force = request.query_params.get("force") == "true"
-
-        try:
-            viz_obj = make_viz(
-                datasource=datasource,
-                form_data=form_data,
-                force=force,
-                settings=settings,
-            )
-
-            payload = await viz_obj.get_payload()
-
-            # Serialize the payload
-            payload_json = viz_obj.json_dumps(payload)
-            has_error = viz_obj.has_error(payload)
-
-            return Response(
-                content=payload_json,
-                status_code=400 if has_error else 200,
-                media_type="application/json",
-            )
-        except Exception as ex:
-            logger.exception("explore_json error")
-            return Response(
-                content=_json.dumps({"error": str(ex)}, default=str),
-                status_code=400,
-                media_type="application/json",
-            )
-
-    @post(
-        "/superset/explore_json/{datasource_type:str}/{datasource_id:int}/",
-        opt={"skip_csrf": True},
-    )
-    async def explore_json_post_with_ids(
-        request: Request[Any, Any, Any],
-        session: AsyncSession,
-        datasource_type: str,
-        datasource_id: int,
-    ) -> Response[Any]:
-        """POST /superset/explore_json/<type>/<id>/"""
-        return await _handle_explore_json(
-            request, session, datasource_type, datasource_id
-        )
-
-    @get(
-        "/superset/explore_json/{datasource_type:str}/{datasource_id:int}/",
-    )
-    async def explore_json_get_with_ids(
-        request: Request[Any, Any, Any],
-        session: AsyncSession,
-        datasource_type: str,
-        datasource_id: int,
-    ) -> Response[Any]:
-        """GET /superset/explore_json/<type>/<id>/"""
-        return await _handle_explore_json(
-            request, session, datasource_type, datasource_id
-        )
-
-    @post("/superset/explore_json/", opt={"skip_csrf": True})
-    async def explore_json_post(
-        request: Request[Any, Any, Any],
-        session: AsyncSession,
-    ) -> Response[Any]:
-        """POST /superset/explore_json/"""
-        return await _handle_explore_json(request, session)
-
-    @get(
-        "/superset/explore_json/",
-    )
-    async def explore_json_get(
-        request: Request[Any, Any, Any],
-        session: AsyncSession,
-    ) -> Response[Any]:
-        """GET /superset/explore_json/"""
-        return await _handle_explore_json(request, session)
-
     route_handlers: list[Any] = [
-        explore_json_post_with_ids,
-        explore_json_get_with_ids,
-        explore_json_post,
-        explore_json_get,
+        # Legacy /superset/explore_json endpoints (deprecated, eol 5.0.0) —
+        # serve deck.gl and other legacy viz types that POST/GET form_data
+        # instead of /api/v1/chart/data, plus the GAQ async transport and the
+        # cached-result fetch. Listed first so its explicit paths resolve
+        # ahead of the SPA catch-all (/superset/{path:path}).
+        ExploreJsonController,
         health_check,
         health,
         healthcheck,

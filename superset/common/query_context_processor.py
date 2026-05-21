@@ -152,6 +152,69 @@ async def load_cached_query_context_form(
     return None
 
 
+# Cache-key prefix the legacy ``load_explore_json_into_cache`` Celery task
+# writes its entry under.  The default async cache slot (``AsyncCacheManager``)
+# issues an unprefixed ``redis.get``, but the task writes via the
+# Flask-Caching-style ``superset_cache:`` prefix (raw sync Redis), so the read
+# must try the prefixed key first.
+_FLASK_CACHE_KEY_PREFIX = "superset_cache:"
+
+
+async def load_cached_explore_form(
+    cache_manager: Any,
+    cache_key: str,
+) -> dict[str, Any] | None:
+    """Load the ``{form_data, response_type}`` cached by the explore task.
+
+    Inverse of the cache write in
+    :func:`superset.tasks.async_queries.load_explore_json_into_cache`, which
+    stores ``{"form_data": ..., "response_type": ...}`` (pickle-serialized)
+    under the ``ejr-`` cache key.  Used by the legacy
+    ``GET /superset/explore_json/data/<cache_key>`` endpoint.
+
+    The task writes via raw sync Redis under the Flask-Caching-style
+    ``superset_cache:<cache_key>`` key, while the default async cache slot
+    (``AsyncCacheManager.get``) issues an unprefixed ``redis.get`` — so we try
+    the prefixed key first and fall back to the bare key.
+
+    1:1 with the original ``Superset.explore_json_data`` which read
+    ``cache_manager.cache.get(cache_key)`` and raised ``CacheLoadError`` on a
+    miss; here we return ``None`` on a miss so the caller can raise the
+    project's 404.
+
+    :param cache_manager: an async/sync cache slot exposing ``get(key)``
+        (e.g. ``superset.extensions.cache_manager.cache``).
+    :param cache_key: the ``ejr-`` prefixed key from the result_url.
+    :returns: the cached value dict, or ``None`` when absent / malformed.
+    """
+    if cache_manager is None or not cache_key:
+        return None
+
+    for key in (f"{_FLASK_CACHE_KEY_PREFIX}{cache_key}", cache_key):
+        try:
+            getter = cache_manager.get(key)
+            raw = await getter if inspect.isawaitable(getter) else getter
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Cache get failed for explore form key %s", key, exc_info=True
+            )
+            raw = None
+        if raw is None:
+            continue
+        value: Any = raw
+        if isinstance(raw, (bytes, bytearray)):
+            import pickle  # noqa: S403 — cache compat with the Celery task
+
+            try:
+                value = pickle.loads(raw)  # noqa: S301
+            except (pickle.UnpicklingError, TypeError, EOFError, ValueError):
+                logger.warning("Failed to unpickle explore form for key %s", key)
+                continue
+        if isinstance(value, dict):
+            return value
+    return None
+
+
 class AsyncQueryContextProcessor:
     """Processes QueryContext payloads asynchronously.
 
