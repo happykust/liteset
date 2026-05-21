@@ -26,6 +26,7 @@ updates via Redis Streams (matching AsyncEventManager's data model).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import json
 import logging
@@ -93,6 +94,53 @@ def _get_sync_redis() -> Any:
             )
         _sync_redis = redis.Redis.from_url(redis_url)
     return _sync_redis
+
+
+def _build_async_cache_manager(settings: Any) -> Any:
+    """Build a per-event-loop async cache manager for the worker.
+
+    The Celery worker never runs Litestar's ``on_startup`` hook, so the
+    module-global ``superset.extensions.cache_manager`` is never
+    ``init_app``-ed and its slots are all ``NullAsyncCacheManager`` (no-ops).
+    Moreover ``asyncio.run`` creates a fresh event loop per task and
+    ``redis.asyncio`` clients cannot cross loops, so a global client would
+    not be reusable anyway.
+
+    We therefore construct a throwaway :class:`CacheManager`, ``init_app`` it
+    with a Redis client created *inside the current loop*, and hand it to the
+    :class:`AsyncQueryContextProcessor`. Its ``.get`` / ``.set`` pass-throughs
+    target the default ``cache`` slot — the same slot the web process exposes
+    via ``app.state.cache_manager`` — so the per-query RESULT and the ``qc-``
+    query-context FORM written here are read back by ``data_from_cache``.
+
+    Returns a :class:`CacheManager` whose slots are all
+    ``NullAsyncCacheManager`` when ``redis_url`` is unset (caching disabled,
+    matching upstream when no cache backend is configured).
+    """
+    from superset.cache.manager import CacheManager
+
+    manager = CacheManager()
+    redis_url = getattr(settings, "redis_url", None)
+    redis_client = None
+    if redis_url:
+        try:
+            from redis.asyncio import Redis as AsyncRedis
+
+            redis_client = AsyncRedis.from_url(redis_url)
+        except Exception:  # noqa: BLE001 — never crash the task on cache setup
+            logger.warning(
+                "Failed to build async Redis client for worker cache; "
+                "chart-data caching disabled for this task",
+                exc_info=True,
+            )
+            redis_client = None
+    manager.init_app(
+        redis=redis_client,
+        cache_default_timeout=getattr(settings, "cache_default_timeout", 300),
+        cache_config=getattr(settings, "cache_config", None),
+        data_cache_config=getattr(settings, "data_cache_config", None),
+    )
+    return manager
 
 
 def _update_job(
@@ -445,6 +493,17 @@ def load_chart_data_into_cache(
 
             engine = get_engine()
             factory = create_session_factory(engine)
+            # Build a per-loop async cache manager bound to a Redis client
+            # created *inside* this event loop. ``asyncio.run`` creates a
+            # fresh loop per task, and ``redis.asyncio`` clients cannot be
+            # shared across loops, so we cannot reuse the module-global
+            # ``extensions.cache_manager`` (which the worker never inits via
+            # ``init_app`` anyway). This cache manager writes both the
+            # per-query RESULT and the ``qc-`` query-context FORM to the same
+            # Redis the web process reads from, so ``data_from_cache`` is a
+            # cache hit. 1:1 with the original which used the Flask-global
+            # ``cache_manager.cache`` inside the task body.
+            cache_manager = _build_async_cache_manager(settings)
             async with factory() as async_session:
                 user = await _load_user_from_job_metadata(
                     job_metadata, async_session, settings
@@ -464,6 +523,7 @@ def load_chart_data_into_cache(
                     settings=settings,
                     security_manager=sec_mgr,
                     user=user,
+                    cache_manager=cache_manager,
                     query_context=query_context,
                 )
                 command = ChartDataCommand(
@@ -471,7 +531,17 @@ def load_chart_data_into_cache(
                     processor=processor,
                 )
                 await command.validate()
-                return await command.run()
+                try:
+                    # ``cache=True`` → ``get_payload(cache_query_context=True)``
+                    # generates the ``qc-`` cache_key, caches the form, and
+                    # returns the key in the result. 1:1 with the original
+                    # ``command.run(cache=True)``.
+                    return await command.run(cache=True)
+                finally:
+                    close_fn = getattr(cache_manager, "close", None)
+                    if close_fn is not None:
+                        with contextlib.suppress(Exception):
+                            await close_fn()
 
         result = asyncio.run(_execute())
         cache_key = result.get("cache_key", "")

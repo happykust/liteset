@@ -36,10 +36,7 @@ from litestar.params import Body, Parameter
 from litestar.response import Response, Stream
 
 from superset.commands.chart.create import CreateChartCommand
-from superset.commands.chart.data.get_data_command import (
-    ChartDataCommand,
-    GetCachedChartDataCommand,
-)
+from superset.commands.chart.data.get_data_command import ChartDataCommand
 from superset.commands.chart.delete import BulkDeleteChartsCommand, DeleteChartCommand
 from superset.commands.chart.export import ExportChartsCommand
 from superset.commands.chart.fave import AddFavoriteChartCommand
@@ -48,7 +45,10 @@ from superset.commands.chart.unfave import RemoveFavoriteChartCommand
 from superset.commands.chart.update import UpdateChartCommand
 from superset.commands.chart.warm_up_cache import WarmUpChartCacheCommand
 from superset.common.query_context import AsyncQueryContext
-from superset.common.query_context_processor import AsyncQueryContextProcessor
+from superset.common.query_context_processor import (
+    AsyncQueryContextProcessor,
+    load_cached_query_context_form,
+)
 from superset.common.query_object import AsyncQueryObject
 from superset.controllers.base import (
     build_export_headers,
@@ -2081,35 +2081,93 @@ class ChartController(Controller):
         "/data/{cache_key:str}",
         guards=[require_permission("can_read", "Chart")],
     )
-    async def get_cached_data(
+    async def data_from_cache(
         self,
         cache_key: str,
         request: Request[Any, Any, Any],
-        security_manager: SecurityManagerProtocol,
         ds_dao: DatasourceDAOProtocol,
-        state: State,
+        security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
-    ) -> dict[str, Any]:
-        """GET /api/v1/chart/data/{cache_key} — retrieve cached chart data."""
+        state: State,
+    ) -> Response[Any]:
+        """GET /api/v1/chart/data/{cache_key} — return data for a cached query.
+
+        1:1 port of ``superset_old/charts/data/api.py::data_from_cache``.
+
+        This is the ``result_url`` target of the GLOBAL_ASYNC_QUERIES flow:
+        once ``load_chart_data_into_cache`` finishes, the worker broadcasts a
+        ``result_url`` of ``/api/v1/chart/data/<cache_key>`` and the frontend
+        (``asyncEvent.ts::fetchCachedData``) GETs it. The original flow:
+
+        1. Load the cached query-context *form* (``cache.get(cache_key)["data"]``;
+           404 on miss — matching the original ``ChartDataCacheLoadError``).
+        2. Rebuild the query context from the form.
+        3. Build the command and run it. The per-query RESULT is already cached
+           (the worker computed and stored it under the same cache manager), so
+           this is a cache hit — no re-execution against the warehouse.
+        4. Render the chart-data payload (same shape as ``POST /data``) so the
+           frontend's ``'result' in json ? json.result : json`` works unchanged.
+        """
+        from superset.tasks.async_queries import _create_query_context_from_form
+
         cache_manager = getattr(request.app.state, "cache_manager", None)
         settings: SupersetSettings = cast(
             "SupersetSettings", getattr(state, "settings", None)
         )
-        cmd = GetCachedChartDataCommand(
-            cache_key=cache_key,
-            cache_manager=cache_manager,
-            security_manager=security_manager,
-            datasource_dao=ds_dao,
-            settings=settings,
-            user=current_user,
-        )
-        result = await cmd.execute()
-        await event_logger.alog_with_context(
-            "chart.cached_data", object_ref=f"cache:{cache_key}"
-        )
-        if result is None:
-            # Original Superset surfaces a cache miss as 404 (the cached
-            # entry doesn't exist), not as an empty 200 — see
-            # superset_old/charts/api.py::ChartRestApi.get_data.
+
+        # 1. Load the cached query-context form. ``cache_manager`` exposes a
+        # ``.get``/``.set`` pass-through to the default cache slot — the same
+        # slot the worker wrote the ``qc-`` form to via ``_cache_set``.
+        form = await load_cached_query_context_form(cache_manager, cache_key)
+        if form is None:
+            # Original returned ``response_404()`` on ``ChartDataCacheLoadError``.
             raise ObjectNotFoundError("ChartCachedData", cache_key)
-        return result
+
+        # 2. Rebuild the query context from the cached form (reuses the worker's
+        # helper so the deserialization is identical to the submit path).
+        query_context = _create_query_context_from_form(form)
+
+        # 3. Resolve the datasource (mirror ``POST /data``).
+        ds_ref = query_context.datasource
+        ds_id: int | None = None
+        ds_type: str = "table"
+        if isinstance(ds_ref, dict):
+            ds_id = ds_ref.get("id")
+            ds_type = ds_ref.get("type") or "table"
+        elif isinstance(ds_ref, str) and "__" in ds_ref:
+            parts = ds_ref.split("__")
+            try:
+                ds_id = int(parts[0])
+                ds_type = parts[1]
+            except (ValueError, IndexError):
+                ds_id = None
+        if ds_id is None:
+            raise ObjectNotFoundError("ChartCachedData", cache_key)
+
+        datasource = await ds_dao.get_datasource(ds_type, ds_id)
+        if not datasource:
+            raise ObjectNotFoundError("Datasource", ds_id)
+        query_context.datasource = datasource
+
+        # 4. Build the processor *with* the cache manager so the per-query
+        # RESULT cache is hit, then run the command (1:1 with the original
+        # ``_get_data_response(command, True)`` → ``command.run()``).
+        processor = AsyncQueryContextProcessor(
+            datasource=datasource,
+            settings=settings,
+            security_manager=security_manager,
+            user=current_user,
+            cache_manager=cache_manager,
+            query_context=query_context,
+        )
+        command = ChartDataCommand(query_context=query_context, processor=processor)
+        await command.validate()
+        result = await command.run()
+
+        await event_logger.alog_with_context(
+            "chart.data_from_cache", object_ref=f"cache:{cache_key}"
+        )
+        return _render_chart_data_payload(
+            result,
+            is_guest=security_manager.is_guest_user(current_user),
+        )
