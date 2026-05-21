@@ -132,6 +132,29 @@ async def test_no_refresh_when_valid_cookie_matches_user():
         assert _async_token(resp) is None
 
 
+async def test_no_refresh_for_anonymous_with_valid_cookie():
+    # The anonymous cookie carries sub=None; the middleware must be able to
+    # decode it (verify_sub disabled) and recognise the sub already matches
+    # (None == None) so it does NOT re-mint on every anonymous response.
+    app = _make_app(_User(None, authed=False))
+    async with AsyncTestClient(app) as client:
+        existing = pyjwt.encode(
+            {"channel": "anon-uuid", "sub": None}, JWT_SECRET, algorithm="HS256"
+        )
+        resp = await client.get("/ping", headers={"Cookie": f"async-token={existing}"})
+        assert _async_token(resp) is None
+
+
+def test_parse_channel_id_from_anonymous_cookie():
+    from superset.middleware.async_token import parse_channel_id_from_cookie
+
+    token = pyjwt.encode(
+        {"channel": "anon-chan", "sub": None}, JWT_SECRET, algorithm="HS256"
+    )
+    channel = parse_channel_id_from_cookie(f"async-token={token}", JWT_SECRET)
+    assert channel == "anon-chan"
+
+
 async def test_refresh_when_cookie_sub_mismatches_user():
     app = _make_app(_User(7, authed=True))
     async with AsyncTestClient(app) as client:

@@ -111,7 +111,15 @@ def _decode_existing_cookie(
     if morsel is None:
         return None
     try:
-        return pyjwt.decode(morsel.value, secret_key, algorithms=["HS256"])
+        # verify_sub=False: the anonymous cookie carries ``sub=None`` (1:1 with
+        # the original Flask handler); pyjwt >= 2.10 otherwise rejects a null
+        # sub, which would force a needless re-mint on every anonymous response.
+        return pyjwt.decode(
+            morsel.value,
+            secret_key,
+            algorithms=["HS256"],
+            options={"verify_sub": False},
+        )
     except pyjwt.PyJWTError:
         return None
 
@@ -360,7 +368,14 @@ def parse_channel_id_from_cookie(
     if morsel is None:
         return None
     try:
-        payload = pyjwt.decode(morsel.value, secret_key, algorithms=["HS256"])
+        # verify_sub=False so an anonymous cookie (``sub=None``) still yields its
+        # channel claim under pyjwt >= 2.10 (matches the original lax decode).
+        payload = pyjwt.decode(
+            morsel.value,
+            secret_key,
+            algorithms=["HS256"],
+            options={"verify_sub": False},
+        )
     except pyjwt.PyJWTError:
         return None
     channel = payload.get("channel")
