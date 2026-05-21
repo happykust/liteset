@@ -27,9 +27,6 @@ working until they're migrated.  New code should import from
 
 from __future__ import annotations
 
-from superset.commands.chart.data.get_data_command import (
-    ChartDataCommand,
-    GetCachedChartDataCommand,
-)
+from superset.commands.chart.data.get_data_command import ChartDataCommand
 
-__all__ = ("ChartDataCommand", "GetCachedChartDataCommand")
+__all__ = ("ChartDataCommand",)
