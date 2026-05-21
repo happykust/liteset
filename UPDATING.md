@@ -59,6 +59,11 @@ assists people when migrating to a new version.
      `GLOBAL_ASYNC_QUERIES_WEBSOCKET_URL` to point at the app's `/ws/events` endpoint
      (e.g. `ws://localhost:8088/ws/events`).  The historical default `ws://127.0.0.1:8080/`
      referred to the now-removed Node.js sidecar and is no longer valid.
+   - **Redis TLS for the event stream**: the in-process endpoint reads the async-event
+     Redis Streams via the application's `REDIS_URL` (no separate sidecar Redis config).
+     For an encrypted connection use the `rediss://` scheme in `REDIS_URL`
+     (e.g. `rediss://host:6379/3?ssl_cert_reqs=required`) — this replaces the
+     sidecar's `REDIS_SSL` / `validateHostname` options.
 
 4. **Celery**: Task paths changed from `superset.tasks.*` to `liteset.tasks.*`.
    Update `CELERYBEAT_SCHEDULE` in configuration. Both old and new paths accepted during transition.
