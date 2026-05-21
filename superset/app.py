@@ -565,12 +565,46 @@ async def on_shutdown(app: Litestar) -> None:
         logger.info("Redis connection closed")
 
 
+def _validate_global_async_queries_config(settings: SupersetSettings) -> None:
+    """Validate Global Async Queries config at app build time.
+
+    1:1 with the original ``AsyncQueryManager.init_app`` guard, which only ran
+    when the ``GLOBAL_ASYNC_QUERIES`` feature flag was enabled
+    (``configure_async_queries`` → ``init_app``) and refused to start the app
+    if the JWT secret was shorter than 32 bytes. The async-token JWT is signed
+    with this secret; a short HMAC key is a real security weakness, so the app
+    fails fast rather than silently signing with a weak key.
+
+    The secret checked is the one actually used to sign/verify async tokens
+    (``_resolve_secret_key`` — ``GLOBAL_ASYNC_QUERIES_JWT_SECRET`` with fallback
+    to ``SECRET_KEY``), which matches the WS handler, the polling endpoint and
+    ``AsyncTokenMiddleware``.
+    """
+    if not getattr(settings, "global_async_queries", False):
+        return
+
+    from superset.commands.chart.data.create_async_job_command import (
+        AsyncQueryTokenException,
+    )
+    from superset.middleware.async_token import _resolve_secret_key
+
+    secret = _resolve_secret_key(settings)
+    if len(secret) < 32:
+        raise AsyncQueryTokenException(
+            "Please provide a JWT secret at least 32 bytes long"
+        )
+
+
 def create_app(  # noqa: C901
     settings: SupersetSettings | None = None,
 ) -> Litestar:
     if settings is None:
         # secret_key is resolved at runtime from env vars or superset_config.py
         settings = SupersetSettings()  # type: ignore[call-arg]
+
+    # When Global Async Queries is enabled, refuse to start with a weak JWT
+    # secret (1:1 with the original AsyncQueryManager.init_app guard).
+    _validate_global_async_queries_config(settings)
 
     # Import core API controllers (Phase 4)
     # Import remaining API controllers (Phase 5)
