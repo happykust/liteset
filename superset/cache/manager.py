@@ -1081,7 +1081,12 @@ def _build_async_redis_from_config(
                 "to NullAsyncCacheManager."
             )
             return None
-        return AsyncRedis.from_url(redis_url, decode_responses=True)
+        # decode_responses MUST be False: these cache slots store binary
+        # values (serialized chart-data DataFrames / query-context forms and
+        # thumbnail image bytes). AsyncCacheManager.get returns the raw value
+        # verbatim, so a decoding client raises UnicodeDecodeError on binary
+        # payloads (which start with byte 0x80) and the read silently None-s.
+        return AsyncRedis.from_url(redis_url, decode_responses=False)
 
     if "CACHE_REDIS_HOST" in cache_config:
         try:
@@ -1096,12 +1101,21 @@ def _build_async_redis_from_config(
             "host": cache_config.get("CACHE_REDIS_HOST", "localhost"),
             "port": cache_config.get("CACHE_REDIS_PORT", 6379),
             "db": cache_config.get("CACHE_REDIS_DB", 0),
-            "decode_responses": True,
+            # See the from_url branch above: binary cache values require a
+            # non-decoding client.
+            "decode_responses": False,
         }
         if cache_config.get("CACHE_REDIS_PASSWORD"):
             kwargs["password"] = cache_config["CACHE_REDIS_PASSWORD"]
         return AsyncRedis(**kwargs)
 
+    # NOTE: ``default_redis`` is the process-wide auth-cache client built in
+    # ``superset.app.on_startup`` with ``decode_responses=True`` (it stores
+    # string user records).  Reusing it here is only safe for slots that store
+    # text; the binary cache slots (chart-data / qc-form / thumbnails) would
+    # re-trigger the 0x80 UnicodeDecodeError on read.  Today every Redis cache
+    # slot sets CACHE_REDIS_HOST so this fallback is not reached for them — if
+    # that changes, build a dedicated ``decode_responses=False`` client instead.
     return default_redis
 
 

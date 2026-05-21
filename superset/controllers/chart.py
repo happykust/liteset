@@ -2084,7 +2084,6 @@ class ChartController(Controller):
     async def data_from_cache(
         self,
         cache_key: str,
-        request: Request[Any, Any, Any],
         ds_dao: DatasourceDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
@@ -2108,9 +2107,13 @@ class ChartController(Controller):
         4. Render the chart-data payload (same shape as ``POST /data``) so the
            frontend's ``'result' in json ? json.result : json`` works unchanged.
         """
+        from superset.extensions import cache_manager
         from superset.tasks.async_queries import _create_query_context_from_form
 
-        cache_manager = getattr(request.app.state, "cache_manager", None)
+        # Use the process-wide cache manager initialized in app on_startup
+        # (``cache_manager.init_app``). ``app.state.cache_manager`` is never
+        # set, so read the module-global the rest of the controllers use — the
+        # same default cache slot the worker wrote the ``qc-`` form to.
         settings: SupersetSettings = cast(
             "SupersetSettings", getattr(state, "settings", None)
         )
