@@ -52,6 +52,7 @@ from litestar.datastructures import State
 from litestar.exceptions import WebSocketDisconnect
 
 from superset.async_events.manager import increment_id, parse_event
+from superset.extensions import stats_logger_manager
 from superset.middleware.async_token import _channel_key, _resolve_secret_key
 from superset.websocket.auth import authenticate_websocket, validate_origin
 
@@ -191,6 +192,8 @@ class AsyncQueryWebSocket(Controller):
 
             await socket.accept()
             active_ws[socket] = auth_result.user_id
+            # 1:1 with the original sidecar's statsd.increment('ws_connected_client').
+            stats_logger_manager.incr("ws_connected_client")
 
         # Resolve per-session channel id.  The JWT claim ("channel") is the
         # canonical source when present (query-param and cookie paths).  The
@@ -394,8 +397,14 @@ class AsyncQueryWebSocket(Controller):
                         cursor = entry_id
                         continue
                     # A send failure (client gone) propagates intentionally so
-                    # the handler tears down — only the parse is guarded.
-                    await socket.send_json(event)
+                    # the handler tears down — only the parse is guarded.  Emit
+                    # the original sidecar's ws_client_send_error metric first
+                    # (statsd.increment('ws_client_send_error')), then re-raise.
+                    try:
+                        await socket.send_json(event)
+                    except Exception:
+                        stats_logger_manager.incr("ws_client_send_error")
+                        raise
                     cursor = entry_id  # advance past last delivered id
 
     @staticmethod

@@ -293,6 +293,27 @@ async def test_relay_delivers_id_bearing_events():
     assert all("id" in frame for frame in sent)
 
 
+async def test_relay_increments_send_error_metric():
+    """A send failure emits ws_client_send_error (1:1 with the sidecar) and
+    still propagates so the handler tears the connection down."""
+    import json
+    from unittest.mock import patch
+
+    event = {"channel_id": "ch-1", "job_id": "j", "status": "done"}
+    entries = [("1-0", {"data": json.dumps(event)})]
+    redis = AsyncMock()
+    redis.xread = AsyncMock(return_value=_stream_response("ch-1", entries))
+    socket = MagicMock()
+    socket.send_json = AsyncMock(side_effect=ConnectionError("client gone"))
+
+    with patch("superset.websocket.events.stats_logger_manager") as stats:
+        with pytest.raises(ConnectionError):
+            await AsyncQueryWebSocket._relay_events(
+                socket, _relay_state(redis), "ch-1", None
+            )
+        stats.incr.assert_any_call("ws_client_send_error")
+
+
 async def test_relay_exclusive_last_id_cursor():
     """With last_id supplied, the first xread starts from increment_id(last_id)."""
     redis = AsyncMock()
@@ -513,13 +534,20 @@ async def test_teardown_removes_socket_from_active_websockets():
     # the real class — _relay_events and _receiver are @staticmethod, so
     # Python's descriptor protocol returns the real coroutine functions when
     # accessed via a spec'd instance, not an auto-created child MagicMock.
+    from unittest.mock import patch
+
     fake_self = MagicMock(spec=AsyncQueryWebSocket)
-    await AsyncQueryWebSocket.on_event.fn(fake_self, socket=fake_socket, state=state)
+    with patch("superset.websocket.events.stats_logger_manager") as stats:
+        await AsyncQueryWebSocket.on_event.fn(
+            fake_self, socket=fake_socket, state=state
+        )
 
     # The socket must be removed from active_websockets after teardown.
     assert fake_socket not in active_ws, (
         "Socket was not removed from active_websockets after disconnect teardown"
     )
+    # The accepted connection emitted ws_connected_client (1:1 with the sidecar).
+    stats.incr.assert_any_call("ws_connected_client")
 
 
 # ---------------------------------------------------------------------------
