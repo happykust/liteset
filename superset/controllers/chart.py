@@ -31,6 +31,7 @@ from litestar.connection import Request
 from litestar.datastructures import State, UploadFile
 from litestar.di import Provide
 from litestar.enums import RequestEncodingType
+from litestar.exceptions import NotAuthorizedException
 from litestar.params import Body, Parameter
 from litestar.response import Response, Stream
 
@@ -207,6 +208,62 @@ def _render_chart_data_payload(
 
     encoded = _msgspec.json.encode({"result": queries}, enc_hook=_enc_hook)
     return Response(content=encoded, media_type="application/json")
+
+
+# ---------------------------------------------------------------------------
+# Async chart-data channel resolution
+# ---------------------------------------------------------------------------
+def _resolve_async_channel_id(
+    request: Request[Any, Any, Any],
+    settings: Any,
+) -> str | None:
+    """Return the ``channel`` claim from the request's ``async-token`` cookie.
+
+    1:1 with the original Flask path
+    (``async_query_manager.parse_channel_id_from_request`` →
+    ``jwt.decode(cookie, GLOBAL_ASYNC_QUERIES_JWT_SECRET)["channel"]``).
+
+    Mirrors the secret / cookie-name resolution used by the polling
+    endpoint (:func:`superset.controllers.async_event.AsyncEventController.get_events`)
+    so the submit path writes to the SAME channel the readers (the
+    WebSocket relay and the polling endpoint) read from.  Returns
+    ``None`` when the cookie is missing or invalid — the caller maps
+    that to HTTP 401, mirroring the original ``AsyncQueryTokenException
+    → response_401``.
+    """
+    from superset.middleware.async_token import parse_channel_id_from_cookie
+
+    if settings is None:
+        return None
+
+    secret_key_obj = getattr(settings, "global_async_queries_jwt_secret", None)
+    if secret_key_obj is None:
+        secret_key_obj = getattr(settings, "secret_key", "")
+    if hasattr(secret_key_obj, "get_secret_value"):
+        secret_key_str = secret_key_obj.get_secret_value()
+    else:
+        secret_key_str = str(secret_key_obj) if secret_key_obj else ""
+
+    cookie_name = getattr(
+        settings, "global_async_queries_jwt_cookie_name", "async-token"
+    )
+
+    # Pull the raw cookie header straight from the ASGI scope headers,
+    # exactly as ``async_event.get_events`` does.
+    raw_cookie: str | None = None
+    for header_name, header_value in request.scope.get("headers", []):
+        if header_name == b"cookie":
+            raw_cookie = header_value.decode("utf-8", errors="replace")
+            break
+
+    if not raw_cookie or not secret_key_str:
+        return None
+
+    return parse_channel_id_from_cookie(
+        raw_cookie,
+        secret_key_str,
+        cookie_name=cookie_name,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1387,6 +1444,7 @@ class ChartController(Controller):
     )
     async def get_chart_data(  # noqa: C901
         self,
+        request: Request[Any, Any, Any],
         pk: int,
         dao: ChartDAOProtocol,
         ds_dao: DatasourceDAOProtocol,
@@ -1427,7 +1485,19 @@ class ChartController(Controller):
                         "Chart has invalid query context"
                     ) from exc
 
-                channel_id = str(uuid.uuid4())
+                # Channel id MUST come from the request's ``async-token``
+                # cookie (the same claim the polling endpoint and the
+                # WebSocket relay read from) — NOT a random uuid. A random
+                # channel would mean results are written where no reader is
+                # listening. 1:1 with the original
+                # ``CreateAsyncChartDataJobCommand.validate`` →
+                # ``parse_channel_id_from_request`` → 401 on missing/invalid
+                # token.
+                channel_id = _resolve_async_channel_id(request, settings)
+                if not channel_id:
+                    raise NotAuthorizedException(
+                        detail="Failed to parse async query channel token"
+                    )
                 job_id = str(uuid.uuid4())
                 job_metadata = build_job_metadata(
                     channel_id=channel_id,
@@ -1437,7 +1507,7 @@ class ChartController(Controller):
                 )
                 load_chart_data_into_cache.delay(job_metadata, form_data)
                 return Response(
-                    content={"channel_id": channel_id, "job_id": job_id},
+                    content=job_metadata,
                     status_code=202,
                 )
 
@@ -1591,7 +1661,19 @@ class ChartController(Controller):
                 from superset.async_events.manager import build_job_metadata
                 from superset.tasks.async_queries import load_chart_data_into_cache
 
-                channel_id = str(uuid.uuid4())
+                # Channel id MUST come from the request's ``async-token``
+                # cookie (the same claim the polling endpoint and the
+                # WebSocket relay read from) — NOT a random uuid. A random
+                # channel would mean results are written where no reader is
+                # listening. 1:1 with the original
+                # ``CreateAsyncChartDataJobCommand.validate`` →
+                # ``parse_channel_id_from_request`` → 401 on missing/invalid
+                # token.
+                channel_id = _resolve_async_channel_id(request, settings)
+                if not channel_id:
+                    raise NotAuthorizedException(
+                        detail="Failed to parse async query channel token"
+                    )
                 job_id = str(uuid.uuid4())
                 job_metadata = build_job_metadata(
                     channel_id=channel_id,
@@ -1602,7 +1684,7 @@ class ChartController(Controller):
                 form_data = _msgspec.to_builtins(data)
                 load_chart_data_into_cache.delay(job_metadata, form_data)
                 return Response(
-                    content={"channel_id": channel_id, "job_id": job_id},
+                    content=job_metadata,
                     status_code=202,
                 )
 

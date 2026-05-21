@@ -109,6 +109,7 @@ async def test_get_chart_data_chart_not_found(
     with pytest.raises(ObjectNotFoundError):
         await _get_chart_data(
             controller,
+            request=MagicMock(),
             pk=999,
             dao=mock_chart_dao,
             ds_dao=mock_ds_dao,
@@ -135,6 +136,7 @@ async def test_get_chart_data_no_query_context(
     with pytest.raises(SupersetValidationException, match="no query context"):
         await _get_chart_data(
             controller,
+            request=MagicMock(),
             pk=1,
             dao=mock_chart_dao,
             ds_dao=mock_ds_dao,
@@ -161,6 +163,7 @@ async def test_get_chart_data_invalid_json(
     with pytest.raises(SupersetValidationException, match="invalid query context"):
         await _get_chart_data(
             controller,
+            request=MagicMock(),
             pk=1,
             dao=mock_chart_dao,
             ds_dao=mock_ds_dao,
@@ -191,6 +194,7 @@ async def test_get_chart_data_datasource_not_found(
     with pytest.raises(ObjectNotFoundError):
         await _get_chart_data(
             controller,
+            request=MagicMock(),
             pk=1,
             dao=mock_chart_dao,
             ds_dao=mock_ds_dao,
@@ -229,6 +233,7 @@ async def test_get_chart_data_executes_command(
 
     result = await _get_chart_data(
         controller,
+        request=MagicMock(),
         pk=1,
         dao=mock_chart_dao,
         ds_dao=mock_ds_dao,
