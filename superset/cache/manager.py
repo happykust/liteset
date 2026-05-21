@@ -859,8 +859,13 @@ class AsyncCacheManager:
         return count
 
     async def close(self) -> None:
-        """Close the underlying Redis connection."""
-        await self._redis.aclose()
+        """Close the underlying Redis connection.
+
+        Uses the version-tolerant helper: ``aclose`` exists on redis-py 5.x,
+        but the installed 4.6 only has ``close`` — calling ``aclose`` there
+        raises ``AttributeError`` and leaks the slot's connection on shutdown.
+        """
+        await _close_async_redis(self._redis)
 
 
 # ---------------------------------------------------------------------------
