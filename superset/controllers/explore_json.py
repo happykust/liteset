@@ -415,6 +415,11 @@ class ExploreJsonController(Controller):
                     settings=settings,
                 )
                 payload = await viz_obj.get_payload()
+                # Deliberate deviation from the original (core.py:322-325 returned
+                # the cached payload whenever it was non-None, incl. error payloads
+                # as a 400): for the async transport we only short-circuit on a
+                # *successful* cached payload and otherwise fall through to submit
+                # a fresh job, so a stale cached error isn't served instead of a retry.
                 if payload is not None and payload.get("status") != "failed":
                     payload_json, has_error = viz_obj.payload_json_and_has_error(
                         payload
