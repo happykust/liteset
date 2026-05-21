@@ -61,6 +61,7 @@ from superset.exceptions import (
     validation_error_handler,
 )
 from superset.logging import configure_logging
+from superset.middleware.async_token import AsyncTokenMiddleware
 from superset.middleware.auth import SupersetAuthMiddleware
 from superset.middleware.http_headers import HTTPHeadersMiddleware
 from superset.middleware.locale import LocaleMiddleware
@@ -1128,6 +1129,22 @@ def create_app(  # noqa: C901
             # CSRF check sees a body the middleware has already cached.
             RequestContextMiddleware(),
             SupersetAuthMiddleware,
+            # AsyncTokenMiddleware mints / refreshes the ``async-token`` JWT
+            # cookie on authenticated responses — 1:1 with the original Flask
+            # ``register_request_handlers`` after-request hook.  Gated on the
+            # same two flags the original used (``configure_async_queries`` ran
+            # only under GLOBAL_ASYNC_QUERIES, and ``init_app`` registered the
+            # handler only when REGISTER_REQUEST_HANDLERS was set).  Placed after
+            # the auth middleware so ``scope["user"]`` is populated when the
+            # cookie is built on ``http.response.start``.
+            *(
+                [AsyncTokenMiddleware()]
+                if (
+                    settings.global_async_queries
+                    and settings.global_async_queries_register_request_handlers
+                )
+                else []
+            ),
             *([csrf_middleware] if csrf_middleware else []),
         ],
         csrf_config=None,  # Using custom middleware
