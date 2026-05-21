@@ -351,6 +351,31 @@ def _create_query_context_from_form(form_data: dict[str, Any]) -> Any:
     )
 
 
+def _resolve_datasource_id(form_data: dict[str, Any]) -> int | None:
+    """Return the datasource id referenced by a chart-data ``form_data``.
+
+    The chart-data query context serialises ``datasource`` as a dict
+    ``{"id": N, "type": "table"}`` (msgspec ``ChartDataQueryContext`` →
+    ``to_builtins``), while legacy/explore payloads use the ``"N__table"``
+    string form.  Both must be handled — otherwise the worker loads no
+    datasource and the processor receives ``datasource=None``, which makes
+    RLS composition fail with ``'NoneType' object has no attribute 'id'``.
+    """
+    ref = form_data.get("datasource", "")
+    if isinstance(ref, dict):
+        raw = ref.get("id")
+        try:
+            return int(raw) if raw is not None else None
+        except (ValueError, TypeError):
+            return None
+    if isinstance(ref, str) and "__" in ref:
+        try:
+            return int(ref.split("__")[0])
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Celery tasks
 # ---------------------------------------------------------------------------
@@ -393,26 +418,21 @@ def load_chart_data_into_cache(
 
         query_context = _create_query_context_from_form(form_data)
 
-        # Resolve the datasource from the form_data "datasource" string
-        # e.g. "1__table" -> datasource_id=1, datasource_type="table"
-        datasource_ref = form_data.get("datasource", "")
+        # Load the datasource (SqlaTable) referenced by the query context.
+        # Handles both the dict form ``{"id": N, "type": "table"}`` and the
+        # legacy ``"N__table"`` string form (see _resolve_datasource_id).
         datasource = None
-        if isinstance(datasource_ref, str) and "__" in datasource_ref:
-            parts = datasource_ref.split("__")
-            try:
-                ds_id = int(parts[0])
-                from sqlalchemy import select as sa_select
+        ds_id = _resolve_datasource_id(form_data)
+        if ds_id is not None:
+            from sqlalchemy import select as sa_select
 
-                from superset.models.connectors import SqlaTable
+            from superset.models.connectors import SqlaTable
 
-                ds = (
-                    session.execute(sa_select(SqlaTable).where(SqlaTable.id == ds_id))
-                    .scalars()
-                    .one_or_none()
-                )
-                datasource = ds
-            except (ValueError, IndexError):
-                pass
+            datasource = (
+                session.execute(sa_select(SqlaTable).where(SqlaTable.id == ds_id))
+                .scalars()
+                .one_or_none()
+            )
 
         # Build the processor and command using async wrappers run
         # synchronously via asyncio.run().  User identity (regular user
