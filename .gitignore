@@ -120,6 +120,10 @@ superset/translations/**/messages.mo
 docker/requirements-local.txt
 
 cache/
+# ``cache/`` (above) is meant for build/runtime cache dirs, but it also matches
+# the ``superset/cache`` SOURCE package (the async cache managers). Re-include
+# it so new modules added there are not silently untracked.
+!superset/cache/
 docker/*local*
 
 .temp_cache
