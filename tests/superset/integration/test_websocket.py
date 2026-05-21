@@ -136,16 +136,13 @@ async def test_websocket_unauthorized_no_token():
     async with AsyncTestClient(app) as client:
         with pytest.raises(WebSocketException) as exc_info:
             await _connect_and_receive(client, "/ws/events")
-        # A 404 would not produce a WebSocketException from within the handler.
-        # The handler emits close code 4401 (WS_CLOSE_UNAUTHORIZED).
+        # A 404/route-miss surfaces a different close code (e.g. 4500), so
+        # asserting the exact 4401 (WS_CLOSE_UNAUTHORIZED) proves the real
+        # handler ran and rejected the connection.
         close_code = _get_ws_close_code(exc_info.value)
-        if close_code is not None:
-            assert close_code == 4401, (
-                f"Expected close code 4401 (Unauthorized), got {close_code}"
-            )
-        # Guard: a 404 would surface as a different exception entirely, so
-        # reaching this assertion proves the handler was invoked.
-        assert exc_info.value is not None
+        assert close_code == 4401, (
+            f"Expected close code 4401 (Unauthorized), got {close_code}"
+        )
 
 
 async def test_websocket_unauthorized_invalid_token():
@@ -160,11 +157,9 @@ async def test_websocket_unauthorized_invalid_token():
         with pytest.raises(WebSocketException) as exc_info:
             await _connect_and_receive(client, "/ws/events?token=invalid")
         close_code = _get_ws_close_code(exc_info.value)
-        if close_code is not None:
-            assert close_code == 4401, (
-                f"Expected close code 4401 (Unauthorized), got {close_code}"
-            )
-        assert exc_info.value is not None
+        assert close_code == 4401, (
+            f"Expected close code 4401 (Unauthorized), got {close_code}"
+        )
 
 
 async def test_websocket_forbidden_origin():
@@ -183,11 +178,9 @@ async def test_websocket_forbidden_origin():
                 headers={"origin": "https://evil.com"},
             )
         close_code = _get_ws_close_code(exc_info.value)
-        if close_code is not None:
-            assert close_code == 4403, (
-                f"Expected close code 4403 (Forbidden origin), got {close_code}"
-            )
-        assert exc_info.value is not None
+        assert close_code == 4403, (
+            f"Expected close code 4403 (Forbidden origin), got {close_code}"
+        )
 
 
 async def test_websocket_per_user_limit():
@@ -219,10 +212,9 @@ async def test_websocket_per_user_limit():
         with pytest.raises(WebSocketException) as exc_info:
             await _connect_and_receive(client, f"/ws/events?token={token}")
         close_code = _get_ws_close_code(exc_info.value)
-        if close_code is not None:
-            assert close_code == 4429, (
-                f"Expected close code 4429 (Too Many Connections), got {close_code}"
-            )
+        assert close_code == 4429, (
+            f"Expected close code 4429 (Too Many Connections), got {close_code}"
+        )
         # Prove the limit check ran: active_ws still contains the pre-seeded entry
         # (the handler does NOT add the rejected socket to active_ws).
         assert fake_socket in active_ws, (
