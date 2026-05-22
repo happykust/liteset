@@ -421,6 +421,18 @@ class ExploreJsonController(Controller):
                     getattr(settings, "data_cache_config", None),
                     getattr(settings, "redis_url", None),
                 )
+                # RLS-differentiate the cache key (same value the worker wrote
+                # for this user), so a cache hit only serves this user's
+                # RLS-filtered result.
+                try:
+                    viz_obj._rls_cache_key = await security_manager.get_rls_cache_key(
+                        datasource, user=current_user
+                    )
+                except Exception:  # noqa: BLE001 — key defaults to [] (safe)
+                    logger.warning(
+                        "Could not populate _rls_cache_key for explore_json",
+                        exc_info=True,
+                    )
                 payload = await viz_obj.get_payload()
                 # Deliberate deviation from the original (core.py:322-325 returned
                 # the cached payload whenever it was non-None, incl. error payloads
@@ -579,6 +591,17 @@ class ExploreJsonController(Controller):
                 getattr(settings, "data_cache_config", None),
                 getattr(settings, "redis_url", None),
             )
+            # RLS-differentiate the cache key so a user only reads their own
+            # RLS-filtered cached result (matches the key the worker wrote).
+            try:
+                viz_obj._rls_cache_key = await security_manager.get_rls_cache_key(
+                    datasource, user=current_user
+                )
+            except Exception:  # noqa: BLE001 — key defaults to [] (safe)
+                logger.warning(
+                    "Could not populate _rls_cache_key for explore_json_data",
+                    exc_info=True,
+                )
             result = await _generate_json(viz_obj, response_type)
         except SupersetException as ex:
             return Response(

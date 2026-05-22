@@ -133,6 +133,35 @@ def query_context_modified(query_context: Any) -> bool:
     return False
 
 
+def build_async_security_manager(
+    session: Any,
+    settings: Any,
+) -> "AsyncSecurityManager":
+    """Build an :class:`AsyncSecurityManager` bound to ``session`` from settings.
+
+    Single source of truth for the manager's construction so the Litestar DI
+    provider (``superset.dependencies.provide_security_manager``) and
+    non-request callers (e.g. the Celery ``load_explore_json_into_cache`` task,
+    which must compute the same RLS cache key as the web process) build an
+    identically-configured manager — otherwise their RLS cache keys would
+    diverge and the explore_json cache would not be RLS-isolated.
+    """
+    from superset.security.dao import AsyncSecurityDAO
+
+    feature_flags = getattr(settings, "feature_flags", {}) or {}
+    embedded_enabled = getattr(
+        settings, "embedded_superset", False
+    ) or feature_flags.get("EMBEDDED_SUPERSET", False)
+    return AsyncSecurityManager(
+        dao=AsyncSecurityDAO(session),
+        admin_role_name=settings.auth_role_admin,
+        public_role_name=settings.auth_role_public,
+        guest_role_name=settings.guest_role_name,
+        dashboard_rbac_enabled=settings.dashboard_rbac,
+        embedded_superset_enabled=embedded_enabled,
+    )
+
+
 class AsyncSecurityManager:
     """Async reimplementation of Superset's SecurityManager.
 

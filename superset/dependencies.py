@@ -98,22 +98,6 @@ async def provide_security_manager(
     state: State,
 ) -> Any:
     """Provide AsyncSecurityManager scoped to the request session."""
-    from superset.security.dao import AsyncSecurityDAO
-    from superset.security.manager import AsyncSecurityManager
+    from superset.security.manager import build_async_security_manager
 
-    dao = AsyncSecurityDAO(session)
-    settings = state.settings
-    # Resolve embedded_superset from dedicated setting or feature flags
-    feature_flags = getattr(settings, "feature_flags", {})
-    embedded_enabled = getattr(
-        settings, "embedded_superset", False
-    ) or feature_flags.get("EMBEDDED_SUPERSET", False)
-
-    return AsyncSecurityManager(
-        dao=dao,
-        admin_role_name=settings.auth_role_admin,
-        public_role_name=settings.auth_role_public,
-        guest_role_name=settings.guest_role_name,
-        dashboard_rbac_enabled=settings.dashboard_rbac,
-        embedded_superset_enabled=embedded_enabled,
-    )
+    return build_async_security_manager(session, state.settings)

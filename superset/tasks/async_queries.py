@@ -647,11 +647,30 @@ def load_explore_json_into_cache(  # noqa: C901
 
             engine = get_engine()
             factory = create_session_factory(engine)
+            rls_cache_key: list[str] = []
             async with factory() as async_session:
                 user = await _load_user_from_job_metadata(
                     job_metadata, async_session, settings
                 )
                 set_current_user(user)
+
+                # Compute the submitting user's RLS cache key in the same
+                # session (where ``user`` is bound), so the cached DataFrame is
+                # RLS-isolated — the web process recomputes the same key on read.
+                # Mirrors ``security_manager.get_rls_cache_key`` which the
+                # original folded into ``BaseViz.cache_key``.
+                try:
+                    from superset.security.manager import (
+                        build_async_security_manager,
+                    )
+
+                    sm = build_async_security_manager(async_session, settings)
+                    rls_cache_key = await sm.get_rls_cache_key(datasource, user=user)
+                except Exception:  # noqa: BLE001 — key defaults to [] (safe)
+                    logger.warning(
+                        "Could not populate _rls_cache_key for explore_json cache",
+                        exc_info=True,
+                    )
 
             viz_obj = _get_viz(
                 datasource=datasource,
@@ -666,6 +685,7 @@ def load_explore_json_into_cache(  # noqa: C901
                 getattr(settings, "data_cache_config", None),
                 getattr(settings, "redis_url", None),
             )
+            viz_obj._rls_cache_key = rls_cache_key  # noqa: SLF001
             payload = await viz_obj.get_payload()
             if viz_obj.has_error(payload):
                 raise SupersetVizException(errors=payload.get("errors", []))
