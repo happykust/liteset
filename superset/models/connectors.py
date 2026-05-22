@@ -951,11 +951,26 @@ class SqlaTable(
 
         from sqlalchemy import text as sa_text
 
-        from superset.exceptions import SupersetGenericDBErrorException
+        from superset.exceptions import (
+            SupersetGenericDBErrorException,
+            SupersetSyntaxErrorException,
+        )
         from superset.utils.database import get_sync_connection
 
-        # Strip trailing semicolon and wrap in a subquery
+        # Process Jinja templates first (1:1 with the original
+        # ``get_virtual_table_metadata``); a raw ``{{ }}`` would otherwise be
+        # sent to the warehouse and fail. A template syntax error maps to a
+        # ``SupersetGenericDBErrorException`` (400), as in the original.
         inner_sql = self.sql.strip().rstrip(";")
+        try:
+            inner_sql = self.get_template_processor().process_template(
+                inner_sql, **self.template_params_dict
+            )
+        except SupersetSyntaxErrorException as ex:
+            raise SupersetGenericDBErrorException(
+                message=f"Template processing error: {ex}"
+            ) from ex
+
         metadata_sql = f"SELECT * FROM ({inner_sql}) AS virtual_table LIMIT 0"  # noqa: S608
 
         try:

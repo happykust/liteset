@@ -138,34 +138,37 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         if self._user_id is not None:
             dataset.created_by_fk = self._user_id
             dataset.changed_by_fk = self._user_id
-        self._dao.session.add(dataset)
-        await self._dao.session.flush()
-
-        # Introspect and persist physical/virtual columns + metrics
-        # (1:1 with the original CreateDatasetCommand, which calls
-        # ``dataset.fetch_metadata()`` unconditionally after create).
-        # A SQLAlchemy introspection failure (e.g. a missing table) is
-        # translated to ``DatasetCreateFailedError`` → 422, matching the
-        # original's ``@transaction(on_error=reraise=DatasetCreateFailedError)``
-        # whose default ``catches=(SQLAlchemyError,)`` — non-SQLAlchemy errors
-        # (e.g. ``SupersetGenericDBErrorException`` from a virtual dataset)
+        # Persist + introspect (fetch_metadata) + tag, wrapping the whole body
+        # so any ``SQLAlchemyError`` maps to ``DatasetCreateFailedError`` → 422.
+        # 1:1 with the original ``@transaction(on_error=reraise=
+        # DatasetCreateFailedError)`` decorating ``run()`` whose default
+        # ``catches=(SQLAlchemyError,)`` — non-SQLAlchemy errors (e.g.
+        # ``SupersetGenericDBErrorException`` from a virtual-dataset probe)
         # propagate unchanged with their own status code.
         try:
+            self._dao.session.add(dataset)
+            await self._dao.session.flush()
+
+            # Introspect and persist physical/virtual columns + metrics (the
+            # original calls ``dataset.fetch_metadata()`` unconditionally here).
             await self._dao.fetch_metadata(dataset)
+
+            # Add implicit type: and owner: tags (port of
+            # DatasetUpdater.after_insert).
+            await self._dao.session.refresh(dataset, ["owners"])
+            owner_ids = (
+                [o.id for o in dataset.owners] if hasattr(dataset, "owners") else []
+            )
+            await add_implicit_tags_after_insert(
+                self._dao.session, "dataset", dataset.id, owner_ids
+            )
         except SQLAlchemyError as ex:
             from superset.commands.dataset.exceptions import (
                 DatasetCreateFailedError,
             )
 
-            logger.warning("fetch_metadata failed for new dataset", exc_info=True)
+            logger.warning("dataset create failed", exc_info=True)
             raise DatasetCreateFailedError(exceptions=[ex]) from ex
-
-        # Add implicit type: and owner: tags (async port of DatasetUpdater.after_insert)
-        await self._dao.session.refresh(dataset, ["owners"])
-        owner_ids = [o.id for o in dataset.owners] if hasattr(dataset, "owners") else []
-        await add_implicit_tags_after_insert(
-            self._dao.session, "dataset", dataset.id, owner_ids
-        )
 
         return dataset
 
