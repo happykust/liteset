@@ -47,6 +47,7 @@ import pytest
 from litestar.exceptions import NotAuthorizedException
 
 from superset.controllers.explore_json import (
+    _extract_guest_token,
     _resolve_response_type,
     ExploreJsonController,
     get_datasource_info,
@@ -127,6 +128,10 @@ def mock_security_manager() -> MagicMock:
     sm = MagicMock()
     sm.can_access = AsyncMock(return_value=True)
     sm.raise_for_access = AsyncMock(return_value=None)
+    # Regular (non-guest) user: the GAQ submit branch must NOT forward a
+    # guest token. (A bare MagicMock would return a truthy is_guest_user.)
+    sm.is_guest_user = MagicMock(return_value=False)
+    sm.get_rls_cache_key = AsyncMock(return_value=[])
     return sm
 
 
@@ -419,6 +424,61 @@ async def test_async_branch_wrong_secret_401(
                 datasource_id=None,
             )
         mock_task.delay.assert_not_called()
+
+
+async def test_extract_guest_token_from_header() -> None:
+    """The raw guest JWT is re-read from the configured header."""
+    settings = MagicMock()
+    settings.guest_token_header_name = "X-GuestToken"
+    request = MagicMock()
+    request.headers = {"X-GuestToken": "raw-guest-jwt"}
+    assert await _extract_guest_token(request, settings) == "raw-guest-jwt"
+
+
+async def test_async_branch_forwards_guest_token(
+    controller: ExploreJsonController,
+    mock_user: MagicMock,
+    gaq_state: MagicMock,
+    form_data: dict[str, Any],
+) -> None:
+    """GAQ submit forwards the raw guest token so the worker matches RLS keys."""
+    gaq_state.settings.guest_token_header_name = "X-GuestToken"
+    channel = str(uuid.uuid4())
+    datasource = MagicMock()
+    request = _make_request(
+        _cookie_header_bytes(channel), query={}, form_data=form_data
+    )
+    request.headers = {"X-GuestToken": "raw-guest-jwt"}
+
+    sm = MagicMock()
+    sm.raise_for_access = AsyncMock(return_value=None)
+    sm.is_guest_user = MagicMock(return_value=True)
+
+    with (
+        _patch_jsctrl_off(),
+        _patch_datasource(datasource),
+        patch("superset.tasks.async_queries.load_explore_json_into_cache") as mock_task,
+        patch("superset.viz.get_viz") as mock_get_viz,
+    ):
+        viz_obj = MagicMock()
+        viz_obj.get_payload = AsyncMock(return_value=None)
+        mock_get_viz.return_value = viz_obj
+        mock_task.delay = MagicMock()
+
+        result = await _explore_json_post(
+            controller,
+            request=request,
+            session=AsyncMock(),
+            security_manager=sm,
+            current_user=mock_user,
+            state=gaq_state,
+            datasource_type=None,
+            datasource_id=None,
+        )
+
+    assert result.status_code == 202
+    job_metadata = mock_task.delay.call_args.args[0]
+    assert job_metadata.get("guest_token") == "raw-guest-jwt"
 
 
 # ---------------------------------------------------------------------------

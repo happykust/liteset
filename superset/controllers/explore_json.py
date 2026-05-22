@@ -176,6 +176,33 @@ def _resolve_response_type(request: Request[Any, Any, Any]) -> str:
     return "json"
 
 
+async def _extract_guest_token(
+    request: Request[Any, Any, Any],
+    settings: Any,
+) -> str | None:
+    """Re-read the raw guest JWT from the request (header, then form field).
+
+    Mirrors ``AuthMiddleware._authenticate_guest_token``: the ``GuestUser``
+    does not retain the raw token, so the GAQ submit re-extracts it to forward
+    to the Celery worker (which decodes it back into the same ``GuestUser`` and
+    so computes the same RLS cache key). 1:1 with the original
+    ``submit_explore_json_job`` passing ``guest_user.guest_token``.
+    """
+    header_name = getattr(settings, "guest_token_header_name", "X-GuestToken")
+    token = request.headers.get(header_name) or request.headers.get(
+        header_name.lower()
+    )
+    if token:
+        return token
+    # Fallback: ``guest_token`` POST form field (sendBeacon API).
+    try:
+        form = await request.form()
+        token = form.get("guest_token")
+    except Exception:  # noqa: BLE001 — body may not be form-encoded
+        token = None
+    return token or None
+
+
 async def _generate_json(
     viz_obj: BaseViz,
     response_type: str,
@@ -472,6 +499,16 @@ class ExploreJsonController(Controller):
                 user_id=getattr(current_user, "id", None),
                 status="pending",
             )
+            # For an embedded guest user, forward the raw guest JWT so the
+            # worker reconstructs the same GuestUser — hence the same RLS cache
+            # key — keeping the cache key consistent between submit and the
+            # data fetch. 1:1 with the original ``submit_explore_json_job``.
+            # (``build_job_metadata`` drops unknown kwargs, so merge into the
+            # returned dict; the worker reads ``job_metadata["guest_token"]``.)
+            if security_manager.is_guest_user(current_user):
+                raw_token = await _extract_guest_token(request, settings)
+                if raw_token:
+                    job_metadata = {**job_metadata, "guest_token": raw_token}
             load_explore_json_into_cache.delay(
                 job_metadata, form_data, response_type, force
             )

@@ -447,8 +447,7 @@ def load_chart_data_into_cache(
     from superset.common.query_context_processor import AsyncQueryContextProcessor
     from superset.config import SupersetSettings
     from superset.db.session import get_sync_session
-    from superset.security.dao import AsyncSecurityDAO
-    from superset.security.manager import AsyncSecurityManager
+    from superset.security.manager import build_async_security_manager
     from superset.utils.core import (
         reset_form_data,
         set_current_user,
@@ -509,15 +508,10 @@ def load_chart_data_into_cache(
                     job_metadata, async_session, settings
                 )
                 set_current_user(user)
-                dao = AsyncSecurityDAO(async_session)
-                feature_flags = getattr(settings, "feature_flags", {})
-                embedded_enabled = getattr(
-                    settings, "embedded_superset", False
-                ) or feature_flags.get("EMBEDDED_SUPERSET", False)
-                sec_mgr = AsyncSecurityManager(
-                    dao=dao,
-                    embedded_superset_enabled=embedded_enabled,
-                )
+                # Build the manager via the shared factory so its role-name /
+                # dashboard-RBAC / embedded config matches the web process —
+                # otherwise the chart-data async RLS could diverge from sync.
+                sec_mgr = build_async_security_manager(async_session, settings)
                 processor = AsyncQueryContextProcessor(
                     datasource=datasource,
                     settings=settings,
