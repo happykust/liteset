@@ -22,7 +22,12 @@ from typing import Any
 from sqlalchemy import select
 
 from superset.db.base_dao import BaseAsyncDAO
-from superset.models.connectors import SqlaTable, SqlMetric, TableColumn
+from superset.models.connectors import (
+    MetadataResult,
+    SqlaTable,
+    SqlMetric,
+    TableColumn,
+)
 from superset.models.core import Database
 from superset.models.dashboard import Dashboard, dashboard_slices
 from superset.models.slice import Slice
@@ -266,7 +271,7 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
                 model.metrics.remove(existing_metrics[mid])
                 await self.session.delete(existing_metrics[mid])
 
-    async def fetch_metadata(self, model: SqlaTable) -> None:
+    async def fetch_metadata(self, model: SqlaTable) -> MetadataResult:
         """Introspect table columns + metrics and merge them onto the dataset.
 
         Async port of ``SqlaTable.fetch_metadata`` in
@@ -279,6 +284,9 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         relationship diff triggers a lazy load under asyncpg (``MissingGreenlet``).
         The caller owns the surrounding transaction (commit), matching create /
         refresh which flush within the request-scoped session.
+
+        Returns the :class:`MetadataResult` diff (added / removed / modified
+        column names), 1:1 with the original.
         """
         import asyncio
 
@@ -303,10 +311,18 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         old_columns = list(model.columns)
         old_columns_by_name = {col.column_name: col for col in old_columns}
 
+        new_column_names = {col["column_name"] for col in new_columns}
+        results = MetadataResult(
+            removed=[
+                name for name in old_columns_by_name if name not in new_column_names
+            ]
+        )
+
         columns: list[TableColumn] = []
         for col in new_columns:
             old_column = old_columns_by_name.pop(col["column_name"], None)
             if not old_column:
+                results.added.append(col["column_name"])
                 new_column = TableColumn(
                     column_name=col["column_name"],
                     type=col["type"],
@@ -318,6 +334,8 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
                 db_engine_spec.alter_new_orm_column(new_column)
             else:
                 new_column = old_column
+                if new_column.type != col["type"]:
+                    results.modified.append(col["column_name"])
                 new_column.type = col["type"]
                 new_column.expression = ""
                 if col.get("comment"):
@@ -341,6 +359,7 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         _apply_sqla_table_mutator(model)
 
         await self.session.flush()
+        return results
 
     async def get_related_objects(
         self,

@@ -41,8 +41,26 @@ class WarmUpCacheTableNotFoundError(CommandException):
     message = _("The provided table was not found in the provided database")
 
 
+class DatasetCreateFailedError(CommandInvalidError):
+    # 1:1 with ``superset_old/commands/dataset/exceptions.py:165``.  The
+    # original maps to 422 via the API view's explicit handler; here the
+    # ``status_code`` carries that mapping (CommandInvalidError = 422).
+    status_code = 422
+    message = _("Dataset could not be created.")
+
+
+class DatasetRefreshFailedError(CommandInvalidError):
+    # 1:1 with ``superset_old/commands/dataset/exceptions.py:177`` (which
+    # subclasses ``UpdateFailedError`` and surfaces "Dataset could not be
+    # updated." → 422).
+    status_code = 422
+    message = _("Dataset could not be updated.")
+
+
 __all__ = (
     "CommandInvalidError",
+    "DatasetCreateFailedError",
+    "DatasetRefreshFailedError",
     "ObjectNotFoundError",
     "WarmUpCacheTableNotFoundError",
 )

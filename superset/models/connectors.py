@@ -226,6 +226,18 @@ class QueryResult:
     prequeries: list[str] = field(default_factory=list)
 
 
+@dataclass
+class MetadataResult:
+    """Diff returned by ``fetch_metadata`` — 1:1 with the original
+    ``superset_old/connectors/sqla/models.py:131``: the column names added,
+    removed and (type-)modified during an introspection refresh.
+    """
+
+    added: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
+    modified: list[str] = field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Association tables
 # ---------------------------------------------------------------------------

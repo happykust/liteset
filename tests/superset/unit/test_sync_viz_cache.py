@@ -75,8 +75,17 @@ def test_set_get_round_trip_serializes_under_prefix() -> None:
     assert r.last_ttl == 300
     # ...as opaque serialized bytes, not the live object.
     assert isinstance(r.store[f"{CACHE_KEY_PREFIX}ejr-abc"], (bytes, bytearray))
-    # Round-trips back to an equal value.
-    assert cache.get("ejr-abc") == value
+    # Round-trips back: original fields preserved + a dttm stamp added
+    # (1:1 with the original set_and_log_cache).
+    got = cache.get("ejr-abc")
+    assert {k: got[k] for k in value} == value
+    assert "dttm" in got
+
+
+def test_set_does_not_overwrite_existing_dttm() -> None:
+    r = _FakeRedis()
+    SyncVizCache(r).set("k", {"df": [1], "dttm": "preset"})
+    assert SyncVizCache(r).get("k")["dttm"] == "preset"
 
 
 def test_get_missing_returns_none() -> None:

@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import logging
 import pickle  # noqa: S403 - Flask-Caching RedisCache parity (pickle wire format)
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,15 @@ class SyncVizCache:
         if timeout is not None and timeout < 0:
             return
         try:
+            # Stamp dict payloads with ``dttm`` (1:1 with the original
+            # ``set_and_log_cache``) so ``cached_dttm`` reflects the write time.
+            # ``strftime`` (not isoformat) yields the original's naive
+            # ``YYYY-MM-DDTHH:MM:SS`` shape — no ``+00:00`` tz suffix.
+            if isinstance(value, dict) and "dttm" not in value:
+                value = {
+                    **value,
+                    "dttm": datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+                }
             data = pickle.dumps(value)
             full_key = f"{self._prefix}{key}"
             if timeout:  # positive TTL

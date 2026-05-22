@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
@@ -27,6 +28,8 @@ from superset.exceptions import ObjectNotFoundError
 if TYPE_CHECKING:
     from superset.db.daos.dataset import AsyncDatasetDAO
     from superset.models.connectors import SqlaTable
+
+logger = logging.getLogger(__name__)
 
 
 class RefreshDatasetCommand(AsyncBaseCommand["SqlaTable"]):
@@ -54,5 +57,16 @@ class RefreshDatasetCommand(AsyncBaseCommand["SqlaTable"]):
 
     async def run(self) -> "SqlaTable":
         assert self._dataset is not None
-        await self._dao.fetch_metadata(self._dataset)
+        # Translate any introspection failure to ``DatasetRefreshFailedError``
+        # → 422, matching the original's
+        # ``@transaction(on_error=reraise=DatasetRefreshFailedError)`` wrapper.
+        try:
+            await self._dao.fetch_metadata(self._dataset)
+        except Exception as ex:
+            from superset.commands.dataset.exceptions import (
+                DatasetRefreshFailedError,
+            )
+
+            logger.warning("fetch_metadata failed on dataset refresh", exc_info=True)
+            raise DatasetRefreshFailedError(exceptions=[ex]) from ex
         return self._dataset
