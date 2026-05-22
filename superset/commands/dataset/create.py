@@ -22,6 +22,8 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from superset.commands.base import AsyncBaseCommand
 from superset.exceptions import CommandInvalidError
 from superset.tags.core import add_implicit_tags_after_insert
@@ -142,12 +144,15 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         # Introspect and persist physical/virtual columns + metrics
         # (1:1 with the original CreateDatasetCommand, which calls
         # ``dataset.fetch_metadata()`` unconditionally after create).
-        # Any introspection failure (e.g. a missing table) is translated to
-        # ``DatasetCreateFailedError`` → 422, matching the original's
-        # ``@transaction(on_error=reraise=DatasetCreateFailedError)`` wrapper.
+        # A SQLAlchemy introspection failure (e.g. a missing table) is
+        # translated to ``DatasetCreateFailedError`` → 422, matching the
+        # original's ``@transaction(on_error=reraise=DatasetCreateFailedError)``
+        # whose default ``catches=(SQLAlchemyError,)`` — non-SQLAlchemy errors
+        # (e.g. ``SupersetGenericDBErrorException`` from a virtual dataset)
+        # propagate unchanged with their own status code.
         try:
             await self._dao.fetch_metadata(dataset)
-        except Exception as ex:
+        except SQLAlchemyError as ex:
             from superset.commands.dataset.exceptions import (
                 DatasetCreateFailedError,
             )

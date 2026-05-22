@@ -22,6 +22,8 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from superset.commands.base import AsyncBaseCommand
 from superset.exceptions import ObjectNotFoundError
 
@@ -57,12 +59,15 @@ class RefreshDatasetCommand(AsyncBaseCommand["SqlaTable"]):
 
     async def run(self) -> "SqlaTable":
         assert self._dataset is not None
-        # Translate any introspection failure to ``DatasetRefreshFailedError``
-        # → 422, matching the original's
-        # ``@transaction(on_error=reraise=DatasetRefreshFailedError)`` wrapper.
+        # Translate a SQLAlchemy introspection failure to
+        # ``DatasetRefreshFailedError`` → 422, matching the original's
+        # ``@transaction(on_error=reraise=DatasetRefreshFailedError)`` whose
+        # default ``catches=(SQLAlchemyError,)``. Non-SQLAlchemy errors (e.g.
+        # ``SupersetGenericDBErrorException`` from a virtual dataset) propagate
+        # unchanged with their own status code.
         try:
             await self._dao.fetch_metadata(self._dataset)
-        except Exception as ex:
+        except SQLAlchemyError as ex:
             from superset.commands.dataset.exceptions import (
                 DatasetRefreshFailedError,
             )

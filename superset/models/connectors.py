@@ -936,39 +936,45 @@ class SqlaTable(
     def _get_virtual_table_metadata(self) -> list[dict[str, Any]]:
         """Get column metadata for a virtual dataset (custom SQL query).
 
-        Executes the SQL with a LIMIT 0 to get column names and types
-        from the result set metadata.
+        Executes the SQL with a LIMIT 0 to get column names and types from the
+        result set metadata.
+
+        Execution errors are raised as ``SupersetGenericDBErrorException`` (1:1
+        with the original ``get_virtual_table_metadata`` in
+        ``superset_old/connectors/sqla/utils.py:99``) rather than swallowed to
+        ``[]`` — otherwise a transient warehouse / invalid-SQL error during
+        ``fetch_metadata`` would silently drop every introspected column via the
+        ``all, delete-orphan`` cascade.
         """
         if not self.sql:
             return []
+
+        from sqlalchemy import text as sa_text
+
+        from superset.exceptions import SupersetGenericDBErrorException
+        from superset.utils.database import get_sync_connection
 
         # Strip trailing semicolon and wrap in a subquery
         inner_sql = self.sql.strip().rstrip(";")
         metadata_sql = f"SELECT * FROM ({inner_sql}) AS virtual_table LIMIT 0"  # noqa: S608
 
         try:
-            from sqlalchemy import text as sa_text
-
-            from superset.utils.database import get_sync_connection
-
             with get_sync_connection(self.database) as (conn, spec):
                 result = conn.execute(sa_text(metadata_sql))
                 columns: list[dict[str, Any]] = []
                 for col in result.cursor.description or []:
+                    # ``cursor.description`` type codes are DBAPI-specific
+                    # (psycopg2 returns int OIDs); map to a string type repr via
+                    # the engine spec — 1:1 with the original ``SupersetResultSet``
+                    # path (``get_datatype``).  Persisting the raw int code would
+                    # crash on the VARCHAR ``TableColumn.type`` column.
+                    type_repr = spec.get_datatype(col[1]) if len(col) > 1 else None
                     columns.append(
-                        {
-                            "column_name": col[0],
-                            "type": col[1] if len(col) > 1 else None,
-                        }
+                        {"column_name": col[0], "type": type_repr}
                     )
                 return columns
-        except Exception:
-            logger.warning(
-                "Failed to get virtual table metadata for '%s'",
-                self.table_name,
-                exc_info=True,
-            )
-            return []
+        except Exception as ex:
+            raise SupersetGenericDBErrorException(message=f"Invalid SQL: {ex}") from ex
 
     def _get_physical_table_metadata(self) -> list[dict[str, Any]]:
         """Use a SQLAlchemy inspector to get physical-table column metadata.
