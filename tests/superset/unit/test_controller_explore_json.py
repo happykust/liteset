@@ -295,6 +295,8 @@ async def test_async_branch_submits_with_cookie_channel(
     assert sent_form_data == form_data
     assert response_type == "json"
     assert force is False
+    # Non-guest user → no guest token forwarded to the worker.
+    assert "guest_token" not in job_metadata
 
 
 async def test_async_branch_cache_hit_returns_payload(
