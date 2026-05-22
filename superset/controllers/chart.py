@@ -1431,7 +1431,10 @@ class ChartController(Controller):
             result_format = (format or "json").lower()
             result_type = (type or "full").lower()
             if result_format == "json" and result_type == "full":
-                from superset.async_events.manager import build_job_metadata
+                from superset.async_events.manager import (
+                    build_job_metadata,
+                    maybe_forward_guest_token,
+                )
                 from superset.tasks.async_queries import load_chart_data_into_cache
 
                 chart = await dao.find_by_id(pk)
@@ -1469,6 +1472,16 @@ class ChartController(Controller):
                     job_id=job_id,
                     user_id=current_user.id,
                     status="pending",
+                )
+                # Forward the embedded guest JWT so the worker rebuilds the
+                # same GuestUser (and matching RLS cache key) — 1:1 with the
+                # original submit_chart_data_job.
+                job_metadata = await maybe_forward_guest_token(
+                    job_metadata,
+                    request=request,
+                    settings=settings,
+                    security_manager=security_manager,
+                    current_user=current_user,
                 )
                 load_chart_data_into_cache.delay(job_metadata, form_data)
                 return Response(
@@ -1623,7 +1636,10 @@ class ChartController(Controller):
         # BL-C2: Check GLOBAL_ASYNC_QUERIES feature flag
         if getattr(settings, "global_async_queries", False):
             if result_format == "json" and result_type == "full":
-                from superset.async_events.manager import build_job_metadata
+                from superset.async_events.manager import (
+                    build_job_metadata,
+                    maybe_forward_guest_token,
+                )
                 from superset.tasks.async_queries import load_chart_data_into_cache
 
                 # Channel id MUST come from the request's ``async-token``
@@ -1645,6 +1661,16 @@ class ChartController(Controller):
                     job_id=job_id,
                     user_id=current_user.id,
                     status="pending",
+                )
+                # Forward the embedded guest JWT so the worker rebuilds the
+                # same GuestUser (and matching RLS cache key) — 1:1 with the
+                # original submit_chart_data_job.
+                job_metadata = await maybe_forward_guest_token(
+                    job_metadata,
+                    request=request,
+                    settings=settings,
+                    security_manager=security_manager,
+                    current_user=current_user,
                 )
                 form_data = _msgspec.to_builtins(data)
                 load_chart_data_into_cache.delay(job_metadata, form_data)

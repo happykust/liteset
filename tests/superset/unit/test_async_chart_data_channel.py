@@ -125,7 +125,11 @@ def mock_user() -> MagicMock:
 
 @pytest.fixture
 def mock_security_manager() -> MagicMock:
-    return MagicMock()
+    sm = MagicMock()
+    # Regular (non-guest) user: the GAQ submit must not forward a guest token.
+    # (A bare MagicMock would return a truthy is_guest_user.)
+    sm.is_guest_user = MagicMock(return_value=False)
+    return sm
 
 
 @pytest.fixture

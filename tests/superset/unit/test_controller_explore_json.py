@@ -46,8 +46,8 @@ import jwt as pyjwt
 import pytest
 from litestar.exceptions import NotAuthorizedException
 
+from superset.async_events.manager import extract_guest_token
 from superset.controllers.explore_json import (
-    _extract_guest_token,
     _resolve_response_type,
     ExploreJsonController,
     get_datasource_info,
@@ -434,7 +434,45 @@ async def test_extract_guest_token_from_header() -> None:
     settings.guest_token_header_name = "X-GuestToken"
     request = MagicMock()
     request.headers = {"X-GuestToken": "raw-guest-jwt"}
-    assert await _extract_guest_token(request, settings) == "raw-guest-jwt"
+    assert await extract_guest_token(request, settings) == "raw-guest-jwt"
+
+
+async def test_maybe_forward_guest_token_guest_merges() -> None:
+    """For a guest user the shared helper merges the raw token into metadata."""
+    from superset.async_events.manager import maybe_forward_guest_token
+
+    settings = MagicMock()
+    settings.guest_token_header_name = "X-GuestToken"
+    request = MagicMock()
+    request.headers = {"X-GuestToken": "raw-guest-jwt"}
+    sm = MagicMock()
+    sm.is_guest_user = MagicMock(return_value=True)
+    out = await maybe_forward_guest_token(
+        {"channel_id": "c", "job_id": "j"},
+        request=request,
+        settings=settings,
+        security_manager=sm,
+        current_user=MagicMock(),
+    )
+    assert out["guest_token"] == "raw-guest-jwt"
+
+
+async def test_maybe_forward_guest_token_non_guest_noop() -> None:
+    """For a non-guest user the metadata is returned unchanged."""
+    from superset.async_events.manager import maybe_forward_guest_token
+
+    sm = MagicMock()
+    sm.is_guest_user = MagicMock(return_value=False)
+    meta = {"channel_id": "c", "job_id": "j"}
+    out = await maybe_forward_guest_token(
+        meta,
+        request=MagicMock(),
+        settings=MagicMock(),
+        security_manager=sm,
+        current_user=MagicMock(),
+    )
+    assert out == meta
+    assert "guest_token" not in out
 
 
 async def test_async_branch_forwards_guest_token(

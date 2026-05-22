@@ -55,6 +55,55 @@ def build_job_metadata(
     }
 
 
+async def extract_guest_token(request: Any, settings: Any) -> str | None:
+    """Re-read the raw embedded guest JWT from the request.
+
+    Mirrors ``AuthMiddleware._authenticate_guest_token``: the resolved
+    ``GuestUser`` does not retain the raw token, so async submit paths re-extract
+    it (configured header, then the ``guest_token`` sendBeacon form field) to
+    forward to the Celery worker. Litestar caches the parsed form/body, so a
+    second ``request.form()`` after the controller already read it is safe.
+    """
+    header_name = getattr(settings, "guest_token_header_name", "X-GuestToken")
+    token = request.headers.get(header_name) or request.headers.get(
+        header_name.lower()
+    )
+    if token:
+        return token
+    try:
+        form = await request.form()
+        token = form.get("guest_token")
+    except Exception:  # noqa: BLE001 — body may not be form-encoded
+        token = None
+    return token or None
+
+
+async def maybe_forward_guest_token(
+    job_metadata: dict[str, Any],
+    *,
+    request: Any,
+    settings: Any,
+    security_manager: Any,
+    current_user: Any,
+) -> dict[str, Any]:
+    """Merge the raw guest JWT into ``job_metadata`` for an embedded guest user.
+
+    The worker decodes it back into the same ``GuestUser`` so it computes a
+    matching RLS cache key — otherwise the worker (anonymous) and the read path
+    (real ``GuestUser``) produce different keys and the cache round-trip breaks.
+    No-op for non-guest users. 1:1 with the original ``submit_*_job`` which
+    dispatched ``{**job_metadata, "guest_token": guest_user.guest_token}``.
+    (``build_job_metadata`` drops unknown kwargs, so the token is merged into
+    the returned dict; the worker reads ``job_metadata["guest_token"]``.)
+    """
+    if not security_manager.is_guest_user(current_user):
+        return job_metadata
+    token = await extract_guest_token(request, settings)
+    if token:
+        return {**job_metadata, "guest_token": token}
+    return job_metadata
+
+
 def parse_event(event_data: tuple[str, dict[str, Any]]) -> dict[str, Any]:
     """Parse a raw Redis Stream entry into an event dict."""
     event_id = event_data[0]
