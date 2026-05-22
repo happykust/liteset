@@ -379,6 +379,20 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
 
         return _ctx()
 
+    def get_metrics(self, table: Any) -> list[dict[str, Any]]:
+        """Fetch metric definitions for a table via the engine spec.
+
+        1:1 with ``Database.get_metrics`` in
+        ``superset_old/models/core.py`` (line 1016). ``table`` is a
+        :class:`superset.sql.parse.Table`. Synchronous (inspector-backed),
+        so callers in the async runtime must run it in a thread.
+        """
+        with self.get_inspector(
+            catalog=table.catalog,
+            schema=table.schema,
+        ) as inspector:
+            return self.db_engine_spec.get_metrics(self, inspector, table)
+
     async def get_all_table_names_in_schema(
         self,
         *,

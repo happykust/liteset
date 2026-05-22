@@ -30,11 +30,11 @@ import contextlib
 import copy
 import json
 import logging
-import pickle  # noqa: S403 — required for cache compat with original Superset
 from typing import Any, cast
 
 from celery.exceptions import SoftTimeLimitExceeded
 
+from superset.cache.sync_viz_cache import build_sync_viz_cache
 from superset.exceptions import SupersetVizException
 from superset.tasks.celery_app import celery_app
 
@@ -659,6 +659,13 @@ def load_explore_json_into_cache(  # noqa: C901
                 force=force,
                 settings=settings,
             )
+            # Wire a sync data cache (DATA_CACHE_CONFIG) so get_payload caches
+            # the DataFrame under the viz cache key — the web process reads it
+            # back via force_cached on the cache-first / data-fetch paths.
+            viz_obj.cache_manager = build_sync_viz_cache(
+                getattr(settings, "data_cache_config", None),
+                getattr(settings, "redis_url", None),
+            )
             payload = await viz_obj.get_payload()
             if viz_obj.has_error(payload):
                 raise SupersetVizException(errors=payload.get("errors", []))
@@ -674,17 +681,19 @@ def load_explore_json_into_cache(  # noqa: C901
         hash_str = md5_sha_from_dict(cache_value, default=json_int_dttm_ser)
         cache_key = f"{cache_key_prefix}{hash_str}"
 
-        # Store in cache using sync Redis.
-        # Uses pickle for compatibility with the original flask-caching
-        # Redis backend which serializes cached values as pickle bytes.
+        # Store the {form_data, response_type} entry in the CACHE_CONFIG slot —
+        # the same slot the web process reads via ``cache_manager.cache``
+        # (``load_cached_explore_form``).  The original wrote to
+        # ``cache_manager.cache``; here we use a sync adapter so the Celery task
+        # (and its per-task event loop) hits the right Redis DB + key prefix.
         try:
-            r = _get_sync_redis()
             cache_timeout = getattr(settings, "cache_default_timeout", 300) or 300
-            r.setex(
-                f"superset_cache:{cache_key}",
-                cache_timeout,
-                pickle.dumps(cache_value),  # noqa: S301
+            ejr_cache = build_sync_viz_cache(
+                getattr(settings, "cache_config", None),
+                getattr(settings, "redis_url", None),
             )
+            if ejr_cache is not None:
+                ejr_cache.set(cache_key, cache_value, cache_timeout)
         except Exception:
             logger.warning(
                 "Failed to store explore json in cache for key %s",

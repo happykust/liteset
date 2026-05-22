@@ -403,6 +403,7 @@ class ExploreJsonController(Controller):
             # (a) Cache-first: return immediately if the query is cached.
             import contextlib
 
+            from superset.cache.sync_viz_cache import build_sync_viz_cache
             from superset.exceptions import CacheLoadError
             from superset.viz import get_viz as make_viz
 
@@ -413,6 +414,12 @@ class ExploreJsonController(Controller):
                     force=force,
                     force_cached=True,
                     settings=settings,
+                )
+                # Read the DataFrame from the shared DATA_CACHE_CONFIG slot the
+                # Celery worker wrote to; without it force_cached always misses.
+                viz_obj.cache_manager = build_sync_viz_cache(
+                    getattr(settings, "data_cache_config", None),
+                    getattr(settings, "redis_url", None),
                 )
                 payload = await viz_obj.get_payload()
                 # Deliberate deviation from the original (core.py:322-325 returned
@@ -556,6 +563,7 @@ class ExploreJsonController(Controller):
             security_manager, current_user, datasource
         )
 
+        from superset.cache.sync_viz_cache import build_sync_viz_cache
         from superset.viz import get_viz as make_viz
 
         try:
@@ -564,6 +572,12 @@ class ExploreJsonController(Controller):
                 form_data=form_data,
                 force_cached=True,
                 settings=settings,
+            )
+            # Serve the DataFrame the worker cached in the shared
+            # DATA_CACHE_CONFIG slot (force_cached → no warehouse re-execution).
+            viz_obj.cache_manager = build_sync_viz_cache(
+                getattr(settings, "data_cache_config", None),
+                getattr(settings, "redis_url", None),
             )
             result = await _generate_json(viz_obj, response_type)
         except SupersetException as ex:

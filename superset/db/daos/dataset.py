@@ -28,6 +28,29 @@ from superset.models.dashboard import Dashboard, dashboard_slices
 from superset.models.slice import Slice
 
 
+def _apply_sqla_table_mutator(model: SqlaTable) -> None:
+    """Apply the configured ``SQLA_TABLE_MUTATOR`` to a dataset (default no-op).
+
+    Mirrors ``current_app.config["SQLA_TABLE_MUTATOR"](self)`` from the original
+    ``SqlaTable.fetch_metadata``. Resolution follows the same dual-discovery
+    path used elsewhere (``mutate_sql_based_on_config``): legacy uppercase
+    constant first, then the Pydantic settings attribute.
+    """
+    try:
+        from superset import config as _config
+    except ImportError:
+        return
+    mutator = getattr(_config, "SQLA_TABLE_MUTATOR", None)
+    if mutator is None:
+        try:
+            settings = _config.SupersetSettings()  # type: ignore[call-arg]
+            mutator = getattr(settings, "sqla_table_mutator", None)
+        except Exception:  # noqa: BLE001, S110
+            pass
+    if mutator:
+        mutator(model)
+
+
 class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
     model_cls = SqlaTable
 
@@ -242,6 +265,82 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
             for mid in ids_to_delete:
                 model.metrics.remove(existing_metrics[mid])
                 await self.session.delete(existing_metrics[mid])
+
+    async def fetch_metadata(self, model: SqlaTable) -> None:
+        """Introspect table columns + metrics and merge them onto the dataset.
+
+        Async port of ``SqlaTable.fetch_metadata`` in
+        ``superset_old/connectors/sqla/models.py`` (line 1699). The original is
+        synchronous and ends with ``db.session.merge(self)``; here the blocking
+        introspection (``external_metadata`` + ``Database.get_metrics``) runs in
+        a thread while the ORM column diff, collection mutation and persistence
+        happen on the async session. ``database``/``columns``/``metrics`` are
+        eager-refreshed first so neither the threaded introspection nor the
+        relationship diff triggers a lazy load under asyncpg (``MissingGreenlet``).
+        The caller owns the surrounding transaction (commit), matching create /
+        refresh which flush within the request-scoped session.
+        """
+        import asyncio
+
+        from superset.sql.parse import Table as ParsedTable
+
+        await self.session.refresh(model, ["database", "columns", "metrics"])
+
+        db_engine_spec = model.db_engine_spec
+
+        new_columns = await asyncio.to_thread(model.external_metadata)
+        parsed_table = ParsedTable(
+            model.table_name,
+            model.schema or None,
+            model.catalog or None,
+        )
+        metric_dicts = await asyncio.to_thread(
+            model.database.get_metrics, parsed_table
+        )
+        metrics = [SqlMetric(**metric) for metric in metric_dicts]
+
+        any_date_col: str | None = None
+        old_columns = list(model.columns)
+        old_columns_by_name = {col.column_name: col for col in old_columns}
+
+        columns: list[TableColumn] = []
+        for col in new_columns:
+            old_column = old_columns_by_name.pop(col["column_name"], None)
+            if not old_column:
+                new_column = TableColumn(
+                    column_name=col["column_name"],
+                    type=col["type"],
+                    table=model,
+                )
+                new_column.is_dttm = new_column.is_temporal
+                if col.get("comment"):
+                    new_column.description = col["comment"]
+                db_engine_spec.alter_new_orm_column(new_column)
+            else:
+                new_column = old_column
+                new_column.type = col["type"]
+                new_column.expression = ""
+                if col.get("comment"):
+                    new_column.description = col["comment"]
+            new_column.groupby = True
+            new_column.filterable = True
+            columns.append(new_column)
+            if not any_date_col and new_column.is_temporal:
+                any_date_col = col["column_name"]
+
+        # add back calculated (virtual) columns
+        columns.extend([col for col in old_columns if col.expression])
+        # Reassigning the (already-loaded) collection lets the
+        # ``all, delete-orphan`` cascade drop columns no longer present.
+        model.columns = columns
+
+        if not model.main_dttm_col:
+            model.main_dttm_col = any_date_col
+        model.add_missing_metrics(metrics)
+
+        _apply_sqla_table_mutator(model)
+
+        await self.session.flush()
 
     async def get_related_objects(
         self,

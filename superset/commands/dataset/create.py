@@ -139,13 +139,10 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         self._dao.session.add(dataset)
         await self._dao.session.flush()
 
-        import asyncio
-
-        if hasattr(dataset, "fetch_metadata"):
-            try:
-                await asyncio.to_thread(dataset.fetch_metadata)
-            except Exception:
-                logger.warning("fetch_metadata failed for new dataset", exc_info=True)
+        # Introspect and persist physical/virtual columns + metrics
+        # (1:1 with the original CreateDatasetCommand, which calls
+        # ``dataset.fetch_metadata()`` unconditionally after create).
+        await self._dao.fetch_metadata(dataset)
 
         # Add implicit type: and owner: tags (async port of DatasetUpdater.after_insert)
         await self._dao.session.refresh(dataset, ["owners"])

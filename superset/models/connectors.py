@@ -959,35 +959,75 @@ class SqlaTable(
             return []
 
     def _get_physical_table_metadata(self) -> list[dict[str, Any]]:
-        """Get column metadata for a physical table.
+        """Use a SQLAlchemy inspector to get physical-table column metadata.
 
-        Uses the database engine spec's get_columns method to fetch
-        metadata from the actual database table.
+        Async port of ``get_physical_table_metadata`` in
+        ``superset_old/connectors/sqla/utils.py`` (line 50). The original
+        sources columns via ``Database.get_columns``; liteset has no such model
+        method, so columns are read directly from the engine spec + a sync
+        inspector (``Database.get_inspector``). ``schema_options`` is forwarded
+        so engine specs that expand nested columns (Trino ``expand_rows``)
+        behave identically. Each column's SQLAlchemy ``type`` is converted to
+        the dialect type string and enriched with ``type_generic`` / ``is_dttm``
+        so the persisted ``TableColumn`` rows match the original contract.
+
+        Introspection errors (e.g. a missing table) are *not* swallowed: the
+        original raises ``NoSuchTableError`` so the dataset create / refresh API
+        surfaces a proper error rather than silently producing zero columns.
         """
+        from sqlalchemy.types import TypeEngine
 
-        table = Table(
+        from superset.sql.parse import Table as ParsedTable
+
+        db_engine_spec = self.db_engine_spec
+        db_dialect = self.database.get_dialect()
+        parsed_table = ParsedTable(
             str(self.table_name),
             self.schema or None,
             self.catalog or None,
         )
 
-        try:
-            from superset.utils.database import get_sync_connection
-
-            with get_sync_connection(self.database) as (conn, spec):
-                return spec.get_columns(
-                    database=self.database,
-                    table=table,
-                    conn=conn,
-                    schema=self.schema,
-                )
-        except Exception:
-            logger.warning(
-                "Failed to get physical table metadata for '%s'",
-                self.table_name,
-                exc_info=True,
+        with self.database.get_inspector(
+            catalog=self.catalog or None,
+            schema=self.schema or None,
+        ) as inspector:
+            cols = db_engine_spec.get_columns(
+                inspector, parsed_table, self.database.schema_options
             )
-            return []
+
+        for col in cols:
+            try:
+                if isinstance(col["type"], TypeEngine):
+                    name = col["column_name"]
+                    if not self.normalize_columns:
+                        name = db_engine_spec.denormalize_name(db_dialect, name)
+                    db_type = db_engine_spec.column_datatype_to_string(
+                        col["type"], db_dialect
+                    )
+                    type_spec = db_engine_spec.get_column_spec(
+                        db_type, db_extra=self.database.get_extra()
+                    )
+                    col.update(
+                        {
+                            "name": name,
+                            "column_name": name,
+                            "type": db_type,
+                            "type_generic": (
+                                type_spec.generic_type if type_spec else None
+                            ),
+                            "is_dttm": type_spec.is_dttm if type_spec else None,
+                        }
+                    )
+            # Broad catch: drivers raise a variety of errors outside CompileError.
+            except Exception:  # noqa: BLE001
+                col.update(
+                    {
+                        "type": "UNKNOWN",
+                        "type_generic": None,
+                        "is_dttm": None,
+                    }
+                )
+        return cols
 
     def get_perm(self) -> str:
         """Return this dataset's permission name.
@@ -1027,6 +1067,19 @@ class SqlaTable(
     def metrics_dict(self) -> dict[str, SqlMetric]:
         """Map of metric_name -> SqlMetric."""
         return {m.metric_name: m for m in (self.metrics or [])}
+
+    def add_missing_metrics(self, metrics: list[SqlMetric]) -> None:
+        """Append metrics not already present on this dataset.
+
+        1:1 with ``SqlaTable.add_missing_metrics`` in
+        ``superset_old/connectors/sqla/models.py`` (line 310). Requires the
+        ``metrics`` relationship to be loaded by the caller.
+        """
+        existing_metrics = {m.metric_name for m in self.metrics}
+        for metric in metrics:
+            if metric.metric_name not in existing_metrics:
+                metric.table_id = self.id
+                self.metrics.append(metric)
 
     @property
     def dttm_cols(self) -> list[str]:

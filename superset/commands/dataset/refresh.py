@@ -54,8 +54,5 @@ class RefreshDatasetCommand(AsyncBaseCommand["SqlaTable"]):
 
     async def run(self) -> "SqlaTable":
         assert self._dataset is not None
-        import asyncio
-
-        if hasattr(self._dataset, "fetch_metadata"):
-            await asyncio.to_thread(self._dataset.fetch_metadata)
+        await self._dao.fetch_metadata(self._dataset)
         return self._dataset

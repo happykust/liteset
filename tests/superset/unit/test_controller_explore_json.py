@@ -138,6 +138,10 @@ def gaq_state() -> MagicMock:
     settings.global_async_queries = True
     settings.global_async_queries_jwt_secret = GAQ_SECRET
     settings.global_async_queries_jwt_cookie_name = COOKIE_NAME
+    # No data cache configured -> build_sync_viz_cache returns None (the viz
+    # cache wiring is a no-op); control flow is what these tests assert.
+    settings.data_cache_config = None
+    settings.redis_url = None
     state.settings = settings
     return state
 
@@ -148,6 +152,8 @@ def sync_state() -> MagicMock:
     state = MagicMock()
     settings = MagicMock()
     settings.global_async_queries = False
+    settings.data_cache_config = None
+    settings.redis_url = None
     state.settings = settings
     return state
 

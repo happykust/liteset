@@ -27,6 +27,7 @@ calling ``datasource.async_query()`` instead of the synchronous
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import dataclasses
 import json as stdlib_json
@@ -46,7 +47,8 @@ from dateutil import relativedelta as rdelta
 from geopy.point import Point
 from pandas.tseries.frequencies import to_offset
 
-from superset.exceptions import SupersetException
+from superset.constants import CACHE_DISABLED_TIMEOUT
+from superset.exceptions import CacheLoadError, SupersetException
 from superset.models.connectors import QueryResult
 from superset.utils.column import (
     Column,
@@ -746,11 +748,16 @@ class BaseViz:
         cache_timeout = self.cache_timeout
 
         # --- Cache read ---
-        force = self.force
+        # 1:1 with the original (viz.py:531): a datasource with a
+        # ``CACHE_DISABLED_TIMEOUT`` (-1) cache_timeout bypasses the cache.
+        force = self.force or cache_timeout == CACHE_DISABLED_TIMEOUT
         data_cache = self._get_data_cache()
         if cache_key and data_cache is not None and not force:
             try:
-                raw = data_cache.get(cache_key)
+                # ``data_cache`` is a synchronous backend (Flask-Caching parity);
+                # off-load the blocking Redis round-trip so it doesn't stall the
+                # event loop in the async web process.
+                raw = await asyncio.to_thread(data_cache.get, cache_key)
                 if raw is not None:
                     if isinstance(raw, dict) and "df" in raw:
                         cache_value = raw
@@ -774,6 +781,10 @@ class BaseViz:
                     "force_cached (viz.py): value not found for cache key %s",
                     cache_key,
                 )
+                # 1:1 with the original BaseViz.get_df_payload (viz.py:563):
+                # in force_cached mode a cache miss must NOT compute — it raises
+                # so the explore_json GAQ branch falls through to an async job.
+                raise CacheLoadError("Cached value not found")
             try:
                 invalid_columns = [
                     col
@@ -819,7 +830,10 @@ class BaseViz:
                         "applied_filter_columns": self.applied_filter_columns,
                         "rejected_filter_columns": self.rejected_filter_columns,
                     }
-                    data_cache.set(cache_key, cache_payload, cache_timeout)
+                    # Sync backend — off-load the blocking write off the loop.
+                    await asyncio.to_thread(
+                        data_cache.set, cache_key, cache_payload, cache_timeout
+                    )
                     logger.info("Stored result in cache, key: %s", cache_key)
                 except Exception:
                     logger.warning(
