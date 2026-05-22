@@ -517,8 +517,11 @@ async def test_async_branch_forwards_guest_token(
         )
 
     assert result.status_code == 202
-    job_metadata = mock_task.delay.call_args.args[0]
-    assert job_metadata.get("guest_token") == "raw-guest-jwt"
+    # The token rides only on the *dispatched* metadata...
+    dispatched = mock_task.delay.call_args.args[0]
+    assert dispatched.get("guest_token") == "raw-guest-jwt"
+    # ...never echoed back in the 202 response body.
+    assert "guest_token" not in result.content
 
 
 # ---------------------------------------------------------------------------

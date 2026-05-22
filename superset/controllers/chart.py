@@ -1475,15 +1475,16 @@ class ChartController(Controller):
                 )
                 # Forward the embedded guest JWT so the worker rebuilds the
                 # same GuestUser (and matching RLS cache key) — 1:1 with the
-                # original submit_chart_data_job.
-                job_metadata = await maybe_forward_guest_token(
+                # original submit_chart_data_job. Only the *dispatched* metadata
+                # carries the token; the 202 response returns clean job_metadata.
+                dispatch_metadata = await maybe_forward_guest_token(
                     job_metadata,
                     request=request,
                     settings=settings,
                     security_manager=security_manager,
                     current_user=current_user,
                 )
-                load_chart_data_into_cache.delay(job_metadata, form_data)
+                load_chart_data_into_cache.delay(dispatch_metadata, form_data)
                 return Response(
                     content=job_metadata,
                     status_code=202,
@@ -1664,16 +1665,17 @@ class ChartController(Controller):
                 )
                 # Forward the embedded guest JWT so the worker rebuilds the
                 # same GuestUser (and matching RLS cache key) — 1:1 with the
-                # original submit_chart_data_job.
-                job_metadata = await maybe_forward_guest_token(
+                # original submit_chart_data_job. Only the *dispatched* metadata
+                # carries the token; the 202 response returns clean job_metadata.
+                form_data = _msgspec.to_builtins(data)
+                dispatch_metadata = await maybe_forward_guest_token(
                     job_metadata,
                     request=request,
                     settings=settings,
                     security_manager=security_manager,
                     current_user=current_user,
                 )
-                form_data = _msgspec.to_builtins(data)
-                load_chart_data_into_cache.delay(job_metadata, form_data)
+                load_chart_data_into_cache.delay(dispatch_metadata, form_data)
                 return Response(
                     content=job_metadata,
                     status_code=202,

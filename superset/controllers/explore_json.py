@@ -478,7 +478,10 @@ class ExploreJsonController(Controller):
             # For an embedded guest user, forward the raw guest JWT so the
             # worker reconstructs the same GuestUser (hence the same RLS cache
             # key), keeping the key consistent between submit and the data fetch.
-            job_metadata = await maybe_forward_guest_token(
+            # Only the *dispatched* metadata carries the token — the 202 response
+            # returns the clean ``job_metadata`` (1:1 with the original, which
+            # never echoes the token back to the client).
+            dispatch_metadata = await maybe_forward_guest_token(
                 job_metadata,
                 request=request,
                 settings=settings,
@@ -486,7 +489,7 @@ class ExploreJsonController(Controller):
                 current_user=current_user,
             )
             load_explore_json_into_cache.delay(
-                job_metadata, form_data, response_type, force
+                dispatch_metadata, form_data, response_type, force
             )
             await event_logger.alog_with_context(
                 "explore_json", object_ref=f"datasource:{datasource_id}"
