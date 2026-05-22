@@ -75,6 +75,21 @@ class BaseAsyncEngineSpec(ABC):
     def epoch_to_dttm(cls) -> str:
         return "{col}"
 
+    @classmethod
+    def get_datatype(cls, type_code: Any) -> str | None:
+        """Map a ``cursor.description`` type code to a string type repr.
+
+        1:1 with ``BaseEngineSpec.get_datatype`` in
+        ``superset_old/db_engine_specs/base.py``: string codes (Trino /
+        ClickHouse) are upper-cased; non-string codes (e.g. DBAPI int OIDs from
+        MySQL) return ``None``. ``AsyncPostgresEngineSpec`` overrides this to
+        resolve psycopg2 int OIDs. Defined on the base so every async spec
+        exposes it — used by ``SqlaTable._get_virtual_table_metadata``.
+        """
+        if isinstance(type_code, str) and type_code != "":
+            return type_code.upper()
+        return None
+
     # Default column-type mappings used by get_column_types / get_column_spec.
     _default_column_type_mappings: tuple[ColumnTypeMapping, ...] = (  # noqa: RUF012
         (
