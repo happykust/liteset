@@ -68,7 +68,6 @@ from superset.params.rison import provide_rison_query
 from superset.providers import provide_chart_dao, provide_datasource_dao
 from superset.schemas.base import FavoriteStatusItem, FavoriteStatusResponse
 from superset.schemas.chart import (
-    ChartCacheScreenshotResponse,
     ChartCacheWarmUpRequest,
     ChartDataQueryContext,
     ChartDetailResult,
@@ -92,7 +91,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Chart data response serialization
 # ---------------------------------------------------------------------------
-def _render_chart_data_payload(
+def _render_chart_data_payload(  # noqa: C901
     result: dict[str, Any],
     *,
     is_guest: bool,
@@ -234,7 +233,7 @@ def _resolve_async_channel_id(
 # ---------------------------------------------------------------------------
 # Custom RISON filters for charts
 # ---------------------------------------------------------------------------
-def _chart_custom_filters(current_user: Any) -> dict[str, Any]:
+def _chart_custom_filters(current_user: Any) -> dict[str, Any]:  # noqa: C901
     """Return custom filter callables keyed by RISON ``opr`` name.
 
     Each callable has signature ``(model_cls, value) -> clause | None``.
@@ -1932,7 +1931,7 @@ class ChartController(Controller):
                 import msgspec as _msgspec_inner
 
                 _form_data = _msgspec_inner.to_builtins(data)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110 — best-effort form_data
                 pass
             for _q in result.get("queries", []):
                 if isinstance(_q, dict):
@@ -1944,7 +1943,9 @@ class ChartController(Controller):
         # --- Default JSON path (result_type: full / results / columns / etc.) ----
         else:
 
-            query_objects = [AsyncQueryObject.from_request(q, ds_ref) for q in data.queries]
+            query_objects = [
+                AsyncQueryObject.from_request(q, ds_ref) for q in data.queries
+            ]
             query_context = AsyncQueryContext(
                 datasource=datasource,
                 queries=query_objects,
