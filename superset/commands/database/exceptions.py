@@ -29,6 +29,7 @@ from superset.exceptions import (
     DatabaseConnectionFailedError,
     DatabaseTestConnectionDriverError,
     DatabaseTestConnectionUnexpectedError,
+    DatabaseUpdateFailedError,
     OAuth2Error,
     ObjectNotFoundError,
     SupersetErrorsException,
@@ -41,6 +42,22 @@ class DatabaseNotFoundError(ObjectNotFoundError):
 
     def __init__(self, database_id: int | str | None = None) -> None:
         super().__init__("Database", database_id)
+
+
+class UserNotFoundInSessionError(CommandException):
+    """1:1 with ``superset_old/commands/database/exceptions.py``."""
+
+    status_code = 500
+    message = _("Could not validate the user in the current session.")
+
+
+class MissingOAuth2TokenError(DatabaseUpdateFailedError):
+    """Connection is missing an OAuth2 token and no OAuth2 dance is possible.
+
+    1:1 with ``superset_old/commands/database/exceptions.py``.
+    """
+
+    message = _("Missing OAuth2 token")
 
 
 class DatabaseSchemaUploadNotAllowed(CommandException):
@@ -80,7 +97,9 @@ __all__ = (
     "DatabaseUploadFailed",
     "DatabaseUploadNotSupported",
     "DatabaseUploadSaveMetadataFailed",
+    "MissingOAuth2TokenError",
     "OAuth2Error",
     "ObjectNotFoundError",
     "SupersetErrorsException",
+    "UserNotFoundInSessionError",
 )

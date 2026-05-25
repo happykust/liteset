@@ -376,7 +376,13 @@ class BaseScreenshot:
 
             user = get_current_user()
         if user is None:
+            # Honour the original's "cache success or error" contract: a failed
+            # capture must still reach a terminal ``Error`` state in the cache,
+            # otherwise a polling client is stuck on ``Computing`` forever.
+            # Persist the error payload before bailing out.
             logger.warning("compute_and_cache called without an authenticated user")
+            cache_payload.error()
+            self.cache.set(cache_key, cache_payload.to_dict())
             return
         try:
             logger.info("trying to generate screenshot")

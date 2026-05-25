@@ -31,17 +31,16 @@ Key adaptations vs. the Flask original:
   sync ``SELECT`` against the FAB ``ab_user`` table (eager-loading
   ``roles`` + ``groups`` so subsequent ``is_admin`` / RBAC checks made
   by the screenshot pipeline never trip a lazy load).
-* ``override_user`` (Flask ``g``-local context manager) is replaced by
-  :func:`superset.utils.core.set_current_user`, which writes to a
-  per-task :class:`~contextvars.ContextVar`.  The token is reset in a
-  ``finally`` block so the binding never leaks between Celery tasks
-  re-using the same worker thread.
+* The Flask ``g``-local ``override_user`` context manager is replaced by
+  :func:`superset.utils.core.override_user`, which writes the executor user
+  to a per-task :class:`~contextvars.ContextVar` and restores the previous
+  value on exit, so the binding never leaks between Celery tasks re-using the
+  same worker thread.
 * ``app.config["THUMBNAIL_EXECUTORS"]`` is read off
   :class:`SupersetSettings` (cached in
-  :func:`superset.utils.webdriver.cached_settings`).  When the
-  operator leaves the list empty we fall back to
-  ``[ExecutorType.CURRENT_USER]`` to mirror the upstream config
-  default verbatim.
+  :func:`superset.utils.webdriver.cached_settings`); the upstream default of
+  ``[ExecutorType.CURRENT_USER]`` lives in the config, exactly as in the
+  original.
 * The ``thumbnail_cache`` accessor goes through the
   ``CacheManager.sync_thumbnail_cache`` proxy exposed by
   :mod:`superset.utils.screenshots`; the Flask original used
@@ -143,7 +142,7 @@ def cache_chart_thumbnail(  # noqa: C901
     from superset.db.session import get_sync_session
     from superset.models.slice import Slice
     from superset.tasks.utils import get_executor
-    from superset.utils.core import _current_user_ctx
+    from superset.utils.core import override_user
     from superset.utils.screenshots import ChartScreenshot, thumbnail_cache
     from superset.utils.urls import get_url_path
 
@@ -174,16 +173,7 @@ def cache_chart_thumbnail(  # noqa: C901
             current_user=current_user,
         )
         user = _find_user_by_username(session, username)
-        if user is None:
-            logger.warning(
-                "Executor user %s not found; skipping thumbnail for chart %s",
-                username,
-                chart_id,
-            )
-            return
-
-        token = _current_user_ctx.set(user)
-        try:
+        with override_user(user):
             screenshot = ChartScreenshot(
                 url, _compute_digest(chart), window_size, thumb_size
             )
@@ -193,14 +183,6 @@ def cache_chart_thumbnail(  # noqa: C901
                 thumb_size=thumb_size,
                 force=force,
             )
-        finally:
-            # Restore the previous binding so the worker thread doesn't
-            # carry this user over into the next task.
-
-            try:
-                _current_user_ctx.reset(token)
-            except (LookupError, ValueError):
-                _current_user_ctx.set(None)
     finally:
         session.close()
 
@@ -235,7 +217,7 @@ def cache_dashboard_thumbnail(  # noqa: C901
     from superset.db.session import get_sync_session
     from superset.models.dashboard import Dashboard
     from superset.tasks.utils import get_executor
-    from superset.utils.core import _current_user_ctx
+    from superset.utils.core import override_user
     from superset.utils.screenshots import DashboardScreenshot, thumbnail_cache
     from superset.utils.urls import get_url_path
 
@@ -266,16 +248,7 @@ def cache_dashboard_thumbnail(  # noqa: C901
             current_user=current_user,
         )
         user = _find_user_by_username(session, username)
-        if user is None:
-            logger.warning(
-                "Executor user %s not found; skipping thumbnail for dashboard %s",
-                username,
-                dashboard_id,
-            )
-            return
-
-        token = _current_user_ctx.set(user)
-        try:
+        with override_user(user):
             screenshot = DashboardScreenshot(
                 url, _compute_digest(dashboard), window_size, thumb_size
             )
@@ -286,11 +259,6 @@ def cache_dashboard_thumbnail(  # noqa: C901
                 force=force,
                 cache_key=cache_key,
             )
-        finally:
-            try:
-                _current_user_ctx.reset(token)
-            except (LookupError, ValueError):
-                _current_user_ctx.set(None)
     finally:
         session.close()
 
@@ -326,7 +294,7 @@ def cache_dashboard_screenshot(  # noqa: C901
     from superset.models.dashboard import Dashboard
     from superset.security.guest import GuestUser
     from superset.tasks.utils import get_executor
-    from superset.utils.core import _current_user_ctx
+    from superset.utils.core import override_user
     from superset.utils.screenshots import DashboardScreenshot, thumbnail_cache
 
     if not thumbnail_cache:
@@ -350,6 +318,7 @@ def cache_dashboard_screenshot(  # noqa: C901
         logger.info("Caching dashboard: %s", dashboard_url)
 
         current_user_obj: Any
+        # Requests from Embedded should always use the Guest user.
         if guest_token:
             # Embedded / guest flow — mint the in-process user record
             # directly from the JWT payload.  The original Flask code
@@ -363,16 +332,8 @@ def cache_dashboard_screenshot(  # noqa: C901
                 current_user=username,
             )
             current_user_obj = _find_user_by_username(session, exec_username)
-            if current_user_obj is None:
-                logger.warning(
-                    "Executor user %s not found; skipping screenshot for dashboard %s",
-                    exec_username,
-                    dashboard_id,
-                )
-                return
 
-        token = _current_user_ctx.set(current_user_obj)
-        try:
+        with override_user(current_user_obj):
             screenshot = DashboardScreenshot(
                 dashboard_url, _compute_digest(dashboard), window_size, thumb_size
             )
@@ -383,11 +344,6 @@ def cache_dashboard_screenshot(  # noqa: C901
                 cache_key=cache_key,
                 force=force,
             )
-        finally:
-            try:
-                _current_user_ctx.reset(token)
-            except (LookupError, ValueError):
-                _current_user_ctx.set(None)
     finally:
         session.close()
 

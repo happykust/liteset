@@ -16,6 +16,9 @@
 # under the License.
 """Superset Celery task modules.
 
-Replaces ``superset/tasks/`` with superset import paths while preserving
-backward-compatible task names via :func:`celery_app.register_task_aliases`.
+Every task is registered under its original Apache Superset name (e.g.
+``reports.scheduler``, ``cache-warmup``, ``fetch_url``, ``sql_lab.get_sql_results``)
+so existing ``CELERYBEAT_SCHEDULE`` / ``apply_async`` references keep working
+unchanged.  :mod:`superset.tasks.celery_app` imports each module at load time
+so the worker registers them all.
 """

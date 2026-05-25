@@ -107,47 +107,56 @@ def _is_secure_url(url: str) -> bool:
     return url.startswith("https://")
 
 
-def _fetch_csrf_token(headers: dict[str, str]) -> dict[str, str]:
+def _fetch_csrf_token(
+    headers: dict[str, str], session_cookie_name: str = "session"
+) -> dict[str, str]:
     """Fetch a CSRF token for API requests.
 
-    The original used ``fetch_csrf_token`` from ``superset/tasks/utils.py``
-    which called ``get_url_path("SecurityRestApi.csrf_token")``. In Liteset
-    we construct the URL directly from settings.
+    1:1 port of ``superset_old/tasks/utils.py:fetch_csrf_token`` with two
+    deployment-specific deviations:
+
+    * URL — the original used ``get_url_path("SecurityRestApi.csrf_token")``
+      (Flask ``url_for``); here we build it directly from ``WEBDRIVER_BASEURL``.
+    * CSRF header name — the original sent ``X-CSRF-Token`` because Flask-WTF
+      accepts both ``X-CSRFToken`` and ``X-CSRF-Token`` by default.  Liteset's
+      :mod:`superset.middleware.csrf` reads a single header (``X-CSRFToken``,
+      per ``CSRF_HEADER_NAME``), so we must send exactly that spelling or the
+      warm-up PUT would be rejected.
+
+    :param headers: headers to use in the request, including the session cookie
+    :returns: a map of headers, including the session cookie and csrf token
     """
+    import json
+
     from superset.config import SupersetSettings
 
     settings = SupersetSettings()  # type: ignore[call-arg]
     base_url = settings.webdriver_baseurl.rstrip("/")
     url = f"{base_url}/api/v1/security/csrf_token/"
 
-    try:
-        req = request.Request(url, headers=headers, method="GET")  # noqa: S310
-        with request.urlopen(req, timeout=600) as response:  # noqa: S310
-            body = response.read().decode("utf-8")
-            import json
+    logger.info("Fetching %s", url)
+    req = request.Request(url, headers=headers, method="GET")  # noqa: S310
+    with request.urlopen(req, timeout=600) as response:  # noqa: S310
+        body = response.read().decode("utf-8")
+        session_cookie: str | None = None
+        cookie_headers = response.headers.get_all("set-cookie")
+        if cookie_headers:
+            for cookie in cookie_headers:
+                cookie = cookie.split(";", 1)[0]
+                name, value = cookie.split("=", 1)
+                if name == session_cookie_name:
+                    session_cookie = value
+                    break
 
+        if response.status == 200:
             data = json.loads(body)
-            csrf_token = data.get("result", "")
+            res = {"X-CSRFToken": data["result"]}
+            if session_cookie is not None:
+                res["Cookie"] = f"{session_cookie_name}={session_cookie}"
+            return res
 
-            session_cookie: str | None = None
-            cookie_headers = response.headers.get_all("set-cookie")
-            if cookie_headers:
-                for cookie in cookie_headers:
-                    cookie = cookie.split(";", 1)[0]
-                    name, value = cookie.split("=", 1)
-                    if name == "session":
-                        session_cookie = value
-                        break
-
-            result_headers: dict[str, str] = {}
-            if csrf_token:
-                result_headers["X-CSRFToken"] = csrf_token
-            if session_cookie:
-                result_headers["Cookie"] = f"session={session_cookie}"
-            return result_headers
-    except Exception:
-        logger.warning("Failed to fetch CSRF token", exc_info=True)
-        return {}
+    logger.error("Error fetching CSRF token, status code: %s", response.status)
+    return {}
 
 
 def _get_auth_cookies(user: Any) -> dict[str, str]:
@@ -387,15 +396,19 @@ strategies = [DummyStrategy, TopNDashboardsStrategy, DashboardTagsStrategy]
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(name="superset.tasks.cache.fetch_url")
-def fetch_url(data: str, headers: dict[str, str]) -> dict[str, str]:
+@celery_app.task(name="fetch_url")
+def fetch_url(data: str, headers: dict[str, str]) -> dict[str, Any]:
     """Fetch a URL to warm up the chart cache.
 
     Sends an HTTP PUT request with the provided *data* payload and
     *headers* to the chart warm-up cache endpoint.
     Returns a dict indicating success or failure.
+
+    The non-200 branch reports ``status_code`` as an ``int`` (the raw
+    ``response.code``), matching the original ``fetch_url`` task exactly; the
+    return type is therefore ``dict[str, Any]`` rather than ``dict[str, str]``.
     """
-    result: dict[str, str] = {}
+    result: dict[str, Any] = {}
     try:
         url = _get_warmup_url()
 
@@ -417,7 +430,7 @@ def fetch_url(data: str, headers: dict[str, str]) -> dict[str, str]:
         if response.code == 200:
             result = {"success": data, "response": response.read().decode("utf-8")}
         else:
-            result = {"error": data, "status_code": str(response.code)}
+            result = {"error": data, "status_code": response.code}
             logger.error(
                 "Error fetching %s with payload %s, status code: %s",
                 url,
@@ -430,7 +443,7 @@ def fetch_url(data: str, headers: dict[str, str]) -> dict[str, str]:
     return result
 
 
-@celery_app.task(name="superset.tasks.cache.cache_warmup")
+@celery_app.task(name="cache-warmup")
 def cache_warmup(
     strategy_name: str, *args: Any, **kwargs: Any
 ) -> Union[dict[str, list[str]], str]:

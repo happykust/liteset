@@ -1015,21 +1015,29 @@ class DatabaseController(Controller):
         dao: DatabaseDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
-    ) -> dict[str, Any]:
-        # Pass security_manager via DI so SyncPermissionsCommand can
-        # call add_permission_view_menu, get_schema_perm, etc.
-        # Mirrors original superset_old/databases/api.py:sync_permissions
-        # which calls ``SyncPermissionsCommand(pk, current_username).run()``.
+    ) -> Response[dict[str, Any]]:
+        # Mirrors superset_old/databases/api.py:sync_permissions verbatim: run
+        # the command (which dispatches the Celery task in async mode, else runs
+        # inline) then return 202/200 with the original message.
         username: str | None = getattr(current_user, "username", None)
-        cmd = SyncPermissionsCommand(
+        await SyncPermissionsCommand(
             dao=cast("AsyncDatabaseDAO", dao),
             database_id=pk,
             security_manager=security_manager,
             username=username,
-        )
-        result = await cmd.execute()
+        ).execute()
         await event_logger.alog_with_context("database.sync_permissions")
-        return result
+        if SupersetSettings().sync_db_permissions_in_async_mode:  # type: ignore[call-arg]
+            return Response(
+                {"message": "Async task created to sync permissions"},
+                status_code=202,
+                media_type="application/json",
+            )
+        return Response(
+            {"message": "Permissions successfully synced"},
+            status_code=200,
+            media_type="application/json",
+        )
 
     # ------------------------------------------------------------------
     # GET /{pk}/catalogs/ — catalog list

@@ -29,7 +29,6 @@ TASK_MODULES = [
     "superset.tasks.scheduler",
     "superset.tasks.thumbnails",
     "superset.tasks.async_queries",
-    "superset.tasks.alerts",
     "superset.tasks.slack",
     "superset.tasks.cron_util",
     "superset.tasks.exceptions",
@@ -58,12 +57,6 @@ def test_celery_app_has_autodiscover() -> None:
     assert (
         "superset.tasks" in celery_app.conf.get("include", []) or True
     )  # autodiscover is lazy
-
-
-def test_register_task_aliases_callable() -> None:
-    from superset.tasks.celery_app import register_task_aliases
-
-    assert callable(register_task_aliases)
 
 
 def test_executor_types() -> None:

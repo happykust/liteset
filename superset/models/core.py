@@ -334,6 +334,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         schema: str | None = None,
         source: Any | None = None,
         nullpool: bool = True,
+        override_ssh_tunnel: Any | None = None,
     ) -> Any:
         """Return a context manager yielding a sync SQLAlchemy engine.
 
@@ -342,6 +343,10 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         Wraps ``superset.utils.database.get_sync_engine`` which is the
         Liteset-side equivalent of the Flask app's sync engine
         registry. Used by ``compile_sqla_query`` and ``get_df``.
+
+        When ``override_ssh_tunnel`` is supplied, the engine is created
+        through the SSH tunnel (opened/torn down by the context manager),
+        mirroring upstream's ``override_ssh_tunnel`` parameter.
         """
         from superset.utils.database import get_sync_engine
 
@@ -350,6 +355,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
             catalog=catalog,
             schema=schema,
             nullpool=nullpool,
+            override_ssh_tunnel=override_ssh_tunnel,
         )
 
     def get_inspector(

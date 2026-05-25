@@ -60,6 +60,12 @@ class GuestUser:
     resources: list[dict[str, Any]] = field(default_factory=list)
     rls_rules: list[dict[str, Any]] = field(default_factory=list)
     permissions: set[tuple[str, str]] = field(default_factory=set)
+    # The raw decoded JWT payload this user was built from.  Mirrors the
+    # original ``GuestUser.guest_token`` attribute (set in
+    # ``superset_old/security/guest_token.py``) — the dashboard screenshot
+    # controller forwards it to the ``cache_dashboard_screenshot`` Celery
+    # task so the worker can rebuild the same guest user (and its RLS rules).
+    token_payload: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_token_payload(cls, payload: dict[str, Any]) -> GuestUser:
@@ -83,6 +89,7 @@ class GuestUser:
             resources=resources,
             rls_rules=payload.get("rls_rules", []),
             permissions=permissions,
+            token_payload=payload,
         )
 
 

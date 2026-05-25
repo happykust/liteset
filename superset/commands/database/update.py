@@ -23,7 +23,11 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
-from superset.exceptions import CommandInvalidError, ObjectNotFoundError
+from superset.exceptions import (
+    CommandInvalidError,
+    ObjectNotFoundError,
+    OAuth2RedirectError,
+)
 
 if TYPE_CHECKING:
     from superset.db.daos.database import AsyncDatabaseDAO
@@ -64,6 +68,10 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
 
     async def run(self) -> "Database":  # noqa: C901
         assert self._database is not None
+
+        # Capture the original name before the setattr loop overwrites it, so a
+        # rename can be propagated to the (name-based) FAB permissions below.
+        original_database_name = self._database.database_name
 
         # --- build_sqlalchemy_uri --------------------------------------------
         # Mirrors the ``@pre_load`` hook on
@@ -157,4 +165,49 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
         if self._user_id is not None:
             self._database.changed_by_fk = self._user_id
         await self._dao.session.flush()
+
+        # If the database name changed, existing permissions are name-based and
+        # must be updated.  Mirrors superset_old UpdateDatabaseCommand which
+        # always invokes SyncPermissionsCommand after an update (it internally
+        # no-ops when old == new name).
+        await self._sync_permissions(original_database_name)
+
         return self._database
+
+    async def _sync_permissions(self, original_database_name: str) -> None:
+        """Resync name-based catalog/schema permissions after an update.
+
+        Swallows OAuth2 redirects (the connection needs re-auth) so the update
+        itself never fails — mirrors the original's
+        ``except (OAuth2RedirectError, MissingOAuth2TokenError): pass``.
+        """
+        from superset.commands.database.sync_permissions import (
+            SyncPermissionsCommand,
+        )
+        from superset.config import SupersetSettings
+        from superset.security.manager import build_async_security_manager
+        from superset.utils.core import get_current_user
+
+        try:
+            security_manager = build_async_security_manager(
+                self._dao.session,
+                SupersetSettings(),  # type: ignore[call-arg]
+            )
+            current = get_current_user()
+            username = getattr(current, "username", None)
+            await SyncPermissionsCommand(
+                dao=self._dao,
+                database_id=self._database_id,
+                security_manager=security_manager,
+                username=username,
+                old_db_connection_name=original_database_name,
+                db_connection=self._database,
+            ).execute()
+        except OAuth2RedirectError:
+            # The connection needs OAuth2 re-auth — don't fail the update.  Any
+            # other error propagates (and rolls back the update), exactly as the
+            # original's ``except (OAuth2RedirectError, MissingOAuth2TokenError)``
+            # (``MissingOAuth2TokenError`` has no equivalent in the port — live
+            # connection failures are already swallowed inside
+            # ``SyncPermissionsCommand._get_catalog_names`` / ``_get_schema_names``).
+            pass

@@ -35,8 +35,10 @@ from pytz import (
 
 logger = logging.getLogger(__name__)
 
-# Default cron window size in seconds (matches Superset's default of 60).
-_DEFAULT_CRON_WINDOW_SIZE: int = 60
+# Default cron window size in seconds (matches Superset's default
+# ``ALERT_REPORTS_CRON_WINDOW_SIZE`` of 59 — one less than the 60s beat
+# interval so a schedule never fires in two adjacent windows).
+_DEFAULT_CRON_WINDOW_SIZE: int = 59
 
 
 def cron_schedule_window(

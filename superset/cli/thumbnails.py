@@ -22,7 +22,38 @@ synchronously or via Celery tasks.
 
 from __future__ import annotations
 
+from typing import Any
+
 import click
+
+
+def _compute_one_thumbnail(
+    task_obj: Any,
+    model_id: int,
+    label: str,
+    name: str,
+    index: int,
+    total: int,
+    *,
+    asynchronous: bool,
+    force: bool,
+) -> None:
+    """Trigger (async) or run (sync, in-process) one thumbnail computation.
+
+    The synchronous path calls the bare task function — mirroring the original
+    CLI's ``func(None, model.id, force=force)`` — so ``compute-thumbnails``
+    without ``-a`` actually renders rather than no-op'ing.
+    """
+    action = "Triggering" if asynchronous else "Processing"
+    try:
+        if asynchronous:
+            task_obj.delay(None, model_id, force=force)
+        else:
+            task_obj(None, model_id, force=force)
+    except Exception as exc:  # noqa: BLE001
+        click.secho(f"  Failed to process {label} {model_id}: {exc}", fg="red")
+        return
+    click.secho(f'  {action} {label} "{name}" ({index + 1}/{total})', fg="green")
 
 
 @click.command("compute-thumbnails")
@@ -93,27 +124,18 @@ def compute_thumbnails(  # noqa: C901
                         text("SELECT id, dashboard_title FROM dashboards ORDER BY id")
                     )
                 dashboards = result.fetchall()
-                for i, (dash_id, title) in enumerate(dashboards):
-                    if asynchronous:
-                        action = "Triggering"
-                        try:
-                            from superset.tasks.thumbnails import (
-                                cache_dashboard_thumbnail,
-                            )
+                from superset.tasks.thumbnails import cache_dashboard_thumbnail
 
-                            cache_dashboard_thumbnail.delay(None, dash_id, force=force)
-                        except Exception as exc:
-                            click.secho(
-                                f"  Failed to trigger task for dashboard "
-                                f"{dash_id}: {exc}",
-                                fg="red",
-                            )
-                            continue
-                    else:
-                        action = "Processing"
-                    click.secho(
-                        f'  {action} dashboard "{title}" ({i + 1}/{len(dashboards)})',
-                        fg="green",
+                for i, (dash_id, title) in enumerate(dashboards):
+                    _compute_one_thumbnail(
+                        cache_dashboard_thumbnail,
+                        dash_id,
+                        "dashboard",
+                        title,
+                        i,
+                        len(dashboards),
+                        asynchronous=asynchronous,
+                        force=force,
                     )
 
             if not dashboards_only:
@@ -133,26 +155,18 @@ def compute_thumbnails(  # noqa: C901
                         text("SELECT id, slice_name FROM slices ORDER BY id")
                     )
                 charts = result.fetchall()
-                for i, (chart_id, name) in enumerate(charts):
-                    if asynchronous:
-                        action = "Triggering"
-                        try:
-                            from superset.tasks.thumbnails import (
-                                cache_chart_thumbnail,
-                            )
+                from superset.tasks.thumbnails import cache_chart_thumbnail
 
-                            cache_chart_thumbnail.delay(None, chart_id, force=force)
-                        except Exception as exc:
-                            click.secho(
-                                f"  Failed to trigger task for chart {chart_id}: {exc}",
-                                fg="red",
-                            )
-                            continue
-                    else:
-                        action = "Processing"
-                    click.secho(
-                        f'  {action} chart "{name}" ({i + 1}/{len(charts)})',
-                        fg="green",
+                for i, (chart_id, name) in enumerate(charts):
+                    _compute_one_thumbnail(
+                        cache_chart_thumbnail,
+                        chart_id,
+                        "chart",
+                        name,
+                        i,
+                        len(charts),
+                        asynchronous=asynchronous,
+                        force=force,
                     )
 
         click.echo("Thumbnail computation complete.")

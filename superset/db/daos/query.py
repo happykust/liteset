@@ -26,6 +26,7 @@ from sqlalchemy import select
 from superset.common.query_status import QueryStatus
 from superset.db.base_dao import BaseAsyncDAO
 from superset.models.sql_lab import Query, SavedQuery
+from superset.utils.dates import now_as_float
 
 
 class AsyncQueryDAO(BaseAsyncDAO[Query]):
@@ -122,7 +123,7 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
             )
 
         query.status = QueryStatus.STOPPED  # type: ignore[assignment]
-        query.end_time = datetime.now(tz=timezone.utc).timestamp()  # type: ignore[assignment]
+        query.end_time = now_as_float()  # type: ignore[assignment]
         return query
 
     @staticmethod

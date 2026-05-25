@@ -41,6 +41,7 @@ import sqlalchemy as sa
 from celery.exceptions import SoftTimeLimitExceeded
 
 from superset.tasks.celery_app import celery_app
+from superset.utils.dates import now_as_float
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,9 @@ def get_sql_results(  # pylint: disable=too-many-arguments
         )
     except Exception as ex:  # noqa: BLE001
         logger.debug("Query %d: %s", query_id, ex)
+        from superset.extensions import stats_logger_manager
+
+        stats_logger_manager.incr("error_sqllab_unhandled")
         try:
             session = _get_session()
             try:
@@ -159,6 +163,14 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
     - The ``override_user`` Flask-thread-local helper is replaced by
       :func:`superset.utils.core.set_current_user`.
     """
+    from superset.extensions import stats_logger_manager
+
+    if store_results and start_time:
+        # only asynchronous queries
+        stats_logger_manager.timing(
+            "sqllab.query.time_pending", now_as_float() - start_time
+        )
+
     session = _get_session()
     try:
         query = _get_query(session, query_id)
@@ -196,7 +208,7 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
         from superset.common.query_status import QueryStatus
 
         query.status = QueryStatus.RUNNING
-        query.start_running_time = time.time()
+        query.start_running_time = now_as_float()
         session.commit()
 
         from superset.commands.sqllab._shared import get_engine_name
@@ -314,11 +326,7 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
                         payload.update({"status": query.status})
                         return payload
 
-                    msg = (
-                        f"Running block {i + 1} out of {block_count}"
-                        if block_count > 1
-                        else "Running query"
-                    )
+                    msg = f"Running block {i + 1} out of {block_count}"
                     logger.info("Query %s: %s", str(query_id), msg)
                     query.set_extra_json_key("progress", msg)
                     session.commit()
@@ -336,16 +344,21 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
                         query.executed_sql = block
 
                     try:
-                        result_set = _execute_query(query, cursor, db_engine_spec)
+                        result_set = _execute_query(
+                            session, query, cursor, db_engine_spec
+                        )
                     except SqlLabQueryStoppedException:
                         payload.update({"status": QueryStatus.STOPPED})
                         return payload
-                    except SoftTimeLimitExceeded:
-                        query.status = QueryStatus.TIMED_OUT
-                        session.commit()
-                        raise
                     except Exception as ex:  # noqa: BLE001
-                        return _handle_query_error(session, ex, query, payload)
+                        prefix_message = (
+                            f"Block {i + 1} out of {block_count}"
+                            if block_count > 1
+                            else ""
+                        )
+                        return _handle_query_error(
+                            session, ex, query, payload, prefix_message
+                        )
 
                 if parsed_script.has_mutation() or query.select_as_cta:
                     try:
@@ -356,43 +369,30 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
                         )
 
         # ------------------------------------------------------------------
-        # Success — write results-backend payload
+        # Success, updating the query entry in database
         # ------------------------------------------------------------------
-        if result_set is None:
-            # No result set (DDL only or all blocks were mutations) —
-            # mirror the original by treating this as success with empty data.
-            data: list[Any] = []
-            selected_columns: list[Any] = []
-            all_columns: list[Any] = []
-            expanded_columns: list[Any] = []
-        else:
-            query.rows = result_set.size
-            if query.select_as_cta:
-                try:
-                    query.select_sql = database.select_star(
-                        Table(query.tmp_table_name, query.tmp_schema_name),
-                        limit=query.limit,
-                        show_cols=False,
-                        latest_partition=False,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.debug("select_star failed", exc_info=True)
-
-            use_arrow_data = store_results and bool(results_backend_use_msgpack)
-            (
-                data,
-                selected_columns,
-                all_columns,
-                expanded_columns,
-            ) = _serialize_and_expand_data(
-                result_set, db_engine_spec, use_arrow_data, expand_data
-            )
-
+        query.rows = result_set.size
         query.progress = 100
         query.set_extra_json_key("progress", None)
-        if result_set is not None:
-            query.set_extra_json_key("columns", selected_columns)
-        query.end_time = time.time()
+        query.set_extra_json_key("columns", result_set.columns)
+        if query.select_as_cta:
+            query.select_sql = database.select_star(
+                Table(query.tmp_table_name, query.tmp_schema_name),
+                limit=query.limit,
+                show_cols=False,
+                latest_partition=False,
+            )
+        query.end_time = now_as_float()
+
+        use_arrow_data = store_results and bool(results_backend_use_msgpack)
+        (
+            data,
+            selected_columns,
+            all_columns,
+            expanded_columns,
+        ) = _serialize_and_expand_data(
+            result_set, db_engine_spec, use_arrow_data, expand_data
+        )
 
         payload.update(
             {
@@ -463,6 +463,7 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
                     str(query_id),
                     key,
                 )
+                stats_logger_manager.incr("sqllab.results_backend.write_failure")
                 query.results_key = None
                 if not return_results:
                     query.status = QueryStatus.FAILED
@@ -539,7 +540,13 @@ def _get_session() -> Any:
 
 
 def _get_query(session: Any, query_id: int) -> Any:
-    """Look up a Query row, with the original's exponential-backoff retry."""
+    """Look up a Query row, retrying like the original ``get_query``.
+
+    Mirrors ``@backoff.on_exception(backoff.constant, interval=1, max_tries=5)``
+    with the same statsd counters the original ``get_query_backoff_handler`` /
+    ``get_query_giveup_handler`` emitted.
+    """
+    from superset.extensions import stats_logger_manager
     from superset.models.sql_lab import Query
 
     last_err: Exception | None = None
@@ -550,7 +557,19 @@ def _get_query(session: Any, query_id: int) -> Any:
             ).scalar_one()
         except Exception as ex:  # noqa: BLE001
             last_err = ex
-            time.sleep(min(2**attempt, 4))
+            logger.error(
+                "Query with id `%s` could not be retrieved",
+                str(query_id),
+                exc_info=True,
+            )
+            stats_logger_manager.incr(f"error_attempting_orm_query_{attempt}")
+            logger.error(
+                "Query %s: Sleeping for a sec before retrying...",
+                str(query_id),
+                exc_info=True,
+            )
+            time.sleep(1)
+    stats_logger_manager.incr("error_failed_at_getting_orm_query")
     raise SqlLabException("Failed at getting query") from last_err
 
 
@@ -648,7 +667,11 @@ def _apply_ctas(query: Any, statement: Any) -> Any:
     from superset.sql.parse import CTASMethod, Table
 
     if not query.tmp_table_name:
-        start_dttm = datetime.fromtimestamp(query.start_time)
+        # ``start_time`` is stored in milliseconds (``now_as_float``), so divide
+        # by 1000 for the POSIX-seconds value ``fromtimestamp`` expects.  NOTE:
+        # the original ``apply_ctas`` omitted this division (a latent
+        # ms-as-seconds bug → far-future tmp-table name); the port corrects it.
+        start_dttm = datetime.fromtimestamp(query.start_time / 1000)
         prefix = f"tmp_{query.user_id}_table"
         query.tmp_table_name = start_dttm.strftime(f"{prefix}_%Y_%m_%d_%H_%M_%S")
 
@@ -702,67 +725,102 @@ def _get_cancel_query_id(db_engine_spec: Any, cursor: Any, query: Any) -> str | 
         return None
 
 
-def _execute_query(query: Any, cursor: Any, db_engine_spec: Any) -> Any:
+def _execute_query(
+    session: Any, query: Any, cursor: Any, db_engine_spec: Any
+) -> Any:
     """Run ``query.executed_sql`` against ``cursor`` and wrap the result.
 
-    1:1 with ``superset_old/sql_lab.py::execute_query`` minus the
-    Flask-specific stats logging. Returns a :class:`SupersetResultSet`
-    when the original is available; otherwise a lightweight shim that
-    exposes ``.size``, ``.columns``, ``.pa_table``, and ``.to_pandas_df``
-    so the downstream serializer keeps working.
+    1:1 with ``superset_old/sql_lab.py::execute_query``. Returns a
+    :class:`SupersetResultSet` when the original is available; otherwise a
+    lightweight shim that exposes ``.size``, ``.columns``, ``.pa_table``, and
+    ``.to_pandas_df`` so the downstream serializer keeps working.
     """
     from superset.common.query_status import QueryStatus
+    from superset.exceptions import OAuth2RedirectError
+    from superset.extensions import stats_logger_manager
+    from superset.utils.log import stats_timing
+
+    stats_logger = stats_logger_manager.instance
 
     try:
-        if hasattr(db_engine_spec, "execute_with_cursor"):
-            db_engine_spec.execute_with_cursor(cursor, query.executed_sql, query)
-        elif hasattr(db_engine_spec, "execute"):
-            db_engine_spec.execute(cursor, query.executed_sql, query.database)
-        else:
-            cursor.execute(query.executed_sql)
+        # Persist ``executed_sql`` (set by the caller) before executing, so it
+        # survives a worker crash mid-statement — mirrors the original's
+        # ``db.session.commit()`` at the top of ``execute_query``.
+        session.commit()
 
-        # Apply LIMIT+1 fetch trick to detect overflow.
-        increased_limit = None if query.limit is None else query.limit + 1
-        fetch_fn = getattr(db_engine_spec, "fetch_data", None)
-        if callable(fetch_fn):
-            data = fetch_fn(cursor, increased_limit)
-        elif increased_limit is None:
-            data = cursor.fetchall()
-        else:
-            data = cursor.fetchmany(increased_limit)
+        with stats_timing("sqllab.query.time_executing_query", stats_logger):
+            if hasattr(db_engine_spec, "execute_with_cursor"):
+                db_engine_spec.execute_with_cursor(cursor, query.executed_sql, query)
+            elif hasattr(db_engine_spec, "execute"):
+                db_engine_spec.execute(cursor, query.executed_sql, query.database)
+            else:
+                cursor.execute(query.executed_sql)
 
-        from superset.models.sql_lab import LimitingFactor
+        with stats_timing("sqllab.query.time_fetching_results", stats_logger):
+            # Apply LIMIT+1 fetch trick to detect overflow.
+            increased_limit = None if query.limit is None else query.limit + 1
+            fetch_fn = getattr(db_engine_spec, "fetch_data", None)
+            if callable(fetch_fn):
+                data = fetch_fn(cursor, increased_limit)
+            elif increased_limit is None:
+                data = cursor.fetchall()
+            else:
+                data = cursor.fetchmany(increased_limit)
 
-        if query.limit is None or len(data) <= query.limit:
-            query.limiting_factor = LimitingFactor.NOT_LIMITED
-        else:
-            data = data[:-1]
+            from superset.models.sql_lab import LimitingFactor
 
-        cursor_description = cursor.description
+            if query.limit is None or len(data) <= query.limit:
+                query.limiting_factor = LimitingFactor.NOT_LIMITED
+            else:
+                # return 1 row less than increased_query
+                data = data[:-1]
+    except SoftTimeLimitExceeded as ex:
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+        from superset.exceptions import SupersetErrorException
 
-        # Wrap into the original SupersetResultSet when available.
-        try:
-            from superset.result_set import SupersetResultSet
-
-            return SupersetResultSet(data, cursor_description, db_engine_spec)
-        except Exception:  # noqa: BLE001
-            return _LiteSetResultSet(data, cursor_description)
-    except SoftTimeLimitExceeded:
+        query.status = QueryStatus.TIMED_OUT
+        logger.warning("Query %d: Time limit exceeded", query.id)
+        logger.debug("Query %d: %s", query.id, ex)
+        raise SupersetErrorException(
+            SupersetError(
+                message=(
+                    f"The query was killed after {_SOFT_TIME_LIMIT} seconds. "
+                    "It might be too complex, or the database might be under "
+                    "heavy load."
+                ),
+                error_type=SupersetErrorType.SQLLAB_TIMEOUT_ERROR,
+                level=ErrorLevel.ERROR,
+            )
+        ) from ex
+    except OAuth2RedirectError:
+        # user needs to authenticate with OAuth2 in order to run query
         raise
     except Exception as ex:
-        # ``query.status`` may have been changed externally — pick that up
+        # query is stopped in another thread/worker; stopping raises expected
+        # exceptions which we should skip.  Refresh the live row (not a merge
+        # into a throwaway session) to read the committed status, exactly as
+        # the original ``db.session.refresh(query)`` did.
         try:
-            from superset.db.session import get_sync_session
-
-            with closing(get_sync_session()) as fresh_session:
-                fresh = fresh_session.merge(query)
-                if fresh.status == QueryStatus.STOPPED:
-                    raise SqlLabQueryStoppedException() from ex
-        except SqlLabQueryStoppedException:
-            raise
+            session.refresh(query)
         except Exception:  # noqa: BLE001
-            pass
-        raise SqlLabException(str(ex)) from ex
+            logger.debug("Could not refresh query status", exc_info=True)
+        if query.status == QueryStatus.STOPPED:
+            raise SqlLabQueryStoppedException() from ex
+
+        logger.debug("Query %d: %s", query.id, ex)
+        extract = getattr(db_engine_spec, "extract_error_message", None)
+        msg = extract(ex) if callable(extract) else str(ex)
+        raise SqlLabException(msg) from ex
+
+    cursor_description = cursor.description
+
+    # Wrap into the original SupersetResultSet when available.
+    try:
+        from superset.result_set import SupersetResultSet
+
+        return SupersetResultSet(data, cursor_description, db_engine_spec)
+    except Exception:  # noqa: BLE001
+        return _LiteSetResultSet(data, cursor_description)
 
 
 # ---------------------------------------------------------------------------
@@ -842,20 +900,27 @@ def _serialize_and_expand_data(
     selected_columns = result_set.columns
 
     if use_msgpack:
+        from superset.extensions import stats_logger_manager
+        from superset.utils.log import stats_timing
+
         try:
             from superset.sqllab.utils import write_ipc_buffer  # type: ignore
         except Exception:  # noqa: BLE001
             write_ipc_buffer = None  # type: ignore[assignment]
 
-        if write_ipc_buffer is not None:
-            data = write_ipc_buffer(result_set.pa_table).to_pybytes()
-        else:
-            import pyarrow as pa
+        with stats_timing(
+            "sqllab.query.results_backend_pa_serialization",
+            stats_logger_manager.instance,
+        ):
+            if write_ipc_buffer is not None:
+                data = write_ipc_buffer(result_set.pa_table).to_pybytes()
+            else:
+                import pyarrow as pa
 
-            sink = pa.BufferOutputStream()
-            with pa.ipc.new_stream(sink, result_set.pa_table.schema) as writer:
-                writer.write_table(result_set.pa_table)
-            data = sink.getvalue().to_pybytes()
+                sink = pa.BufferOutputStream()
+                with pa.ipc.new_stream(sink, result_set.pa_table.schema) as writer:
+                    writer.write_table(result_set.pa_table)
+                data = sink.getvalue().to_pybytes()
 
         all_columns = selected_columns
         expanded_columns: list[Any] = []
@@ -905,7 +970,7 @@ def _handle_query_error(
     query.tmp_table_name = None
     query.status = QueryStatus.FAILED
     if not query.end_time:
-        query.end_time = time.time()
+        query.end_time = now_as_float()
 
     errors: list[Any] = []
     if isinstance(ex, SupersetErrorException):

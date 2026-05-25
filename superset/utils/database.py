@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from typing import Any
 
 from sqlalchemy import create_engine
@@ -87,6 +87,7 @@ def get_sync_engine(
     catalog: str | None = None,
     schema: str | None = None,
     nullpool: bool = True,
+    override_ssh_tunnel: Any | None = None,
 ) -> Iterator[Engine]:
     """Yield a synchronous SQLAlchemy ``Engine`` for the given database.
 
@@ -102,33 +103,62 @@ def get_sync_engine(
     uri = getattr(database, "sqlalchemy_uri_decrypted", None) or getattr(
         database, "sqlalchemy_uri", ""
     )
-    sync_uri = _to_sync_uri(str(uri))
+    sqlalchemy_uri = str(uri)
 
-    # Engine extra params from the database's ``extra`` JSON.  The
-    # heavy ``adjust_engine_params`` flow (BigQuery, Hive…) is
-    # intentionally bypassed here — those specs require Flask app
-    # context which is not available in the async runtime.  Liteset
-    # users that need engine-spec-specific connect args set them via
-    # ``extra.engine_params.connect_args`` in the dataset configuration.
-    connect_args: dict[str, Any] = {}
-    try:
-        extra = database.get_extra() if hasattr(database, "get_extra") else {}
-        engine_params = (extra or {}).get("engine_params") or {}
-        connect_args = engine_params.get("connect_args") or {}
-    except Exception:  # noqa: BLE001
-        connect_args = {}
+    # SSH tunnel: when one is supplied, open it, rewrite the URL to the local
+    # bind endpoint, and tear it down when the engine context exits — mirroring
+    # ``superset_old`` ``Database.get_sqla_engine``'s ssh_context_manager.  Only
+    # an explicit ``override_ssh_tunnel`` is honoured here; the original also
+    # auto-resolved the stored tunnel via the (sync) ``DatabaseDAO.get_ssh_tunnel``,
+    # which the async port leaves to callers (they pass it as the override).
+    if override_ssh_tunnel is not None:
+        from superset.extensions import ssh_manager_factory
 
-    engine_kwargs: dict[str, Any] = {"connect_args": connect_args}
-    if nullpool:
-        from sqlalchemy.pool import NullPool
+        ssh_manager: Any = ssh_manager_factory.instance
+        tunnel_cm: Any = ssh_manager.create_tunnel(
+            ssh_tunnel=override_ssh_tunnel,
+            sqlalchemy_database_uri=sqlalchemy_uri,
+        )
+    else:
+        ssh_manager = None
+        tunnel_cm = nullcontext()
 
-        engine_kwargs["poolclass"] = NullPool
+    with tunnel_cm as tunnel_server:
+        if tunnel_server is not None and ssh_manager is not None:
+            logger.info(
+                "[SSH] Using tunnel at %s", tunnel_server.local_bind_address
+            )
+            sqlalchemy_uri = str(
+                ssh_manager.build_sqla_url(sqlalchemy_uri, tunnel_server)
+            )
 
-    engine = create_engine(sync_uri, **engine_kwargs)
-    try:
-        yield engine
-    finally:
-        engine.dispose()
+        sync_uri = _to_sync_uri(sqlalchemy_uri)
+
+        # Engine extra params from the database's ``extra`` JSON.  The
+        # heavy ``adjust_engine_params`` flow (BigQuery, Hive…) is
+        # intentionally bypassed here — those specs require Flask app
+        # context which is not available in the async runtime.  Liteset
+        # users that need engine-spec-specific connect args set them via
+        # ``extra.engine_params.connect_args`` in the dataset configuration.
+        connect_args: dict[str, Any] = {}
+        try:
+            extra = database.get_extra() if hasattr(database, "get_extra") else {}
+            engine_params = (extra or {}).get("engine_params") or {}
+            connect_args = engine_params.get("connect_args") or {}
+        except Exception:  # noqa: BLE001
+            connect_args = {}
+
+        engine_kwargs: dict[str, Any] = {"connect_args": connect_args}
+        if nullpool:
+            from sqlalchemy.pool import NullPool
+
+            engine_kwargs["poolclass"] = NullPool
+
+        engine = create_engine(sync_uri, **engine_kwargs)
+        try:
+            yield engine
+        finally:
+            engine.dispose()
 
 
 @contextmanager

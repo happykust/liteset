@@ -110,6 +110,28 @@ def init_worker_db_engine(**kwargs: Any) -> None:
 
     try:
         settings = SupersetSettings()  # type: ignore[call-arg]
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to load SupersetSettings at worker init")
+        return
+
+    # Configure the process-wide managers that the Litestar ``on_startup`` hook
+    # sets up for the web app.  Celery workers never run that hook, so without
+    # this the feature-flag manager stays empty — every ``is_feature_enabled``
+    # would return ``False``, which (for example) stops ``reports.scheduler``
+    # from ever queueing alerts — and the stats logger stays a no-op
+    # ``DummyStatsLogger`` instead of the configured ``STATS_LOGGER``.
+    try:
+        from superset.extensions import stats_logger_manager  # noqa: WPS433
+        from superset.utils.feature_flags import (  # noqa: WPS433
+            feature_flag_manager,
+        )
+
+        feature_flag_manager.init_from_config(settings.feature_flags)
+        stats_logger_manager.configure(settings.stats_logger)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to configure worker feature-flag / stats managers")
+
+    try:
         create_worker_engine(settings.sqlalchemy_database_uri)
         logger.info("Worker async DB engine initialized (NullPool)")
     except Exception:  # noqa: BLE001
@@ -129,81 +151,42 @@ def teardown(**kwargs: Any) -> None:
     """
 
 
-def register_task_aliases(app: Celery) -> None:
-    """Map legacy Superset task names to the new dotted module names.
-
-    Existing Celery beat schedules and ``apply_async`` calls that reference
-    old canonical names (e.g. ``reports.scheduler``, ``cache-warmup``,
-    ``fetch_url``, ``slack.cache_channels``, ``prune_query``,
-    ``prune_logs``) will resolve correctly against the new worker.
-    """
-    # Map: legacy_name -> new dotted task name
-    alias_map: dict[str, str] = {
-        # Reports / scheduler
-        "reports.scheduler": "superset.tasks.scheduler.scheduler",
-        "reports.execute": "superset.tasks.scheduler.execute",
-        "reports.prune_log": "superset.tasks.scheduler.prune_log",
-        "prune_query": "superset.tasks.scheduler.prune_query",
-        "prune_logs": "superset.tasks.scheduler.prune_logs",
-        # Cache warming (note the hyphen in the old name)
-        "cache-warmup": "superset.tasks.cache.cache_warmup",
-        "fetch_url": "superset.tasks.cache.fetch_url",
-        # Slack
-        "slack.cache_channels": "superset.tasks.slack.cache_channels",
-        # Thumbnail names are unchanged; register them anyway so any
-        # ``apply_async(task_name=...)`` spellings keep working.
-        "cache_chart_thumbnail": "cache_chart_thumbnail",
-        "cache_dashboard_thumbnail": "cache_dashboard_thumbnail",
-        "cache_dashboard_screenshot": "cache_dashboard_screenshot",
-        # Async query names unchanged
-        "load_chart_data_into_cache": "load_chart_data_into_cache",
-        "load_explore_json_into_cache": "load_explore_json_into_cache",
-    }
-    for old_name, new_name in alias_map.items():
-        if old_name == new_name:
-            continue  # Self-reference: skip (task already registered under this name)
-        if new_name in app.tasks and old_name not in app.tasks:
-            # ``TaskRegistry.register`` does not accept a ``name`` kwarg in
-            # newer Celery versions. Re-register the task object with the
-            # alias name by setting it directly on the registry dict.
-            task_obj = app.tasks[new_name]
-            app.tasks[old_name] = task_obj
-            logger.debug("Registered task alias %r -> %r", old_name, new_name)
-
-
 # ---------------------------------------------------------------------------
-# Import all task modules so Celery workers discover tasks before any
-# ``apply_async`` call — autodiscover_tasks only picks up modules named
-# ``tasks.py`` inside the listed package; we must import each sibling module
-# explicitly.  ``register_task_aliases`` is called afterwards so the new
-# task objects are already in ``app.tasks``.
+# Import all task modules so Celery workers register every task before any
+# ``apply_async`` / beat dispatch.  ``autodiscover_tasks`` only picks up
+# modules literally named ``tasks.py`` inside the listed package, and none of
+# our task modules are — so each sibling module must be imported explicitly.
+# (The original Apache Superset relied on ``create_app`` importing these via
+# ``CELERY_CONFIG.imports``; Liteset workers never run ``create_app``.)  Every
+# task is registered under its original Apache Superset name, so no alias layer
+# is needed.
 # ---------------------------------------------------------------------------
 
-def _discover_and_alias() -> None:
-    # Import order does not matter; just ensure all modules are loaded.
-    import superset.tasks.alerts  # noqa: F401
+
+def _import_task_modules() -> None:
+    # Import order does not matter; just ensure every task module is loaded so
+    # its ``@celery_app.task`` decorators run and register the task.
     import superset.tasks.async_queries  # noqa: F401
     import superset.tasks.cache  # noqa: F401
     import superset.tasks.scheduler  # noqa: F401
     import superset.tasks.slack  # noqa: F401
     import superset.tasks.thumbnails  # noqa: F401
 
-    # log_prune and sql_lab / sync_database_permissions register themselves
-    # during import as well.
-    try:
-        import superset.tasks.log_prune  # noqa: F401
-    except Exception:  # noqa: BLE001
-        pass
+    # An import failure would make that task silently unavailable at runtime,
+    # so log it loudly rather than swallowing the error.
     try:
         import superset.tasks.sql_lab  # noqa: F401
     except Exception:  # noqa: BLE001
-        pass
+        logger.exception(
+            "Failed to import superset.tasks.sql_lab; its task is unavailable"
+        )
     try:
         import superset.tasks.sync_database_permissions  # noqa: F401
     except Exception:  # noqa: BLE001
-        pass
+        logger.exception(
+            "Failed to import superset.tasks.sync_database_permissions; "
+            "its task is unavailable"
+        )
 
-    register_task_aliases(celery_app)
 
-
-_discover_and_alias()
+_import_task_modules()

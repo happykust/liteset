@@ -129,3 +129,7 @@ class AlertQueryMultipleColumnsError(CommandException):
 class AlertValidatorConfigError(CommandException):
     status_code = 422
     message = "Alert validator config error."
+
+
+class ReportSchedulePruneLogError(CommandException):
+    message = "An error occurred while pruning logs "

@@ -29,7 +29,7 @@ from superset.tasks.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="superset.tasks.slack.cache_channels")
+@celery_app.task(name="slack.cache_channels")
 def cache_channels() -> None:
     """Warm up the Slack channels cache.
 
@@ -43,13 +43,13 @@ def cache_channels() -> None:
     from superset.config import SupersetSettings
 
     settings = SupersetSettings()  # type: ignore[call-arg]
-    slack_token = getattr(settings, "slack_api_token", "")
+    slack_token = settings.slack_api_token
     if not slack_token:
         logger.warning("Slack API token not configured; skipping channel cache warm-up")
         return
 
-    slack_cache_timeout = getattr(settings, "slack_cache_timeout", 1800) or 1800
-    retry_count = getattr(settings, "slack_api_rate_limit_retry_count", 2) or 2
+    slack_cache_timeout = settings.slack_cache_timeout
+    retry_count = settings.slack_api_rate_limit_retry_count
 
     logger.info(
         "Starting Slack channels cache warm-up task "

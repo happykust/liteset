@@ -37,7 +37,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-import time
 from contextlib import closing
 from typing import Any, TYPE_CHECKING
 
@@ -63,6 +62,7 @@ from superset.exceptions import (
     SupersetInvalidCVASException,
     SupersetTimeoutException,
 )
+from superset.utils.dates import now_as_float
 
 if TYPE_CHECKING:
     from superset.db.daos.query import AsyncQueryDAO
@@ -167,7 +167,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         # ------------------------------------------------------------------
         # 4. Create Query record with PENDING status
         # ------------------------------------------------------------------
-        start_time = time.time()
+        start_time = now_as_float()
         query = Query(
             database_id=self._database_id,
             sql=self._sql,
@@ -211,7 +211,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
                 logger.info("SQL Lab access denied for query %s: %s", query_id, ex)
                 query.status = QueryStatus.FAILED
                 query.error_message = str(ex)
-                query.end_time = time.time()
+                query.end_time = now_as_float()
                 await session.flush()
                 raise
 
@@ -275,7 +275,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         # written below.
         # ------------------------------------------------------------------
         query.status = QueryStatus.RUNNING
-        query.start_running_time = time.time()
+        query.start_running_time = now_as_float()
         query.set_extra_json_key(QUERY_EARLY_CANCEL_KEY, True)
         await session.flush()
 
@@ -291,7 +291,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
             logger.warning("Failed to parse SQL script: %s", ex)
             query.status = QueryStatus.FAILED
             query.error_message = str(ex)
-            query.end_time = time.time()
+            query.end_time = now_as_float()
             await session.flush()
             return self._build_response(
                 status=QueryStatus.FAILED,
@@ -314,7 +314,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
                 "SQL statement contains disallowed functions: "
                 f"{sorted(disallowed_functions)}"
             )
-            query.end_time = time.time()
+            query.end_time = now_as_float()
             await session.flush()
             raise SupersetDisallowedSQLFunctionException(disallowed_functions)
 
@@ -324,7 +324,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         if parsed_script.has_mutation() and not getattr(db_row, "allow_dml", False):
             query.status = QueryStatus.FAILED
             query.error_message = "DML is not allowed for this database"
-            query.end_time = time.time()
+            query.end_time = now_as_float()
             await session.flush()
             raise SupersetDMLNotAllowedException()
 
@@ -416,7 +416,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
             query.error_message = (
                 f"The query exceeded the {sqllab_timeout} seconds timeout."
             )
-            query.end_time = time.time()
+            query.end_time = now_as_float()
             await session.flush()
             raise SupersetTimeoutException(
                 error_type="SQLLAB_TIMEOUT_ERROR",
@@ -430,7 +430,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
             logger.exception("Query %s execution failed", query_id)
             query.status = QueryStatus.FAILED
             query.error_message = str(exc)
-            query.end_time = time.time()
+            query.end_time = now_as_float()
             query.progress = 0
             await session.flush()
 
@@ -497,7 +497,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         query.status = QueryStatus.SUCCESS
         query.rows = len(data)
         query.progress = 100
-        query.end_time = time.time()
+        query.end_time = now_as_float()
         query.limiting_factor = limiting_factor
         query.set_extra_json_key("columns", columns)
         query.set_extra_json_key("progress", None)
@@ -644,7 +644,11 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         from superset.sql.parse import CTASMethod, Table
 
         if not query.tmp_table_name:
-            start_dttm = _dt.fromtimestamp(query.start_time)
+            # ``start_time`` is stored in milliseconds (``now_as_float``), so
+            # divide by 1000 for the POSIX-seconds value ``fromtimestamp``
+            # expects.  NOTE: the original omitted this division (a latent
+            # ms-as-seconds bug → far-future tmp-table name); the port corrects it.
+            start_dttm = _dt.fromtimestamp(query.start_time / 1000)
             prefix = f"tmp_{query.user_id}_table"
             query.tmp_table_name = start_dttm.strftime(f"{prefix}_%Y_%m_%d_%H_%M_%S")
 

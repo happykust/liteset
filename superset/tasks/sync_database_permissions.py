@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
 
 from superset.tasks.celery_app import celery_app
 
@@ -68,9 +67,12 @@ async def _run(
     old_db_connection_name: str,
 ) -> None:
     from superset.commands.database.sync_permissions import SyncPermissionsCommand
+    from superset.config import SupersetSettings
     from superset.db.daos.database import AsyncDatabaseDAO
     from superset.db.session import create_session_factory, get_engine
     from superset.security.dao import AsyncSecurityDAO
+    from superset.security.manager import build_async_security_manager
+    from superset.utils.core import set_current_user
 
     engine = get_engine()
     factory = create_session_factory(engine)
@@ -84,9 +86,13 @@ async def _run(
             )
             return
 
-        from superset.utils.core import set_current_user
-
+        # Impersonate the requesting user (for OAuth2 connections, RLS, etc.).
         set_current_user(user)
+        logger.info(
+            "Syncing permissions for DB connection %s while impersonating user %s",
+            database_id,
+            getattr(user, "id", "?"),
+        )
 
         dao = AsyncDatabaseDAO(session)
         database = await dao.find_by_id(database_id)
@@ -97,44 +103,20 @@ async def _run(
             )
             return
 
-        cmd = _build_command(
+        security_manager = build_async_security_manager(session, SupersetSettings())
+        cmd = SyncPermissionsCommand(
             dao=dao,
             database_id=database_id,
+            security_manager=security_manager,
             username=username,
             old_db_connection_name=old_db_connection_name,
-            database=database,
+            db_connection=database,
         )
-        await cmd.execute()
-
-
-def _build_command(
-    *,
-    dao: Any,
-    database_id: int,
-    username: str,
-    old_db_connection_name: str,
-    database: Any,
-) -> Any:
-    """Instantiate ``SyncPermissionsCommand`` against the new constructor.
-
-    The new command's signature differs slightly between revisions; we
-    import lazily and pass keyword arguments compatible with the
-    canonical Liteset implementation. Only kwargs known to the current
-    constructor are forwarded to keep this task forward-compatible.
-    """
-    from inspect import signature
-
-    from superset.commands.database.sync_permissions import SyncPermissionsCommand
-
-    base_kwargs: dict[str, Any] = {
-        "dao": dao,
-        "database_id": database_id,
-        "username": username,
-        "old_db_connection_name": old_db_connection_name,
-        "db_connection": database,
-    }
-
-    sig = signature(SyncPermissionsCommand.__init__)
-    accepted = {name for name in sig.parameters if name != "self"}
-    kwargs = {k: v for k, v in base_kwargs.items() if k in accepted}
-    return SyncPermissionsCommand(**kwargs)
+        # We are already inside the Celery task, so call the inline sync
+        # directly rather than ``run()`` (which would re-dispatch the task in
+        # async mode) — and without ``validate()`` (no pre-flight ping), exactly
+        # like the original task's ``SyncPermissionsCommand(...).sync_database_permissions()``.
+        await cmd.sync_database_permissions()
+        # No request middleware here to commit the AsyncSession, so commit
+        # explicitly — otherwise the new/renamed permission rows are lost.
+        await session.commit()
