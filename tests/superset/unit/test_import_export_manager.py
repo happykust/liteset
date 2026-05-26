@@ -136,10 +136,15 @@ async def test_export_unknown_asset_type_skipped(
 
 
 async def test_import_handles_bad_zip(manager: AsyncFullAssetManager) -> None:
-    """import_assets returns an error for invalid ZIP content."""
-    result = await manager.import_assets(file_content=b"not a zip file")
-    assert not result.success
-    assert any("Invalid ZIP" in e for e in result.errors)
+    """import_assets raises IncorrectFormatError (422) for invalid ZIP content.
+
+    Matches the original FAB behaviour (``IncorrectFormatError`` → 4xx) rather
+    than swallowing the failure into a 200 ``result.errors``.
+    """
+    from superset.commands.importers.exceptions import IncorrectFormatError
+
+    with pytest.raises(IncorrectFormatError):
+        await manager.import_assets(file_content=b"not a zip file")
 
 
 async def test_import_invokes_assets_command(
@@ -147,14 +152,22 @@ async def test_import_invokes_assets_command(
 ) -> None:
     """Valid bundle dispatches to ``ImportAssetsCommand`` and per-type counts
     are populated from the parsed file groups."""
+    # Upstream export bundles nest everything under an ``assets_export_<ts>/``
+    # root that ``get_contents_from_bundle`` strips via ``remove_root``.
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
-            "metadata.yaml",
+            "assets_export_test/metadata.yaml",
             yaml.safe_dump({"version": "1.0.0", "type": "assets"}),
         )
-        zf.writestr("charts/c1.yaml", yaml.safe_dump({"slug": "c1", "uuid": "u-1"}))
-        zf.writestr("charts/c2.yaml", yaml.safe_dump({"slug": "c2", "uuid": "u-2"}))
+        zf.writestr(
+            "assets_export_test/charts/c1.yaml",
+            yaml.safe_dump({"slug": "c1", "uuid": "u-1"}),
+        )
+        zf.writestr(
+            "assets_export_test/charts/c2.yaml",
+            yaml.safe_dump({"slug": "c2", "uuid": "u-2"}),
+        )
 
     captured_kwargs: dict[str, Any] = {}
 
@@ -194,11 +207,18 @@ async def test_import_result_failure_with_errors() -> None:
 async def test_import_groups_by_type(manager: AsyncFullAssetManager) -> None:
     """Bundle entries are grouped by their top-level directory and counted
     per asset type in :class:`ImportResult`."""
+    # Nested under the ``assets_export_<ts>/`` root that ``remove_root`` strips.
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("metadata.yaml", yaml.safe_dump({"version": "1.0.0"}))
-        zf.writestr("charts/c1.yaml", yaml.safe_dump({"name": "c1"}))
-        zf.writestr("dashboards/d1.yaml", yaml.safe_dump({"name": "d1"}))
+        zf.writestr(
+            "assets_export_test/metadata.yaml", yaml.safe_dump({"version": "1.0.0"})
+        )
+        zf.writestr(
+            "assets_export_test/charts/c1.yaml", yaml.safe_dump({"name": "c1"})
+        )
+        zf.writestr(
+            "assets_export_test/dashboards/d1.yaml", yaml.safe_dump({"name": "d1"})
+        )
 
     class _NoopAssetsCommand:
         def __init__(self, **kwargs: Any) -> None:

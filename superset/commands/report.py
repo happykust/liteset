@@ -273,6 +273,12 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
 
         crontab = self._data.get("crontab", "")
 
+        # Reject syntactically invalid crontab expressions up front. Upstream
+        # validates this in the Marshmallow schema (``validate_crontab`` →
+        # ``croniter.is_valid``); the msgspec schema doesn't, so guard here.
+        if crontab and croniter is not None and not croniter.is_valid(crontab):
+            raise CommandInvalidError(f"Invalid crontab: {crontab}")
+
         chart_id = self._data.get("chart")
         creation_method = self._data.get("creation_method")
         dashboard_id = self._data.get("dashboard")
@@ -404,6 +410,15 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         name = self._data.get("name", self._report.name)
         report_type = self._data.get("type", self._report.type)
         database_id = self._data.get("database")
+
+        # Reject syntactically invalid crontab expressions up front (the
+        # msgspec schema doesn't, unlike upstream's Marshmallow schema).
+        if (
+            self._data.get("crontab") is not None
+            and croniter is not None
+            and not croniter.is_valid(crontab)
+        ):
+            raise CommandInvalidError(f"Invalid crontab: {crontab}")
 
         exceptions: list[ReportScheduleValidationError] = []
 
