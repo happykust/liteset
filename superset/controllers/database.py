@@ -543,6 +543,50 @@ def _coerce_ssh_tunnel_payload(value: Any) -> dict[str, Any] | None:
     return None
 
 
+async def _database_is_accessible(
+    security_manager: Any,
+    user: Any,
+    database: Any,
+) -> bool:
+    """Return whether ``user`` may view ``database``.
+
+    In-Python evaluation of the same predicate encoded by
+    ``superset.db.filters.database_access_filters`` (1:1 with the original
+    ``DatabaseFilter``): ``all_database_access`` holders see everything;
+    everyone else needs a ``database_access`` perm on this database OR its
+    name appearing in a ``catalog_access`` / ``schema_access`` /
+    ``datasource_access`` view-menu permission.  Used for GET-by-id so an
+    inaccessible database returns 404 (existence hidden), matching FAB's
+    ``get_headless`` base-filter behaviour.
+    """
+    from superset.db.filters import _databases_from_view_menus
+
+    if await security_manager.can_access_all_databases(user=user):
+        return True
+
+    database_perms = await security_manager.user_view_menu_names(
+        "database_access", user=user
+    )
+    if getattr(database, "perm", None) in database_perms:
+        return True
+
+    catalog_access = await security_manager.user_view_menu_names(
+        "catalog_access", user=user
+    )
+    schema_access = await security_manager.user_view_menu_names(
+        "schema_access", user=user
+    )
+    datasource_access = await security_manager.user_view_menu_names(
+        "datasource_access", user=user
+    )
+    database_names = (
+        _databases_from_view_menus(catalog_access)
+        | _databases_from_view_menus(schema_access)
+        | _databases_from_view_menus(datasource_access)
+    )
+    return getattr(database, "database_name", None) in database_names
+
+
 class DatabaseController(Controller):
     path = "/api/v1/database"
     tags = ["Databases"]
@@ -563,17 +607,19 @@ class DatabaseController(Controller):
         dao: DatabaseDAOProtocol,
         rison_params: dict[str, Any] | None,
         current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> dict[str, Any]:
         from sqlalchemy.orm import selectinload
 
+        from superset.db.filters import database_access_filters
         from superset.models.core import Database
 
-        # Anonymous and database_access-less callers see an empty list —
-        # mirrors original ``DatabaseFilter`` (databases/filters.py) which
-        # restricts the query to databases the caller is allowed to read.
-        # ``can_read`` on the menu is satisfied by Public role permissions
-        # but data-level access (``database_access`` / ``all_database_access``)
-        # is required to see actual rows.
+        # Anonymous callers see an empty list — mirrors original
+        # ``DatabaseFilter`` (databases/filters.py) which restricts the query
+        # to databases the caller is allowed to read.  ``can_read`` on the menu
+        # is satisfied by Public role permissions but data-level access
+        # (``database_access`` / ``all_database_access``) is required to see
+        # actual rows.
         if not getattr(current_user, "is_authenticated", False):
             return {
                 "count": 0,
@@ -592,8 +638,15 @@ class DatabaseController(Controller):
         if not order_by:
             order_by = [Database.changed_on.desc()]
 
+        # Apply the RBAC base filter (1:1 with the original ``DatabaseFilter``
+        # base_filter): non-``all_database_access`` users only see databases
+        # they hold ``database_access`` for, or whose name appears in a
+        # catalog/schema/datasource_access permission.
+        base_filters = await database_access_filters(security_manager, current_user)
+        combined_filters = (rison_filters or []) + (base_filters or [])
+
         databases = await dao.find_all(
-            filters=rison_filters or None,
+            filters=combined_filters or None,
             page=page,
             page_size=page_size,
             order_by=order_by,
@@ -602,7 +655,7 @@ class DatabaseController(Controller):
                 selectinload(Database.created_by),
             ],
         )
-        total = await dao.count(filters=rison_filters or None)
+        total = await dao.count(filters=combined_filters or None)
         await event_logger.alog_with_context("database.list")
         payload = serialize_list_response(
             databases,
@@ -692,7 +745,11 @@ class DatabaseController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/{pk:int}/connection",
-        guards=[require_permission("can_read", "Database")],
+        # The original ``constants.MODEL_API_RW_METHOD_PERMISSION_MAP`` maps
+        # ``get_connection`` to ``write`` — this endpoint returns the full
+        # connection info (incl. masked URI, parameters_schema, ssh_tunnel),
+        # so it requires ``can_write`` rather than ``can_read``.
+        guards=[require_permission("can_write", "Database")],
     )
     async def get_connection(
         self, pk: int, dao: DatabaseDAOProtocol
@@ -761,10 +818,20 @@ class DatabaseController(Controller):
         guards=[require_permission("can_read", "Database")],
     )
     async def get_database(
-        self, pk: int, dao: DatabaseDAOProtocol
+        self,
+        pk: int,
+        dao: DatabaseDAOProtocol,
+        current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> DatabaseGetResponse:
         database = await dao.find_by_id(pk)
         if not database:
+            raise ObjectNotFoundError("Database", pk)
+        # Enforce the RBAC base filter on GET-by-id, mirroring the original
+        # ``DatabaseRestApi.get`` which fetches via ``get_headless`` and so
+        # applies ``base_filters = [["id", DatabaseFilter, ...]]`` — an
+        # inaccessible database returns 404 (existence is hidden).
+        if not await _database_is_accessible(security_manager, current_user, database):
             raise ObjectNotFoundError("Database", pk)
         result = _build_database_result(database)
         # Merge SSH tunnel data into response — matches original
@@ -908,11 +975,18 @@ class DatabaseController(Controller):
                 "force_ctas_schema": data.force_ctas_schema,
             }
         )
+        # Pass ``masked_encrypted_extra`` THROUGH to the command unchanged
+        # (do NOT pre-rename to ``encrypted_extra``).  The command's unmask
+        # branch — mirroring ``superset_old/commands/database/update.py:70-77``
+        # — resolves the ``XXXXXXXXXX`` placeholders against the existing
+        # database's stored secret via
+        # ``db_engine_spec.unmask_encrypted_extra`` (which uses
+        # ``superset.utils.json.reveal_sensitive``) and only then writes the
+        # real value to ``encrypted_extra``.  Renaming the key here would skip
+        # that step and persist the masked placeholders, destroying the real
+        # OAuth2/encrypted credentials.
         if data.masked_encrypted_extra is not msgspec.UNSET:
-            if data.masked_encrypted_extra is not None:
-                update_data["encrypted_extra"] = data.masked_encrypted_extra
-            else:
-                update_data["encrypted_extra"] = None
+            update_data["masked_encrypted_extra"] = data.masked_encrypted_extra
 
         # Extract ssh_tunnel before passing data to UpdateDatabaseCommand.
         # The command only updates Database model columns; SSH tunnel is handled

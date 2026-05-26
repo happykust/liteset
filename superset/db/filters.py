@@ -99,6 +99,80 @@ async def chart_access_filters(
         return []
 
 
+def _databases_from_view_menus(view_menu_names: set[str]) -> set[str]:
+    """Extract database names from a set of ``view_menu`` permission strings.
+
+    1:1 port of ``superset_old/databases/filters.py:can_access_databases``:
+    a ``catalog_access`` / ``schema_access`` / ``datasource_access`` view menu
+    looks like ``[db_name].[schema]`` (or ``[db_name].[schema].[table](id:N)``);
+    the database name is the first dotted component with its surrounding
+    brackets stripped (``vm.split(".")[0][1:-1]``).
+    """
+    result: set[str] = set()
+    for vm in view_menu_names:
+        head = vm.split(".")[0]
+        # Strip the surrounding ``[...]`` brackets, matching the original
+        # ``[1:-1]`` slice.  Guard against malformed entries.
+        if len(head) >= 2:
+            result.add(head[1:-1])
+    return result
+
+
+async def database_access_filters(
+    security_manager: Any,
+    user: Any,
+) -> list[Any]:
+    """Return SQLAlchemy filters restricting databases to those the user can access.
+
+    1:1 port of ``superset_old/databases/filters.py:DatabaseFilter.apply``.
+
+    Visibility rules:
+      * users with the global ``all_database_access`` permission (which
+        includes admins, who also carry that grant) see every database —
+        no restriction;
+      * everyone else is restricted to databases for which they hold a
+        ``database_access`` permission OR whose name appears in any
+        ``catalog_access`` / ``schema_access`` / ``datasource_access``
+        view-menu permission.
+
+    Note: the original additionally applies
+    ``EXTRA_DYNAMIC_QUERY_FILTERS["databases"]`` to the FAB ``Query``.  That
+    hook operates on a synchronous SQLAlchemy ``Query`` object and has no
+    direct analogue in the async ``find_all(filters=...)`` clause-list API,
+    so it is intentionally omitted here (no dynamic-filter callable is wired
+    up in this deployment).
+    """
+    if await security_manager.can_access_all_databases(user=user):
+        return []
+
+    from superset.models.core import Database
+
+    database_perms = await security_manager.user_view_menu_names(
+        "database_access", user=user
+    )
+    catalog_access = await security_manager.user_view_menu_names(
+        "catalog_access", user=user
+    )
+    schema_access = await security_manager.user_view_menu_names(
+        "schema_access", user=user
+    )
+    datasource_access = await security_manager.user_view_menu_names(
+        "datasource_access", user=user
+    )
+    database_names = (
+        _databases_from_view_menus(catalog_access)
+        | _databases_from_view_menus(schema_access)
+        | _databases_from_view_menus(datasource_access)
+    )
+
+    return [
+        or_(
+            Database.perm.in_(database_perms),
+            Database.database_name.in_(sorted(database_names)),
+        )
+    ]
+
+
 async def dashboard_access_filters(  # noqa: C901  # full 1:1 port from old code
     security_manager: Any,
     user: Any,
@@ -403,32 +477,32 @@ async def saved_query_access_filters(
     security_manager: Any,
     user: Any,
 ) -> list[Any]:
-    """Return SQLAlchemy filters restricting saved queries.
+    """Return SQLAlchemy filters restricting saved queries to the user's own.
 
-    Admins and users with can_access_all_queries see all saved queries.
-    Others see only their own (matched by created_by_fk from AuditMixinNullable).
+    1:1 port of ``superset_old/queries/saved_queries/filters.py:SavedQueryFilter``
+    (lines 82-91): the base_filter UNCONDITIONALLY scopes to
+    ``SavedQuery.created_by == g.user`` — there is NO bypass for admins or for
+    holders of ``can_access_all_queries``.  Even an admin only sees the saved
+    queries they created.
+
+    ``created_by`` maps to the ``created_by_fk`` FK column on
+    ``AuditMixinNullable``; comparing the FK against the user id is equivalent
+    to the original's relationship comparison.
     """
-    if security_manager.is_admin(user):
-        return []
-
-    can_access_all = await security_manager.can_access(
-        "can_access_all_queries", "Superset", user=user
-    )
-    if can_access_all:
-        return []
+    # ``security_manager`` is intentionally unused — the original filter does
+    # not consult any permission and always scopes to the current user.
+    del security_manager
 
     user_id = getattr(user, "id", None)
-    if user_id is None:
-        try:
-            from superset.models.sql_lab import SavedQuery
-
-            return [SavedQuery.created_by_fk == -1]
-        except (ImportError, ModuleNotFoundError):
-            return []
 
     try:
         from superset.models.sql_lab import SavedQuery
-
-        return [SavedQuery.created_by_fk == user_id]
     except (ImportError, ModuleNotFoundError):
         return []
+
+    if user_id is None:
+        # No authenticated user — the original would compare ``created_by``
+        # against an anonymous ``g.user`` and match nothing; deny everything.
+        return [SavedQuery.created_by_fk == -1]
+
+    return [SavedQuery.created_by_fk == user_id]
