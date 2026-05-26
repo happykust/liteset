@@ -52,6 +52,11 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from superset.commands.importers.exceptions import (
+    IncorrectFormatError,
+    NoValidFilesFoundError,
+)
+
 logger = logging.getLogger(__name__)
 
 MAX_ZIP_ENTRIES = 1000
@@ -267,7 +272,7 @@ class AsyncFullAssetManager:
 
     async def import_assets(
         self,
-        file_content: bytes,
+        contents: dict[str, str] | None = None,
         overwrite: bool = False,
         passwords: dict[str, str] | None = None,
         ssh_tunnel_passwords: dict[str, str] | None = None,
@@ -276,14 +281,26 @@ class AsyncFullAssetManager:
         sparse: bool = False,
         security_manager: Any | None = None,
         current_user: Any | None = None,
+        file_content: bytes | None = None,
     ) -> ImportResult:
-        """Import assets from a ZIP file.
+        """Import assets from a parsed bundle.
+
+        Mirrors the original Flask path
+        (``superset_old/importexport/api.py:import_``): the controller parses
+        the upload via ``get_contents_from_bundle`` (which applies
+        ``remove_root`` so a nested ``assets_export_<ts>/`` bundle is
+        flattened) and passes the resulting ``{file_name: text}`` mapping
+        straight to :class:`ImportAssetsCommand`.
 
         Args:
-            file_content: Raw bytes of the ZIP archive.
+            contents: Canonical ``{file_name: text-content}`` mapping
+                produced by ``get_contents_from_bundle`` — the same shape
+                the original ``ImportAssetsCommand`` consumed.
             overwrite: Whether to overwrite existing assets.
-            passwords: Database connection passwords keyed by file name
-                (NOT by UUID — matches the original Marshmallow contract).
+            passwords: Database connection passwords keyed by **file name**
+                (e.g. ``{"databases/MyDatabase.yaml": "pw"}``), matching the
+                original Marshmallow contract; UUID fallback against existing
+                DB rows happens inside ``load_configs``.
             ssh_tunnel_passwords: SSH tunnel passwords keyed by file name.
             ssh_tunnel_private_keys: SSH tunnel private keys keyed by file name.
             ssh_tunnel_private_key_passwords: SSH tunnel private key
@@ -294,26 +311,42 @@ class AsyncFullAssetManager:
             security_manager: Optional :class:`AsyncSecurityManager` for
                 permission checks.  Tests / CLI imports may omit it.
             current_user: Optional :class:`User` model for owner attribution.
+            file_content: Backwards-compat — raw ZIP bytes.  When supplied
+                (and ``contents`` is ``None``) the manager parses the bundle
+                itself via :meth:`_parse_import_zip` (which now applies
+                ``remove_root`` to strip the root export folder).
 
-        ZIP parsing runs in a thread pool to avoid blocking the event
-        loop on large archives.  Path traversal checks and entry-count
-        limits are enforced before any file is decoded.
+        Validation/import failures are NOT swallowed: ``CommandException``
+        and its subclasses (``IncorrectFormatError`` / ``NoValidFilesFoundError``
+        / ``CommandInvalidError``) propagate to the controller so the global
+        exception handler maps them to the matching 4xx — matching the
+        original FAB behaviour rather than wrapping everything in a 200.
         """
         result = ImportResult()
+        by_type: dict[str, list[str]] = {}
 
-        try:
-            metadata, by_type, contents = await asyncio.to_thread(
-                self._parse_import_zip, file_content
-            )
-        except zipfile.BadZipFile:
-            result.errors.append("Invalid ZIP file")
-            return result
-        except ValueError as exc:
-            result.errors.append(str(exc))
-            return result
+        if contents is None:
+            if file_content is None:
+                raise NoValidFilesFoundError()
+            # Backwards-compat: parse the raw bytes ourselves.  ``BadZipFile``
+            # surfaces as ``IncorrectFormatError`` (422) rather than being
+            # swallowed into a 200 ``result.errors``.
+            try:
+                metadata, by_type, contents = await asyncio.to_thread(
+                    self._parse_import_zip, file_content
+                )
+            except zipfile.BadZipFile as exc:
+                raise IncorrectFormatError("Not a ZIP file") from exc
+            if metadata is not None:
+                logger.info("Importing assets version %s", metadata.get("version"))
 
-        if metadata is not None:
-            logger.info("Importing assets version %s", metadata.get("version"))
+        if not contents:
+            raise NoValidFilesFoundError()
+
+        # Build per-type counters for the response payload from the parsed
+        # ``contents`` when the controller pre-parsed the bundle for us.
+        if not by_type:
+            by_type = _count_by_type(contents)
 
         # ------------------------------------------------------------------
         # Delegate to ImportAssetsCommand for dependency-aware orchestration.
@@ -322,7 +355,6 @@ class AsyncFullAssetManager:
         # per-type command in isolation (which would lose ordering).
         # ------------------------------------------------------------------
         from superset.commands.importers.v1 import ImportAssetsCommand
-        from superset.exceptions import CommandException
 
         cmd = ImportAssetsCommand(
             contents=contents,
@@ -336,15 +368,9 @@ class AsyncFullAssetManager:
             current_user=current_user,
         )
 
-        try:
-            await cmd.execute()
-        except CommandException as exc:
-            result.errors.append(str(exc))
-            return result
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Asset import failed")
-            result.errors.append(f"Asset import failed: {exc}")
-            return result
+        # Let CommandException (and subclasses) propagate so the controller
+        # surfaces a 4xx — do NOT trap it into ``result.errors`` (HTTP 200).
+        await cmd.execute()
 
         # Populate per-type counts for the response payload — the
         # controller surfaces these so the frontend can show "Imported
@@ -373,10 +399,20 @@ class AsyncFullAssetManager:
         * ``contents`` is the canonical ``{file_name: text-content}``
           mapping consumed by :class:`ImportAssetsCommand`.
 
+        Mirrors ``get_contents_from_bundle`` from the original
+        ``superset_old/commands/importers/v1/utils.py``: every entry is
+        filtered through :func:`is_valid_config` (drop dotfiles /
+        underscore-prefixed / non-YAML files) and stripped of its leading
+        export folder via :func:`remove_root`.  Upstream exports always nest
+        everything under ``assets_export_<ts>/``; without ``remove_root`` the
+        ``metadata.yaml`` lookup misses and zero objects import.
+
         Raises :class:`ValueError` on entry count or path traversal
         violations; :class:`zipfile.BadZipFile` propagates upwards from
         :class:`zipfile.ZipFile` itself.
         """
+        from superset.commands.importers.v1.utils import is_valid_config, remove_root
+
         zf = zipfile.ZipFile(io.BytesIO(file_content))
         try:
             entries = [n for n in zf.namelist() if not n.endswith("/")]
@@ -392,24 +428,30 @@ class AsyncFullAssetManager:
                 if ".." in parts:
                     raise ValueError(f"ZIP entry contains path traversal: {entry}")
 
-            metadata: dict[str, Any] | None = None
-            if "metadata.yaml" in entries:
-                metadata = yaml.safe_load(zf.read("metadata.yaml"))
-
+            # Apply remove_root + is_valid_config exactly like the original
+            # ``get_contents_from_bundle`` so a nested bundle flattens to the
+            # canonical ``metadata.yaml`` / ``databases/...`` layout.
             contents: dict[str, str] = {}
-            by_type: dict[str, list[str]] = {}
             for entry in entries:
-                contents[entry] = zf.read(entry).decode("utf-8")
-                if entry == "metadata.yaml":
+                if not is_valid_config(entry):
+                    continue
+                contents[remove_root(entry)] = zf.read(entry).decode("utf-8")
+
+            metadata: dict[str, Any] | None = None
+            if "metadata.yaml" in contents:
+                metadata = yaml.safe_load(contents["metadata.yaml"])
+
+            by_type: dict[str, list[str]] = {}
+            for file_name in contents:
+                if file_name == "metadata.yaml":
                     continue
                 # Only the first path component is the type prefix.
-                head = entry.split("/", 1)[0]
+                head = file_name.split("/", 1)[0]
                 # Skip anything that isn't a known asset directory; this
-                # keeps stray top-level files (README, .DS_Store, ...) out
-                # of the counters but keeps them in ``contents`` so the
-                # caller can still see them.
+                # keeps stray top-level files out of the counters but keeps
+                # them in ``contents`` so the caller can still see them.
                 if head in _ASSET_TYPES:
-                    by_type.setdefault(head, []).append(entry)
+                    by_type.setdefault(head, []).append(file_name)
 
             return metadata, by_type, contents
         finally:
@@ -488,6 +530,22 @@ class AsyncFullAssetManager:
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+
+def _count_by_type(contents: dict[str, str]) -> dict[str, list[str]]:
+    """Group bundle file names by their asset-type prefix.
+
+    Stray top-level / unknown-prefix files are ignored (kept out of the
+    per-type counters) but remain in ``contents`` for the importer.
+    """
+    by_type: dict[str, list[str]] = {}
+    for file_name in contents:
+        if file_name == "metadata.yaml":
+            continue
+        head = file_name.split("/", 1)[0]
+        if head in _ASSET_TYPES:
+            by_type.setdefault(head, []).append(file_name)
+    return by_type
 
 
 def _type_singular(asset_type: str) -> str:

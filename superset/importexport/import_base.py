@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import zipfile
 from abc import abstractmethod
 from pathlib import PurePosixPath
@@ -29,6 +30,8 @@ import yaml
 
 from superset.commands.base import AsyncBaseCommand
 from superset.exceptions import CommandInvalidError
+
+logger = logging.getLogger(__name__)
 
 MAX_ZIP_ENTRIES = 1000
 MAX_ENTRY_SIZE = 50 * 1024 * 1024  # 50 MB
@@ -55,6 +58,15 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
         self._ssh_tunnel_private_key_passwords = ssh_tunnel_private_key_passwords or {}
         self._overwrite = overwrite
         self._configs: dict[str, dict[str, Any]] | None = None
+        # Existing-DB secret caches keyed by UUID, used as the fallback when
+        # the request supplied no file-name-keyed password.  Mirrors the four
+        # ``db.session.query(...)`` look-ups in
+        # ``superset_old/commands/importers/v1/utils.py:load_configs``.  Lazily
+        # populated by :meth:`validate` (subclasses that wire a DAO/session).
+        self._db_passwords: dict[str, str] = {}
+        self._db_ssh_tunnel_passwords: dict[str, str] = {}
+        self._db_ssh_tunnel_private_keys: dict[str, str] = {}
+        self._db_ssh_tunnel_priv_key_passws: dict[str, str] = {}
 
     def _parse_zip(self) -> dict[str, dict[str, Any]]:
         """Parse ZIP file into ``{filename: parsed_yaml_dict}``.
@@ -132,6 +144,10 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
                     f"Expected type '{self._expected_type}', got '{meta_type}'"
                 )
 
+        # Load existing DB / SSH-tunnel secrets so ``_apply_password`` can fall
+        # back to them by UUID (matches ``load_configs``).
+        await self._load_existing_secrets()
+
         # Filter metadata.yaml before validation to match run() behavior
         validatable = {k: v for k, v in self._configs.items() if k != "metadata.yaml"}
 
@@ -143,9 +159,9 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
         # pre-check can implement it in their _validate() override.
 
         # Apply password substitutions before subclass validation
-        for _file_name, content in validatable.items():
+        for file_name, content in validatable.items():
             if isinstance(content, dict):
-                self._apply_password(content)
+                self._apply_password(content, file_name)
 
         await self._validate(validatable)
 
@@ -159,43 +175,103 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
             if file_name == "metadata.yaml":
                 continue
             if isinstance(content, dict):
-                content = self._apply_password(content)
+                content = self._apply_password(content, file_name)
             await self._import_single(file_name, content)
 
-    def _apply_password(self, content: dict[str, Any]) -> dict[str, Any]:
-        """Substitute masked passwords in database URIs and SSH tunnels.
+    async def _load_existing_secrets(self) -> None:
+        """Cache existing DB / SSH-tunnel secrets keyed by UUID.
 
-        Mirrors ``superset_old/commands/importers/v1/utils.py:load_configs``
-        lines 151-190: applies passwords, ssh_tunnel_passwords,
-        ssh_tunnel_private_keys, and ssh_tunnel_private_key_passwords
-        by file-name key or database UUID key.
+        Mirrors the four ``db.session.query(...)`` look-ups at the top of
+        ``superset_old/commands/importers/v1/utils.py:load_configs`` — they
+        provide the UUID fallback when the request didn't pass a
+        file-name-keyed secret.  Best-effort: subclasses without a DAO/session
+        leave the caches empty (the file-name keying still works).
+        """
+        dao = getattr(self, "_dao", None)
+        session = getattr(dao, "session", None) if dao is not None else None
+        if session is None:
+            return
+        try:
+            from superset.commands.importers.v1.utils import (
+                _existing_database_secrets,
+            )
+
+            (
+                self._db_passwords,
+                self._db_ssh_tunnel_passwords,
+                self._db_ssh_tunnel_private_keys,
+                self._db_ssh_tunnel_priv_key_passws,
+            ) = await _existing_database_secrets(session)
+        except Exception:  # noqa: BLE001
+            logger.debug("Could not preload existing DB secrets", exc_info=True)
+
+    def _apply_password(
+        self,
+        content: dict[str, Any],
+        file_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Splice in masked passwords / SSH-tunnel secrets.
+
+        1:1 port of ``superset_old/commands/importers/v1/utils.py:load_configs``
+        (lines 151-191): each secret is matched **by file name first**
+        (``{"databases/MyDatabase.yaml": "pw"}``), then falls back to the
+        secret of an existing database with the same UUID.  The value is
+        written to ``config["password"]`` / ``config["ssh_tunnel"][...]``
+        (NOT spliced into the ``sqlalchemy_uri`` string) — the database
+        importer later masks it into the URI via ``set_sqlalchemy_uri``.
         """
         uuid = content.get("uuid", "")
-        if uuid and self._passwords and uuid in self._passwords:
-            uri = content.get("sqlalchemy_uri", "")
-            if "XXXXXXXXXX" in uri:
-                content["sqlalchemy_uri"] = uri.replace(
-                    "XXXXXXXXXX", self._passwords[uuid]
-                )
-        ssh = content.get("ssh_tunnel")
-        if ssh and isinstance(ssh, dict):
-            if uuid and self._ssh_tunnel_passwords and uuid in self._ssh_tunnel_passwords:
-                if "XXXXXXXXXX" in ssh.get("password", ""):
-                    ssh["password"] = self._ssh_tunnel_passwords[uuid]
-            if (
+        is_database = bool(file_name) and str(file_name).startswith("databases/")
+
+        # populate password from the request (by file name) or existing DBs
+        if file_name is not None and file_name in self._passwords:
+            content["password"] = self._passwords[file_name]
+        elif is_database and uuid and uuid in self._db_passwords:
+            content["password"] = self._db_passwords[uuid]
+
+        # populate ssh_tunnel password from the request or from existing DBs
+        if file_name is not None and file_name in self._ssh_tunnel_passwords:
+            content.setdefault("ssh_tunnel", {})
+            content["ssh_tunnel"]["password"] = self._ssh_tunnel_passwords[file_name]
+        elif (
+            is_database
+            and uuid
+            and uuid in self._db_ssh_tunnel_passwords
+            and content.get("ssh_tunnel") is not None
+        ):
+            content["ssh_tunnel"]["password"] = self._db_ssh_tunnel_passwords[uuid]
+
+        # populate ssh_tunnel private_key from the request or from existing DBs
+        if file_name is not None and file_name in self._ssh_tunnel_private_keys:
+            content.setdefault("ssh_tunnel", {})
+            content["ssh_tunnel"]["private_key"] = self._ssh_tunnel_private_keys[
+                file_name
+            ]
+        elif (
+            is_database
+            and uuid
+            and uuid in self._db_ssh_tunnel_private_keys
+            and content.get("ssh_tunnel") is not None
+        ):
+            content["ssh_tunnel"]["private_key"] = self._db_ssh_tunnel_private_keys[
                 uuid
-                and self._ssh_tunnel_private_keys
-                and uuid in self._ssh_tunnel_private_keys
-            ):
-                ssh["private_key"] = self._ssh_tunnel_private_keys[uuid]
-            if (
-                uuid
-                and self._ssh_tunnel_private_key_passwords
-                and uuid in self._ssh_tunnel_private_key_passwords
-            ):
-                ssh["private_key_password"] = self._ssh_tunnel_private_key_passwords[
-                    uuid
-                ]
+            ]
+
+        # populate ssh_tunnel private_key_password from request or existing DBs
+        priv_key_pw = self._ssh_tunnel_private_key_passwords
+        if file_name is not None and file_name in priv_key_pw:
+            content.setdefault("ssh_tunnel", {})
+            content["ssh_tunnel"]["private_key_password"] = priv_key_pw[file_name]
+        elif (
+            is_database
+            and uuid
+            and uuid in self._db_ssh_tunnel_priv_key_passws
+            and content.get("ssh_tunnel") is not None
+        ):
+            content["ssh_tunnel"]["private_key_password"] = (
+                self._db_ssh_tunnel_priv_key_passws[uuid]
+            )
+
         return content
 
     @abstractmethod

@@ -79,7 +79,7 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
             if file_name.startswith("databases/") and isinstance(config, dict):
                 db = await _import_database(
                     session,
-                    self._apply_password(dict(config)),
+                    self._apply_password(dict(config), file_name),
                     overwrite=self._overwrite,
                     ignore_permissions=self._ignore_permissions,
                     security_manager=self._security_manager,

@@ -35,9 +35,8 @@ import logging
 from typing import Any, TYPE_CHECKING
 from uuid import UUID as _UUID
 
-from superset.utils.file import secure_filename
-
 from superset.exceptions import ImportFailedError
+from superset.utils.file import secure_filename
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -363,23 +362,99 @@ async def _import_database(  # noqa: C901
     if ssh_tunnel_config:
         await _import_ssh_tunnel(session, database.id, dict(ssh_tunnel_config))
 
-    # Best-effort permission setup — original calls ``add_permissions``.
-    try:
-        from superset.commands.database.utils import add_permissions  # type: ignore
-
-        try:
-            await add_permissions(  # type: ignore[misc]
-                session,
-                database,
-                ssh_tunnel=None,
-            )
-        except TypeError:
-            # Fall back to sync signature if liteset's port still uses one.
-            add_permissions(database, None)
-    except (ImportError, AttributeError):
-        pass
+    # Create catalog/schema DAR permission-view-menus — port of
+    # ``superset_old/commands/database/importers/v1/utils.py`` ->
+    # ``superset_old/commands/database/utils.py:add_permissions``.  Best-effort
+    # (the original wrapped this in ``try/except SupersetDBAPIConnectionError``)
+    # so a database that's unreachable at import time doesn't abort the import.
+    await add_permissions(session, database)
 
     return database
+
+
+async def add_permissions(  # noqa: C901
+    session: AsyncSession,
+    database: Database,
+) -> None:
+    """Add DAR (data-access-role) permission-view-menus for catalogs/schemas.
+
+    1:1 port of ``superset_old/commands/database/utils.py:add_permissions``:
+
+    * If the engine supports catalogs, enumerate every catalog (or only the
+      default one when cross-catalog queries / multi-catalog aren't enabled)
+      and create a ``catalog_access`` PVM for each.
+    * For every catalog enumerate its schemas and create a ``schema_access``
+      PVM for each.
+
+    The catalog/schema enumeration mirrors the async pattern used by
+    :class:`superset.commands.database.sync_permissions.SyncPermissionsCommand`
+    (blocking inspector calls run in a thread).  PVMs are written via
+    :class:`superset.security.permission_manager.AsyncPermissionManager` against
+    the import ``session`` so the new rows stay inside the import transaction.
+    """
+    import asyncio
+
+    from superset.security.permission_manager import (
+        AsyncPermissionManager,
+        get_catalog_perm,
+        get_schema_perm,
+    )
+
+    spec = getattr(database, "db_engine_spec", None)
+    supports_catalog = bool(getattr(spec, "supports_catalog", False))
+
+    if supports_catalog:
+        try:
+            if (
+                getattr(spec, "supports_cross_catalog_queries", False)
+                or getattr(database, "allow_multi_catalog", False)
+            ):
+
+                def _fetch_catalogs() -> set[str]:
+                    with database.get_inspector() as inspector:
+                        return spec.get_catalog_names(database, inspector)
+
+                catalogs: set[str | None] = set(
+                    await asyncio.to_thread(_fetch_catalogs)
+                )
+            else:
+                default_catalog = await asyncio.to_thread(database.get_default_catalog)
+                catalogs = {default_catalog}
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Error fetching catalogs for database '%s'",
+                getattr(database, "database_name", ""),
+                exc_info=True,
+            )
+            catalogs = set()
+
+        for catalog in catalogs:
+            await AsyncPermissionManager.add_permission_view_menu(
+                session,
+                "catalog_access",
+                get_catalog_perm(database.database_name, catalog),
+            )
+    else:
+        catalogs = {None}
+
+    for catalog in catalogs:
+        try:
+
+            def _fetch_schemas(catalog: str | None = catalog) -> set[str]:
+                with database.get_inspector(catalog=catalog) as inspector:
+                    return spec.get_schema_names(inspector)
+
+            schemas = await asyncio.to_thread(_fetch_schemas)
+        except Exception:  # noqa: BLE001
+            logger.warning("Error processing catalog '%s'", catalog, exc_info=True)
+            continue
+
+        for schema in schemas:
+            await AsyncPermissionManager.add_permission_view_menu(
+                session,
+                "schema_access",
+                get_schema_perm(database.database_name, catalog, schema),
+            )
 
 
 async def _import_ssh_tunnel(

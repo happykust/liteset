@@ -128,7 +128,7 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
             if file_name == "metadata.yaml":
                 continue
             if isinstance(content, dict):
-                content = self._apply_password(content)
+                content = self._apply_password(content, file_name)
             await self._import_single(file_name, content)
 
     async def _check_existing(self, uuid_val: str) -> bool:
@@ -576,6 +576,51 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                     dataset.metrics.remove(m_obj)
                     await self._dao.session.delete(m_obj)  # type: ignore[union-attr]
 
+    @staticmethod
+    def _normalize_example_data_url(data_uri: str) -> str:
+        """Convert ``examples://`` URLs to the configured CDN URL.
+
+        Port of ``normalize_example_data_url`` usage in the original
+        ``load_data`` — leaves non-example URLs untouched.
+        """
+        try:
+            from superset.examples.helpers import normalize_example_data_url
+        except ImportError:
+            return data_uri
+        return normalize_example_data_url(data_uri)
+
+    @staticmethod
+    def _validate_data_uri(data_uri: str) -> None:
+        """Validate ``data_uri`` against ``DATASET_IMPORT_ALLOWED_DATA_URLS``.
+
+        1:1 port of ``superset_old/commands/dataset/importers/v1/utils.py``
+        ``validate_data_uri``: any allow-list regex matching the URI passes;
+        otherwise the original raised ``DatasetForbiddenDataURI``.  That
+        exception class isn't part of the async dataset exceptions module
+        yet, so we raise :class:`CommandInvalidError` with the original
+        message (HTTP 422) — the SSRF protection is what matters here.
+        """
+        try:
+            from superset.config import SupersetSettings
+
+            settings = SupersetSettings()  # type: ignore[call-arg]
+            allowed_urls: list[str] = getattr(
+                settings, "dataset_import_allowed_data_urls", [r".*"]
+            )
+        except Exception:  # noqa: BLE001
+            allowed_urls = [r".*"]
+
+        for allowed_url in allowed_urls:
+            try:
+                if re.match(allowed_url, data_uri):
+                    return
+            except re.error:
+                logger.exception(
+                    "Invalid regular expression on DATASET_IMPORT_ALLOWED_DATA_URLS"
+                )
+                raise
+        raise CommandInvalidError("Data URI is not allowed.")
+
     async def _load_data(  # noqa: C901
         self,
         data_uri: str,
@@ -584,8 +629,18 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         """Load data from a URI into the dataset's table.
 
         Port of superset_old/commands/dataset/importers/v1/utils.py load_data().
+
+        Restores the original SSRF protection: example URLs are first
+        normalised (``examples://`` -> configured CDN) and then validated
+        against ``DATASET_IMPORT_ALLOWED_DATA_URLS`` before any ``urlopen``.
         """
         import asyncio
+
+        # Convert example URLs to align with configuration.
+        data_uri = self._normalize_example_data_url(data_uri)
+
+        # Validate against the allow-list (raises DatasetForbiddenDataURI).
+        self._validate_data_uri(data_uri)
 
         logger.info("Downloading data from %s", data_uri)
         data = await asyncio.to_thread(

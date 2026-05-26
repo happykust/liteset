@@ -82,7 +82,7 @@ class ImportSavedQueriesCommand(AsyncImportModelsCommand):
             ):
                 db = await _import_database(
                     session,
-                    self._apply_password(dict(config)),
+                    self._apply_password(dict(config), file_name),
                     overwrite=False,
                 )
                 database_ids[str(db.uuid)] = int(db.id)

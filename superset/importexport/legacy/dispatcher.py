@@ -43,7 +43,9 @@ Inputs:
 
 from __future__ import annotations
 
+import io
 import logging
+import zipfile
 from typing import Any
 
 from superset.commands.importers.exceptions import IncorrectVersionError
@@ -87,7 +89,7 @@ class ImportDashboardsCommand:
                 ImportDashboardsCommand as V1ImportDashboardsCommand,
             )
         except Exception:  # noqa: BLE001
-            V1ImportDashboardsCommand = None  # type: ignore[assignment,misc]
+            V1ImportDashboardsCommand = None  # type: ignore[assignment,misc]  # noqa: N806
 
         if V1ImportDashboardsCommand is not None:
             try:
@@ -130,6 +132,55 @@ class ImportDashboardsCommand:
 
         raise CommandInvalidError("Could not find a valid command to import file")
 
+    async def run_async(
+        self,
+        *,
+        dao: Any | None = None,
+        session: Any | None = None,
+    ) -> None:
+        """Async port of the dispatcher's version-tolerant ``run``.
+
+        Wires the v0 fallback into the HTTP import path: tries the async v1
+        command first (building a ZIP from the ``{filename: text}`` contents
+        the controller parsed) and, on :class:`IncorrectVersionError`, falls
+        back to the sync v0 command (run in a thread).  This mirrors the
+        original ``ImportDashboardsCommand`` dispatcher
+        (``superset_old/commands/dashboard/importers/dispatcher.py``) which
+        the Flask API called directly.
+        """
+        try:
+            from superset.commands.dashboard.importers.v1 import (  # noqa: PLC0415
+                ImportDashboardsCommand as V1ImportDashboardsCommand,  # noqa: N814
+            )
+        except Exception:  # noqa: BLE001
+            v1_command = None
+        else:
+            v1_command = V1ImportDashboardsCommand
+
+        if v1_command is not None:
+            try:
+                cmd = v1_command(
+                    _contents_to_zip(self.contents),
+                    *self.args,
+                    dao=dao,
+                    **self.kwargs,
+                )
+                await cmd.execute()
+                return
+            except IncorrectVersionError:
+                logger.debug("File not handled by v1, trying v0")
+            except (CommandInvalidError, CommandException):
+                logger.info("v1 command failed validation")
+                raise
+
+        await _run_v0_async(
+            V0ImportDashboardsCommand,
+            self.contents,
+            self.args,
+            self.kwargs,
+            session,
+        )
+
     def validate(self) -> None:
         """No-op — each underlying version validates its own contents."""
 
@@ -153,7 +204,7 @@ class ImportDatasetsCommand:
                 ImportDatasetsCommand as V1ImportDatasetsCommand,
             )
         except Exception:  # noqa: BLE001
-            V1ImportDatasetsCommand = None  # type: ignore[assignment,misc]
+            V1ImportDatasetsCommand = None  # type: ignore[assignment,misc]  # noqa: N806
 
         if V1ImportDatasetsCommand is not None:
             try:
@@ -186,6 +237,49 @@ class ImportDatasetsCommand:
 
         raise CommandInvalidError("Could not find a valid command to import file")
 
+    async def run_async(
+        self,
+        *,
+        dao: Any | None = None,
+        session: Any | None = None,
+    ) -> None:
+        """Async port of the dispatcher — async v1 first, sync v0 fallback.
+
+        See :meth:`ImportDashboardsCommand.run_async`.
+        """
+        try:
+            from superset.commands.dataset.importers.v1 import (  # noqa: PLC0415
+                ImportDatasetsCommand as V1ImportDatasetsCommand,  # noqa: N814
+            )
+        except Exception:  # noqa: BLE001
+            v1_command = None
+        else:
+            v1_command = V1ImportDatasetsCommand
+
+        if v1_command is not None:
+            try:
+                cmd = v1_command(
+                    _contents_to_zip(self.contents),
+                    *self.args,
+                    dao=dao,
+                    **self.kwargs,
+                )
+                await cmd.execute()
+                return
+            except IncorrectVersionError:
+                logger.debug("File not handled by v1, trying v0")
+            except (CommandInvalidError, CommandException):
+                logger.info("v1 command failed validation")
+                raise
+
+        await _run_v0_async(
+            V0ImportDatasetsCommand,
+            self.contents,
+            self.args,
+            self.kwargs,
+            session,
+        )
+
     def validate(self) -> None:
         """No-op — each underlying version validates its own contents."""
 
@@ -200,6 +294,46 @@ def _is_coroutine_method(func: Any) -> bool:
     if inspect.iscoroutinefunction(getattr(func, "__func__", func)):
         return True
     return False
+
+
+def _contents_to_zip(contents: dict[str, str]) -> io.BytesIO:
+    """Pack a ``{filename: text}`` mapping into an in-memory ZIP for v1.
+
+    The async v1 import commands consume an :class:`io.BytesIO` ZIP, whereas
+    the dispatcher (mirroring the original) carries the bundle as a dict.  The
+    v1 command's ``_parse_zip`` re-applies ``remove_root``/``is_valid_config``,
+    so a flat ``{name: text}`` round-trips unchanged.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, text in contents.items():
+            zf.writestr(name, text)
+    buf.seek(0)
+    return buf
+
+
+async def _run_v0_async(
+    v0_cls: Any,
+    contents: dict[str, str],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    session: Any | None,
+) -> None:
+    """Run a sync v0 command in a worker thread (it uses a sync Session)."""
+    import asyncio
+
+    def _run() -> None:
+        try:
+            v0_cls(contents, *args, **kwargs).run(session=session)
+            return
+        except IncorrectVersionError:
+            logger.debug("File not handled by v0 either")
+        except (CommandInvalidError, CommandException):
+            logger.info("v0 command failed validation")
+            raise
+        raise CommandInvalidError("Could not find a valid command to import file")
+
+    await asyncio.to_thread(_run)
 
 
 __all__ = ["ImportDashboardsCommand", "ImportDatasetsCommand"]
