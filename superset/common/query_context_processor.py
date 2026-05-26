@@ -309,10 +309,18 @@ class AsyncQueryContextProcessor:
     ) -> dict[str, Any]:
         """Main entry point — processes all query objects, returns payload.
 
-        Dispatches based on each query_object's result_type:
-          - "query"   — build SQL but don't execute
-          - "samples" — raw rows without metrics/filters
-          - "results" — execute without post-processing
+        Dispatches based on each query_object's result_type. Mirrors the
+        original ``superset_old/common/query_actions.py::_result_type_functions``
+        table:
+          - "columns"        — datasource column metadata, no query executed
+          - "timegrains"     — available time grains, no query executed
+          - "query"          — build SQL but don't execute
+          - "samples"        — raw rows without metrics/filters/time window
+          - "drill_detail"   — like samples but keeps the time filter and
+                               orders by the first column
+          - "results"        — execute without post-processing
+          - "post_processed" — full results (post-processing applied later by
+                               the chart context), same as "full"
           - "full" (default) — execute, normalize, and post-process
         """
         await self._ensure_totals_available(query_objects)
@@ -330,10 +338,18 @@ class AsyncQueryContextProcessor:
                 getattr(qo, "result_type", None) or ctx_result_type or "full"
             )
 
-            if result_type == "query":
+            if result_type == "columns":
+                result = self._get_columns()
+            elif result_type == "timegrains":
+                result = self._get_timegrains()
+            elif result_type == "query":
                 result = await self._get_query_only(qo)
-            elif result_type in ("samples", "drill_detail"):
+            elif result_type == "samples":
                 result = await self._get_samples(qo)
+            elif result_type == "drill_detail":
+                result = await self._get_drill_detail(
+                    qo, force=force, force_cached=force_cached
+                )
             elif result_type == "results":
                 result = await self.get_df_payload(
                     qo,
@@ -342,7 +358,11 @@ class AsyncQueryContextProcessor:
                     skip_post_processing=True,
                 )
             else:
-                # "full" — default behavior
+                # "full" / "post_processed" — default behavior. For
+                # ``post_processed`` the original returns the full results and
+                # leaves chart-specific post-processing to the viz layer, so it
+                # maps to the same path as ``full`` (see original
+                # ``_result_type_functions[POST_PROCESSED] = _get_full``).
                 result = await self.get_df_payload(
                     qo,
                     force=force,
@@ -373,6 +393,51 @@ class AsyncQueryContextProcessor:
             return_value["cache_key"] = cache_key
 
         return return_value
+
+    def _get_columns(self) -> dict[str, Any]:
+        """Return datasource column metadata without executing a query.
+
+        1:1 port of ``superset_old/common/query_actions.py:_get_columns``.
+        ``extract_column_dtype`` is inlined here (it has no new-tree home)
+        and mirrors ``superset_old/utils/core.py:extract_column_dtype``:
+        temporal columns -> TEMPORAL, numeric -> NUMERIC, else STRING.
+        """
+        from superset.typing import GenericDataType
+
+        def _column_dtype(col: Any) -> int:
+            if getattr(col, "is_temporal", False):
+                return GenericDataType.TEMPORAL
+            if getattr(col, "is_numeric", False):
+                return GenericDataType.NUMERIC
+            # TODO: add check for boolean data type when proper support is added
+            return GenericDataType.STRING
+
+        return {
+            "data": [
+                {
+                    "column_name": col.column_name,
+                    "verbose_name": col.verbose_name,
+                    "dtype": _column_dtype(col),
+                }
+                for col in getattr(self._datasource, "columns", []) or []
+            ]
+        }
+
+    def _get_timegrains(self) -> dict[str, Any]:
+        """Return the datasource's available time grains, no query executed.
+
+        1:1 port of ``superset_old/common/query_actions.py:_get_timegrains``.
+        """
+        return {
+            "data": [
+                {
+                    "name": grain.name,
+                    "function": grain.function,
+                    "duration": grain.duration,
+                }
+                for grain in self._datasource.database.grains()
+            ]
+        }
 
     async def _get_query_only(self, query_object: AsyncQueryObject) -> dict[str, Any]:
         """Build SQL without executing — returns the query string only."""
@@ -431,6 +496,45 @@ class AsyncQueryContextProcessor:
             sample_qo.row_limit = getattr(self._settings, "samples_row_limit", 1000)
 
         return await self.get_df_payload(sample_qo, skip_post_processing=True)
+
+    async def _get_drill_detail(
+        self,
+        query_object: AsyncQueryObject,
+        force: bool = False,
+        force_cached: bool = False,
+    ) -> dict[str, Any]:
+        """Execute a drill-to-detail query.
+
+        1:1 port of ``superset_old/common/query_actions.py:_get_drill_detail``.
+        Differs from ``_get_samples`` in two ways:
+          - the time filter is preserved (``from_dttm`` / ``to_dttm`` are NOT
+            cleared), and
+          - rows are ordered ascending by the first datasource column.
+        Like samples it clears metrics/post-processing and selects every
+        physical column.
+        """
+        # todo(yongjie): Remove this function,
+        #  when determining whether samples should be applied to the time filter.
+        drill_qo = copy.deepcopy(query_object)
+        drill_qo.is_timeseries = False
+        drill_qo.metrics = None
+        drill_qo.post_processing = []
+        qry_obj_cols: list[str] = []
+        for o in getattr(self._datasource, "columns", []) or []:
+            if isinstance(o, dict):
+                col_name = o.get("column_name")
+            else:
+                col_name = getattr(o, "column_name", None)
+            if col_name:
+                qry_obj_cols.append(col_name)
+        drill_qo.columns = qry_obj_cols
+        drill_qo.orderby = [(drill_qo.columns[0], True)]
+
+        return await self.get_df_payload(
+            drill_qo,
+            force=force,
+            force_cached=force_cached,
+        )
 
     async def get_df_payload(  # noqa: C901
         self,

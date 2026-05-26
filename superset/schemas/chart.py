@@ -440,6 +440,8 @@ ChartDataResultType = Literal[
     "results",
     "samples",
     "timegrains",
+    "post_processed",
+    "drill_detail",
 ]
 
 ChartDataResultFormat = Literal["csv", "json", "xlsx"]
