@@ -23,7 +23,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
-from superset.commands.utils import compute_owner_list
+from superset.commands.utils import compute_owner_list, update_tags, validate_tags
 from superset.exceptions import (
     DashboardsNotFoundValidationError,
     DatasourceNotFoundValidationError,
@@ -31,6 +31,7 @@ from superset.exceptions import (
     ObjectNotFoundError,
 )
 from superset.tags.core import sync_owner_tags_after_update
+from superset.tags.models import ObjectType
 
 if TYPE_CHECKING:
     from superset.db.daos.chart import AsyncChartDAO
@@ -85,6 +86,25 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
         }
         if not is_query_context_update and self._security_manager is not None:
             await self._security_manager.raise_for_ownership(self._chart, self._user_id)
+
+        # Validate tags — 1:1 with
+        # ``superset_old/commands/chart/update.py::UpdateChartCommand.validate``
+        # (lines 130-134). Checks the caller has permission to manage tags
+        # and that every new tag id exists.  Raises ``TagForbiddenError``
+        # (403) / ``TagNotFoundValidationError`` (422).
+        if self._security_manager is not None:
+            user = (
+                await self._security_manager.find_user_by_id(self._user_id)
+                if self._user_id is not None
+                else None
+            )
+            await validate_tags(
+                ObjectType.chart,
+                list(self._chart.tags),
+                self._data.get("tags"),
+                self._security_manager,
+                user,
+            )
 
         # Validate/Populate datasource — 1:1 with
         # ``superset_old/commands/chart/update.py``: ``datasource_type`` is
@@ -179,10 +199,18 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
                 self._data.get("owners"),
             )
 
-        # Resolve tags
+        # Update tags — 1:1 with
+        # ``superset_old/commands/chart/update.py::UpdateChartCommand.run``
+        # (lines 66-67): apply the add/remove of custom tags on the chart.
         tag_ids = self._data.get("tags")
-        if tag_ids is not None and hasattr(self._dao, "find_tags_by_ids"):
-            self._chart.tags = await self._dao.find_tags_by_ids(tag_ids)
+        if tag_ids is not None:
+            await update_tags(
+                ObjectType.chart,
+                self._chart.id,
+                list(self._chart.tags),
+                tag_ids,
+                self._dao.session,
+            )
 
         # Assign dashboards — ``validate()`` already resolved the
         # requested ids to ``Dashboard`` instances and validated access

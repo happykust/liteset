@@ -16,6 +16,7 @@
 # under the License.
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from sqlalchemy import select
@@ -24,7 +25,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from superset.exceptions import (
     OwnersNotFoundValidationError,
     RolesNotFoundValidationError,
+    TagForbiddenError,
+    TagNotFoundValidationError,
 )
+from superset.tags.models import ObjectType, TagType
 
 
 async def populate_roles(
@@ -112,3 +116,102 @@ async def compute_owner_list(
         owner_ids,
         default_to_user=False,
     )
+
+
+async def validate_tags(
+    object_type: ObjectType,
+    current_tags: list[Any],
+    new_tag_ids: list[int] | None,
+    security_manager: Any,
+    user: Any,
+) -> None:
+    """Validate the tags list for an update command.
+
+    Async port of ``superset_old/commands/utils.py::validate_tags``.
+
+    Users with ``can_write`` on ``Tag`` are allowed to both create new tags
+    and manage tag associations with objects. Users with ``can_tag`` on
+    ``object_type`` are only allowed to manage existing tags' associations
+    with the object.
+
+    :param object_type: the object type being tagged
+    :param current_tags: list of current tags on the object
+    :param new_tag_ids: list of tag ids specified in the update payload
+    :param security_manager: the async security manager
+    :param user: the acting user (a ``User`` object)
+    :raises TagForbiddenError: if the user lacks permission to manage tags
+    :raises TagNotFoundValidationError: if a new tag id does not exist
+    """
+
+    # `tags` not part of the update payload
+    if new_tag_ids is None:
+        return
+
+    # No changes in the list
+    current_custom_tags = [tag.id for tag in current_tags if tag.type == TagType.custom]
+    if Counter(current_custom_tags) == Counter(new_tag_ids):
+        return
+
+    # No perm to tag assets
+    if not (
+        await security_manager.can_access("can_write", "Tag", user=user)
+        or await security_manager.can_access(
+            "can_tag", object_type.name.capitalize(), user=user
+        )
+    ):
+        validation_error = (
+            f"You do not have permission to manage tags on {object_type.name}s"
+        )
+        raise TagForbiddenError(validation_error)
+
+    # Validate if new tags already exist
+    from superset.db.daos.tag import AsyncTagDAO
+
+    tag_dao = AsyncTagDAO(security_manager.dao.session)
+    additional_tags = [tag for tag in new_tag_ids if tag not in current_custom_tags]
+    for tag_id in additional_tags:
+        if not await tag_dao.find_by_id(tag_id):
+            validation_error = f"Tag ID {tag_id} not found"
+            raise TagNotFoundValidationError(validation_error)
+
+    return
+
+
+async def update_tags(
+    object_type: ObjectType,
+    object_id: int,
+    current_tags: list[Any],
+    new_tag_ids: list[int],
+    session: AsyncSession,
+) -> None:
+    """Update the tag relationship for an object on an update command.
+
+    Async port of ``superset_old/commands/utils.py::update_tags``.
+
+    :param object_type: the object type being tagged
+    :param object_id: the object (dashboard, chart, etc) id
+    :param current_tags: list of current tags on the object
+    :param new_tag_ids: list of tag ids specified in the update payload
+    :param session: the async session to operate on
+    """
+    from superset.db.daos.tag import AsyncTagDAO
+
+    tag_dao = AsyncTagDAO(session)
+
+    current_custom_tags = [tag for tag in current_tags if tag.type == TagType.custom]
+    current_custom_tag_ids = [
+        tag.id for tag in current_tags if tag.type == TagType.custom
+    ]
+
+    tags_to_delete = [tag for tag in current_custom_tags if tag.id not in new_tag_ids]
+    for tag in tags_to_delete:
+        await tag_dao.delete_tagged_object(object_type.name, object_id, tag.name)
+
+    tag_ids_to_add = [
+        tag_id for tag_id in new_tag_ids if tag_id not in current_custom_tag_ids
+    ]
+    if tag_ids_to_add:
+        tags_to_add = await tag_dao.find_by_ids(tag_ids_to_add)
+        await tag_dao.create_custom_tagged_objects(
+            object_type.name, object_id, [tag.name for tag in tags_to_add]
+        )

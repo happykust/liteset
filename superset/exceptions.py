@@ -775,6 +775,35 @@ class DatasourceTypeUpdateRequiredValidationError(CommandInvalidError):
     message = "Datasource type is required when datasource_id is updated"
 
 
+class TagNotFoundValidationError(CommandInvalidError):
+    """Raised when a requested tag id can't be resolved during an update.
+
+    Ported 1:1 from
+    ``superset_old/commands/tag/exceptions.py``-adjacent
+    ``superset_old/commands/exceptions.py::TagNotFoundValidationError``
+    (a ``ValidationError`` on the ``tags`` field, status 422). The message
+    is supplied by the caller (e.g. ``f"Tag ID {tag_id} not found"``).
+    """
+
+    status_code = 422
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message=message)
+
+
+class TagForbiddenError(ForbiddenError):
+    """Raised when the user lacks permission to manage tags on an object.
+
+    Ported 1:1 from
+    ``superset_old/commands/exceptions.py::TagForbiddenError`` (a
+    ``ForbiddenError`` subclass, status 403). The message is supplied by
+    the caller.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message=message)
+
+
 class RLSRuleNotFoundError(CommandException):
     """Raised when an RLS rule lookup by id returns nothing.
 

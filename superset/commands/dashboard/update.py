@@ -23,9 +23,10 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
-from superset.commands.utils import compute_owner_list
+from superset.commands.utils import compute_owner_list, update_tags, validate_tags
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.tags.core import sync_owner_tags_after_update
+from superset.tags.models import ObjectType
 
 if TYPE_CHECKING:
     from superset.db.daos.dashboard import AsyncDashboardDAO
@@ -81,6 +82,25 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
             if not is_unique:
                 raise CommandInvalidError(f"slug '{slug}' already exists")
 
+        # Validate tags — 1:1 with
+        # ``superset_old/commands/dashboard/update.py::UpdateDashboardCommand.validate``
+        # (lines 106-110). Checks the caller has permission to manage tags
+        # and that every new tag id exists.  Raises ``TagForbiddenError``
+        # (403) / ``TagNotFoundValidationError`` (422).
+        if self._security_manager is not None:
+            user = (
+                await self._security_manager.find_user_by_id(self._user_id)
+                if self._user_id is not None
+                else None
+            )
+            await validate_tags(
+                ObjectType.dashboard,
+                list(self._dashboard.tags),
+                self._data.get("tags"),
+                self._security_manager,
+                user,
+            )
+
     async def run(self) -> "Dashboard":  # noqa: C901
         assert self._dashboard is not None
 
@@ -95,6 +115,19 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
                 setattr(self._dashboard, key, value)
         if self._user_id is not None:
             self._dashboard.changed_by_fk = self._user_id
+
+        # Update tags — 1:1 with
+        # ``superset_old/commands/dashboard/update.py::UpdateDashboardCommand.run``
+        # (lines 64-65): apply the add/remove of custom tags on the dashboard.
+        tag_ids = self._data.get("tags")
+        if tag_ids is not None:
+            await update_tags(
+                ObjectType.dashboard,
+                self._dashboard.id,
+                list(self._dashboard.tags),
+                tag_ids,
+                self._dao.session,
+            )
 
         if "position_json" in self._data:
             await self._process_tab_diff(old_position_json)
