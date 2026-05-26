@@ -362,6 +362,43 @@ async def query_access_filters(
         return []
 
 
+async def report_access_filters(
+    security_manager: Any,
+    user: Any,
+) -> list[Any]:
+    """Return SQLAlchemy filters restricting report schedules to those the user
+    can access.
+
+    1:1 port of ``superset_old/reports/filters.py:ReportScheduleFilter``:
+    users with the global ``can_access_all_datasources`` permission (which
+    includes admins) see every report; everyone else is restricted to the
+    reports they own (via the ``ReportSchedule.owners`` M2M).
+    """
+    can_access_all_datasources = await security_manager.can_access_all_datasources(
+        user=user
+    )
+    if can_access_all_datasources:
+        return []
+
+    try:
+        from superset.models.reports import ReportSchedule
+    except (ImportError, ModuleNotFoundError):
+        return []
+
+    user_id = getattr(user, "id", None)
+    if user_id is None:
+        # No authenticated user — deny everything (mirrors the original which
+        # filters on ``get_user_id()`` and would match nothing).
+        return [ReportSchedule.id == -1]
+
+    owner_ids_query = (
+        select(ReportSchedule.id)
+        .join(ReportSchedule.owners)
+        .where(ReportSchedule.owners.any(id=user_id))
+    )
+    return [ReportSchedule.id.in_(owner_ids_query)]
+
+
 async def saved_query_access_filters(
     security_manager: Any,
     user: Any,

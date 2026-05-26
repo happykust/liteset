@@ -22,7 +22,13 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
-from superset.exceptions import CommandInvalidError, ObjectNotFoundError
+from superset.commands.report_exceptions import ReportScheduleForbiddenError
+from superset.commands.utils import compute_owner_list, populate_owner_list
+from superset.exceptions import (
+    CommandInvalidError,
+    ObjectNotFoundError,
+    SupersetSecurityException,
+)
 
 try:
     from croniter import croniter
@@ -42,10 +48,12 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         dao: AsyncReportScheduleDAO,
         data: dict[str, Any],
         user_id: int | None = None,
+        security_manager: Any | None = None,
     ) -> None:
         self._dao = dao
         self._data = data
         self._user_id = user_id
+        self._security_manager = security_manager
 
     async def validate(self) -> None:
         name = self._data.get("name")
@@ -95,14 +103,28 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         if "database" in create_data:
             create_data["database_id"] = create_data.pop("database")
 
-        # Remove relationship fields handled separately
-        create_data.pop("owners", None)
+        # Resolve owners separately so we can assign the M2M after insert.
+        # Mirrors ``superset_old/commands/report/create.py`` which calls
+        # ``populate_owners(owner_ids)`` (default_to_user=True) so the current
+        # user becomes the owner when none are supplied.
+        owner_ids = create_data.pop("owners", None)
 
         if self._user_id is not None:
             create_data["created_by_fk"] = self._user_id
             create_data["changed_by_fk"] = self._user_id
 
         report = await self._dao.create(create_data)
+
+        if self._security_manager is not None:
+            owners = await populate_owner_list(
+                self._security_manager,
+                self._user_id,
+                owner_ids,
+                default_to_user=True,
+            )
+            report.owners = owners
+
+        await self._dao.session.flush()
         return report
 
 
@@ -113,17 +135,32 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         pk: int,
         data: dict[str, Any],
         user_id: int | None = None,
+        security_manager: Any | None = None,
     ) -> None:
         self._dao = dao
         self._pk = pk
         self._data = data
         self._user_id = user_id
+        self._security_manager = security_manager
         self._report: Any | None = None
 
     async def validate(self) -> None:
+        from superset.models.reports import ReportState
+
         self._report = await self._dao.find_by_id(self._pk)
         if not self._report:
             raise ObjectNotFoundError("ReportSchedule", self._pk)
+
+        # Change the state to not triggered when the user deactivates a report
+        # that is currently in a working state. This prevents an alert/report
+        # from being kept in a working state if activated back. 1:1 with
+        # ``superset_old/commands/report/update.py:83-88``.
+        if (
+            self._report.last_state == ReportState.WORKING
+            and "active" in self._data
+            and not self._data["active"]
+        ):
+            self._data["last_state"] = ReportState.NOOP
 
         # Validate uniqueness if name or type changed
         name = self._data.get("name", self._report.name)
@@ -146,6 +183,16 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             except (ValueError, KeyError) as e:
                 raise CommandInvalidError(f"Invalid crontab expression: {e}") from e
 
+        # Check ownership — non-owners (and non-admins) get a 403, 1:1 with
+        # ``superset_old/commands/report/update.py:124-128``.
+        if self._security_manager is not None:
+            try:
+                await self._security_manager.raise_for_ownership(
+                    self._report, self._user_id
+                )
+            except SupersetSecurityException as ex:
+                raise ReportScheduleForbiddenError() from ex
+
     async def run(self) -> "ReportSchedule":
         assert self._report is not None
 
@@ -157,13 +204,28 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         if "database" in update_data:
             update_data["database_id"] = update_data.pop("database")
 
-        # Remove relationship fields handled separately
-        update_data.pop("owners", None)
+        # Resolve owners separately. Mirrors
+        # ``superset_old/commands/report/update.py`` which calls
+        # ``compute_owners(model.owners, owner_ids)`` — preserving the existing
+        # owners when none are supplied in the payload.
+        owners_in_payload = "owners" in update_data
+        owner_ids = update_data.pop("owners", None)
 
         if self._user_id is not None:
             update_data["changed_by_fk"] = self._user_id
 
         report = await self._dao.update(self._report, update_data)
+
+        if self._security_manager is not None:
+            await self._dao.session.refresh(report, ["owners"])
+            owners = await compute_owner_list(
+                self._security_manager,
+                self._user_id,
+                list(report.owners),
+                owner_ids if owners_in_payload else None,
+            )
+            report.owners = owners
+
         await self._dao.session.flush()
         return report
 
@@ -173,15 +235,29 @@ class DeleteReportScheduleCommand(AsyncBaseCommand[None]):
         self,
         dao: AsyncReportScheduleDAO,
         pk: int,
+        user_id: int | None = None,
+        security_manager: Any | None = None,
     ) -> None:
         self._dao = dao
         self._pk = pk
+        self._user_id = user_id
+        self._security_manager = security_manager
         self._report: Any | None = None
 
     async def validate(self) -> None:
         self._report = await self._dao.find_by_id(self._pk)
         if not self._report:
             raise ObjectNotFoundError("ReportSchedule", self._pk)
+
+        # Check ownership — 1:1 with
+        # ``superset_old/commands/report/delete.py:53-58``.
+        if self._security_manager is not None:
+            try:
+                await self._security_manager.raise_for_ownership(
+                    self._report, self._user_id
+                )
+            except SupersetSecurityException as ex:
+                raise ReportScheduleForbiddenError() from ex
 
     async def run(self) -> None:
         assert self._report is not None
@@ -194,9 +270,13 @@ class BulkDeleteReportScheduleCommand(AsyncBaseCommand[None]):
         self,
         dao: AsyncReportScheduleDAO,
         ids: list[int],
+        user_id: int | None = None,
+        security_manager: Any | None = None,
     ) -> None:
         self._dao = dao
         self._ids = ids
+        self._user_id = user_id
+        self._security_manager = security_manager
         self._reports: list[Any] = []
 
     async def validate(self) -> None:
@@ -207,6 +287,17 @@ class BulkDeleteReportScheduleCommand(AsyncBaseCommand[None]):
         missing = set(self._ids) - found_ids
         if missing:
             raise ObjectNotFoundError("ReportSchedule", str(missing))
+
+        # Check ownership for every report — 1:1 with
+        # ``superset_old/commands/report/delete.py:53-58``.
+        if self._security_manager is not None:
+            for model in self._reports:
+                try:
+                    await self._security_manager.raise_for_ownership(
+                        model, self._user_id
+                    )
+                except SupersetSecurityException as ex:
+                    raise ReportScheduleForbiddenError() from ex
 
     async def run(self) -> None:
         await self._dao.delete(self._reports)

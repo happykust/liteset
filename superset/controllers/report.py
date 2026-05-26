@@ -282,10 +282,13 @@ class ReportScheduleController(Controller):
         self,
         dao: Any,
         rison_params: dict[str, Any] | None,
+        current_user: UserProtocol,
+        security_manager: Any,
     ) -> dict[str, Any]:
         """GET /api/v1/report/ — list report schedules with pagination."""
         from sqlalchemy.orm import selectinload
 
+        from superset.db.filters import report_access_filters
         from superset.models.reports import ReportSchedule
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
@@ -295,8 +298,13 @@ class ReportScheduleController(Controller):
         if not order_by:
             order_by = [ReportSchedule.changed_on.desc()]
 
+        # Owner-scope visibility (1:1 with ``ReportScheduleFilter``): non
+        # ``can_access_all_datasources`` users only see reports they own.
+        base_filters = await report_access_filters(security_manager, current_user)
+        all_filters = (rison_filters or []) + base_filters
+
         items = await dao.find_all(
-            filters=rison_filters or None,
+            filters=all_filters or None,
             page=page,
             page_size=page_size,
             order_by=order_by,
@@ -307,7 +315,7 @@ class ReportScheduleController(Controller):
                 selectinload(ReportSchedule.created_by),
             ],
         )
-        total = await dao.count(filters=rison_filters or None)
+        total = await dao.count(filters=all_filters or None)
         await event_logger.alog_with_context("report.list")
         return serialize_list_response(
             items,
@@ -320,14 +328,24 @@ class ReportScheduleController(Controller):
         "/{pk:int}",
         guards=[require_permission("can_read", "ReportSchedule")],
     )
-    async def get_report(self, pk: int, dao: Any) -> dict[str, Any]:
+    async def get_report(
+        self,
+        pk: int,
+        dao: Any,
+        current_user: UserProtocol,
+        security_manager: Any,
+    ) -> dict[str, Any]:
         """GET /api/v1/report/<pk> — get a single report schedule."""
         from sqlalchemy.orm import selectinload
 
+        from superset.db.filters import report_access_filters
         from superset.models.reports import ReportSchedule
 
+        # Owner-scope visibility (1:1 with ``ReportScheduleFilter``): non
+        # ``can_access_all_datasources`` users can only read reports they own.
+        base_filters = await report_access_filters(security_manager, current_user)
         results = await dao.find_all(
-            filters=[ReportSchedule.id == pk],
+            filters=[ReportSchedule.id == pk, *base_filters],
             page=0,
             page_size=1,
             options=[
@@ -357,6 +375,7 @@ class ReportScheduleController(Controller):
         data: ReportSchedulePostSchema,
         dao: Any,
         current_user: UserProtocol,
+        security_manager: Any,
     ) -> dict[str, Any]:
         """POST /api/v1/report/ — create a report schedule."""
         raw = msgspec.structs.asdict(data)
@@ -366,7 +385,12 @@ class ReportScheduleController(Controller):
                 msgspec.structs.asdict(r) if hasattr(r, "__struct_fields__") else r
                 for r in raw["recipients"]
             ]
-        cmd = CreateReportScheduleCommand(dao=dao, data=raw, user_id=current_user.id)
+        cmd = CreateReportScheduleCommand(
+            dao=dao,
+            data=raw,
+            user_id=current_user.id,
+            security_manager=security_manager,
+        )
         item = await cmd.execute()
         await event_logger.alog_with_context(
             "report.create",
@@ -385,6 +409,7 @@ class ReportScheduleController(Controller):
         data: ReportSchedulePutSchema,
         dao: Any,
         current_user: UserProtocol,
+        security_manager: Any,
     ) -> dict[str, Any]:
         """PUT /api/v1/report/<pk> — update a report schedule."""
         raw = filter_unset(msgspec.structs.asdict(data))
@@ -395,7 +420,11 @@ class ReportScheduleController(Controller):
                 for r in raw["recipients"]
             ]
         cmd = UpdateReportScheduleCommand(
-            dao=dao, pk=pk, data=raw, user_id=current_user.id
+            dao=dao,
+            pk=pk,
+            data=raw,
+            user_id=current_user.id,
+            security_manager=security_manager,
         )
         item = await cmd.execute()
         await event_logger.alog_with_context(
@@ -410,9 +439,20 @@ class ReportScheduleController(Controller):
         guards=[require_permission("can_write", "ReportSchedule")],
         status_code=200,
     )
-    async def delete_report(self, pk: int, dao: Any) -> dict[str, str]:
+    async def delete_report(
+        self,
+        pk: int,
+        dao: Any,
+        current_user: UserProtocol,
+        security_manager: Any,
+    ) -> dict[str, str]:
         """DELETE /api/v1/report/<pk> — delete a single report schedule."""
-        cmd = DeleteReportScheduleCommand(dao=dao, pk=pk)
+        cmd = DeleteReportScheduleCommand(
+            dao=dao,
+            pk=pk,
+            user_id=current_user.id,
+            security_manager=security_manager,
+        )
         await cmd.execute()
         await event_logger.alog_with_context("report.delete", object_ref=f"report:{pk}")
         return {"message": "OK"}
@@ -426,10 +466,17 @@ class ReportScheduleController(Controller):
         self,
         dao: Any,
         rison_params: list[int] | dict[str, Any] | None,
+        current_user: UserProtocol,
+        security_manager: Any,
     ) -> dict[str, str]:
         """DELETE /api/v1/report/ — bulk delete report schedules."""
         ids = extract_ids_required(rison_params)
-        cmd = BulkDeleteReportScheduleCommand(dao=dao, ids=ids)
+        cmd = BulkDeleteReportScheduleCommand(
+            dao=dao,
+            ids=ids,
+            user_id=current_user.id,
+            security_manager=security_manager,
+        )
         await cmd.execute()
         await event_logger.alog_with_context(
             "report.bulk_delete", extra={"count": len(ids)}
@@ -445,8 +492,13 @@ class ReportScheduleController(Controller):
         column_name: str,
         dao: Any,
         rison_params: dict[str, Any] | None,
+        current_user: UserProtocol,
+        security_manager: Any,
     ) -> dict[str, Any]:
         """GET /api/v1/report/related/{column_name} — related values for dropdowns."""
+        from superset.db.filters import report_access_filters
+
+        base_filters = await report_access_filters(security_manager, current_user)
         return await get_related_payload(
             dao=dao,
             column_name=column_name,
@@ -454,6 +506,7 @@ class ReportScheduleController(Controller):
             allowed_fields=frozenset(
                 {"owners", "created_by", "chart", "dashboard", "database"}
             ),
+            base_filters=base_filters or None,
         )
 
     @get(

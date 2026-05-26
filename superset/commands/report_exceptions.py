@@ -23,12 +23,28 @@ These are used by the Celery-based report execution pipeline
 
 from __future__ import annotations
 
-from superset.exceptions import CommandException, SupersetErrorsException
+from superset.exceptions import (
+    CommandException,
+    ForbiddenError,
+    SupersetErrorsException,
+)
 
 
 class ReportScheduleNotFoundError(CommandException):
     status_code = 404
     message = "Report Schedule not found."
+
+
+class ReportScheduleForbiddenError(ForbiddenError):
+    """Raised when the user is not an owner (nor admin) of a report schedule.
+
+    Ported 1:1 from
+    ``superset_old/commands/report/exceptions.py::ReportScheduleForbiddenError``
+    (status 403). Raised by update/delete commands when the ownership check
+    (``security_manager.raise_for_ownership``) fails.
+    """
+
+    message = "Changing this report is forbidden"
 
 
 class ReportScheduleExecuteUnexpectedError(CommandException):

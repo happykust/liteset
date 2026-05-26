@@ -194,7 +194,7 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
                 ReportExecutionLog.state.notin_(
                     [ReportState.ERROR, ReportState.WORKING]
                 ),
-                ReportExecutionLog.end_dttm > last_error_log.end_dttm,
+                ReportExecutionLog.end_dttm < last_error_log.end_dttm,
             )
             .order_by(ReportExecutionLog.end_dttm.desc())
             .limit(1)
