@@ -68,7 +68,7 @@ class PermissionController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/",
-        guards=[require_permission("can_read", "Permission")],
+        guards=[require_permission("can_get", "Permission")],
     )
     async def get_list(
         self,
@@ -125,7 +125,7 @@ class PermissionController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/{pk:int}",
-        guards=[require_permission("can_read", "Permission")],
+        guards=[require_permission("can_get", "Permission")],
     )
     async def get_single(
         self,
@@ -150,7 +150,7 @@ class PermissionController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/_info",
-        guards=[require_permission("can_read", "Permission")],
+        guards=[require_permission("can_info", "Permission")],
     )
     async def get_info(self) -> dict[str, Any]:
         """GET /api/v1/security/permissions/_info -- metadata.

@@ -90,7 +90,7 @@ class ViewMenuController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/",
-        guards=[require_permission("can_read", "ViewMenu")],
+        guards=[require_permission("can_get", "ViewMenu")],
     )
     async def get_list(
         self,
@@ -147,7 +147,7 @@ class ViewMenuController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/{pk:int}",
-        guards=[require_permission("can_read", "ViewMenu")],
+        guards=[require_permission("can_get", "ViewMenu")],
     )
     async def get_single(
         self,
@@ -172,7 +172,7 @@ class ViewMenuController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/_info",
-        guards=[require_permission("can_read", "ViewMenu")],
+        guards=[require_permission("can_info", "ViewMenu")],
     )
     async def get_info(self) -> dict[str, Any]:
         """GET /api/v1/security/resources/_info -- metadata.
@@ -191,7 +191,7 @@ class ViewMenuController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/",
-        guards=[require_permission("can_write", "ViewMenu")],
+        guards=[require_permission("can_post", "ViewMenu")],
         status_code=201,
     )
     async def create(
@@ -228,7 +228,7 @@ class ViewMenuController(Controller):
     # ------------------------------------------------------------------
     @put(
         "/{pk:int}",
-        guards=[require_permission("can_write", "ViewMenu")],
+        guards=[require_permission("can_put", "ViewMenu")],
     )
     async def update(
         self,
@@ -264,7 +264,7 @@ class ViewMenuController(Controller):
     # ------------------------------------------------------------------
     @delete(
         "/{pk:int}",
-        guards=[require_permission("can_write", "ViewMenu")],
+        guards=[require_permission("can_delete", "ViewMenu")],
         status_code=200,
     )
     async def delete_single(

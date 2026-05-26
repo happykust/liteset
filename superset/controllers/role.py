@@ -106,7 +106,7 @@ class RoleController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/",
-        guards=[require_permission("can_read", "Role")],
+        guards=[require_permission("can_get", "Role")],
     )
     async def get_list(
         self,
@@ -169,7 +169,7 @@ class RoleController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/{pk:int}",
-        guards=[require_permission("can_read", "Role")],
+        guards=[require_permission("can_get", "Role")],
     )
     async def get_single(
         self,
@@ -196,7 +196,7 @@ class RoleController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/",
-        guards=[require_permission("can_write", "Role")],
+        guards=[require_permission("can_post", "Role")],
     )
     async def create(
         self,
@@ -221,7 +221,7 @@ class RoleController(Controller):
     # ------------------------------------------------------------------
     @put(
         "/{pk:int}",
-        guards=[require_permission("can_write", "Role")],
+        guards=[require_permission("can_put", "Role")],
     )
     async def update(
         self,
@@ -249,7 +249,7 @@ class RoleController(Controller):
     # ------------------------------------------------------------------
     @delete(
         "/{pk:int}",
-        guards=[require_permission("can_write", "Role")],
+        guards=[require_permission("can_delete", "Role")],
         status_code=200,
     )
     async def delete_single(
@@ -274,7 +274,7 @@ class RoleController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/{role_id:int}/permissions/",
-        guards=[require_permission("can_read", "Role")],
+        guards=[require_permission("can_list_role_permissions", "Role")],
     )
     async def get_permissions(
         self,
@@ -316,7 +316,7 @@ class RoleController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/{role_id:int}/permissions",
-        guards=[require_permission("can_write", "Role")],
+        guards=[require_permission("can_add_role_permissions", "Role")],
         status_code=200,
     )
     async def set_permissions(
@@ -347,7 +347,7 @@ class RoleController(Controller):
     # ------------------------------------------------------------------
     @put(
         "/{role_id:int}/users",
-        guards=[require_permission("can_write", "Role")],
+        guards=[require_permission("can_update_role_users", "Role")],
     )
     async def set_users(
         self,
@@ -373,7 +373,7 @@ class RoleController(Controller):
     # ------------------------------------------------------------------
     @put(
         "/{role_id:int}/groups",
-        guards=[require_permission("can_write", "Role")],
+        guards=[require_permission("can_update_role_groups", "Role")],
     )
     async def set_groups(
         self,
@@ -399,7 +399,7 @@ class RoleController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/_info",
-        guards=[require_permission("can_read", "Role")],
+        guards=[require_permission("can_info", "Role")],
     )
     async def get_info(self) -> dict[str, Any]:
         """GET /api/v1/security/roles/_info — permissions, columns metadata."""

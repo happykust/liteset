@@ -105,7 +105,7 @@ class PermissionViewController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/",
-        guards=[require_permission("can_read", "PermissionViewMenu")],
+        guards=[require_permission("can_get", "PermissionViewMenu")],
     )
     async def get_list(
         self,
@@ -162,7 +162,7 @@ class PermissionViewController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/{pk:int}",
-        guards=[require_permission("can_read", "PermissionViewMenu")],
+        guards=[require_permission("can_get", "PermissionViewMenu")],
     )
     async def get_single(
         self,
@@ -183,7 +183,7 @@ class PermissionViewController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/_info",
-        guards=[require_permission("can_read", "PermissionViewMenu")],
+        guards=[require_permission("can_info", "PermissionViewMenu")],
     )
     async def get_info(self) -> dict[str, Any]:
         """GET /api/v1/security/permissions-resources/_info — metadata."""
@@ -198,7 +198,7 @@ class PermissionViewController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/",
-        guards=[require_permission("can_write", "PermissionViewMenu")],
+        guards=[require_permission("can_post", "PermissionViewMenu")],
         status_code=201,
     )
     async def create(
@@ -241,7 +241,7 @@ class PermissionViewController(Controller):
     # ------------------------------------------------------------------
     @put(
         "/{pk:int}",
-        guards=[require_permission("can_write", "PermissionViewMenu")],
+        guards=[require_permission("can_put", "PermissionViewMenu")],
     )
     async def update(
         self,
@@ -290,7 +290,7 @@ class PermissionViewController(Controller):
     # ------------------------------------------------------------------
     @delete(
         "/{pk:int}",
-        guards=[require_permission("can_write", "PermissionViewMenu")],
+        guards=[require_permission("can_delete", "PermissionViewMenu")],
         status_code=200,
     )
     async def delete_single(

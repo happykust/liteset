@@ -146,7 +146,7 @@ class GroupController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/",
-        guards=[require_permission("can_read", "Group")],
+        guards=[require_permission("can_get", "Group")],
     )
     async def get_list(
         self,
@@ -181,7 +181,7 @@ class GroupController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/{pk:int}",
-        guards=[require_permission("can_read", "Group")],
+        guards=[require_permission("can_get", "Group")],
     )
     async def get_single(
         self,
@@ -202,7 +202,7 @@ class GroupController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/",
-        guards=[require_permission("can_write", "Group")],
+        guards=[require_permission("can_post", "Group")],
         status_code=201,
     )
     async def create(
@@ -238,7 +238,7 @@ class GroupController(Controller):
     # ------------------------------------------------------------------
     @put(
         "/{pk:int}",
-        guards=[require_permission("can_write", "Group")],
+        guards=[require_permission("can_put", "Group")],
     )
     async def update(
         self,
@@ -277,7 +277,7 @@ class GroupController(Controller):
     # ------------------------------------------------------------------
     @delete(
         "/{pk:int}",
-        guards=[require_permission("can_write", "Group")],
+        guards=[require_permission("can_delete", "Group")],
         status_code=200,
     )
     async def delete_single(
@@ -299,7 +299,7 @@ class GroupController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/_info",
-        guards=[require_permission("can_read", "Group")],
+        guards=[require_permission("can_info", "Group")],
     )
     async def get_info(self) -> dict[str, Any]:
         """GET /api/v1/security/groups/_info — permissions, columns metadata."""

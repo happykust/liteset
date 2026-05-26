@@ -170,7 +170,7 @@ class UserController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/",
-        guards=[require_permission("can_read", "User")],
+        guards=[require_permission("can_get", "User")],
     )
     async def get_list(
         self,
@@ -215,7 +215,7 @@ class UserController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/{pk:int}",
-        guards=[require_permission("can_read", "User")],
+        guards=[require_permission("can_get", "User")],
     )
     async def get_single(
         self,
@@ -236,7 +236,7 @@ class UserController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/",
-        guards=[require_permission("can_write", "User")],
+        guards=[require_permission("can_post", "User")],
         status_code=201,
     )
     async def create(
@@ -276,7 +276,7 @@ class UserController(Controller):
     # ------------------------------------------------------------------
     @put(
         "/{pk:int}",
-        guards=[require_permission("can_write", "User")],
+        guards=[require_permission("can_put", "User")],
     )
     async def update(
         self,
@@ -319,7 +319,7 @@ class UserController(Controller):
     # ------------------------------------------------------------------
     @delete(
         "/{pk:int}",
-        guards=[require_permission("can_write", "User")],
+        guards=[require_permission("can_delete", "User")],
         status_code=200,
     )
     async def delete_single(
@@ -341,7 +341,7 @@ class UserController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/_info",
-        guards=[require_permission("can_read", "User")],
+        guards=[require_permission("can_info", "User")],
     )
     async def get_info(self) -> dict[str, Any]:
         """GET /api/v1/security/users/_info — permissions, columns metadata."""
