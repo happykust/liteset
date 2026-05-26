@@ -55,9 +55,22 @@ class ChartDataCacheLoadError(CommandException):
     """
 
 
+class ChartDeleteFailedReportsExistError(CommandInvalidError):
+    """A chart can't be deleted because alerts/reports reference it.
+
+    1:1 port of
+    ``superset_old.commands.chart.exceptions.ChartDeleteFailedReportsExistError``.
+    The human-readable message (with the offending report names) is supplied
+    by the delete command. Maps to HTTP 422 like the original.
+    """
+
+    status_code = 422
+
+
 __all__ = (
     "ChartDataCacheLoadError",
     "ChartDataQueryFailedError",
+    "ChartDeleteFailedReportsExistError",
     "CommandException",
     "CommandInvalidError",
     "DashboardsForbiddenError",

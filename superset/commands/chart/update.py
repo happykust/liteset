@@ -25,8 +25,9 @@ from typing import Any, TYPE_CHECKING
 from superset.commands.base import AsyncBaseCommand
 from superset.commands.utils import compute_owner_list
 from superset.exceptions import (
-    CommandInvalidError,
     DashboardsNotFoundValidationError,
+    DatasourceNotFoundValidationError,
+    DatasourceTypeUpdateRequiredValidationError,
     ObjectNotFoundError,
 )
 from superset.tags.core import sync_owner_tags_after_update
@@ -85,16 +86,23 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
         if not is_query_context_update and self._security_manager is not None:
             await self._security_manager.raise_for_ownership(self._chart, self._user_id)
 
-        # Validate datasource exists when datasource_id is being changed
+        # Validate/Populate datasource — 1:1 with
+        # ``superset_old/commands/chart/update.py``: ``datasource_type`` is
+        # required when ``datasource_id`` is updated, the datasource must
+        # exist, and its name is stored on the chart (``datasource_name``).
         datasource_id = self._data.get("datasource_id")
         if datasource_id is not None:
-            datasource_type = self._data.get("datasource_type", "table")
-            if hasattr(self._dao, "find_datasource"):
-                ds = await self._dao.find_datasource(datasource_id, datasource_type)
-                if not ds:
-                    raise CommandInvalidError(
-                        f"Datasource {datasource_type}:{datasource_id} not found"
-                    )
+            datasource_type = self._data.get("datasource_type", "")
+            if not datasource_type:
+                raise DatasourceTypeUpdateRequiredValidationError()
+            from superset.db.daos.datasource import AsyncDatasourceDAO
+
+            datasource = await AsyncDatasourceDAO(self._dao.session).get_datasource(
+                datasource_type, datasource_id
+            )
+            if datasource is None:
+                raise DatasourceNotFoundValidationError()
+            self._data["datasource_name"] = datasource.name
 
         # Validate/Populate dashboards — ported 1:1 from
         # ``superset_old/commands/chart/update.py::UpdateChartCommand.validate``

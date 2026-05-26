@@ -764,6 +764,17 @@ class DatasourceNotFoundValidationError(CommandInvalidError):
     message = "Datasource does not exist"
 
 
+class DatasourceTypeUpdateRequiredValidationError(CommandInvalidError):
+    """Raised when ``datasource_id`` is updated without a ``datasource_type``.
+
+    Ported 1:1 from
+    ``superset_old/commands/exceptions.py::DatasourceTypeUpdateRequiredValidationError``.
+    """
+
+    status_code = 422
+    message = "Datasource type is required when datasource_id is updated"
+
+
 class RLSRuleNotFoundError(CommandException):
     """Raised when an RLS rule lookup by id returns nothing.
 

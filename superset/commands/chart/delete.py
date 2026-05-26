@@ -23,6 +23,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
+from superset.commands.chart.exceptions import ChartDeleteFailedReportsExistError
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.tags.core import delete_tagged_objects
 
@@ -50,16 +51,21 @@ class DeleteChartCommand(AsyncBaseCommand[None]):
         self._chart = await self._dao.find_by_id(self._chart_id)
         if not self._chart:
             raise ObjectNotFoundError("Chart", self._chart_id)
+        # Check there are no associated ReportSchedules — 1:1 with the
+        # original, which raises BEFORE the ownership check (a chart with
+        # alerts/reports reports "reports exist", not "forbidden").
+        from superset.db.daos.report import AsyncReportScheduleDAO
+
+        reports = await AsyncReportScheduleDAO(self._dao.session).find_by_chart_ids(
+            [self._chart_id]
+        )
+        if reports:
+            report_names = ", ".join(report.name for report in reports)
+            raise ChartDeleteFailedReportsExistError(
+                f"There are associated alerts or reports: {report_names}"
+            )
         if self._security_manager is not None:
             await self._security_manager.raise_for_ownership(self._chart, self._user_id)
-        # Check for report schedules referencing this chart
-        if hasattr(self._dao, "find_report_schedules_by_chart_id"):
-            reports = await self._dao.find_report_schedules_by_chart_id(self._chart_id)
-            if reports:
-                report_names = ", ".join(getattr(r, "name", str(r)) for r in reports)
-                raise CommandInvalidError(
-                    f"Cannot delete: associated report schedules exist: {report_names}"
-                )
 
     async def run(self) -> None:
         assert self._chart is not None
@@ -92,6 +98,18 @@ class BulkDeleteChartsCommand(AsyncBaseCommand[None]):
         missing = set(self._chart_ids) - found_ids
         if missing:
             raise ObjectNotFoundError("Chart", str(missing))
+        # Check there are no associated ReportSchedules (1:1 with the original
+        # ``DeleteChartCommand``; the bulk path previously skipped this check).
+        from superset.db.daos.report import AsyncReportScheduleDAO
+
+        reports = await AsyncReportScheduleDAO(self._dao.session).find_by_chart_ids(
+            self._chart_ids
+        )
+        if reports:
+            report_names = ", ".join(report.name for report in reports)
+            raise ChartDeleteFailedReportsExistError(
+                f"There are associated alerts or reports: {report_names}"
+            )
         if self._security_manager is not None:
             for chart in self._charts:
                 await self._security_manager.raise_for_ownership(chart, self._user_id)
