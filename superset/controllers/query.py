@@ -38,6 +38,78 @@ from superset.providers import provide_query_dao
 from superset.schemas.query import StopQuerySchema
 from superset.typing import QueryDAOProtocol, UserProtocol
 
+# ``GET /api/v1/query/`` list columns — ported 1:1 from
+# ``superset_old/queries/api.py::QueryRestApi.list_columns`` (the full Query
+# History row). The frontend Query Search page keys off these exact field
+# names, so the set and the dotted nested paths must match verbatim.
+QUERY_LIST_COLUMNS = [
+    "id",
+    "changed_on",
+    "client_id",
+    "database.id",
+    "database.database_name",
+    "executed_sql",
+    "error_message",
+    "limit",
+    "limiting_factor",
+    "progress",
+    "rows",
+    "schema",
+    "select_as_cta",
+    "sql",
+    "sql_editor_id",
+    "sql_tables",
+    "status",
+    "tab_name",
+    "user.first_name",
+    "user.id",
+    "user.last_name",
+    "start_time",
+    "start_running_time",
+    "end_time",
+    "tmp_table_name",
+    "tracking_url",
+    "results_key",
+]
+
+# Mirrors ``QueryRestApi.order_columns``.
+QUERY_ORDER_COLUMNS = [
+    "changed_on",
+    "database.database_name",
+    "rows",
+    "schema",
+    "start_time",
+    "sql",
+    "tab_name",
+    "user.first_name",
+]
+
+
+def _query_sql_tables(query: Any) -> list[dict[str, Any]]:
+    """Best-effort port of ``Query.sql_tables`` for the list response.
+
+    The original model exposes ``sql_tables`` as a property that runs the
+    SQL through Jinja + sqlglot and returns the referenced tables, falling
+    back to ``[]`` on any parse/security/template error. The new ``Query``
+    model does not carry that property, so we recompute it here from the
+    eager-loaded ``database`` relationship, serialising each ``Table``
+    dataclass to ``{table, schema, catalog}`` (the shape Superset's JSON
+    encoder produced for the original dataclass).
+    """
+    sql = getattr(query, "sql", None)
+    database = getattr(query, "database", None)
+    if not sql or database is None:
+        return []
+    try:
+        from superset.sql.parse import process_jinja_sql
+
+        tables = process_jinja_sql(sql, database).tables
+    except Exception:  # noqa: BLE001 — original swallows parse/security/template errors
+        return []
+    return [
+        {"table": t.table, "schema": t.schema, "catalog": t.catalog} for t in tables
+    ]
+
 
 class QueryController(Controller):
     path = "/api/v1/query"
@@ -129,22 +201,53 @@ class QueryController(Controller):
         current_user: UserProtocol,
         security_manager: Any,
     ) -> dict[str, Any]:
-        """GET /api/v1/query/ — list queries."""
+        """GET /api/v1/query/ — list queries.
+
+        Returns the full Query History row (``QUERY_LIST_COLUMNS``), matching
+        ``superset_old/queries/api.py::QueryRestApi`` 1:1 — including the
+        ``changed_on desc`` ``base_order`` and the dotted ``database`` /
+        ``user`` nested objects the frontend Query Search page expects.
+        """
+        from sqlalchemy.orm import selectinload
+
         from superset.db.filters import query_access_filters
+        from superset.models.sql_lab import Query
 
         page, page_size = extract_pagination(rison_params)
         base_filters = await query_access_filters(security_manager, current_user)
+        # Eager-load ``database``/``user`` so the dotted-path serialisation
+        # (and ``sql_tables`` recomputation) doesn't trigger a sync lazy-load
+        # (MissingGreenlet under asyncpg).
         queries = await dao.find_all(
-            filters=base_filters or None, page=page, page_size=page_size
+            filters=base_filters or None,
+            page=page,
+            page_size=page_size,
+            order_by=[Query.changed_on.desc()],
+            options=[selectinload(Query.database), selectinload(Query.user)],
         )
         total = await dao.count(filters=base_filters or None)
         await event_logger.alog_with_context("query.list", user_id=current_user.id)
-        return serialize_list_response(
+
+        response = serialize_list_response(
             queries,
             total,
-            ["id", "status", "sql"],
+            QUERY_LIST_COLUMNS,
             list_title="List Query",
+            order_columns=QUERY_ORDER_COLUMNS,
         )
+        # Post-process columns the SA model can't resolve via plain getattr:
+        #  - ``tracking_url`` lives on the ``tracking_url_raw`` column attr
+        #  - ``sql_tables`` is a property in the original model (recomputed)
+        #  - ``limiting_factor`` is an enum → serialise to its value
+        from superset.models.sql_lab import LimitingFactor
+
+        for row, query in zip(response["result"], queries, strict=True):
+            row["tracking_url"] = getattr(query, "tracking_url_raw", None)
+            row["sql_tables"] = _query_sql_tables(query)
+            lf = row.get("limiting_factor")
+            if isinstance(lf, LimitingFactor):
+                row["limiting_factor"] = lf.value
+        return response
 
     @get(
         "/_info",

@@ -17,10 +17,10 @@
 """``POST /api/v1/sqllab/format_sql/`` command.
 
 1:1 with the original Flask handler
-``superset_old/sqllab/api.py::format_sql`` which dispatched to
-``SQLScript(sql, engine).format()``. We reuse the new ``SQLScript`` so
-engine-specific formatting (e.g. comments policy) stays consistent with
-``ExecuteSQLCommand`` and the validators.
+``superset_old/sqllab/api.py::format_sql`` (lines 231-236) which dispatched
+to ``SQLScript(model["sql"], model.get("engine")).format()`` *without*
+catching parse/format errors — so an unparseable snippet propagates as a
+``SupersetParseError`` (HTTP 422), rather than echoing the raw SQL with 200.
 """
 
 from __future__ import annotations
@@ -37,9 +37,10 @@ logger = logging.getLogger(__name__)
 class FormatSQLCommand(AsyncBaseCommand[str]):
     """Format SQL using engine-aware ``SQLScript.format()``.
 
-    Falls back to the raw input when sqlglot cannot parse the snippet —
-    matching the original behaviour of returning the user's text rather
-    than raising 5xx.
+    Mirrors the original handler exactly: parse failures are *not* swallowed.
+    ``SQLScript(...).format()`` raises ``SupersetParseError`` (status 422) on
+    an unparseable statement and that propagates to the client, instead of
+    returning the unformatted SQL with a 200.
     """
 
     def __init__(self, sql: str, engine: str | None = None) -> None:
@@ -56,36 +57,11 @@ class FormatSQLCommand(AsyncBaseCommand[str]):
         return await asyncio.to_thread(self._format_sync)
 
     def _format_sync(self) -> str:
-        try:
-            from superset.exceptions import SupersetParseError
-            from superset.sql.parse import SQLScript
+        from superset.sql.parse import SQLScript
 
-            try:
-                script = SQLScript(self._sql, engine=self._engine or "base")
-                return script.format()
-            except SupersetParseError:
-                logger.warning(
-                    "SQLScript could not parse input for engine %s; "
-                    "falling back to raw sqlglot.transpile",
-                    self._engine,
-                    exc_info=True,
-                )
-        except ImportError:
-            logger.debug("superset.sql.parse not available; trying sqlglot directly")
-
-        try:
-            import sqlglot
-            from sqlglot.errors import SqlglotError
-        except ImportError:
-            logger.debug("sqlglot not available, returning unformatted SQL")
-            return self._sql
-
-        from superset.commands.sqllab._shared import map_sqlglot_dialect
-
-        dialect = map_sqlglot_dialect(self._engine)
-        try:
-            result = sqlglot.transpile(self._sql, read=dialect, pretty=True)
-            return result[0]
-        except (SqlglotError, ValueError):
-            logger.warning("SQL formatting failed, returning original", exc_info=True)
-            return self._sql
+        # 1:1 with ``superset_old/sqllab/api.py::format_sql`` —
+        # ``SQLScript(sql, engine).format()`` with no error suppression.
+        # ``engine`` is ``None`` when the caller omitted it, exactly as the
+        # original passed ``model.get("engine")``; ``SQLGLOT_DIALECTS.get``
+        # tolerates ``None`` (falls back to the sqlglot default dialect).
+        return SQLScript(self._sql, self._engine).format()  # type: ignore[arg-type]
