@@ -229,6 +229,29 @@ def _get_slack_channels(
     return channels
 
 
+def _report_custom_filters() -> dict[str, Any]:
+    """Search-filter map for the report list endpoint.
+
+    Registers ``report_all_text`` — a 1:1 port of
+    ``superset_old/reports/filters.py::ReportScheduleAllTextFilter`` — which
+    OR-matches the search term across ``name``, ``description`` and ``sql``.
+    """
+
+    def _report_all_text(model_cls: Any, value: Any) -> Any:
+        if not value:
+            return None
+        from sqlalchemy import or_
+
+        ilike_value = f"%{value}%"
+        return or_(
+            model_cls.name.ilike(ilike_value),
+            model_cls.description.ilike(ilike_value),
+            model_cls.sql.ilike(ilike_value),
+        )
+
+    return {"report_all_text": _report_all_text}
+
+
 _LIST_COLUMNS = [
     "id",
     "name",
@@ -294,6 +317,7 @@ class ReportScheduleController(Controller):
         rison_filters, order_by, page, page_size = build_rison_query_params(
             ReportSchedule,
             rison_params,
+            custom_filters=_report_custom_filters(),
         )
         if not order_by:
             order_by = [ReportSchedule.changed_on.desc()]
@@ -385,6 +409,12 @@ class ReportScheduleController(Controller):
                 msgspec.structs.asdict(r) if hasattr(r, "__struct_fields__") else r
                 for r in raw["recipients"]
             ]
+        # Echo the validated input payload back in ``result`` — 1:1 with the
+        # original ``self.response(201, id=new_model.id, result=item)``
+        # (superset_old/reports/api.py:366-367). Snapshot before the command
+        # mutates ``raw`` (it resolves chart/dashboard ids to ORM objects and
+        # serializes validator_config_json).
+        echo = dict(raw)
         cmd = CreateReportScheduleCommand(
             dao=dao,
             data=raw,
@@ -397,7 +427,7 @@ class ReportScheduleController(Controller):
             object_ref=str(item.id),
             user_id=current_user.id,
         )
-        return {"id": item.id, "result": {"name": item.name}}
+        return {"id": item.id, "result": echo}
 
     @put(
         "/{pk:int}",

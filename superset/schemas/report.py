@@ -106,11 +106,18 @@ class ReportSchedulePutSchema(msgspec.Struct):
 
 
 class ChartRef(ModelStruct):
-    """Chart reference embedded in report detail response."""
+    """Chart reference embedded in report detail response.
+
+    ``datasource_id`` / ``datasource_type`` mirror the original
+    ``show_select_columns`` (superset_old/reports/api.py:128-131) so the GET
+    detail response exposes the chart's datasource reference.
+    """
 
     id: int
     slice_name: str | None = None
     viz_type: str | None = None
+    datasource_id: int | None = None
+    datasource_type: str | None = None
 
 
 class ReportDashboardRef(ModelStruct):

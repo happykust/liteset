@@ -43,7 +43,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Optional, Union
-from uuid import UUID
+from uuid import UUID, uuid3
 
 import pandas as pd
 from celery.exceptions import SoftTimeLimitExceeded
@@ -94,6 +94,7 @@ from superset.reports.notifications.exceptions import (
 )
 from superset.tasks.utils import get_executor
 from superset.utils import json
+from superset.utils.core import override_user
 from superset.utils.csv import get_chart_csv_data, get_chart_dataframe
 from superset.utils.pdf import build_pdf_from_screenshots
 from superset.utils.screenshots import ChartScreenshot, DashboardScreenshot
@@ -108,6 +109,19 @@ def _get_settings() -> Any:
     from superset.config import SupersetSettings
 
     return SupersetSettings()  # type: ignore[call-arg]
+
+
+def _recipients_string_to_list(address_string: str | None) -> list[str]:
+    """Split a comma/semicolon/whitespace separated string into a list.
+
+    1:1 port of ``superset_old/utils/core.py::recipients_string_to_list``.
+    """
+    import re
+
+    address_string_list: list[str] = []
+    if isinstance(address_string, str):
+        address_string_list = re.split(r",|\s|;", address_string)
+    return [x.strip() for x in address_string_list if x.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +210,63 @@ class BaseReportState:
                 "during execution"
             ) from ex
 
+    def update_report_schedule_slack_v2(self) -> None:
+        """Upgrade all Slack recipients to v2 (channel names → ids).
+
+        1:1 port of
+        ``superset_old/commands/report/execute.py::update_report_schedule_slack_v2``.
+        V2 uses channel **ids** instead of names, so for every ``SLACK``
+        recipient we resolve the configured channel name(s) to id(s) via
+        ``get_channels_with_search`` (ported as
+        :func:`superset.controllers.report._get_slack_channels`), validate that
+        every requested channel was found, rewrite ``recipient_config_json`` to
+        ``{"target": "<ids>"}``, and flip the type to ``SLACKV2``. On any
+        failure the recipient is reverted to ``SLACK`` and ``UpdateFailedError``
+        is raised.
+        """
+        from superset.controllers.report import _get_slack_channels
+
+        recipient: Any = None
+        try:
+            for recipient in self._report_schedule.recipients:
+                if recipient.type == ReportRecipientType.SLACK:
+                    recipient.type = ReportRecipientType.SLACKV2
+                    slack_recipients = json.loads(recipient.recipient_config_json)
+                    # V1 method allowed a leading ``#`` in the channel name
+                    channel_names = (slack_recipients["target"] or "").replace(
+                        "#", ""
+                    )
+                    # ensure existing reports can also fetch ids from private
+                    # channels (exact match on both public and private)
+                    channels = _get_slack_channels(
+                        search_string=channel_names,
+                        types=["private_channel", "public_channel"],
+                        exact_match=True,
+                    )
+                    channels_list = _recipients_string_to_list(channel_names)
+                    if len(channels_list) != len(channels):
+                        missing_channels = set(channels_list) - {
+                            channel["name"] for channel in channels
+                        }
+                        msg = (
+                            "Could not find the following channels: "
+                            f"{', '.join(missing_channels)}"
+                        )
+                        raise UpdateFailedError(msg)
+                    channel_ids = ",".join(channel["id"] for channel in channels)
+                    recipient.recipient_config_json = json.dumps(
+                        {
+                            "target": channel_ids,
+                        }
+                    )
+        except Exception as ex:
+            # Revert to v1 to preserve configuration (requires manual fix)
+            if recipient is not None:
+                recipient.type = ReportRecipientType.SLACK
+            msg = f"Failed to update slack recipients to v2: {ex!s}"
+            logger.exception(msg)
+            raise UpdateFailedError(msg) from ex
+
     # ------------------------------------------------------------------
     # URL helpers
     # ------------------------------------------------------------------
@@ -208,34 +279,213 @@ class BaseReportState:
     ) -> str:
         """Get the URL for this report schedule: chart or dashboard.
 
-        Uses the settings-based base URL instead of Flask url_for.
+        1:1 port of ``superset_old/commands/report/execute.py::_get_url``.
+        Uses :func:`superset.utils.urls.get_url_path` (the Liteset replacement
+        for Flask ``url_for``).  For dashboards with stateful tab anchors and
+        the ``ALERT_REPORT_TABS`` feature enabled, returns a permalink URL.
 
         :param result_format: If ``"csv"`` or ``"json"``, return the chart
             data API endpoint instead of the explore view.
         """
-        settings = _get_settings()
-        base_url = settings.webdriver_baseurl_user_friendly.rstrip("/")
+        from superset.utils.urls import get_url_path
 
         force = "true" if self._report_schedule.force_screenshot else "false"
         if self._report_schedule.chart:
             if result_format in {"csv", "json"}:
-                return (
-                    f"{base_url}/api/v1/chart/{self._report_schedule.chart_id}"
-                    f"/data/?format={result_format}"
-                    f"&type=post_processed&force={force}"
+                return get_url_path(
+                    "ChartDataRestApi.get_data",
+                    pk=self._report_schedule.chart_id,
+                    format=result_format,
+                    type="post_processed",
+                    force=force,
                 )
-            return (
-                f"{base_url}/explore/?form_data="
-                f"{json.dumps({'slice_id': self._report_schedule.chart_id})}"
-                f"&force={force}"
+            return get_url_path(
+                "ExploreView.root",
+                user_friendly=user_friendly,
+                form_data=json.dumps({"slice_id": self._report_schedule.chart_id}),
+                force=force,
+                **kwargs,
             )
-        # Dashboard URL
+        # If we need to render dashboard in a specific state, use stateful
+        # permalink — 1:1 with execute.py:239-243.
+        if (
+            dashboard_state := self._report_schedule.extra.get("dashboard")
+        ) and self._is_feature_enabled("ALERT_REPORT_TABS"):
+            return self._get_tab_url(dashboard_state, user_friendly=user_friendly)
+
         dashboard = self._report_schedule.dashboard
-        if dashboard:
-            dashboard_id_or_slug = dashboard.id
-            url = f"/superset/dashboard/{dashboard_id_or_slug}/"
-            return f"{base_url}{url}?force={force}"
-        return base_url
+        dashboard_id_or_slug = (
+            dashboard.uuid if dashboard and dashboard.uuid else dashboard.id
+        )
+        return get_url_path(
+            "Superset.dashboard",
+            user_friendly=user_friendly,
+            dashboard_id_or_slug=dashboard_id_or_slug,
+            force=force,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _is_feature_enabled(name: str) -> bool:
+        """Check a feature flag from settings (sync-context safe)."""
+        settings = _get_settings()
+        return bool(settings.feature_flags.get(name, False))
+
+    def get_dashboard_urls(
+        self, user_friendly: bool = False, **kwargs: Any
+    ) -> list[str]:
+        """Retrieve the URL(s) for the dashboard tabs, or the single dashboard
+        URL when no tabs are configured.
+
+        1:1 port of ``execute.py::get_dashboard_urls``.
+        """
+        from superset.utils.urls import get_url_path
+
+        force = "true" if self._report_schedule.force_screenshot else "false"
+        if (
+            dashboard_state := self._report_schedule.extra.get("dashboard")
+        ) and self._is_feature_enabled("ALERT_REPORT_TABS"):
+            if anchor := dashboard_state.get("anchor"):
+                try:
+                    anchor_list: list[str] = json.loads(anchor)
+                    return self._get_tabs_urls(anchor_list, user_friendly=user_friendly)
+                except json.JSONDecodeError:
+                    logger.debug("Anchor value is not a list, Fall back to single tab")
+            return [self._get_tab_url(dashboard_state)]
+
+        dashboard = self._report_schedule.dashboard
+        dashboard_id_or_slug = (
+            dashboard.uuid if dashboard and dashboard.uuid else dashboard.id
+        )
+
+        return [
+            get_url_path(
+                "Superset.dashboard",
+                user_friendly=user_friendly,
+                dashboard_id_or_slug=dashboard_id_or_slug,
+                force=force,
+                **kwargs,
+            )
+        ]
+
+    def _get_tab_url(
+        self, dashboard_state: dict[str, Any], user_friendly: bool = False
+    ) -> str:
+        """Build a single stateful dashboard-tab permalink URL.
+
+        1:1 port of ``execute.py::_get_tab_url``. The async
+        ``CreateDashboardPermalinkCommand`` is reimplemented synchronously
+        here (see :meth:`_create_dashboard_permalink`) so it can run inside
+        the synchronous Celery execution context.
+        """
+        from superset.utils.urls import get_url_path
+
+        permalink_key = self._create_dashboard_permalink(
+            dashboard_uuid=str(self._report_schedule.dashboard.uuid),
+            state=dashboard_state,
+        )
+        return get_url_path(
+            "Superset.dashboard_permalink",
+            key=permalink_key,
+            user_friendly=user_friendly,
+        )
+
+    def _get_tabs_urls(
+        self, tab_anchors: list[str], user_friendly: bool = False
+    ) -> list[str]:
+        """Build permalink URLs for multiple dashboard tabs.
+
+        1:1 port of ``execute.py::_get_tabs_urls``.
+        """
+        return [
+            self._get_tab_url(
+                {
+                    "anchor": tab_anchor,
+                    "dataMask": None,
+                    "activeTabs": None,
+                    "urlParams": None,
+                },
+                user_friendly=user_friendly,
+            )
+            for tab_anchor in tab_anchors
+        ]
+
+    def _create_dashboard_permalink(
+        self, dashboard_uuid: str, state: dict[str, Any]
+    ) -> str:
+        """Get-or-create a dashboard permalink synchronously.
+
+        Replicates ``CreateDashboardPermalinkCommand.run`` (the async command
+        at ``superset/commands/dashboard/permalink/create.py``) against the
+        synchronous Celery ``Session``: deterministic upsert keyed by
+        ``uuid3(salt, (user_id, payload))`` so the same state for the same user
+        reuses the same row, then hashids-encodes the integer id.
+        """
+        from superset.key_value.shared_entries import NAMESPACE, RESOURCE
+        from superset.key_value.types import KeyValueResource, SharedKey
+        from superset.key_value.utils import (
+            encode_permalink_key,
+            get_deterministic_uuid,
+            random_key,
+        )
+        from superset.models.key_value import KeyValueEntry
+        from superset.utils.core import get_user_id
+
+        # --- get-or-create the permalink hashing salt (sync) ---
+        salt_uuid = uuid3(NAMESPACE, SharedKey.DASHBOARD_PERMALINK_SALT.value)
+        salt_entry = (
+            self._session.query(KeyValueEntry)
+            .filter(
+                KeyValueEntry.resource == RESOURCE.value,
+                KeyValueEntry.uuid == salt_uuid,
+            )
+            .one_or_none()
+        )
+        if salt_entry is None:
+            salt = random_key(48)
+            self._session.add(
+                KeyValueEntry(
+                    resource=RESOURCE.value,
+                    uuid=salt_uuid,
+                    value=json.dumps(salt).encode("utf-8"),
+                    created_on=datetime.utcnow(),
+                )
+            )
+            self._session.flush()
+        else:
+            salt = json.loads(salt_entry.value.decode("utf-8"))
+
+        # --- deterministic upsert of the permalink entry ---
+        user_id = get_user_id()
+        payload = {"dashboardId": dashboard_uuid, "state": state}
+        deterministic_uuid = get_deterministic_uuid(salt, (user_id, payload))
+        encoded = json.dumps(payload).encode("utf-8")
+
+        existing = (
+            self._session.query(KeyValueEntry)
+            .filter(
+                KeyValueEntry.resource
+                == KeyValueResource.DASHBOARD_PERMALINK.value,
+                KeyValueEntry.uuid == deterministic_uuid,
+            )
+            .one_or_none()
+        )
+        if existing is None:
+            entry = KeyValueEntry(
+                resource=KeyValueResource.DASHBOARD_PERMALINK.value,
+                uuid=deterministic_uuid,
+                value=encoded,
+                created_on=datetime.utcnow(),
+            )
+            self._session.add(entry)
+            self._session.flush()
+        else:
+            existing.value = encoded
+            entry = existing
+
+        if entry.id is None:
+            raise RuntimeError("Permalink entry missing autogenerated id")
+        return encode_permalink_key(key=int(entry.id), salt=salt)
 
     # ------------------------------------------------------------------
     # Content generation
@@ -309,7 +559,7 @@ class BaseReportState:
                 )
             ]
         else:
-            url = self._get_url()
+            urls = self.get_dashboard_urls()
 
             window_width, window_height = settings.webdriver_window["dashboard"]
             width = min(
@@ -326,6 +576,7 @@ class BaseReportState:
                     window_size=window_size,
                     thumb_size=settings.webdriver_window["dashboard"],
                 )
+                for url in urls
             ]
 
         try:
@@ -581,11 +832,13 @@ class BaseReportState:
                     else:
                         notification.send()
                 except SlackV1NotificationError as ex:
-                    # The slack notification should be sent with the v2 api
+                    # The slack notification should be sent with the v2 api.
+                    # Resolve channel names → ids and persist the SLACKV2 type
+                    # before retrying — 1:1 with execute.py:603-611.
                     logger.info(
                         "Attempting to upgrade the report to Slackv2: %s", str(ex)
                     )
-                    # Upgrade recipient to v2
+                    self.update_report_schedule_slack_v2()
                     recipient.type = ReportRecipientType.SLACKV2
                     notification = create_notification(recipient, notification_content)
                     notification.send()
@@ -995,17 +1248,32 @@ class ExecuteReportScheduleCommand:
             if not self._model:
                 raise ReportScheduleExecuteUnexpectedError()
 
-            logger.info(
-                "Running report schedule %s (id=%s)",
-                self._execution_id,
-                self._model_id,
+            # Resolve the executor user and run the whole state machine under
+            # ``override_user`` so permalink creation, RLS and audit fields all
+            # share the executor context — 1:1 with
+            # ``superset_old/commands/report/execute.py:943-956``.
+            settings = _get_settings()
+            _, username = get_executor(
+                executors=settings.alert_reports_executors,
+                model=self._model,
             )
-            ReportScheduleStateMachine(
-                self._execution_id,
-                self._model,
-                self._scheduled_dttm,
-                self._session,
-            ).run()
+            user = (
+                self._session.query(User)
+                .filter(User.username == username)
+                .one_or_none()
+            )
+            with override_user(user):
+                logger.info(
+                    "Running report schedule %s as user %s",
+                    self._execution_id,
+                    username,
+                )
+                ReportScheduleStateMachine(
+                    self._execution_id,
+                    self._model,
+                    self._scheduled_dttm,
+                    self._session,
+                ).run()
         except CommandException:
             raise
         except Exception as ex:

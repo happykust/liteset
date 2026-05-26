@@ -239,10 +239,19 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
         self,
         dashboard_id: int | None = None,
         chart_id: int | None = None,
+        user_id: int | None = None,
         report_id: int | None = None,
     ) -> bool:
-        """Validate no existing report targets the same dashboard+chart combo."""
+        """Validate the current user has no chart/dashboard report attached.
+
+        1:1 with ``superset_old/daos/report.py:validate_unique_creation_method``
+        which scopes the uniqueness check to ``created_by_fk == get_user_id()``
+        (the self-subscribe reports), then filters by the supplied dashboard
+        and/or chart id.
+        """
         conditions = []
+        if user_id is not None:
+            conditions.append(ReportSchedule.created_by_fk == user_id)
         if dashboard_id is not None:
             conditions.append(ReportSchedule.dashboard_id == dashboard_id)
         if chart_id is not None:
