@@ -1338,129 +1338,351 @@ class AsyncQueryContextProcessor:
         # Time comparison separator (matches Superset's TIME_COMPARISON = "__")
         time_comparison_sep = "__"
 
+        # Resolve the time grain for the temporal join key (week/month/quarter/
+        # year buckets require a synthetic join column — see ``join_offset_dfs``).
+        time_grain = self.get_time_grain(query_object)
+
         offset_dfs: dict[str, pd.DataFrame] = {}
 
+        from superset.exceptions import QueryObjectValidationError
+        from superset.utils.column import get_x_axis_label
+        from superset.utils.date import get_past_or_future
+        from superset.utils.feature_flags import feature_flag_manager
+
         for offset in query_object.time_offsets:
-            try:
-                query_object_clone = copy.deepcopy(query_object)
+            original_offset = offset
 
-                # Shift from_dttm and to_dttm using the offset string
-                from superset.utils.date import get_past_or_future
+            # Date-range offsets ("2015-01-03 : 2015-01-04") require the
+            # DATE_RANGE_TIMESHIFTS_ENABLED flag (1:1 with the original). The
+            # full date-range execution path is not yet ported, so we reject
+            # them explicitly rather than mis-handle them.
+            if self._is_valid_date_range(offset):
+                if not feature_flag_manager.is_feature_enabled(
+                    "DATE_RANGE_TIMESHIFTS_ENABLED"
+                ):
+                    raise QueryObjectValidationError(
+                        "Date range timeshifts are not enabled. Please contact "
+                        "your administrator to enable the "
+                        "DATE_RANGE_TIMESHIFTS_ENABLED feature flag."
+                    )
+                raise QueryObjectValidationError(
+                    "Date range time comparison is not yet supported."
+                )
 
-                query_object_clone.from_dttm = get_past_or_future(
+            query_object_clone = copy.deepcopy(query_object)
+
+            # Resolve ``inherit`` / explicit-date offsets to a relative
+            # "N days ago" string (1:1 with ``get_offset_custom_or_inherit``).
+            # ``original_offset`` is preserved for the metric column label.
+            if offset == "inherit" or self._is_valid_date(offset):
+                offset = self._get_offset_custom_or_inherit(
                     offset,
                     outer_from_dttm,  # type: ignore[arg-type]
-                )
-                query_object_clone.to_dttm = get_past_or_future(
-                    offset,
                     outer_to_dttm,  # type: ignore[arg-type]
                 )
 
-                query_object_clone.inner_from_dttm = query_object_clone.from_dttm
-                query_object_clone.inner_to_dttm = query_object_clone.to_dttm
+            # Shift from_dttm / to_dttm by the (resolved) offset.
+            query_object_clone.from_dttm = get_past_or_future(
+                offset,
+                outer_from_dttm,  # type: ignore[arg-type]
+            )
+            query_object_clone.to_dttm = get_past_or_future(
+                offset,
+                outer_to_dttm,  # type: ignore[arg-type]
+            )
+            query_object_clone.inner_from_dttm = query_object_clone.from_dttm
+            query_object_clone.inner_to_dttm = query_object_clone.to_dttm
 
-                # Set granularity if not already set
-                from superset.utils.column import get_x_axis_label
+            x_axis_label = get_x_axis_label(query_object.columns)
+            query_object_clone.granularity = (
+                query_object_clone.granularity or x_axis_label
+            )
 
-                x_axis_label = get_x_axis_label(query_object.columns)
-                query_object_clone.granularity = (
-                    query_object_clone.granularity or x_axis_label
+            # Clear time_offsets / post_processing on the clone to avoid
+            # recursion, and drop row_limit/offset so the join isn't skewed by
+            # missing rows (matches the original).
+            query_object_clone.time_offsets = []
+            query_object_clone.post_processing = []
+            query_object_clone.row_limit = None
+            query_object_clone.row_offset = 0
+
+            # Execute the shifted query (errors propagate, 1:1 — they are NOT
+            # swallowed into a silently-missing comparison column).
+            result = await self._get_query_result(query_object_clone)
+            offset_metrics_df = result.get("df", pd.DataFrame())
+            queries.append(result.get("query", ""))
+            cache_keys.append(None)
+
+            # Rename metric columns using the USER-FACING (original) offset, e.g.
+            # SUM(value) -> SUM(value)__1 year ago / __inherit.
+            metrics_mapping = {
+                metric: time_comparison_sep.join([metric, original_offset])
+                for metric in metric_names
+            }
+
+            if offset_metrics_df.empty:
+                offset_metrics_df = pd.DataFrame(
+                    {
+                        col: [np.nan]
+                        for col in join_keys + list(metrics_mapping.values())
+                    }
                 )
+            else:
+                offset_metrics_df = self._normalize_df(
+                    offset_metrics_df, query_object_clone
+                )
+                offset_metrics_df = offset_metrics_df.rename(columns=metrics_mapping)
 
-                # Clear time_offsets and post_processing on the clone to avoid
-                # recursion and ensure we get raw data
-                query_object_clone.time_offsets = []
-                query_object_clone.post_processing = []
+            # Key by the RESOLVED offset so ``join_offset_dfs`` shifts the join
+            # column by the real time delta.
+            offset_dfs[offset] = offset_metrics_df
 
-                # Remove row_limit/offset on clone to prevent data inconsistency
-                # during the join (matches Superset behaviour)
-                query_object_clone.row_limit = None
-                query_object_clone.row_offset = 0
-
-                # Execute the shifted query
-                result = await self._get_query_result(query_object_clone)
-                offset_metrics_df = result.get("df", pd.DataFrame())
-                query_str = result.get("query", "")
-
-                queries.append(query_str)
-                cache_keys.append(None)
-
-                # Build metrics mapping: SUM(value) -> SUM(value)__1 year ago
-                metrics_mapping = {
-                    metric: time_comparison_sep.join([metric, offset])
-                    for metric in metric_names
-                }
-
-                if offset_metrics_df.empty:
-                    # Create a placeholder DataFrame with NaN values
-                    offset_metrics_df = pd.DataFrame(
-                        {
-                            col: [np.nan]
-                            for col in join_keys + list(metrics_mapping.values())
-                        }
-                    )
-                else:
-                    # Normalize the offset DataFrame
-                    offset_metrics_df = self._normalize_df(
-                        offset_metrics_df, query_object_clone
-                    )
-                    # Rename metric columns with offset suffix
-                    offset_metrics_df = offset_metrics_df.rename(
-                        columns=metrics_mapping
-                    )
-
-                offset_dfs[offset] = offset_metrics_df
-
-            except Exception:  # noqa: BLE001
-                logger.exception("Failed to process time offset '%s'", offset)
-                queries.append("")
-                cache_keys.append(None)
-
-        # Join all offset DataFrames with the original
+        # Time-grain-aware join (aligns each row with its shifted offset row).
         if offset_dfs:
-            df = self._join_offset_dfs(df, offset_dfs, join_keys)
+            df = self.join_offset_dfs(df, offset_dfs, time_grain, join_keys)
 
         return CachedTimeOffset(df=df, queries=queries, cache_keys=cache_keys)
 
-    @staticmethod
-    def _join_offset_dfs(
+    def join_offset_dfs(
+        self,
         df: pd.DataFrame,
         offset_dfs: dict[str, pd.DataFrame],
+        time_grain: str | None,
         join_keys: list[str],
     ) -> pd.DataFrame:
-        """Join offset DataFrames with the main DataFrame on non-metric columns.
+        """Join offset DataFrames with the main DataFrame.
 
-        Uses a suffixed join column approach to handle duplicate column names,
-        matching Superset's join_offset_dfs logic (simplified without
-        TIME_GRAIN_JOIN_COLUMN_PRODUCERS which requires Flask config).
+        1:1 with ``superset_old/common/query_context_processor.py::join_offset_dfs``.
+        For a temporal time grain the offset result is joined on a *bucketed +
+        offset-shifted* temporal key (:meth:`generate_join_column`) so each main
+        row aligns with the corresponding shifted offset row (e.g. "today" with
+        "today − 1 year"); a plain merge on the raw timestamp would mis-align
+        them. ``TIME_GRAIN_JOIN_COLUMN_PRODUCERS`` is a Flask-only extension
+        hook (normally empty), so we default to no custom producer and fall back
+        to ``generate_join_column``.
         """
-        for _offset, offset_df in offset_dfs.items():
-            # Find common join keys that exist in both DataFrames
-            actual_join_keys = [k for k in join_keys if k in offset_df.columns]
-            if not actual_join_keys:
-                # No join keys — concatenate columns directly
-                df = pd.concat([df, offset_df], axis=1)
-                continue
+        join_column_producer = None
 
-            # Keep only join keys + new (renamed) metric columns from offset_df
-            offset_cols = actual_join_keys + [
-                c for c in offset_df.columns if c not in join_keys
-            ]
-            offset_df = offset_df[offset_cols]
+        for offset, offset_df in offset_dfs.items():
+            # Date-range offsets (DATE_RANGE_TIMESHIFTS_ENABLED) are rejected in
+            # ``processing_time_offsets`` before reaching here.
+            is_date_range_offset = False
+            offset_df, actual_join_keys = self._determine_join_keys(
+                df,
+                offset_df,
+                offset,
+                time_grain,
+                join_keys,
+                is_date_range_offset,
+                join_column_producer,
+            )
+            df = self._perform_join(df, offset_df, actual_join_keys)
+            df = self._apply_cleanup_logic(
+                df, offset, time_grain, join_keys, is_date_range_offset
+            )
 
-            df = df.merge(
+        return df
+
+    def _determine_join_keys(
+        self,
+        df: pd.DataFrame,
+        offset_df: pd.DataFrame,
+        offset: str,
+        time_grain: str | None,
+        join_keys: list[str],
+        is_date_range_offset: bool,
+        join_column_producer: Any,
+    ) -> tuple[pd.DataFrame, list[str]]:
+        """1:1 with the original ``_determine_join_keys``.
+
+        For a temporal grain, add a synthetic offset-join column to both frames
+        (the main frame shifted by ``offset``, the offset frame unshifted) and
+        join on it instead of the raw timestamp.
+        """
+        if time_grain and not is_date_range_offset:
+            column_name = OFFSET_JOIN_COLUMN_SUFFIX + offset
+            self.add_offset_join_column(
+                df, column_name, time_grain, offset, join_column_producer
+            )
+            self.add_offset_join_column(
+                offset_df, column_name, time_grain, None, join_column_producer
+            )
+            return offset_df, [column_name, *join_keys[1:]]
+        return offset_df, join_keys
+
+    def add_offset_join_column(
+        self,
+        df: pd.DataFrame,
+        name: str,
+        time_grain: str,
+        time_offset: str | None = None,
+        join_column_producer: Any = None,
+    ) -> None:
+        """Add an offset join column to ``df`` in place (1:1 with the original)."""
+        if join_column_producer:
+            df[name] = df.apply(lambda row: join_column_producer(row, 0), axis=1)
+        else:
+            df[name] = df.apply(
+                lambda row: self.generate_join_column(row, 0, time_grain, time_offset),
+                axis=1,
+            )
+
+    @staticmethod
+    def generate_join_column(
+        row: pd.Series,
+        column_index: int,
+        time_grain: str,
+        time_offset: str | None = None,
+    ) -> str:
+        """Bucket (and optionally offset-shift) a temporal value into a join key.
+
+        1:1 with the original ``generate_join_column``.
+        """
+        from pandas import DateOffset
+
+        from superset.utils.date import normalize_time_delta
+        from superset.utils.pandas_postprocessing._constants import TimeGrain
+
+        # ``.iloc`` = positional access (the original used ``row[column_index]``,
+        # which newer pandas deprecates for integer keys); semantics identical.
+        value = row.iloc[column_index]
+
+        if hasattr(value, "strftime"):
+            if time_offset:
+                value = value + DateOffset(**normalize_time_delta(time_offset))
+
+            if time_grain in (
+                TimeGrain.WEEK_STARTING_SUNDAY,
+                TimeGrain.WEEK_ENDING_SATURDAY,
+            ):
+                return value.strftime("%Y-W%U")
+            if time_grain in (
+                TimeGrain.WEEK,
+                TimeGrain.WEEK_STARTING_MONDAY,
+                TimeGrain.WEEK_ENDING_SUNDAY,
+            ):
+                return value.strftime("%Y-W%W")
+            if time_grain == TimeGrain.MONTH:
+                return value.strftime("%Y-%m")
+            if time_grain == TimeGrain.QUARTER:
+                return value.strftime("%Y-Q") + str(value.quarter)
+            if time_grain == TimeGrain.YEAR:
+                return value.strftime("%Y")
+
+        return str(value)
+
+    def _perform_join(
+        self,
+        df: pd.DataFrame,
+        offset_df: pd.DataFrame,
+        actual_join_keys: list[str],
+    ) -> pd.DataFrame:
+        """Left-join ``offset_df`` onto ``df`` (1:1 with the original
+        ``_perform_join`` / ``dataframe_utils.left_join_df``)."""
+        if actual_join_keys:
+            return df.merge(
                 offset_df,
                 on=actual_join_keys,
                 how="left",
                 suffixes=("", R_SUFFIX),
             )
+        temp_key = "__temp_join_key__"
+        df = df.copy()
+        offset_df = offset_df.copy()
+        df[temp_key] = 1
+        offset_df[temp_key] = 1
+        result_df = df.merge(
+            offset_df,
+            on=[temp_key],
+            how="left",
+            suffixes=("", R_SUFFIX),
+        )
+        result_df.drop(columns=[temp_key], inplace=True, errors="ignore")
+        result_df.drop(
+            columns=[f"{temp_key}{R_SUFFIX}"], inplace=True, errors="ignore"
+        )
+        return result_df
 
-            # Drop any right-suffix columns created by duplicate non-key columns
-            drop_cols = [c for c in df.columns if c.endswith(R_SUFFIX)]
-            if drop_cols:
-                df = df.drop(columns=drop_cols)
-
+    @staticmethod
+    def _apply_cleanup_logic(
+        df: pd.DataFrame,
+        offset: str,
+        time_grain: str | None,
+        join_keys: list[str],
+        is_date_range_offset: bool,
+    ) -> pd.DataFrame:
+        """Drop the synthetic join column + right-suffix columns and restore
+        column order (1:1 with the original ``_apply_cleanup_logic``)."""
+        if time_grain and not is_date_range_offset:
+            if join_keys:
+                col = df.pop(join_keys[0])
+                df.insert(0, col.name, col)
+            df.drop(
+                list(df.filter(regex=f"{OFFSET_JOIN_COLUMN_SUFFIX}|{R_SUFFIX}")),
+                axis=1,
+                inplace=True,
+            )
+        else:
+            df.drop(
+                list(df.filter(regex=f"{R_SUFFIX}")),
+                axis=1,
+                inplace=True,
+            )
         return df
+
+    @staticmethod
+    def _is_datetime_series(series: Any) -> bool:
+        """1:1 with ``superset_old.common.utils.dataframe_utils.is_datetime_series``."""
+        import datetime as _dt
+
+        if series is None or not isinstance(series, pd.Series):
+            return False
+        if series.isnull().all():
+            return False
+        return pd.api.types.is_datetime64_any_dtype(series) or (
+            series.apply(lambda x: isinstance(x, _dt.date) or x is None).all()
+        )
+
+    @staticmethod
+    def _is_valid_date(date_string: str) -> bool:
+        from datetime import datetime as _datetime
+
+        try:
+            _datetime.strptime(date_string, "%Y-%m-%d")
+            return True
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _is_valid_date_range(date_range: str) -> bool:
+        from datetime import datetime as _datetime
+
+        try:
+            start_date, end_date = date_range.split(":")
+            _datetime.strptime(start_date.strip(), "%Y-%m-%d")
+            _datetime.strptime(end_date.strip(), "%Y-%m-%d")
+            return True
+        except ValueError:
+            return False
+
+    def _get_offset_custom_or_inherit(
+        self,
+        offset: str,
+        outer_from_dttm: Any,
+        outer_to_dttm: Any,
+    ) -> str:
+        """Resolve ``inherit`` / explicit-date offsets to a ``N days ago`` string.
+
+        1:1 with the original ``get_offset_custom_or_inherit``.
+        """
+        from datetime import datetime as _datetime
+
+        if offset == "inherit":
+            return f"{(outer_to_dttm - outer_from_dttm).days} days ago"
+        if self._is_valid_date(offset):
+            offset_date = _datetime.strptime(offset, "%Y-%m-%d")
+            return f"{(outer_from_dttm - offset_date).days} days ago"
+        return ""
 
     async def raise_for_access(self) -> None:
         """Validate per-query and delegate to
