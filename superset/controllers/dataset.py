@@ -41,11 +41,11 @@ from superset.commands.dataset.delete import (
 )
 from superset.commands.dataset.duplicate import DuplicateDatasetCommand
 from superset.commands.dataset.export import ExportDatasetsCommand
-from superset.commands.dataset.importers.v1 import ImportDatasetsCommand
 from superset.commands.dataset.metrics.delete import DeleteDatasetMetricCommand
 from superset.commands.dataset.refresh import RefreshDatasetCommand
 from superset.commands.dataset.update import UpdateDatasetCommand
 from superset.commands.dataset.warm_up_cache import WarmUpDatasetCacheCommand
+from superset.commands.importers.exceptions import NoValidFilesFoundError
 
 # DAO imports moved to provider functions
 from superset.controllers.base import (
@@ -62,6 +62,9 @@ from superset.controllers.base import (
 from superset.events import event_logger
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.guards.rbac import require_permission
+from superset.importexport.legacy.dispatcher import (
+    ImportDatasetsCommand as LegacyImportDatasetsDispatcher,
+)
 from superset.params.rison import provide_rison_query
 from superset.providers import (
     provide_column_dao,
@@ -126,6 +129,34 @@ def _dataset_custom_filters() -> dict[str, Any]:
         "dataset_is_null_or_empty": _dataset_is_null_or_empty,
         "dataset_is_certified": _dataset_is_certified,
     }
+
+
+def _parse_import_upload(filename: str, contents: bytes) -> tuple[dict[str, str], bool]:
+    """Split an uploaded import payload into ``({filename: text}, is_zip)``.
+
+    Mirrors ``superset_old/datasets/api.py:919-927``: ZIP bundles are decoded
+    with ``get_contents_from_bundle`` (``remove_root`` + YAML-only filtering),
+    while a non-ZIP upload is treated as a single legacy (v0) JSON document
+    keyed by its filename. Empty contents raise
+    :class:`NoValidFilesFoundError`, matching the original.
+    """
+    import zipfile
+
+    from superset.commands.importers.v1.utils import get_contents_from_bundle
+
+    buf = io.BytesIO(contents)
+    if zipfile.is_zipfile(buf):
+        buf.seek(0)
+        with zipfile.ZipFile(buf) as bundle:
+            parsed = get_contents_from_bundle(bundle)
+        is_zip = True
+    else:
+        parsed = {filename: contents.decode("utf-8")}
+        is_zip = False
+
+    if not parsed:
+        raise NoValidFilesFoundError()
+    return parsed, is_zip
 
 
 # ``DatasetDetailResult.from_model(dataset)`` (see
@@ -759,7 +790,6 @@ class DatasetController(Controller):
         import json as _json
 
         contents = await data.read()
-        buf = io.BytesIO(contents)
         try:
             passwords_dict: dict[str, str] = _json.loads(passwords) if passwords else {}
         except (ValueError, _json.JSONDecodeError) as exc:
@@ -790,18 +820,47 @@ class DatasetController(Controller):
             raise CommandInvalidError(
                 "Invalid JSON in 'ssh_tunnel_private_key_passwords' field"
             ) from exc
-        cmd = ImportDatasetsCommand(
-            contents=buf,
-            dao=cast("AsyncDatasetDAO", dao),
-            overwrite=overwrite,
-            passwords=passwords_dict,
-            ssh_tunnel_passwords=ssh_dict,
-            ssh_tunnel_private_keys=ssh_private_keys_dict,
-            ssh_tunnel_private_key_passwords=ssh_private_key_passwords_dict,
-            sync_columns=sync_columns,
-            sync_metrics=sync_metrics,
-        )
-        await cmd.execute()
+
+        # Mirror ``superset_old/datasets/api.py:919-963``: a ZIP bundle is
+        # parsed (remove_root + YAML filter) and dispatched v1-then-v0; a
+        # non-ZIP upload is a single legacy (v0) JSON document. The dispatcher
+        # (``superset/importexport/legacy/dispatcher.py``) tries the async v1
+        # command first and falls back to the sync v0 command on
+        # ``IncorrectVersionError`` — matching the original
+        # ``commands/dataset/importers/dispatcher.py``.
+        filename = data.filename or "import.json"
+        parsed, is_zip = _parse_import_upload(filename, contents)
+        if is_zip:
+            dispatcher = LegacyImportDatasetsDispatcher(
+                parsed,
+                overwrite=overwrite,
+                passwords=passwords_dict,
+                ssh_tunnel_passwords=ssh_dict,
+                ssh_tunnel_private_keys=ssh_private_keys_dict,
+                ssh_tunnel_private_key_passwords=ssh_private_key_passwords_dict,
+                sync_columns=sync_columns,
+                sync_metrics=sync_metrics,
+            )
+            await dispatcher.run_async(dao=cast("AsyncDatasetDAO", dao))
+        else:
+            # A single JSON document is unversioned (v0). The modern v1
+            # importer always requires a ZIP with ``metadata.yaml``, so route
+            # straight to the sync v0 legacy command (run in a worker thread
+            # because it uses a sync ``Session``), matching the v0 fallback the
+            # original dispatcher reaches in this path.
+            import asyncio as _asyncio
+
+            from superset.importexport.legacy.dataset_v0 import (
+                ImportDatasetsCommand as V0ImportDatasetsCommand,
+            )
+
+            await _asyncio.to_thread(
+                V0ImportDatasetsCommand(
+                    parsed,
+                    sync_columns=sync_columns,
+                    sync_metrics=sync_metrics,
+                ).run,
+            )
         await event_logger.alog_with_context("dataset.import")
         return {"message": "OK"}
 
@@ -890,57 +949,201 @@ class DatasetController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/dataset/{pk}/drill_info/ — drill-down column info.
 
-        Accepts optional RISON ``q`` parameter with ``dashboard_id`` to
-        enable guest-token / RBAC fallback access checks.
+        Direct port of ``superset_old/datasets/api.py:1191-1287`` +
+        ``DatasetDrillInfoSchema`` (``schemas.py:399-441``).
+
+        The RISON ``q`` parameter carries an optional ``dashboard_id`` that
+        enables the embedded (guest) / DASHBOARD_RBAC drill-through fallback.
+        The response shape is ``{"result": DatasetDrillInfoSchema}`` —
+        ``columns`` are filtered to ``groupby=True`` dimensions, and a guest
+        user only ever sees ``{"id", "columns"}``.
         """
-        import json as _json
-
-        dashboard_id: int | None = None
-        if q:
-            try:
-                rison_parsed = _json.loads(q)
-                dashboard_id = rison_parsed.get("dashboard_id")
-            except (ValueError, _json.JSONDecodeError, TypeError):
-                pass
-
-        # Eager-load ``columns`` to avoid MissingGreenlet on async lazy
-        # access while building the drill_info response below.
         from sqlalchemy.orm import selectinload
 
+        from superset.db.filters import dataset_access_filters
+        from superset.exceptions import ForbiddenError
         from superset.models.connectors import SqlaTable
 
-        dataset = await dao.find_by_id_with_options(
-            pk,
-            options=[selectinload(SqlaTable.columns)],
+        dashboard_id: int | None = self._parse_drill_dashboard_id(q)
+
+        # Eager-load relationships used by ``DatasetDrillInfoSchema`` so they
+        # don't trigger lazy loads (MissingGreenlet under asyncpg).
+        drill_options = [
+            selectinload(SqlaTable.columns),
+            selectinload(SqlaTable.owners),
+            selectinload(SqlaTable.created_by),
+            selectinload(SqlaTable.changed_by),
+        ]
+
+        # First try with regular access (apply the dataset access base
+        # filter, mirroring ``self.datamodel.get(pk, self._base_filters, ...)``).
+        base_filters = await dataset_access_filters(security_manager, current_user)
+        results = await dao.find_all(
+            filters=[SqlaTable.id == pk] + (base_filters or []),
+            page=0,
+            page_size=1,
+            options=drill_options,
         )
-        if not dataset:
+        if results:
+            return {"result": self._dump_drill_info(results[0], security_manager,
+                                                     current_user)}
+
+        # Embedded (guest) user must pass a dashboard id.
+        if not dashboard_id and security_manager.is_guest_user(current_user):
+            raise ForbiddenError()
+        # RBAC user must pass a dashboard id for fallback validation.
+        if not dashboard_id:
             raise ObjectNotFoundError("Dataset", pk)
 
-        # When dashboard_id is provided, verify access via RBAC or
-        # guest-token scoped to that dashboard.
-        if dashboard_id is not None:
-            try:
-                await security_manager.raise_for_access(
-                    datasource=dataset,
-                    dashboard_id=dashboard_id,
-                    user=current_user,
-                )
-            except Exception:  # noqa: BLE001, S110
-                # Fallback: allow access if user can read the dataset directly
-                pass
+        # Lazy-load the dashboard and dataset (skipping base filters) for the
+        # RBAC / embedded drill-through access check.
+        dashboard_dao = self._dashboard_dao(dao)
+        dashboard = await dashboard_dao.find_by_id_with_options(
+            int(dashboard_id),
+            options=[
+                selectinload(dashboard_dao.model_cls.roles),
+                selectinload(dashboard_dao.model_cls.slices),
+            ],
+        )
+        dataset_ = await dao.find_by_id_with_options(
+            pk, options=[selectinload(SqlaTable.slices)]
+        )
+        if not (dashboard and dataset_):
+            raise ObjectNotFoundError("Dataset", pk)
+        if not await self._can_drill_dataset_via_dashboard_access(
+            dataset_, dashboard, security_manager, current_user
+        ):
+            raise ForbiddenError()
 
-        columns = getattr(dataset, "columns", []) or []
+        # Reload the dataset skipping base filters with the eager loads needed
+        # by the schema dump (we avoid reusing ``dataset_`` so column lazy
+        # loads don't fire).
+        dataset = await dao.find_by_id_with_options(pk, options=drill_options)
+        if not dataset:
+            raise ObjectNotFoundError("Dataset", pk)
+        return {"result": self._dump_drill_info(dataset, security_manager,
+                                                current_user)}
+
+    @staticmethod
+    def _parse_drill_dashboard_id(q: str | None) -> int | None:
+        """Extract ``dashboard_id`` from the RISON (or JSON) ``q`` parameter."""
+        if not q:
+            return None
+        import json as _json
+
+        import prison
+
+        parsed: Any = None
+        try:
+            parsed = prison.loads(q)
+        except (ValueError, TypeError):
+            try:
+                parsed = _json.loads(q)
+            except (ValueError, _json.JSONDecodeError, TypeError):
+                parsed = None
+        if isinstance(parsed, dict):
+            return parsed.get("dashboard_id")
+        return None
+
+    @staticmethod
+    def _dashboard_dao(dataset_dao: DatasetDAOProtocol) -> Any:
+        """Build an ``AsyncDashboardDAO`` bound to the dataset DAO's session."""
+        from superset.db.daos.dashboard import AsyncDashboardDAO
+
+        return AsyncDashboardDAO(dataset_dao.session)  # type: ignore[attr-defined]
+
+    @staticmethod
+    def _dump_drill_info(
+        dataset: Any,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
+        """Serialize a dataset into the ``DatasetDrillInfoSchema`` shape.
+
+        Port of ``DatasetDrillInfoSchema`` (``superset_old/datasets/schemas.py``
+        :399-441): ``columns`` are filtered to ``groupby=True`` dimensions and
+        carry ``{column_name, verbose_name}``; a guest user only ever receives
+        ``{"id", "columns"}``.
+        """
+
+        def _user(u: Any) -> dict[str, Any] | None:
+            if u is None:
+                return None
+            return {
+                "first_name": getattr(u, "first_name", None),
+                "last_name": getattr(u, "last_name", None),
+            }
+
+        columns = [
+            {
+                "column_name": getattr(col, "column_name", ""),
+                "verbose_name": getattr(col, "verbose_name", None),
+            }
+            for col in (getattr(dataset, "columns", []) or [])
+            if getattr(col, "groupby", False)
+        ]
+
+        if security_manager.is_guest_user(current_user):
+            return {"id": dataset.id, "columns": columns}
+
         return {
-            "columns": [
-                {
-                    "column_name": getattr(col, "column_name", ""),
-                    "groupby": getattr(col, "groupby", True),
-                    "is_dttm": getattr(col, "is_dttm", False),
-                    "type": getattr(col, "type", ""),
-                }
-                for col in columns
-            ]
+            "id": dataset.id,
+            "table_name": getattr(dataset, "table_name", None),
+            "columns": columns,
+            "owners": [_user(o) for o in (getattr(dataset, "owners", []) or [])],
+            "created_by": _user(getattr(dataset, "created_by", None)),
+            "created_on_humanized": getattr(
+                dataset, "created_on_delta_humanized", None
+            ),
+            "changed_by": _user(getattr(dataset, "changed_by", None)),
+            "changed_on_humanized": getattr(
+                dataset, "changed_on_delta_humanized", None
+            ),
         }
+
+    @staticmethod
+    async def _can_drill_dataset_via_dashboard_access(
+        dataset: Any,
+        dashboard: Any,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> bool:
+        """Async port of
+        ``SupersetSecurityManager.can_drill_dataset_via_dashboard_access``
+        (``superset_old/security/manager.py:576-600``).
+
+        True when an embedded guest with guest-access to the dashboard, or a
+        DASHBOARD_RBAC user whose roles intersect a published dashboard's
+        roles, drills a dataset that the dashboard actually uses.
+        """
+        from superset.utils.feature_flags import feature_flag_manager
+
+        # Datasets used by the dashboard (derived from its table-backed
+        # slices — the new model has no ``datasources`` property).
+        dashboard_dataset_ids = {
+            getattr(slc, "datasource_id", None)
+            for slc in (getattr(dashboard, "slices", []) or [])
+            if getattr(slc, "datasource_type", None) == "table"
+        }
+        if dataset.id not in dashboard_dataset_ids:
+            return False
+
+        embedded_branch = (
+            feature_flag_manager.is_feature_enabled("EMBEDDED_SUPERSET")
+            and security_manager.is_guest_user(current_user)
+            and await security_manager.has_guest_access(dashboard, user=current_user)
+        )
+
+        roles = getattr(dashboard, "roles", []) or []
+        user_roles = await security_manager.get_user_roles(current_user)
+        rbac_branch = bool(
+            feature_flag_manager.is_feature_enabled("DASHBOARD_RBAC")
+            and roles
+            and getattr(dashboard, "published", False)
+            and {role.id for role in roles} & {role.id for role in user_roles}
+        )
+
+        return bool(embedded_branch or rbac_branch)
 
     # ------------------------------------------------------------------
     # Column/Metric delete endpoints (merged from DatasetColumnsController

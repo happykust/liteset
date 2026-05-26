@@ -40,7 +40,6 @@ from superset.commands.dashboard.delete import (
 from superset.commands.dashboard.embedded.upsert import UpsertEmbeddedDashboardCommand
 from superset.commands.dashboard.export import ExportDashboardsCommand
 from superset.commands.dashboard.fave import AddFavoriteDashboardCommand
-from superset.commands.dashboard.importers.v1 import ImportDashboardsCommand
 from superset.commands.dashboard.permalink.create import (
     CreateDashboardPermalinkCommand,
 )
@@ -51,6 +50,7 @@ from superset.commands.dashboard.update import (
     UpdateDashboardCommand,
     UpdateDashboardFiltersCommand,
 )
+from superset.commands.importers.exceptions import NoValidFilesFoundError
 
 # DAO imports moved to provider functions (avoid Flask import chain)
 from superset.controllers.base import (
@@ -69,6 +69,9 @@ from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.guards.rbac import (
     deny_anon_with_404,
     require_permission,
+)
+from superset.importexport.legacy.dispatcher import (
+    ImportDashboardsCommand as LegacyImportDashboardsDispatcher,
 )
 from superset.params.rison import provide_rison_query
 from superset.providers import (
@@ -102,6 +105,34 @@ from superset.utils import filter_none, filter_unset
 if TYPE_CHECKING:
     from superset.db.daos.dashboard import AsyncDashboardDAO, AsyncEmbeddedDashboardDAO
     from superset.db.daos.key_value import AsyncKeyValueDAO
+
+
+def _parse_import_upload(filename: str, contents: bytes) -> tuple[dict[str, str], bool]:
+    """Split an uploaded import payload into ``({filename: text}, is_zip)``.
+
+    Mirrors ``superset_old/dashboards/api.py:1587-1595``: ZIP bundles are
+    decoded with ``get_contents_from_bundle`` (``remove_root`` + YAML-only
+    filtering), while a non-ZIP upload is treated as a single legacy (v0)
+    JSON document keyed by its filename. Empty contents raise
+    :class:`NoValidFilesFoundError`, matching the original.
+    """
+    import zipfile
+
+    from superset.commands.importers.v1.utils import get_contents_from_bundle
+
+    buf = io.BytesIO(contents)
+    if zipfile.is_zipfile(buf):
+        buf.seek(0)
+        with zipfile.ZipFile(buf) as bundle:
+            parsed = get_contents_from_bundle(bundle)
+        is_zip = True
+    else:
+        parsed = {filename: contents.decode("utf-8")}
+        is_zip = False
+
+    if not parsed:
+        raise NoValidFilesFoundError()
+    return parsed, is_zip
 
 
 # ---------------------------------------------------------------------------
@@ -1109,8 +1140,6 @@ class DashboardController(Controller):
         """
         import asyncio
 
-        from superset.db.daos.key_value import AsyncKeyValueDAO
-
         settings = getattr(state, "settings", None)
         flags = getattr(settings, "feature_flags", {}) or {}
         if not flags.get("THUMBNAILS", False) or not flags.get(
@@ -1503,7 +1532,6 @@ class DashboardController(Controller):
         import json as _json
 
         contents = await data.read()
-        buf = io.BytesIO(contents)
         try:
             passwords_dict: dict[str, str] = _json.loads(passwords) if passwords else {}
         except (ValueError, _json.JSONDecodeError) as exc:
@@ -1534,16 +1562,41 @@ class DashboardController(Controller):
             raise CommandInvalidError(
                 "Invalid JSON in 'ssh_tunnel_private_key_passwords' field"
             ) from exc
-        cmd = ImportDashboardsCommand(
-            contents=buf,
-            dao=cast("AsyncDashboardDAO", dao),
-            overwrite=overwrite,
-            passwords=passwords_dict,
-            ssh_tunnel_passwords=ssh_dict,
-            ssh_tunnel_private_keys=ssh_private_keys_dict,
-            ssh_tunnel_private_key_passwords=ssh_private_key_passwords_dict,
-        )
-        await cmd.execute()
+
+        # Mirror ``superset_old/dashboards/api.py:1587-1628``: a ZIP bundle is
+        # parsed (remove_root + YAML filter) and dispatched v1-then-v0; a
+        # non-ZIP upload is a single legacy (v0) JSON document. The dispatcher
+        # (``superset/importexport/legacy/dispatcher.py``) tries the async v1
+        # command first and falls back to the sync v0 command on
+        # ``IncorrectVersionError`` — matching the original
+        # ``commands/dashboard/importers/dispatcher.py``.
+        filename = data.filename or "import.json"
+        parsed, is_zip = _parse_import_upload(filename, contents)
+        if is_zip:
+            dispatcher = LegacyImportDashboardsDispatcher(
+                parsed,
+                overwrite=overwrite,
+                passwords=passwords_dict,
+                ssh_tunnel_passwords=ssh_dict,
+                ssh_tunnel_private_keys=ssh_private_keys_dict,
+                ssh_tunnel_private_key_passwords=ssh_private_key_passwords_dict,
+            )
+            await dispatcher.run_async(dao=cast("AsyncDashboardDAO", dao))
+        else:
+            # A single JSON document is unversioned (v0). The modern v1
+            # importer always requires a ZIP with ``metadata.yaml``, so route
+            # straight to the sync v0 legacy command (run in a worker thread
+            # because it uses a sync ``Session``), matching the v0 fallback the
+            # original dispatcher reaches in this path.
+            import asyncio as _asyncio
+
+            from superset.importexport.legacy.dashboard_v0 import (
+                ImportDashboardsCommand as V0ImportDashboardsCommand,
+            )
+
+            await _asyncio.to_thread(
+                V0ImportDashboardsCommand(parsed).run,
+            )
         await event_logger.alog_with_context("dashboard.import")
         return {"message": "OK"}
 
