@@ -108,8 +108,14 @@ def test_controller_tags():
     assert "Embedded Dashboard" in EmbeddedDashboardController.tags
 
 
-def test_endpoint_excludes_auth():
-    """The get_embedded endpoint should be marked as exclude_from_auth."""
+def test_endpoint_requires_auth():
+    """The get_embedded API endpoint must require ``can_read EmbeddedDashboard``.
+
+    Upstream ``EmbeddedDashboardRestApi.get`` is ``@protect()`` + can_read, so
+    the JSON config endpoint must NOT be ``exclude_from_auth`` and must carry an
+    RBAC guard (the previous open behaviour leaked embedded config anonymously).
+    """
     handler = EmbeddedDashboardController.get_embedded
     opt = getattr(handler, "opt", {})
-    assert opt.get("exclude_from_auth") is True
+    assert opt.get("exclude_from_auth") is not True
+    assert getattr(handler, "guards", None)
