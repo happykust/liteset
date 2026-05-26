@@ -40,8 +40,6 @@ from uuid import UUID
 import numpy as np
 import pandas as pd
 from celery.exceptions import SoftTimeLimitExceeded
-from sqlalchemy import text as sa_text
-from sqlalchemy.engine import create_engine as _create_engine
 from sqlalchemy.orm import Session
 
 from superset.commands.report_exceptions import (
@@ -182,22 +180,42 @@ class AlertCommand:
     # Query execution
     # ------------------------------------------------------------------
 
-    def _execute_query(self) -> pd.DataFrame:
-        """Execute the alert SQL query against the report's database.
+    def _find_user(self, username: str | None) -> Any | None:
+        """Resolve the executor user by username via the sync session.
 
-        In the original implementation this uses Jinja template processing
-        and the Database model's ``get_df``/``apply_limit_to_sql`` methods.
-        Since our Database model is pure SQLAlchemy without Flask helpers,
-        we execute the SQL directly via a sync engine created from the
-        database's connection URI.
+        Mirrors ``ExecuteReportScheduleCommand._find_user``; returns
+        ``None`` when no session/username is available, in which case
+        ``override_user(None)`` simply leaves the user context unset
+        (matching the original's tolerance of a missing user).
+        """
+        if not username or self._session is None:
+            return None
+        from superset.models.security import User
+
+        return (
+            self._session.query(User)
+            .filter(User.username == username)
+            .one_or_none()
+        )
+
+    def _execute_query(self) -> pd.DataFrame:
+        """Execute the actual alert SQL query template.
+
+        1:1 with ``superset_old/commands/report/alert.py::_execute_query``:
+        renders the SQL through the **sandboxed** Jinja processor
+        (``superset.jinja_context``), applies the engine-spec-aware
+        ``Database.apply_limit_to_sql`` (LIMIT 2), optionally mutates it
+        (``MUTATE_ALERT_QUERY`` → ``mutate_sql_based_on_config``), then runs
+        it through ``Database.get_df`` under the resolved executor user
+        (``override_user``) so RLS and Jinja ``current_user`` apply.
 
         :return: A pandas DataFrame with query results.
         :raises AlertQueryError: SQL query is not valid.
         :raises AlertQueryTimeout: Celery soft timeout exceeded.
         """
-        sql = self._report_schedule.sql
-        if not sql:
-            raise AlertQueryError(message="Alert SQL query is empty")
+        from superset.jinja_context import get_template_processor
+        from superset.tasks.utils import get_executor
+        from superset.utils.core import override_user
 
         database: Database | None = self._report_schedule.database
         if database is None:
@@ -205,45 +223,33 @@ class AlertCommand:
 
         settings = _get_settings()
 
-        # Apply SQL LIMIT to prevent heavy loads from user mistakes.
-        # Simple approach: wrap in a subquery with LIMIT.
-        limited_sql = (
-            f"SELECT * FROM ({sql.rstrip().rstrip(';')})"  # noqa: S608
-            f" AS __alert_sq LIMIT {ALERT_SQL_LIMIT}"
-        )
-
-        # If the config has a SQL query mutator and MUTATE_ALERT_QUERY is True,
-        # apply it. In our settings-based config this is a callable or None.
-        if settings.mutate_alert_query and settings.sql_query_mutator:
-            try:
-                limited_sql = settings.sql_query_mutator(
-                    limited_sql,
-                    security_manager=None,
-                    database=database,
-                )
-            except Exception:
-                logger.warning(
-                    "SQL query mutator failed for alert %s, using unmutated SQL",
-                    self._execution_id,
-                )
-
+        sql_template = get_template_processor(database=database)
+        rendered_sql = sql_template.process_template(self._report_schedule.sql)
         try:
-            start = default_timer()
-
-            # Create a disposable engine from the database's decrypted URI
-            engine = _create_engine(database.sqlalchemy_uri_decrypted)
-            try:
-                df = pd.read_sql_query(sa_text(limited_sql), engine)
-            finally:
-                engine.dispose()
-
-            stop = default_timer()
-            logger.info(
-                "Query for %s took %.2f ms",
-                self._execution_id,
-                (stop - start) * 1000.0,
+            limited_rendered_sql = database.apply_limit_to_sql(
+                rendered_sql, ALERT_SQL_LIMIT
             )
-            return df
+
+            if settings.mutate_alert_query:
+                limited_rendered_sql = database.mutate_sql_based_on_config(
+                    limited_rendered_sql
+                )
+
+            _executor, username = get_executor(
+                executors=settings.alert_reports_executors,
+                model=self._report_schedule,
+            )
+            user = self._find_user(username)
+            with override_user(user):
+                start = default_timer()
+                df = database.get_df(sql=limited_rendered_sql)
+                stop = default_timer()
+                logger.info(
+                    "Query for %s took %.2f ms",
+                    self._execution_id,
+                    (stop - start) * 1000.0,
+                )
+                return df
         except SoftTimeLimitExceeded as ex:
             logger.warning("A timeout occurred while executing the alert query: %s", ex)
             raise AlertQueryTimeout() from ex
