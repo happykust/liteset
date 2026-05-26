@@ -23,10 +23,16 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
+from superset.commands.database.utils import (
+    _validate_extra,
+    _validate_field_lengths,
+    _validate_server_cert,
+    _validate_sqlalchemy_uri_safety,
+)
 from superset.exceptions import (
     CommandInvalidError,
-    ObjectNotFoundError,
     OAuth2RedirectError,
+    ObjectNotFoundError,
 )
 
 if TYPE_CHECKING:
@@ -65,6 +71,31 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
                 raise CommandInvalidError(
                     f'A database with the name "{new_name}" already exists'
                 )
+
+        # Field validators — 1:1 with ``DatabasePutSchema`` (extra/server_cert
+        # validators + ``Length`` bounds: database_name 1-250, sqlalchemy_uri
+        # 0-1024, force_ctas_schema 0-250) and ``sqlalchemy_uri_validator``
+        # (make_url_safe + configurable ``check_sqlalchemy_uri`` when
+        # ``PREVENT_UNSAFE_DB_CONNECTIONS`` is enabled). Each runs only when the
+        # field is present in the (partial) PUT payload (PUT min length is 0).
+        uri = self._data.get("sqlalchemy_uri")
+        force_ctas_schema = self._data.get("force_ctas_schema")
+        extra = self._data.get("extra")
+        cert = self._data.get("server_cert")
+        if isinstance(uri, str):
+            _validate_sqlalchemy_uri_safety(uri)
+        _validate_field_lengths(
+            database_name=new_name if isinstance(new_name, str) else None,
+            sqlalchemy_uri=uri if isinstance(uri, str) else None,
+            force_ctas_schema=force_ctas_schema
+            if isinstance(force_ctas_schema, str)
+            else None,
+            sqlalchemy_uri_min=0,
+        )
+        if isinstance(extra, str):
+            _validate_extra(extra)
+        if isinstance(cert, str):
+            _validate_server_cert(cert)
 
     async def run(self) -> "Database":  # noqa: C901
         assert self._database is not None

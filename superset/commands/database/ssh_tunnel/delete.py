@@ -39,6 +39,21 @@ class DeleteSSHTunnelCommand(AsyncBaseCommand[None]):
         self._tunnel: Any = None
 
     async def validate(self) -> None:
+        # Mirrors ``superset_old/commands/database/ssh_tunnel/delete.py:42-43``:
+        # the feature-flag check runs BEFORE the existence check, so deletion
+        # returns 400 when SSH tunnelling is disabled regardless of whether a
+        # tunnel row exists. In the original this guard lives at the top of
+        # ``run()`` (which runs before ``validate()``); here ``execute()`` calls
+        # ``validate()`` first, so we put it at the start of ``validate()`` to
+        # preserve the same ordering.
+        from superset.commands.database.ssh_tunnel.exceptions import (
+            SSHTunnelingNotEnabledError,
+        )
+        from superset.utils.feature_flags import feature_flag_manager
+
+        if not feature_flag_manager.is_feature_enabled("SSH_TUNNELING"):
+            raise SSHTunnelingNotEnabledError()
+
         self._tunnel = await self._dao.get_ssh_tunnel(self._database_id)
         if not self._tunnel:
             raise ObjectNotFoundError("SSHTunnel", self._database_id)

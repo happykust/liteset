@@ -24,6 +24,12 @@ from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
 from superset.commands.database.test_connection import DatabaseTestConnectionCommand
+from superset.commands.database.utils import (
+    _validate_extra,
+    _validate_field_lengths,
+    _validate_server_cert,
+    _validate_sqlalchemy_uri_safety,
+)
 from superset.exceptions import CommandInvalidError
 
 if TYPE_CHECKING:
@@ -102,21 +108,26 @@ class CreateDatabaseCommand(AsyncBaseCommand["Database"]):
         if not self._data.get("sqlalchemy_uri"):
             raise CommandInvalidError("sqlalchemy_uri is required")
 
-        # Validate URI scheme safety
-        uri = self._data.get("sqlalchemy_uri", "")
-        if uri:
-            from urllib.parse import urlparse
+        # Validate URI safety — 1:1 with the original
+        # ``sqlalchemy_uri_validator`` (superset_old/databases/schemas.py:196-216):
+        # parse the URI via ``make_url_safe`` and, when
+        # ``PREVENT_UNSAFE_DB_CONNECTIONS`` is enabled (the default), reject
+        # blocklisted dialects (sqlite/shillelagh/meta-DB) through the
+        # configurable ``check_sqlalchemy_uri`` allowlist rather than a
+        # hardcoded ``{file, sqlite}`` set.
+        _validate_sqlalchemy_uri_safety(self._data.get("sqlalchemy_uri", ""))
 
-            parsed = urlparse(uri)
-            if not parsed.scheme:
-                raise CommandInvalidError("Invalid database URI: missing scheme")
-
-            # Check for unsafe schemes
-            UNSAFE_SCHEMES = {"file", "sqlite"}  # noqa: N806
-            if parsed.scheme.lower().split("+")[0] in UNSAFE_SCHEMES:
-                raise CommandInvalidError(
-                    f"Database URI scheme '{parsed.scheme}' is not allowed"
-                )
+        # Field validators — 1:1 with ``DatabasePostSchema`` (extra/server_cert
+        # validators + ``Length`` bounds: database_name 1-250, sqlalchemy_uri
+        # 1-1024, force_ctas_schema 0-250).
+        _validate_field_lengths(
+            database_name=self._data.get("database_name"),
+            sqlalchemy_uri=self._data.get("sqlalchemy_uri"),
+            force_ctas_schema=self._data.get("force_ctas_schema"),
+            sqlalchemy_uri_min=1,
+        )
+        _validate_extra(self._data.get("extra"))
+        _validate_server_cert(self._data.get("server_cert"))
 
         is_unique = await self._dao.validate_uniqueness(
             self._data["database_name"],

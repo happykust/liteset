@@ -1262,12 +1262,15 @@ class DatabaseController(Controller):
                 schema=schema,
             )
 
+            # Mirror ``superset_old/commands/database/tables.py:119-136``:
+            # only TABLE entries carry an ``extra`` key (defaulting to
+            # ``None``); VIEW entries are emitted without ``extra``.
             options: list[dict[str, Any]] = sorted(
                 [
                     {
                         "value": str(t),
                         "type": "table",
-                        "extra": extra_lookup.get(str(t), {}),
+                        "extra": extra_lookup.get(str(t), None),
                     }
                     for t in table_names
                 ]
@@ -1275,7 +1278,6 @@ class DatabaseController(Controller):
                     {
                         "value": str(v),
                         "type": "view",
-                        "extra": extra_lookup.get(str(v), {}),
                     }
                     for v in view_names
                 ],
@@ -2285,10 +2287,13 @@ class DatabaseController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/upload_metadata/",
-        guards=[require_permission("can_write", "Database")],
+        # The original ``constants.MODEL_API_RW_METHOD_PERMISSION_MAP`` maps
+        # ``upload_metadata`` to ``upload`` (not ``write``) — mirror that so
+        # users with ``can_upload`` but not ``can_write`` retain access.
+        guards=[require_permission("can_upload", "Database")],
         media_type="application/json",
     )
-    async def upload_metadata(  # noqa: C901
+    async def upload_metadata(
         self,
         data: UploadFile = Body(media_type=RequestEncodingType.MULTI_PART),  # noqa: B008
         type: str = Parameter(query="type", default="csv"),  # noqa: A002, B008
@@ -2297,105 +2302,61 @@ class DatabaseController(Controller):
     ) -> dict[str, Any]:
         """Upload a file and return file metadata (column names per sheet).
 
-        Mirrors the original ``DatabaseRestApi.upload_metadata`` endpoint.
-        Reads only a minimal number of rows to extract column headers.
+        Mirrors ``superset_old/databases/api.py:upload_metadata`` (lines
+        1704-1718) verbatim: parse the ``type`` / ``delimiter`` / ``header_row``
+        options (``UploadFileMetadataPostSchema``), instantiate the matching
+        per-format reader and delegate to its ``file_metadata(file)``. The
+        readers honour every option the original passed (delimiter, header_row)
+        and apply identical parsing/error semantics — previously this endpoint
+        used an inline parser that silently dropped reader options.
 
         Supported file types (via the ``type`` query parameter):
         - ``csv``  -- comma/delimiter-separated values
         - ``excel`` -- .xlsx / .xls
         - ``columnar`` -- Apache Parquet (single file or ZIP of Parquet files)
         """
-        ROWS_TO_READ: int = 2  # noqa: N806
-        file_bytes = await data.read()
+        from superset.commands.database.uploaders.base import (
+            BaseDataReader,
+            UploadFileType,
+        )
+        from superset.commands.database.uploaders.columnar_reader import ColumnarReader
+        from superset.commands.database.uploaders.csv_reader import CSVReader
+        from superset.commands.database.uploaders.excel_reader import ExcelReader
 
-        def _parse_csv() -> FileMetadataResponse:
-            import pandas as pd
-
-            buf = io.BytesIO(file_bytes)
-            df = pd.read_csv(
-                buf,
-                nrows=ROWS_TO_READ,
-                header=header_row,
-                sep=delimiter,
-            )
-            return FileMetadataResponse(
-                items=[
-                    FileMetadataItem(
-                        column_names=df.columns.tolist(),
-                        sheet_name=None,
-                    )
-                ]
-            )
-
-        def _parse_excel() -> FileMetadataResponse:
-            import pandas as pd
-
-            buf = io.BytesIO(file_bytes)
-            try:
-                excel_file = pd.ExcelFile(buf)
-            except (ValueError, AssertionError) as exc:
-                raise CommandInvalidError(
-                    message="Excel file format cannot be determined",
-                ) from exc
-
-            items: list[FileMetadataItem] = []
-            for sheet in excel_file.sheet_names:
-                df = excel_file.parse(sheet, nrows=ROWS_TO_READ)
-                items.append(
-                    FileMetadataItem(
-                        column_names=df.columns.tolist(),
-                        sheet_name=sheet,
-                    )
-                )
-            return FileMetadataResponse(items=items)
-
-        def _parse_columnar() -> FileMetadataResponse:
-            from zipfile import BadZipFile, is_zipfile, ZipFile
-
-            import pyarrow.parquet as pq
-
-            buf = io.BytesIO(file_bytes)
-            column_names: set[str] = set()
-
-            if is_zipfile(buf):
-                buf.seek(0)
-                try:
-                    with ZipFile(buf) as zf:
-                        for name in zf.namelist():
-                            with zf.open(name) as f:
-                                pf = pq.ParquetFile(io.BytesIO(f.read()))
-                                column_names.update(pf.metadata.schema.names)
-                except BadZipFile as exc:
-                    raise CommandInvalidError(
-                        message="Not a valid ZIP file",
-                    ) from exc
-            else:
-                buf.seek(0)
-                pf = pq.ParquetFile(buf)
-                column_names.update(pf.metadata.schema.names)
-
-            return FileMetadataResponse(
-                items=[
-                    FileMetadataItem(
-                        column_names=list(column_names),
-                        sheet_name=None,
-                    )
-                ]
-            )
+        # Mirror ``UploadFileMetadataPostSchema``: only ``delimiter`` and
+        # ``header_row`` are forwarded into the reader options.
+        options: dict[str, Any] = {
+            "delimiter": delimiter,
+            "header_row": header_row,
+        }
 
         file_type = type.lower()
-        if file_type == "csv":
-            result = await asyncio.to_thread(_parse_csv)
-        elif file_type == "excel":
-            result = await asyncio.to_thread(_parse_excel)
-        elif file_type == "columnar":
-            result = await asyncio.to_thread(_parse_columnar)
+        reader: BaseDataReader
+        if file_type == UploadFileType.CSV.value:
+            reader = CSVReader(options)  # type: ignore[arg-type]
+        elif file_type == UploadFileType.EXCEL.value:
+            reader = ExcelReader(options)  # type: ignore[arg-type]
+        elif file_type == UploadFileType.COLUMNAR.value:
+            reader = ColumnarReader(options)  # type: ignore[arg-type]
         else:
             return Response(  # type: ignore[return-value]
                 content={"message": f"Unsupported file type: {type}"},
                 status_code=400,
             )
 
+        # The readers accept Litestar ``UploadFile`` directly (normalised via
+        # ``_to_stream``); the columnar reader additionally reads ``filename``
+        # for ZIP/extension detection — also present on ``UploadFile``.
+        metadata = await asyncio.to_thread(reader.file_metadata, data)
+        result = FileMetadataResponse(
+            items=[
+                FileMetadataItem(
+                    column_names=item.get("column_names", []),
+                    sheet_name=item.get("sheet_name"),
+                )
+                for item in metadata.get("items", [])
+            ]
+        )
         return {"result": msgspec.to_builtins(result)}
 
     @get(

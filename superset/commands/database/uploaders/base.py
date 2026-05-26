@@ -232,7 +232,10 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
 
         await self._dao.session.flush()
 
-        return {"message": "OK", "table_id": sqla_table.id}
+        # Mirror the original API contract — ``self.response(201, message="OK")``
+        # (superset_old/databases/api.py:1787). The original endpoint returns
+        # only ``{"message": "OK"}``; ``table_id`` is not part of the response.
+        return {"message": "OK"}
 
     def _read_file(self, file_type: str) -> pd.DataFrame:
         """Read file contents into a pandas DataFrame."""
