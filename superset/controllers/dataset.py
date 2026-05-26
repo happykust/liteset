@@ -383,6 +383,7 @@ class DatasetController(Controller):
         data: DatasetPostSchema,
         dao: DatasetDAOProtocol,
         current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> DatasetGetResponse:
         cmd = CreateDatasetCommand(
             dao=cast("AsyncDatasetDAO", dao),
@@ -404,6 +405,7 @@ class DatasetController(Controller):
                 }
             ),
             user_id=current_user.id,
+            security_manager=security_manager,
         )
         dataset = await cmd.execute()
         await event_logger.alog_with_context(
@@ -656,8 +658,19 @@ class DatasetController(Controller):
         "/{pk:int}/refresh",
         guards=[require_permission("can_write", "Dataset")],
     )
-    async def refresh(self, pk: int, dao: DatasetDAOProtocol) -> dict[str, str]:
-        cmd = RefreshDatasetCommand(dao=cast("AsyncDatasetDAO", dao), dataset_id=pk)
+    async def refresh(
+        self,
+        pk: int,
+        dao: DatasetDAOProtocol,
+        current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
+    ) -> dict[str, str]:
+        cmd = RefreshDatasetCommand(
+            dao=cast("AsyncDatasetDAO", dao),
+            dataset_id=pk,
+            security_manager=security_manager,
+            user_id=current_user.id,
+        )
         await cmd.execute()
         await event_logger.alog_with_context(
             "dataset.refresh", object_ref=f"dataset:{pk}"
@@ -945,12 +958,16 @@ class DatasetController(Controller):
         column_id: int,
         dao: DatasetDAOProtocol,
         column_dao: ColumnDAOProtocol,
+        current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
         cmd = DeleteDatasetColumnCommand(
             dataset_dao=cast("AsyncDatasetDAO", dao),
             column_dao=cast("AsyncDatasetColumnDAO", column_dao),
             dataset_id=pk,
             column_id=column_id,
+            security_manager=security_manager,
+            user_id=current_user.id,
         )
         await cmd.execute()
         await event_logger.alog_with_context(
@@ -970,12 +987,16 @@ class DatasetController(Controller):
         metric_id: int,
         dao: DatasetDAOProtocol,
         metric_dao: MetricDAOProtocol,
+        current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
         cmd = DeleteDatasetMetricCommand(
             dataset_dao=cast("AsyncDatasetDAO", dao),
             metric_dao=cast("AsyncDatasetMetricDAO", metric_dao),
             dataset_id=pk,
             metric_id=metric_id,
+            security_manager=security_manager,
+            user_id=current_user.id,
         )
         await cmd.execute()
         await event_logger.alog_with_context(

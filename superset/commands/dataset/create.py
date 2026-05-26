@@ -85,35 +85,36 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 raise
             except Exception:  # noqa: S110
                 pass  # Skip check if has_table is not available
-        # Check schema access if security manager is available
-        if self._security_manager is not None:
-            schema = self._data.get("schema")
-            if schema:
-                try:
-                    await self._security_manager.raise_for_access(
-                        database=self._database,
-                        schema=schema,
-                        user=self._user_id,
-                    )
-                except Exception as exc:
-                    raise CommandInvalidError(
-                        f"Access denied to schema '{schema}'"
-                    ) from exc
-        # Validate SQL access for virtual datasets
-        sql = self._data.get("sql")
+        # Validate SQL access for virtual datasets — 1:1 with
+        # ``superset_old/commands/dataset/create.py``: only virtual datasets
+        # (``sql`` provided) require ``raise_for_access`` against the parsed
+        # SQL. Physical datasets are gated by ``can_write Dataset`` alone
+        # (the original performs no schema-only access check here).
         if sql and self._security_manager is not None and self._database is not None:
-            if hasattr(self._security_manager, "raise_for_access"):
-                try:
-                    await self._security_manager.raise_for_access(
-                        database=self._database,
-                        schema=self._data.get("schema"),
-                        sql=sql,
-                        user=self._user_id,
-                    )
-                except Exception as exc:
-                    raise CommandInvalidError(
-                        "Access denied: insufficient SQL access"
-                    ) from exc
+            from superset.exceptions import (
+                SupersetParseError,
+                SupersetSecurityException,
+            )
+
+            user = (
+                await self._security_manager.find_user_by_id(self._user_id)
+                if self._user_id is not None
+                else None
+            )
+            try:
+                await self._security_manager.raise_for_access(
+                    user=user,
+                    database=self._database,
+                    sql=sql,
+                    catalog=self._data.get("catalog"),
+                    schema=self._data.get("schema"),
+                )
+            except SupersetSecurityException as ex:
+                message = ex.error.message if getattr(ex, "error", None) else str(ex)
+                raise CommandInvalidError(message) from ex
+            except SupersetParseError as ex:
+                message = ex.error.message if getattr(ex, "error", None) else str(ex)
+                raise CommandInvalidError(f"Invalid SQL: {message}") from ex
 
     async def run(self) -> "SqlaTable":
         from superset.models.connectors import SqlaTable
