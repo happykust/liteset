@@ -254,7 +254,7 @@ class QueryController(Controller):
 
     @post(
         "/stop",
-        guards=[require_permission("can_write", "Query")],
+        guards=[require_permission("can_read", "Query")],
     )
     async def stop_query(
         self, data: StopQuerySchema, dao: QueryDAOProtocol

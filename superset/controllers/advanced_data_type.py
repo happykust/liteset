@@ -26,7 +26,7 @@ from litestar.di import Provide
 
 from superset.advanced_data_type.types import AdvancedDataType
 from superset.exceptions import SupersetValidationException
-from superset.guards.rbac import require_authentication
+from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
 from superset.schemas.advanced_data_type import (
     AdvancedDataTypeConvertRequest,
@@ -78,13 +78,13 @@ class AdvancedDataTypeController(Controller):
         "rison_params": Provide(provide_rison_query),
     }
 
-    @get("/types", guards=[require_authentication])
+    @get("/types", guards=[require_permission("can_read", "AdvancedDataType")])
     async def get_types(self, state: State) -> dict[str, list[str]]:
         """GET /api/v1/advanced_data_type/types -- list registered types."""
         registry = _get_registry(state)
         return {"result": list(registry.keys())}
 
-    @post("/convert", guards=[require_authentication])
+    @post("/convert", guards=[require_permission("can_read", "AdvancedDataType")])
     async def convert(
         self,
         data: AdvancedDataTypeConvertRequest,
@@ -100,7 +100,7 @@ class AdvancedDataTypeController(Controller):
         result = _invoke_handler(handler, data.type, data.values)
         return {"result": result}
 
-    @get("/convert", guards=[require_authentication])
+    @get("/convert", guards=[require_permission("can_read", "AdvancedDataType")])
     async def convert_get(
         self,
         rison_params: dict[str, Any] | None,

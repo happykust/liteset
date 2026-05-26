@@ -207,7 +207,7 @@ class SecurityController(Controller):
 
     @post(
         "/guest_token/",
-        guards=[require_permission("can_grant_guest_token", "Security")],
+        guards=[require_permission("can_grant_guest_token", "SecurityRestApi")],
     )
     async def guest_token(
         self,
@@ -220,7 +220,7 @@ class SecurityController(Controller):
 
         Creates a short-lived JWT for embedded dashboard access.
         Requires the ``can_grant_guest_token`` permission on the
-        ``Security`` resource.
+        ``SecurityRestApi`` resource.
 
         The request body must contain:
         - ``user``: dict with ``username`` (required), ``first_name``,

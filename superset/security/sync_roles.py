@@ -361,13 +361,24 @@ _STANDARD_VIEW_PERMISSIONS: list[tuple[str, str]] = [
     ("can_read", "Row Level Security"),
     ("can_write", "Row Level Security"),
     # SQL Lab
-    ("can_sqllab", "SqlLab"),
+    # Custom Superset-view permissions (mirror create_custom_permissions in
+    # superset_old/security/manager.py:1109-1124 — these live on the
+    # ``Superset`` view-menu, NOT ``SqlLab``).
+    ("can_sqllab", "Superset"),
+    ("can_sqllab_history", "Superset"),
+    ("can_csv", "Superset"),
+    ("can_share_dashboard", "Superset"),
+    ("can_share_chart", "Superset"),
+    # SqlLabRestApi (class_permission_name="SQLLab") + fine-grained method
+    # permissions FAB auto-creates for the SQL Lab endpoints. Mirrors
+    # SQLLAB_ONLY_PERMISSIONS in superset_old/security/manager.py:351-381.
     ("can_read", "SQLLab"),
     ("can_write", "SQLLab"),
-    ("can_csv", "SqlLab"),
-    ("can_only_my_queries", "SqlLab"),
-    ("can_share_dashboard", "SqlLab"),
-    ("can_share_chart", "SqlLab"),
+    ("can_execute_sql_query", "SQLLab"),
+    ("can_get_results", "SQLLab"),
+    ("can_export_csv", "SQLLab"),
+    ("can_estimate_query_cost", "SQL Lab"),
+    ("can_export_csv", "Query"),
     # Menu access
     ("menu_access", "Dashboards"),
     ("menu_access", "Charts"),
