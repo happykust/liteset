@@ -123,49 +123,27 @@ async def test_get_sqllab_permalink_not_found():
 # ---------------------------------------------------------------------------
 
 
-async def test_format_sql_returns_original_when_sqlglot_not_installed():
-    """FormatSQLCommand returns original SQL when sqlglot is not importable."""
-    import builtins
-    from unittest.mock import patch
+async def test_format_sql_propagates_format_error():
+    """FormatSQLCommand does NOT swallow parse/format errors into the original.
 
-    original_import = builtins.__import__
-
-    def mock_import(name, *args, **kwargs):
-        if name == "sqlglot":
-            raise ImportError("No module named 'sqlglot'")
-        return original_import(name, *args, **kwargs)
-
-    cmd = FormatSQLCommand(sql="SELECT 1")
-    await cmd.validate()
-    with patch("builtins.__import__", side_effect=mock_import):
-        result = await cmd.run()
-    assert result == "SELECT 1"
-
-
-async def test_format_sql_returns_original_on_sqlglot_error():
-    """FormatSQLCommand returns original SQL when sqlglot fails to parse."""
+    1:1 with upstream ``sqllab/api.py::format_sql`` which only catches schema
+    ``ValidationError`` — ``SQLScript(...).format()`` failures propagate (HTTP
+    4xx) rather than echoing the unformatted SQL with 200 (the previous
+    swallow-and-return-original behaviour was an audited bug).
+    """
     from unittest.mock import MagicMock, patch
 
-    mock_sqlglot = MagicMock()
-    mock_errors = MagicMock()
-
-    class FakeSqlglotError(Exception):
+    class _Boom(Exception):
         pass
-
-    mock_errors.SqlglotError = FakeSqlglotError
-    mock_sqlglot.transpile = MagicMock(side_effect=FakeSqlglotError("parse error"))
-    mock_sqlglot.errors = mock_errors
 
     cmd = FormatSQLCommand(sql="INVALID SQL %%%")
     await cmd.validate()
 
-    import sys
-
-    with patch.dict(
-        sys.modules, {"sqlglot": mock_sqlglot, "sqlglot.errors": mock_errors}
-    ):
-        result = await cmd.run()
-    assert result == "INVALID SQL %%%"
+    mock_script = MagicMock()
+    mock_script.return_value.format.side_effect = _Boom("parse error")
+    with patch("superset.sql.parse.SQLScript", mock_script):
+        with pytest.raises(_Boom):
+            await cmd.run()
 
 
 # ---------------------------------------------------------------------------
