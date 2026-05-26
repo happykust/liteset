@@ -23,6 +23,9 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
+from superset.commands.dashboard.exceptions import (
+    DashboardDeleteFailedReportsExistError,
+)
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.tags.core import delete_tagged_objects
 
@@ -50,19 +53,23 @@ class DeleteDashboardCommand(AsyncBaseCommand[None]):
         self._dashboard = await self._dao.find_by_id(self._dashboard_id)
         if not self._dashboard:
             raise ObjectNotFoundError("Dashboard", self._dashboard_id)
+        # Check there are no associated ReportSchedules — 1:1 with the
+        # original, which raises BEFORE the ownership check (a dashboard with
+        # alerts/reports reports "reports exist", not "forbidden").
+        from superset.db.daos.report import AsyncReportScheduleDAO
+
+        reports = await AsyncReportScheduleDAO(
+            self._dao.session
+        ).find_by_dashboard_ids([self._dashboard_id])
+        if reports:
+            report_names = ", ".join(report.name for report in reports)
+            raise DashboardDeleteFailedReportsExistError(
+                f"There are associated alerts or reports: {report_names}"
+            )
         if self._security_manager is not None:
             await self._security_manager.raise_for_ownership(
                 self._dashboard, self._user_id
             )
-        # Check for associated report schedules
-        if hasattr(self._dao, "find_report_schedules_by_dashboard_id"):
-            reports = await self._dao.find_report_schedules_by_dashboard_id(
-                self._dashboard_id
-            )
-            if reports:
-                raise CommandInvalidError(
-                    "Cannot delete: associated report schedules exist"
-                )
 
     async def run(self) -> None:
         assert self._dashboard is not None
@@ -96,23 +103,25 @@ class BulkDeleteDashboardsCommand(AsyncBaseCommand[None]):
         missing = set(self._dashboard_ids) - found_ids
         if missing:
             raise ObjectNotFoundError("Dashboard", str(missing))
+        # Check there are no associated ReportSchedules — 1:1 with the
+        # original ``DeleteDashboardCommand``, which raises BEFORE the
+        # ownership check.
+        from superset.db.daos.report import AsyncReportScheduleDAO
+
+        reports = await AsyncReportScheduleDAO(
+            self._dao.session
+        ).find_by_dashboard_ids(self._dashboard_ids)
+        if reports:
+            report_names = ", ".join(report.name for report in reports)
+            raise DashboardDeleteFailedReportsExistError(
+                f"There are associated alerts or reports: {report_names}"
+            )
         # Ownership check
         if self._security_manager is not None:
             for dashboard in self._dashboards:
                 await self._security_manager.raise_for_ownership(
                     dashboard, self._user_id
                 )
-        # Report schedule check
-        if hasattr(self._dao, "find_report_schedules_by_dashboard_id"):
-            for dashboard in self._dashboards:
-                reports = await self._dao.find_report_schedules_by_dashboard_id(
-                    dashboard.id
-                )
-                if reports:
-                    raise CommandInvalidError(
-                        f"Cannot delete dashboard {dashboard.id}: "
-                        "associated report schedules exist"
-                    )
 
     async def run(self) -> None:
         await self._dao.delete(self._dashboards)

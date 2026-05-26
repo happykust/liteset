@@ -50,9 +50,22 @@ class DashboardAccessDeniedError(ForbiddenError):
     message = "You don't have access to this dashboard."
 
 
+class DashboardDeleteFailedReportsExistError(CommandInvalidError):
+    """A dashboard can't be deleted because alerts/reports reference it.
+
+    1:1 port of
+    ``superset_old.commands.dashboard.exceptions.DashboardDeleteFailedReportsExistError``.
+    The human-readable message (with the offending report names) is supplied
+    by the delete command. Maps to HTTP 422 like the original.
+    """
+
+    status_code = 422
+
+
 __all__ = (
     "CommandInvalidError",
     "DashboardAccessDeniedError",
+    "DashboardDeleteFailedReportsExistError",
     "DashboardNotFoundError",
     "ForbiddenError",
     "ImportFailedError",

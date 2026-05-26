@@ -23,7 +23,11 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
-from superset.exceptions import CommandInvalidError, ObjectNotFoundError
+from superset.commands.database.exceptions import (
+    DatabaseDeleteDatasetsExistFailedError,
+    DatabaseDeleteFailedReportsExistError,
+)
+from superset.exceptions import ObjectNotFoundError
 
 if TYPE_CHECKING:
     from superset.db.daos.database import AsyncDatabaseDAO
@@ -53,33 +57,23 @@ class DeleteDatabaseCommand(AsyncBaseCommand[None]):
             await self._security_manager.raise_for_ownership(
                 self._database, self._user_id
             )
-        has_datasets = False
-        try:
-            from superset.models.connectors import SqlaTable
-        except (ImportError, ModuleNotFoundError):
-            SqlaTable = None  # type: ignore[assignment,misc]  # noqa: N806
-        if SqlaTable is not None:
-            from sqlalchemy import func, select
+        # Check there are no associated ReportSchedules — 1:1 with the
+        # original ``DeleteDatabaseCommand``, which raises this BEFORE the
+        # dataset check.
+        from superset.db.daos.report import AsyncReportScheduleDAO
 
-            count = await self._dao.session.scalar(
-                select(func.count()).where(SqlaTable.database_id == self._database_id)
+        reports = await AsyncReportScheduleDAO(
+            self._dao.session
+        ).find_by_database_ids([self._database_id])
+        if reports:
+            report_names = ", ".join(report.name for report in reports)
+            raise DatabaseDeleteFailedReportsExistError(
+                f"There are associated alerts or reports: {report_names}"
             )
-            if count and count > 0:
-                has_datasets = True
-        elif hasattr(self._dao, "has_dependent_datasets"):
-            has_datasets = await self._dao.has_dependent_datasets(self._database_id)
-        if has_datasets:
-            raise CommandInvalidError(
-                "Cannot delete database: dependent datasets exist"
-            )
-        if hasattr(self._dao, "find_report_schedules_by_database_id"):
-            reports = await self._dao.find_report_schedules_by_database_id(
-                self._database_id
-            )
-            if reports:
-                raise CommandInvalidError(
-                    "Cannot delete: associated report schedules exist"
-                )
+        # Check if there are datasets for this database — 1:1 with the
+        # original ``if self._model.tables:`` truthiness check.
+        if await self._dao.has_dependent_datasets(self._database_id):
+            raise DatabaseDeleteDatasetsExistFailedError()
 
     async def run(self) -> None:
         assert self._database is not None

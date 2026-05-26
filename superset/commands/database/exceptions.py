@@ -85,10 +85,35 @@ class DatabaseTablesUnexpectedError(CommandException):
     message = _("Unexpected error occurred, please check your logs for details")
 
 
+class DatabaseDeleteDatasetsExistFailedError(CommandInvalidError):
+    """A database can't be deleted because datasets are attached to it.
+
+    1:1 with
+    ``superset_old.commands.database.exceptions.DatabaseDeleteDatasetsExistFailedError``.
+    """
+
+    status_code = 422
+    message = _("Cannot delete a database that has datasets attached")
+
+
+class DatabaseDeleteFailedReportsExistError(CommandInvalidError):
+    """A database can't be deleted because alerts/reports reference it.
+
+    1:1 with
+    ``superset_old.commands.database.exceptions.DatabaseDeleteFailedReportsExistError``.
+    The human-readable message (with the offending report names) is supplied
+    by the delete command.
+    """
+
+    status_code = 422
+
+
 __all__ = (
     "CommandException",
     "CommandInvalidError",
     "DatabaseConnectionFailedError",
+    "DatabaseDeleteDatasetsExistFailedError",
+    "DatabaseDeleteFailedReportsExistError",
     "DatabaseNotFoundError",
     "DatabaseSchemaUploadNotAllowed",
     "DatabaseTablesUnexpectedError",

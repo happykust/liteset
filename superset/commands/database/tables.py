@@ -135,17 +135,18 @@ class TablesDatabaseCommand(AsyncBaseCommand[dict[str, Any]]):
                 )
 
             # Batch-fetch ``extra`` (certification etc.) for matching
-            # SqlaTable rows — same shape as the original which built
-            # ``extra_dict_by_name`` via a single query.
+            # SqlaTable rows — 1:1 with the original which built
+            # ``extra_dict_by_name`` via a single query filtered by
+            # ``database_id`` + ``catalog`` + ``schema``.
             extra_lookup: dict[str, Any] = {}
-            if hasattr(self._dao, "get_table_extra_lookup"):
-                all_names = {t.table for t in tables}
-                if all_names:
-                    extra_lookup = await self._dao.get_table_extra_lookup(
-                        database_id=self._db_id,
-                        table_names=all_names,
-                        schema=self._schema_name,
-                    )
+            all_names = {t.table for t in tables}
+            if all_names:
+                extra_lookup = await self._dao.get_table_extra_lookup(
+                    database_id=self._db_id,
+                    table_names=all_names,
+                    schema=self._schema_name,
+                    catalog=self._catalog_name,
+                )
 
             options = sorted(
                 [

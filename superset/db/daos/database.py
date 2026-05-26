@@ -121,15 +121,30 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
             encrypted_extra=encrypted_extra,
         )
 
+    async def has_dependent_datasets(self, database_id: int) -> bool:
+        """Return ``True`` when at least one dataset is attached to the database.
+
+        1:1 with the original ``DeleteDatabaseCommand`` check
+        (``self._model.tables`` truthiness): a single matching ``SqlaTable``
+        row is enough to block deletion.
+        """
+        stmt = select(SqlaTable.id).where(SqlaTable.database_id == database_id).limit(1)
+        result = await self.session.execute(stmt)
+        return result.scalars().first() is not None
+
     async def get_table_extra_lookup(
         self,
         database_id: int,
         table_names: set[str],
         schema: str | None = None,
+        catalog: str | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Return a mapping of table_name to parsed extra JSON for the given tables.
 
-        Used to enrich table/view listings with certification info.
+        Used to enrich table/view listings with certification info. 1:1 with
+        the original ``TablesDatabaseCommand``'s ``extra_dict_by_name`` query,
+        which filters by ``database_id`` + ``catalog`` + ``schema`` and parses
+        ``SqlaTable.extra`` via ``extra_dict`` (empty dict on parse failure).
         """
         if not table_names:
             return {}
@@ -139,6 +154,8 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
             SqlaTable.database_id == database_id,
             SqlaTable.table_name.in_(table_names),
         )
+        if catalog:
+            stmt = stmt.where(SqlaTable.catalog == catalog)
         if schema:
             stmt = stmt.where(SqlaTable.schema == schema)
         rows = (await self.session.execute(stmt)).all()
