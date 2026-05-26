@@ -646,41 +646,159 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         joins). Most production paths in Liteset are async — this
         method exists so the synchronous helpers code path remains
         runnable when invoked from a worker thread.
+
+        1:1 with ``superset_old/models/core.py:Database.get_df``: runs the
+        script statement-by-statement through the **engine spec**
+        (``execute`` + ``fetch_data``) and materialises rows via
+        :class:`SupersetResultSet`, so column de-duplication / type
+        coercion match every other code path (the previous implementation
+        bypassed the engine spec and built the DataFrame from raw rows).
         """
+        from contextlib import closing
+
         import pandas as pd
-        from sqlalchemy import text as sa_text
 
         from superset.sql.parse import SQLScript
-        from superset.utils.database import get_sync_engine
 
         script = SQLScript(sql, self.db_engine_spec.engine)
-        with get_sync_engine(self, catalog=catalog, schema=schema) as engine:
-            with engine.connect() as conn:
+        statements = list(script.statements)
+        with self.get_sqla_engine(catalog=catalog, schema=schema) as engine:
+            with closing(engine.raw_connection()) as conn:
+                # Pre-session queries set the selected catalog/schema.
+                for prequery in self.db_engine_spec.get_prequeries(
+                    database=self,
+                    catalog=catalog,
+                    schema=schema,
+                ):
+                    pre_cursor = conn.cursor()
+                    pre_cursor.execute(prequery)
+
+                cursor = conn.cursor()
                 df: pd.DataFrame | None = None
-                statements = list(script.statements)
                 for i, statement in enumerate(statements):
                     sql_ = self.mutate_sql_based_on_config(
-                        statement.format(), is_split=True
+                        statement.format(),
+                        is_split=True,
                     )
-                    is_last = i == len(statements) - 1
-                    result = conn.execute(sa_text(sql_))
-                    if not is_last:
-                        if result.returns_rows:
-                            result.fetchall()
-                        continue
-                    if result.returns_rows:
-                        cols = list(result.keys())
-                        rows = result.fetchall()
-                        df = pd.DataFrame([tuple(row) for row in rows], columns=cols)
-                    else:
-                        df = pd.DataFrame()
-                if df is None:
-                    df = pd.DataFrame()
+                    self.db_engine_spec.execute(cursor, sql_, self)
+                    rows = self.fetch_rows(cursor, i == len(statements) - 1)
+                    if rows is not None:
+                        df = self.load_into_dataframe(cursor.description, rows)
+
                 if mutator:
                     mutated = mutator(df)
                     if mutated is not None:
                         df = mutated
-                return df
+
+                if df is None:
+                    df = pd.DataFrame()
+                return self.post_process_df(df)
+
+    def fetch_rows(self, cursor: Any, last: bool) -> list[tuple[Any, ...]] | None:
+        """Fetch rows for the final statement only.
+
+        1:1 with ``superset_old/models/core.py:Database.fetch_rows``:
+        intermediate statements are drained and discarded; only the last
+        statement's rows are returned via the engine spec's ``fetch_data``.
+        """
+        if not last:
+            cursor.fetchall()
+            return None
+
+        return self.db_engine_spec.fetch_data(cursor)
+
+    def load_into_dataframe(
+        self,
+        description: Any,
+        data: list[tuple[Any, ...]],
+    ) -> Any:
+        """Materialise raw DB-API rows into a normalised DataFrame.
+
+        1:1 with ``superset_old/models/core.py:Database.load_into_dataframe``
+        — goes through :class:`SupersetResultSet` so column de-duplication
+        and type coercion match the rest of the codebase.
+        """
+        from superset.result_set import SupersetResultSet
+
+        result_set = SupersetResultSet(data, description, self.db_engine_spec)
+        return result_set.to_pandas_df()
+
+    @staticmethod
+    def post_process_df(df: Any) -> Any:
+        """Serialise list/dict object columns to JSON strings.
+
+        1:1 with ``superset_old/models/core.py:Database.post_process_df``.
+        Note: ``json_dumps_w_dates`` comes from :mod:`superset.utils.json`
+        (the module-level ``json`` in this file is the stdlib one).
+        """
+        import numpy as np
+        import pandas as pd
+
+        from superset.utils.json import json_dumps_w_dates
+
+        def column_needs_conversion(df_series: Any) -> bool:
+            return (
+                not df_series.empty
+                and isinstance(df_series, pd.Series)
+                and isinstance(df_series[0], (list, dict))
+            )
+
+        for col, coltype in df.dtypes.to_dict().items():
+            if coltype == np.object_ and column_needs_conversion(df[col]):
+                df[col] = df[col].apply(json_dumps_w_dates)
+        return df
+
+    def select_star(
+        self,
+        table: Any,
+        limit: int = 100,
+        show_cols: bool = False,
+        indent: bool = True,
+        latest_partition: bool = False,
+        cols: list[Any] | None = None,
+    ) -> str:
+        """Generate a ``select *`` statement in the proper dialect.
+
+        1:1 with ``superset_old/models/core.py:Database.select_star`` —
+        delegates to the engine spec, binding the engine to the table's
+        catalog/schema so per-catalog dialects resolve correctly.
+        """
+        with self.get_sqla_engine(
+            catalog=table.catalog, schema=table.schema
+        ) as engine:
+            return self.db_engine_spec.select_star(
+                self,
+                table,
+                engine=engine,
+                limit=limit,
+                show_cols=show_cols,
+                indent=indent,
+                latest_partition=latest_partition,
+                cols=cols,
+            )
+
+    def apply_limit_to_sql(
+        self,
+        sql: str,
+        limit: int = 1000,
+        force: bool = False,
+    ) -> str:
+        """Apply (or tighten) a LIMIT on the last statement of ``sql``.
+
+        1:1 with ``superset_old/models/core.py:Database.apply_limit_to_sql``.
+        The limit is only applied when it is stricter than the existing one
+        (or when ``force`` is set), using the engine spec's ``limit_method``.
+        """
+        from superset.sql.parse import SQLScript
+
+        script = SQLScript(sql, self.db_engine_spec.engine)
+        statement = script.statements[-1]
+        current_limit = statement.get_limit_value() or float("inf")
+
+        if limit < current_limit or force:
+            statement.set_limit_value(limit, self.db_engine_spec.limit_method)
+
+        return script.format()
 
     # ------------------------------------------------------------------
     # Engine spec
