@@ -19,12 +19,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import closing
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
 from superset.exceptions import CommandInvalidError
-from superset.utils import mask_uri_password
+from superset.i18n import gettext as _
 
 if TYPE_CHECKING:
     from superset.db.daos.database import AsyncDatabaseDAO
@@ -33,13 +35,66 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class DatabaseSecurityUnsafeError(CommandInvalidError):
+    """Raised when the connection settings are deemed unsafe.
+
+    1:1 with ``superset_old/commands/database/exceptions.py`` (which is not
+    yet ported in the async ``commands/database/exceptions`` module, so the
+    class is defined locally here).
+    """
+
+    status_code = 422
+    message = _("Stopped an unsafe database connection")
+
+
+def _ping(engine: Any) -> bool:
+    """Ping ``engine`` to verify connectivity.
+
+    1:1 with ``superset_old/commands/database/utils.py::ping`` — opens a raw
+    DBAPI connection and runs the dialect's ``do_ping``.  Always executed
+    inside a worker thread (via :func:`asyncio.to_thread`) because the
+    underlying SQLAlchemy engine is synchronous.  ``SigalrmTimeout`` is a
+    no-op off the main thread, matching the original's defensive fallback.
+    """
+    import sqlite3
+
+    from superset.utils.core import SigalrmTimeout
+
+    try:
+        seconds = _ping_timeout_seconds()
+        with SigalrmTimeout(seconds=seconds):
+            with closing(engine.raw_connection()) as conn:
+                return engine.dialect.do_ping(conn)
+    except (sqlite3.ProgrammingError, RuntimeError):
+        # SQLite can't run on a separate thread, so ``utils.timeout`` fails.
+        # RuntimeError catches the equivalent error from duckdb.
+        return engine.dialect.do_ping(engine)
+
+
+def _ping_timeout_seconds() -> int:
+    """Return ``TEST_DATABASE_CONNECTION_TIMEOUT`` in whole seconds."""
+    try:
+        from superset.config import SupersetSettings
+
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        value = getattr(settings, "test_database_connection_timeout", 30)
+    except Exception:  # noqa: BLE001
+        value = 30
+    # Original config holds a ``timedelta``; the ported settings expose an
+    # int.  Support both for safety.
+    total = getattr(value, "total_seconds", None)
+    return int(total()) if callable(total) else int(value)
+
+
 class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
     """Test database connectivity.
 
-    Ported 1:1 from superset_old/commands/database/test_connection.py.
-    Builds an ephemeral Database model from the payload, resolves
-    the URI (including existing model URI decryption for masked URIs),
-    and opens an async connection to verify reachability.
+    Ported 1:1 from ``superset_old/commands/database/test_connection.py``.
+    Builds an ephemeral Database model from the payload, resolves the URI
+    (including existing-model URI decryption for masked URIs), unmasks
+    ``encrypted_extra`` against the persisted model, builds the optional
+    :class:`SSHTunnel` from the payload, and pings the engine (through the
+    SSH tunnel when one is supplied) to verify reachability.
     """
 
     __test__ = False  # prevent pytest collection
@@ -52,73 +107,152 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
         default_redirect_uri: str | None = None,
     ) -> None:
         self._dao = dao
-        self._data = data
+        self._properties = dict(data)
         self._user_id = user_id
         # Used to start the OAuth2 dance — usually the absolute
         # ``/api/v1/database/oauth2/`` URI of the running Liteset instance.
         self._default_redirect_uri = default_redirect_uri or "/api/v1/database/oauth2/"
         self._model: Database | None = None
+        self._context: dict[str, Any] = {}
+        self._uri: str = ""
 
-    async def validate(self) -> None:
-        uri = self._data.get("sqlalchemy_uri")
-        if not uri:
-            raise CommandInvalidError("sqlalchemy_uri is required for connection test")
+    async def _resolve_model_and_uri(self) -> None:
+        """Resolve the existing model (by name) and the effective URI.
 
-        # If a database_name is provided, try to load the existing model
-        # so we can decrypt a masked URI back to the real one.
-        database_name = self._data.get("database_name")
-        if database_name:
+        Mirrors ``TestConnectionDatabaseCommand.__init__`` lines 69-90 in the
+        original — that work happens synchronously in ``__init__`` upstream,
+        but we defer it here because loading the model needs the async DAO.
+        """
+        from superset.databases.utils import make_url_safe
+
+        if (database_name := self._properties.get("database_name")) is not None:
             self._model = await self._dao.get_database_by_name(database_name)
 
-    async def run(self) -> dict[str, Any]:  # noqa: C901
-        from sqlalchemy.exc import DBAPIError, NoSuchModuleError  # noqa: F401
+        uri = self._properties.get("sqlalchemy_uri", "")
+        if self._model and uri == self._model.safe_sqlalchemy_uri():
+            uri = self._model.sqlalchemy_uri_decrypted
 
-        from superset.databases.utils import make_url_safe
-        from superset.exceptions import (
-            DatabaseTestConnectionDriverError,
-            DatabaseTestConnectionUnexpectedError,
-            OAuth2RedirectError,
-            SupersetErrorsException,
-        )
-        from superset.utils.database import get_async_connection
-
-        uri = self._data.get("sqlalchemy_uri", "")
-
-        # If the URI matches the masked version of an existing model,
-        # use the decrypted URI from the model instead.
-        if self._model:
-            safe_uri = mask_uri_password(str(self._model.sqlalchemy_uri))
-            if uri == safe_uri:
-                uri = str(self._model.sqlalchemy_uri)
-
-        # Parse URL into pieces for error context (hostname, port, etc.).
-        # Used by engine_spec.extract_errors() to produce SIP-40 error
-        # responses.  Matches superset_old/commands/database/test_connection.py:79-89
         url = make_url_safe(uri)
-        context = {
+        self._context = {
             "hostname": url.host,
             "password": url.password,
             "port": url.port,
             "username": url.username,
             "database": url.database,
         }
+        self._uri = uri
 
-        # Build an ephemeral Database model for the connection test
-        database = self._dao.build_db_for_connection_test(
-            server_cert=self._data.get("server_cert", ""),
-            extra=self._data.get("extra", "{}"),
-            impersonate_user=self._data.get("impersonate_user", False),
-            encrypted_extra=self._data.get("masked_encrypted_extra", "{}"),
+    async def validate(self) -> None:
+        from superset.commands.database.ssh_tunnel.exceptions import (
+            SSHTunnelDatabasePortError,
+            SSHTunnelingNotEnabledError,
         )
-        database.sqlalchemy_uri = uri
+        from superset.utils.feature_flags import feature_flag_manager
+
+        uri = self._properties.get("sqlalchemy_uri")
+        if not uri:
+            raise CommandInvalidError("sqlalchemy_uri is required for connection test")
+
+        await self._resolve_model_and_uri()
+
+        # Matches ``TestConnectionDatabaseCommand.validate`` (lines 227-233):
+        # an SSH tunnel requires the feature flag plus a non-empty port.
+        if self._properties.get("ssh_tunnel"):
+            if not feature_flag_manager.is_feature_enabled("SSH_TUNNELING"):
+                raise SSHTunnelingNotEnabledError()
+            if not self._context.get("port"):
+                raise SSHTunnelDatabasePortError()
+
+    async def run(self) -> dict[str, Any]:  # noqa: C901
+        from sqlalchemy.exc import DBAPIError, NoSuchModuleError
+
+        from superset.commands.database.ssh_tunnel.exceptions import (
+            SSHTunnelingNotEnabledError,
+        )
+        from superset.exceptions import (
+            DatabaseTestConnectionDriverError,
+            DatabaseTestConnectionUnexpectedError,
+            OAuth2RedirectError,
+            SupersetErrorsException,
+            SupersetSecurityException,
+            SupersetTimeoutException,
+        )
+        from superset.models.ssh_tunnel import SSHTunnel
+        from superset.utils.ssh_tunnel import unmask_password_info
+
+        if not self._uri:
+            await self._resolve_model_and_uri()
+
+        ex_str = ""
+        ssh_tunnel = self._properties.get("ssh_tunnel")
+
+        # Unmask ``encrypted_extra`` against the persisted model so masked
+        # placeholders are replaced with the real stored secret before the
+        # test — matches test_connection.py:99-109.
+        serialized_encrypted_extra = self._properties.get(
+            "masked_encrypted_extra",
+            "{}",
+        )
+        if self._model:
+            serialized_encrypted_extra = (
+                self._model.db_engine_spec.unmask_encrypted_extra(
+                    self._model.encrypted_extra,
+                    serialized_encrypted_extra,
+                )
+            )
+
+        database = self._dao.build_db_for_connection_test(
+            server_cert=self._properties.get("server_cert", ""),
+            extra=self._properties.get("extra", "{}"),
+            impersonate_user=self._properties.get("impersonate_user", False),
+            encrypted_extra=serialized_encrypted_extra,
+        )
+
+        database.set_sqlalchemy_uri(self._uri)
+        database.db_engine_spec.mutate_db_for_connection_test(database)
+
+        # Build the SSHTunnel from the payload (when present), unmasking any
+        # masked credential fields against the existing tunnel row first —
+        # matches test_connection.py:122-130.
+        if ssh_tunnel:
+            ssh_tunnel = dict(ssh_tunnel)
+            if ssh_tunnel_id := ssh_tunnel.pop("id", None):
+                existing_ssh_tunnel = await self._find_ssh_tunnel_by_id(ssh_tunnel_id)
+                if existing_ssh_tunnel:
+                    ssh_tunnel = unmask_password_info(ssh_tunnel, existing_ssh_tunnel)
+            ssh_tunnel = SSHTunnel(**ssh_tunnel)
 
         try:
-            async with get_async_connection(database) as (conn, engine_spec):
-                # Run a simple ``SELECT 1`` to verify connectivity
-                from sqlalchemy import text
-
-                await conn.execute(text("SELECT 1"))
-
+            # Ping through the (sync) engine, optionally via the SSH tunnel.
+            # The sync engine is the only path that supports
+            # ``override_ssh_tunnel`` (it opens/tears down the tunnel through
+            # the SSHManager), mirroring the original ``ping(engine)`` call.
+            #
+            # ``_ping_database`` mirrors the original inner ``try/except`` block
+            # (test_connection.py:138-161): a ``SupersetTimeoutException`` is
+            # re-raised as a connection-timeout SIP-40 error, while any other
+            # failure is swallowed into ``(alive=False, ping_error=ex)`` so the
+            # post-block logic below can run the OAuth2 dance (which is async
+            # and therefore cannot run inside the worker thread) and then raise
+            # a ``DBAPIError`` — matching the original control flow exactly.
+            alive, ping_error = await asyncio.to_thread(
+                self._ping_database, database, ssh_tunnel
+            )
+            if not alive:
+                if (
+                    ping_error is not None
+                    and self._user_id is not None
+                    and database.is_oauth2_enabled()
+                    and database.db_engine_spec.needs_oauth2(ping_error)
+                ):
+                    await database.db_engine_spec.start_oauth2_dance(
+                        database,
+                        user_id=self._user_id,
+                        default_redirect_uri=self._default_redirect_uri,
+                    )
+                # So we stop losing the original message if any.
+                ex_str = str(ping_error) if ping_error is not None else ""
+                raise DBAPIError(ex_str or None, None, None)
             return {"message": "OK"}
 
         except (NoSuchModuleError, ModuleNotFoundError) as ex:
@@ -128,16 +262,22 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
                     f"{database.db_engine_spec.__name__}"
                 ),
             ) from ex
+        except DBAPIError as ex:
+            # Custom errors (wrong username, wrong password, etc).
+            errors = database.db_engine_spec.extract_errors(ex, self._context)
+            raise SupersetErrorsException(errors, status=400) from ex
         except OAuth2RedirectError:
-            # ``start_oauth2_dance`` raises this — let it propagate so the
-            # frontend can launch the OAuth2 popup.
+            raise
+        except SupersetSecurityException as ex:
+            raise DatabaseSecurityUnsafeError(message=str(ex)) from ex
+        except (SupersetTimeoutException, SSHTunnelingNotEnabledError):
+            # bubble up the exception to return proper status code
             raise
         except SupersetErrorsException:
             raise
         except Exception as ex:
-            # If the connection failed because OAuth2 is needed, start
-            # the dance.  Mirrors test_connection.py:213-217 in the
-            # original.
+            # If the connection failed because OAuth2 is needed, start the
+            # dance.  Mirrors test_connection.py:213-217.
             if (
                 self._user_id is not None
                 and database.is_oauth2_enabled()
@@ -148,40 +288,61 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
                     user_id=self._user_id,
                     default_redirect_uri=self._default_redirect_uri,
                 )
-            # Delegate to engine spec for structured SIP-40 errors
-            # (CONNECTION_INVALID_HOSTNAME_ERROR, CONNECTION_ACCESS_DENIED_ERROR,
-            # etc.).  Matches test_connection.py:184-193 — except the
-            # original catches DBAPIError specifically because sync
-            # SQLAlchemy wraps driver errors.  In async with asyncpg,
-            # exceptions raised during pool checkout (e.g.
-            # InvalidPasswordError) are NOT wrapped in DBAPIError, so
-            # we catch Exception and let extract_errors pattern-match
-            # the message.
-            #
-            # NOTE: liteset's extract_errors returns list[dict] while
-            # the original returns list[SupersetError].  We pass the
-            # dicts through as-is — they are already SIP-40 shaped.
-            errors = database.db_engine_spec.extract_errors(ex, context)
-            if errors:
-                raise SupersetErrorsException(
-                    errors=errors,
-                    status_code=400,
-                    message=errors[0].get("message", str(ex)),
+            errors = database.db_engine_spec.extract_errors(ex, self._context)
+            raise DatabaseTestConnectionUnexpectedError(errors) from ex
+
+    # ------------------------------------------------------------------
+    # internal helpers
+    # ------------------------------------------------------------------
+
+    def _ping_database(
+        self, database: Database, ssh_tunnel: Any | None
+    ) -> tuple[bool, Exception | None]:
+        """Open a sync engine (through the tunnel when set) and ping it.
+
+        Mirrors the original ``with database.get_sqla_engine(
+        override_ssh_tunnel=ssh_tunnel) as engine:`` block
+        (test_connection.py:137-161):
+
+        * ``SupersetTimeoutException`` is re-raised as a connection-timeout
+          SIP-40 error (lines 140-150).
+        * any other exception is captured and returned as
+          ``(False, ex)`` so the async caller can run the OAuth2 dance and
+          raise the ``DBAPIError`` (the original does this *after* the
+          ``with`` block, lines 151-164).
+
+        Returns ``(alive, ping_error)``.
+        """
+        from superset.errors import ErrorLevel, SupersetErrorType
+        from superset.exceptions import SupersetTimeoutException
+
+        with database.get_sqla_engine(override_ssh_tunnel=ssh_tunnel) as engine:
+            try:
+                return _ping(engine), None
+            except SupersetTimeoutException as ex:
+                raise SupersetTimeoutException(
+                    error_type=SupersetErrorType.CONNECTION_DATABASE_TIMEOUT,
+                    message=(
+                        "Please check your connection details and database "
+                        "settings, and ensure that your database is accepting "
+                        "connections, then try connecting again."
+                    ),
+                    level=ErrorLevel.ERROR,
+                    extra={"sqlalchemy_uri": database.sqlalchemy_uri},
                 ) from ex
-            # No custom_errors pattern matched — treat as unexpected
-            logger.exception("Unexpected error during connection test")
-            raise DatabaseTestConnectionUnexpectedError(
-                errors=[
-                    {
-                        "message": (
-                            "Unexpected error occurred, please check your "
-                            "logs for details"
-                        ),
-                        "error_type": "GENERIC_DB_ENGINE_ERROR",
-                        "level": "error",
-                        "extra": {},
-                    }
-                ],
-                status_code=422,
-                message=str(ex),
-            ) from ex
+            except Exception as ex:  # noqa: BLE001
+                return False, ex
+
+    async def _find_ssh_tunnel_by_id(self, ssh_tunnel_id: int) -> Any | None:
+        """Look up an existing ``SSHTunnel`` row by primary key.
+
+        Mirrors ``SSHTunnelDAO.find_by_id(ssh_tunnel_id)`` from the original;
+        the async ``AsyncSSHTunnelDAO`` exposes lookups by database id only,
+        so we query the session directly here.
+        """
+        from superset.models.ssh_tunnel import SSHTunnel
+
+        session = getattr(self._dao, "session", None)
+        if session is None:
+            return None
+        return await session.get(SSHTunnel, ssh_tunnel_id)

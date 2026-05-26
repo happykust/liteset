@@ -27,7 +27,7 @@ import re
 from typing import Any, cast, TYPE_CHECKING
 
 import msgspec
-from litestar import Controller, delete, get, post, put, Request
+from litestar import Controller, delete, get, post, put
 from litestar.datastructures import UploadFile
 from litestar.di import Provide
 from litestar.enums import RequestEncodingType
@@ -1900,17 +1900,24 @@ class DatabaseController(Controller):
         data: ValidateSQLSchema,
         dao: DatabaseDAOProtocol,
     ) -> dict[str, Any]:
+        # Mirrors ``superset_old/databases/api.py:validate_sql`` — the command
+        # returns a list of SQL-error annotations, which the API wraps as
+        # ``{"result": [...]}``.  When the engine has no validator configured
+        # the command raises ``NoValidatorConfigFoundError`` (422) /
+        # ``NoValidatorFoundError`` (422) rather than returning 200 — the
+        # global SupersetException handler renders the SIP-40 error.
         cmd = ValidateSQLCommand(
             dao=cast("AsyncDatabaseDAO", dao),
             database_id=pk,
             sql=data.sql,
             schema=data.schema,
+            catalog=getattr(data, "catalog", None),
         )
-        result = await cmd.execute()
+        validator_errors = await cmd.execute()
         await event_logger.alog_with_context(
             "database.validate_sql", object_ref=f"database:{pk}"
         )
-        return result
+        return {"result": validator_errors}
 
     # ------------------------------------------------------------------
     # GET /export/ — ZIP export
