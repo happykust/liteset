@@ -27,7 +27,6 @@ import msgspec.structs
 
 from superset.exceptions import QueryObjectValidationError
 from superset.utils.feature_flags import feature_flag_manager
-from superset.utils.jinja import get_template_processor
 from superset.utils.sql import sanitize_clause
 
 logger = logging.getLogger(__name__)
@@ -223,24 +222,32 @@ class AsyncQueryObject:
         self._sanitize_filters()
 
     def _sanitize_filters(self, datasource: Any | None = None) -> None:
-        """Sanitize ``extras.where`` and ``extras.having`` via *sanitize_clause*.
+        """Sanitize ``extras.where`` and ``extras.having``.
 
-        When a datasource is provided, processes Jinja templates and passes
-        the engine to sanitize_clause for engine-specific escaping.
+        Every clause is validated through :func:`sanitize_clause` (sqlglot).
+        When a datasource with a database is available, the clause is first
+        rendered through the **sandboxed** Jinja processor
+        (``superset.jinja_context`` — never a bare ``jinja2.Environment``),
+        matching ``superset_old/common/query_object.py::_sanitize_filters``.
         """
-        engine: str | None = None
+        engine = "postgresql"
         template_processor = None
-        if datasource is not None:
-            engine = getattr(getattr(datasource, "database", None), "backend", None)
-            template_processor = get_template_processor(datasource)
+        database = getattr(datasource, "database", None) if datasource else None
+        if database is not None:
+            engine = getattr(database, "backend", None) or "postgresql"
+            # Lazy import like upstream: jinja_context pulls in models/security.
+            from superset.jinja_context import get_template_processor
+
+            template_processor = get_template_processor(database=database)
         for clause_key in ("where", "having"):
             clause = self.extras.get(clause_key, "")
             if clause:
                 try:
                     if template_processor is not None:
-                        clause = template_processor.process_template(clause)
-                    sanitize_clause(clause, engine=engine or "postgresql")
-                    self.extras[clause_key] = clause
+                        clause = template_processor.process_template(
+                            clause, force=True
+                        )
+                    self.extras[clause_key] = sanitize_clause(clause, engine)
                 except QueryObjectValidationError:
                     raise
                 except Exception as ex:
