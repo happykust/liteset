@@ -109,10 +109,20 @@ async def authenticate_websocket(
     if token:
         try:
             payload = pyjwt.decode(token, jwt_secret, algorithms=[jwt_algorithm])
-            user_id = int(payload["sub"])
+            # Anonymous async-token cookies are minted with ``sub=None`` (1:1
+            # with the original ``async_query_manager.init_app`` which signs
+            # ``{"channel": ..., "sub": get_user_id()}`` and ``get_user_id()``
+            # returns ``None`` for anonymous users).  The original Node sidecar
+            # routed purely on the ``channel`` claim and never required a
+            # numeric ``sub``; treat a missing/None ``sub`` as the anonymous
+            # user (id 0, matching the guest convention) so the socket can be
+            # closed cleanly with 4401 only when truly unauthenticated rather
+            # than blowing up with ``int(None) → TypeError``.
+            raw_sub = payload.get("sub")
+            user_id = 0 if raw_sub is None else int(raw_sub)
             channel = payload.get("channel", "")
             return WebSocketAuthResult(user_id=user_id, channel=channel)
-        except (pyjwt.InvalidTokenError, KeyError, ValueError) as exc:
+        except (pyjwt.InvalidTokenError, KeyError, TypeError, ValueError) as exc:
             logger.debug("WebSocket JWT auth failed: %s", exc)
 
     # 3. Fallback to session cookie (browser WS connections carry it)

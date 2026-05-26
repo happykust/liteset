@@ -37,6 +37,7 @@ import logging
 from typing import Any
 
 from litestar import Controller, get, Request
+from litestar.exceptions import NotAuthorizedException
 
 from superset.async_events.manager import AsyncEventManager
 from superset.guards.rbac import require_authentication
@@ -95,13 +96,16 @@ class AsyncEventController(Controller):
         )
 
         if not channel_id:
-            # Fallback: derive from user id so anonymous / unauthenticated callers
-            # get an empty list rather than a 500.  In practice the middleware
-            # guarantees a cookie is present for every authenticated user.
-            channel_id = f"user-{current_user.id}"
-            logger.debug(
-                "async-token cookie missing or invalid; falling back to channel %s",
-                channel_id,
+            # 1:1 with the original Flask path
+            # (``superset_old/async_events/api.py:91-101``): a missing or
+            # unparseable ``async-token`` cookie raises
+            # ``AsyncQueryTokenException`` → ``self.response_401()``.  Mirror
+            # the submit paths (``chart.py``/``explore_json.py``) which raise
+            # ``NotAuthorizedException`` on the same condition rather than
+            # silently returning an empty list from an unwritten channel.
+            logger.debug("async-token cookie missing or invalid; returning 401")
+            raise NotAuthorizedException(
+                detail="Failed to parse async query channel token"
             )
 
         events = await event_manager.read_events(

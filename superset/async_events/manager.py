@@ -166,15 +166,23 @@ class AsyncEventManager:
         )
         payload = {"data": json.dumps(metadata)}
 
-        # Write to channel-specific stream
+        # Write to channel-specific stream.  ``maxlen`` trims the stream
+        # synchronously on every write (1:1 with the original
+        # ``async_query_manager.update_job`` which passed ``self._stream_limit``
+        # / ``self._stream_limit_firehose`` to ``xadd``).  ``approximate=True``
+        # maps to Redis ``XADD ... MAXLEN ~ N`` so trimming stays cheap.
         await self.redis.xadd(
             self._channel_key(channel_id),
             payload,  # type: ignore[arg-type]
+            maxlen=self.channel_stream_limit,
+            approximate=True,
         )
         # Write to global firehose stream
         await self.redis.xadd(
             self.global_stream_key,
             payload,  # type: ignore[arg-type]
+            maxlen=self.global_stream_limit,
+            approximate=True,
         )
 
         logger.debug(
@@ -205,15 +213,20 @@ class AsyncEventManager:
         )
         payload = {"data": json.dumps(metadata)}
 
-        # Write to channel stream
+        # Write to channel stream — trim synchronously via ``maxlen`` (1:1 with
+        # the original ``xadd(..., self._stream_limit)``).
         await self.redis.xadd(
             self._channel_key(channel_id),
             payload,  # type: ignore[arg-type]
+            maxlen=self.channel_stream_limit,
+            approximate=True,
         )
         # Write to global stream
         await self.redis.xadd(
             self.global_stream_key,
             payload,  # type: ignore[arg-type]
+            maxlen=self.global_stream_limit,
+            approximate=True,
         )
 
         logger.debug(
