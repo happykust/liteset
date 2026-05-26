@@ -21,12 +21,17 @@ from __future__ import annotations
 from litestar import Controller, get
 from litestar.datastructures import State
 
+from superset.guards.rbac import require_permission
+
 
 class AvailableDomainsController(Controller):
     path = "/api/v1/available_domains"
     tags = ["Available Domains"]
 
-    @get("/")
+    @get(
+        "/",
+        guards=[require_permission("can_read", "AvailableDomains")],
+    )
     async def get_available_domains(self, state: State) -> dict[str, list[str]]:
         """GET /api/v1/available_domains/ — return allowed domains from config."""
         domains: list[str] = getattr(state.settings, "superset_webserver_domains", [])

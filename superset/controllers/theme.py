@@ -56,6 +56,30 @@ from superset.typing import CRUDDAOProtocol, UserProtocol
 from superset.utils import filter_unset
 
 
+def _guard_system_theme_admin(user: UserProtocol, state: State) -> None:
+    """Enforce the system-theme admin + feature-flag gate.
+
+    Mirrors ``superset_old/themes/api.py`` system-theme handlers
+    (``set_system_default``/``set_system_dark``/``unset_system_default``/
+    ``unset_system_dark``) which first require ``security_manager.is_admin()``
+    (else 403 "Only administrators can set system themes") **and** the
+    ``ENABLE_UI_THEME_ADMINISTRATION`` config flag (else 403 "UI theme
+    administration is not enabled").
+    """
+    from superset.exceptions import ForbiddenError
+
+    settings = getattr(state, "settings", None)
+    admin_role_name = getattr(settings, "auth_role_admin", "Admin")
+    user_roles = getattr(user, "roles", [])
+    is_admin = any(
+        getattr(role, "name", "") == admin_role_name for role in user_roles
+    )
+    if not is_admin:
+        raise ForbiddenError(message="Only administrators can set system themes")
+    if not getattr(settings, "enable_ui_theme_administration", False):
+        raise ForbiddenError(message="UI theme administration is not enabled")
+
+
 class ThemeController(Controller):
     path = "/api/v1/theme"
     tags = ["Themes"]
@@ -220,8 +244,10 @@ class ThemeController(Controller):
         pk: int,
         dao: Any,
         current_user: UserProtocol,
+        state: State,
     ) -> dict[str, Any]:
         """PUT /api/v1/theme/{pk}/set_system_default — set as system default."""
+        _guard_system_theme_admin(current_user, state)
         cmd = SetSystemDefaultCommand(dao=dao, pk=pk)
         theme = await cmd.execute()
         await event_logger.alog_with_context(
@@ -241,8 +267,10 @@ class ThemeController(Controller):
         self,
         dao: Any,
         current_user: UserProtocol,
+        state: State,
     ) -> dict[str, Any]:
         """DELETE /api/v1/theme/unset_system_default — remove system default."""
+        _guard_system_theme_admin(current_user, state)
         cmd = UnsetSystemDefaultCommand(dao=dao)
         await cmd.execute()
         await event_logger.alog_with_context(
@@ -281,8 +309,10 @@ class ThemeController(Controller):
         pk: int,
         dao: Any,
         current_user: UserProtocol,
+        state: State,
     ) -> dict[str, Any]:
         """PUT /api/v1/theme/{pk}/set_system_dark -- set as system dark theme."""
+        _guard_system_theme_admin(current_user, state)
         cmd = SetSystemDarkCommand(dao=dao, pk=pk)
         theme = await cmd.execute()
         await event_logger.alog_with_context(
@@ -301,8 +331,10 @@ class ThemeController(Controller):
         self,
         dao: Any,
         current_user: UserProtocol,
+        state: State,
     ) -> dict[str, Any]:
         """DELETE /api/v1/theme/unset_system_dark -- clear system dark theme."""
+        _guard_system_theme_admin(current_user, state)
         cmd = UnsetSystemDarkCommand(dao=dao)
         await cmd.execute()
         await event_logger.alog_with_context(

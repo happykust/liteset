@@ -252,15 +252,27 @@ GAMMA_READ_ONLY_MODEL_VIEWS: frozenset[str] = frozenset(
     }
 )
 
-# Custom permission views that should always be created in the DB
+# Custom permission views that should always be created in the DB.
+# Mirrors ``create_custom_permissions`` in
+# ``superset_old/security/manager.py:1109-1124`` (the 12 custom PVMs), plus
+# the ``Superset``-view permissions FAB auto-creates for the explore/guest
+# endpoints (``can_explore_json``/``can_explore``) and the FAB-standard
+# ``UserInfoView`` perms.
 CUSTOM_PERMISSION_VIEWS: frozenset[tuple[str, str]] = frozenset(
     {
+        # create_custom_permissions() — superset_old/security/manager.py
+        ("can_csv", "Superset"),
         ("can_share_dashboard", "Superset"),
         ("can_share_chart", "Superset"),
-        ("can_csv", "Superset"),
+        ("can_sqllab", "Superset"),
+        ("can_view_query", "Dashboard"),
+        ("can_view_chart_as_table", "Dashboard"),
+        ("can_drill", "Dashboard"),
+        ("can_tag", "Chart"),
+        ("can_tag", "Dashboard"),
+        # FAB-registered Superset-view + security endpoints
         ("can_explore_json", "Superset"),
         ("can_explore", "Superset"),
-        ("can_sqllab", "Superset"),
         ("can_grant_guest_token", "SecurityRestApi"),
         ("can_userinfo", "UserInfoView"),
         ("resetmypassword", "UserInfoView"),

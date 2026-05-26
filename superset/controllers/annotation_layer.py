@@ -61,7 +61,7 @@ class AnnotationLayerController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/",
-        guards=[require_permission("can_read", "AnnotationLayer")],
+        guards=[require_permission("can_read", "Annotation")],
     )
     async def get_list(
         self,
@@ -112,7 +112,7 @@ class AnnotationLayerController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/{pk:int}",
-        guards=[require_permission("can_read", "AnnotationLayer")],
+        guards=[require_permission("can_read", "Annotation")],
     )
     async def get_single(
         self,
@@ -143,7 +143,7 @@ class AnnotationLayerController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/",
-        guards=[require_permission("can_write", "AnnotationLayer")],
+        guards=[require_permission("can_write", "Annotation")],
         status_code=201,
     )
     async def create(
@@ -173,7 +173,7 @@ class AnnotationLayerController(Controller):
     # ------------------------------------------------------------------
     @put(
         "/{pk:int}",
-        guards=[require_permission("can_write", "AnnotationLayer")],
+        guards=[require_permission("can_write", "Annotation")],
     )
     async def update(
         self,
@@ -205,7 +205,7 @@ class AnnotationLayerController(Controller):
     # ------------------------------------------------------------------
     @delete(
         "/{pk:int}",
-        guards=[require_permission("can_write", "AnnotationLayer")],
+        guards=[require_permission("can_write", "Annotation")],
         status_code=200,
     )
     async def delete_layer(
@@ -226,7 +226,7 @@ class AnnotationLayerController(Controller):
     # ------------------------------------------------------------------
     @delete(
         "/",
-        guards=[require_permission("can_write", "AnnotationLayer")],
+        guards=[require_permission("can_write", "Annotation")],
         status_code=200,
     )
     async def bulk_delete(
@@ -245,7 +245,7 @@ class AnnotationLayerController(Controller):
 
     @get(
         "/_info",
-        guards=[require_permission("can_read", "AnnotationLayer")],
+        guards=[require_permission("can_read", "Annotation")],
     )
     async def info(self, dao: Any) -> dict[str, Any]:
         """GET /api/v1/annotation_layer/_info -- API metadata for frontend."""
@@ -257,7 +257,7 @@ class AnnotationLayerController(Controller):
 
     @get(
         "/related/{column_name:str}",
-        guards=[require_permission("can_read", "AnnotationLayer")],
+        guards=[require_permission("can_read", "Annotation")],
     )
     async def related(
         self,

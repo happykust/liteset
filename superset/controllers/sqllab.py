@@ -146,7 +146,7 @@ class SqlLabController(Controller):
 
     @post(
         "/estimate/",
-        guards=[require_permission("can_read", "SQLLab")],
+        guards=[require_permission("can_estimate_query_cost", "SQL Lab")],
         status_code=200,
     )
     async def estimate(
@@ -179,7 +179,7 @@ class SqlLabController(Controller):
 
     @get(
         "/export/{client_id:str}/",
-        guards=[require_permission("can_read", "SQLLab")],
+        guards=[require_permission("can_export_csv", "SQLLab")],
         media_type="text/csv",
     )
     async def export_csv(
@@ -256,7 +256,7 @@ class SqlLabController(Controller):
 
     @get(
         "/results/",
-        guards=[require_permission("can_read", "SQLLab")],
+        guards=[require_permission("can_get_results", "SQLLab")],
     )
     async def results(
         self,
@@ -300,7 +300,7 @@ class SqlLabController(Controller):
 
     @post(
         "/execute/",
-        guards=[require_permission("can_sqllab", "Superset")],
+        guards=[require_permission("can_execute_sql_query", "SQLLab")],
         status_code=200,
     )
     async def execute(

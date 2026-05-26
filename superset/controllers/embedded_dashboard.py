@@ -36,6 +36,7 @@ from litestar.di import Provide
 from litestar.response import Response, Template
 
 from superset.exceptions import SupersetNotFoundError
+from superset.guards.rbac import require_permission
 from superset.providers import provide_embedded_dao
 
 
@@ -66,7 +67,7 @@ class EmbeddedDashboardController(Controller):
 
     @get(
         "/{uuid:str}",
-        opt={"exclude_from_auth": True},
+        guards=[require_permission("can_read", "EmbeddedDashboard")],
     )
     async def get_embedded(
         self,

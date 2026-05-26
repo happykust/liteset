@@ -171,7 +171,7 @@ class RLSController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/",
-        guards=[require_permission("can_read", "RowLevelSecurity")],
+        guards=[require_permission("can_read", "Row Level Security")],
     )
     async def get_list(
         self,
@@ -228,7 +228,7 @@ class RLSController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/{pk:int}",
-        guards=[require_permission("can_read", "RowLevelSecurity")],
+        guards=[require_permission("can_read", "Row Level Security")],
     )
     async def get_single(
         self,
@@ -266,7 +266,7 @@ class RLSController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/",
-        guards=[require_permission("can_write", "RowLevelSecurity")],
+        guards=[require_permission("can_write", "Row Level Security")],
         status_code=201,
     )
     async def create(
@@ -297,7 +297,7 @@ class RLSController(Controller):
     # ------------------------------------------------------------------
     @put(
         "/{pk:int}",
-        guards=[require_permission("can_write", "RowLevelSecurity")],
+        guards=[require_permission("can_write", "Row Level Security")],
         status_code=200,
     )
     async def update(
@@ -326,7 +326,7 @@ class RLSController(Controller):
     # ------------------------------------------------------------------
     @delete(
         "/",
-        guards=[require_permission("can_write", "RowLevelSecurity")],
+        guards=[require_permission("can_write", "Row Level Security")],
         status_code=200,
     )
     async def bulk_delete(
@@ -354,7 +354,7 @@ class RLSController(Controller):
 
     @get(
         "/_info",
-        guards=[require_permission("can_read", "RowLevelSecurity")],
+        guards=[require_permission("can_read", "Row Level Security")],
     )
     async def info(self, dao: CRUDDAOProtocol) -> dict[str, Any]:
         """Get metadata information about this API resource.
@@ -373,7 +373,7 @@ class RLSController(Controller):
 
     @get(
         "/related/{column_name:str}",
-        guards=[require_permission("can_read", "RowLevelSecurity")],
+        guards=[require_permission("can_read", "Row Level Security")],
     )
     async def related(
         self,
