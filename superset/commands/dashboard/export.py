@@ -27,7 +27,6 @@ from typing import Any, TYPE_CHECKING
 from uuid import UUID as _UUID
 
 import yaml  # type: ignore[import-untyped]
-from superset.utils.file import secure_filename
 
 from superset.commands.dashboard.importers.v1.utils import (
     _append_charts,
@@ -38,6 +37,7 @@ from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.importexport.export_base import AsyncExportModelsCommand
 from superset.models.tags import TagType
 from superset.utils.feature_flags import feature_flag_manager
+from superset.utils.file import get_filename
 
 if TYPE_CHECKING:
     from superset.db.daos.dashboard import AsyncDashboardDAO
@@ -80,8 +80,8 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
 
     @staticmethod
     def _file_name(model: Any) -> str:
-        slug = secure_filename(model.dashboard_title or "") or "unnamed"
-        return f"dashboards/{slug}_{model.id}.yaml"
+        file_name = get_filename(model.dashboard_title or "", model.id, skip_id=False)
+        return f"dashboards/{file_name}.yaml"
 
     async def _export_single(self, model_id: int) -> list[tuple[str, str]]:  # noqa: C901
         from sqlalchemy import select as sa_select
@@ -114,6 +114,7 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
                 selectinload(Dashboard.slices)
                 .selectinload(Slice.table)
                 .selectinload(SqlaTable.columns),
+                selectinload(Dashboard.slices).selectinload(Slice.tags),
                 selectinload(Dashboard.theme),
                 selectinload(Dashboard.tags),
             )
@@ -185,6 +186,38 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
             )
         ]
 
+        # Emit a separate ``tags.yaml`` entry when the TAGGING_SYSTEM feature
+        # flag is enabled.  Ported 1:1 from
+        # ``superset_old/commands/tag/export.py::ExportTagsCommand``: dashboard
+        # tags are filtered to ``TagType.custom`` while chart tags drop the
+        # implicit ``type:`` / ``owner:`` system tags, then both sets are merged
+        # by name (dashboard wins on conflict).
+        if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+            dashboard_tags = [
+                {"tag_name": tag.name, "description": tag.description}
+                for tag in (getattr(dashboard, "tags", []) or [])
+                if tag.type == TagType.custom
+            ]
+            chart_tags: list[dict[str, Any]] = []
+            for chart in dashboard.slices or []:
+                chart_tags.extend(
+                    {"tag_name": tag.name, "description": tag.description}
+                    for tag in (getattr(chart, "tags", []) or [])
+                    if "type:" not in tag.name and "owner:" not in tag.name
+                )
+            # Merge, preventing duplicates by tag name (dashboard tags win).
+            tags_dict = {tag["tag_name"]: tag for tag in dashboard_tags}
+            for tag in chart_tags:
+                if tag["tag_name"] not in tags_dict:
+                    tags_dict[tag["tag_name"]] = tag
+            tags_payload = {"tags": list(tags_dict.values())}
+            files.append(
+                (
+                    "tags.yaml",
+                    yaml.safe_dump(tags_payload, sort_keys=False),
+                )
+            )
+
         # Bundle related charts + datasets + databases.
         seen_datasets: set[int] = set()
         seen_databases: set[int] = set()
@@ -210,10 +243,10 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
                 chart_payload["dataset_uuid"] = str(chart.table.uuid)
             chart_payload["version"] = EXPORT_VERSION
 
-            chart_slug = secure_filename(chart.slice_name or "") or "unnamed"
+            chart_file_name = get_filename(chart.slice_name or "", chart.id)
             files.append(
                 (
-                    f"charts/{chart_slug}_{chart.id}.yaml",
+                    f"charts/{chart_file_name}.yaml",
                     yaml.safe_dump(chart_payload, sort_keys=False),
                 )
             )
@@ -243,15 +276,19 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
                 ds_payload["version"] = EXPORT_VERSION
                 if ds.database:
                     ds_payload["database_uuid"] = str(ds.database.uuid)
-                db_slug = (
-                    secure_filename(ds.database.database_name)
+                db_file_name = (
+                    get_filename(
+                        ds.database.database_name or "",
+                        ds.database.id,
+                        skip_id=True,
+                    )
                     if ds.database
                     else "unknown"
-                ) or "unknown"
-                ds_slug = secure_filename(ds.table_name or "") or "unnamed"
+                )
+                ds_file_name = get_filename(ds.table_name or "", ds.id)
                 files.append(
                     (
-                        f"datasets/{db_slug}/{ds_slug}.yaml",
+                        f"datasets/{db_file_name}/{ds_file_name}.yaml",
                         yaml.safe_dump(ds_payload, sort_keys=False),
                     )
                 )
@@ -271,10 +308,12 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
                         except (TypeError, _json.JSONDecodeError):
                             pass
                     db_payload["version"] = EXPORT_VERSION
-                    db_slug = secure_filename(db.database_name or "") or "unnamed"
+                    db_file_name = get_filename(
+                        db.database_name or "", db.id, skip_id=True
+                    )
                     files.append(
                         (
-                            f"databases/{db_slug}.yaml",
+                            f"databases/{db_file_name}.yaml",
                             yaml.safe_dump(db_payload, sort_keys=False),
                         )
                     )
@@ -303,15 +342,19 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
                         ds_payload["version"] = EXPORT_VERSION
                         if ds.database:
                             ds_payload["database_uuid"] = str(ds.database.uuid)
-                        db_slug = (
-                            secure_filename(ds.database.database_name)
+                        db_file_name = (
+                            get_filename(
+                                ds.database.database_name or "",
+                                ds.database.id,
+                                skip_id=True,
+                            )
                             if ds.database
                             else "unknown"
-                        ) or "unknown"
-                        ds_slug = secure_filename(ds.table_name or "") or "unnamed"
+                        )
+                        ds_file_name = get_filename(ds.table_name or "", ds.id)
                         files.append(
                             (
-                                f"datasets/{db_slug}/{ds_slug}.yaml",
+                                f"datasets/{db_file_name}/{ds_file_name}.yaml",
                                 yaml.safe_dump(ds_payload, sort_keys=False),
                             )
                         )
