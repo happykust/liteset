@@ -544,6 +544,11 @@ class AsyncQueryContextProcessor:
         skip_post_processing: bool = False,
     ) -> dict[str, Any]:
         """Execute a single query, return DataFrame + metadata."""
+        from superset.exceptions import (
+            InvalidPostProcessingError,
+            QueryObjectValidationError,
+        )
+
         # Validate query object (sanitize filters, check duplicates, etc.)
         query_object.validate()
 
@@ -563,10 +568,16 @@ class AsyncQueryContextProcessor:
                 if col not in ds_columns and col != DTTM_ALIAS
             ]
             if invalid:
-                from superset.exceptions import QueryObjectValidationError
+                from superset.i18n import _
 
+                # 1:1 with the original message
+                # (``superset_old/.../query_context_processor.py:158-163``):
+                # "dataset" (not "datasource") and i18n-wrapped.
                 raise QueryObjectValidationError(
-                    f"Columns missing in datasource: {invalid}"
+                    _(
+                        "Columns missing in dataset: %(invalid_columns)s",
+                        invalid_columns=invalid,
+                    )
                 )
 
         cache_key = await self._get_cache_key(query_object)
@@ -657,9 +668,18 @@ class AsyncQueryContextProcessor:
                 # on the joined, shifted DataFrame. Skipped for ``results`` /
                 # ``samples`` result types where the caller opted out.
                 if not skip_post_processing and not df.empty:
-                    df = await asyncio.to_thread(
-                        self._exec_post_processing, df, query_object
-                    )
+                    try:
+                        df = await asyncio.to_thread(
+                            self._exec_post_processing, df, query_object
+                        )
+                    except InvalidPostProcessingError as ex:
+                        # 1:1 with the original ``get_query_result``
+                        # (``superset_old/.../query_context_processor.py:300-304``):
+                        # a bad post-processing op surfaces as a
+                        # ``QueryObjectValidationError`` (caught below → a
+                        # status=failed payload carrying the validation
+                        # message), not a generic execution error.
+                        raise QueryObjectValidationError(ex.message) from ex
 
                 # Fetch annotation data only on cache miss
                 annotation_data = await self.get_annotation_data(query_object)
@@ -923,9 +943,16 @@ class AsyncQueryContextProcessor:
                 )
             )
 
-        # Build DateColumn list from base axis labels with proper metadata
+        # Build DateColumn list from base axis labels with proper metadata.
+        # The legacy ``granularity`` column is appended to the candidate list
+        # so a temporal column defined via ``granularity`` (not in ``columns``)
+        # is still normalized — 1:1 with the original ``normalize_df``
+        # (``superset_old/.../query_context_processor.py:329-341``) which built
+        # ``labels`` from ``get_base_axis_labels(columns) + granularity``.
         seen_labels = {DTTM_ALIAS}
-        base_labels = get_base_axis_labels(query_object.columns)
+        base_labels = [*get_base_axis_labels(query_object.columns)]
+        if query_object.granularity:
+            base_labels.append(query_object.granularity)
         for label in base_labels:
             if label in df.columns and label not in seen_labels:
                 seen_labels.add(label)
@@ -1016,14 +1043,30 @@ class AsyncQueryContextProcessor:
                 "post-processing operations cannot be applied."
             )
 
+        from superset.exceptions import InvalidPostProcessingError
+        from superset.i18n import _
+
+        # 1:1 with the original ``QueryObject.exec_post_processing``
+        # (``superset_old/common/query_object.py:488-505``): a missing
+        # ``operation`` key or an unsupported operation raises
+        # ``InvalidPostProcessingError`` with these exact messages, which the
+        # caller re-raises as ``QueryObjectValidationError``.
         for operation in query_object.post_processing:
             op_name = operation.get("operation")
             op_options = operation.get("options", {})
-            if op_name:
-                if not hasattr(pandas_postprocessing, op_name):
-                    raise ValueError(f"Unknown post-processing operation: {op_name}")
-                func = getattr(pandas_postprocessing, op_name)
-                df = func(df, **op_options)
+            if not op_name:
+                raise InvalidPostProcessingError(
+                    _("`operation` property of post processing object undefined")
+                )
+            if not hasattr(pandas_postprocessing, op_name):
+                raise InvalidPostProcessingError(
+                    _(
+                        "Unsupported post processing operation: %(operation)s",
+                        operation=op_name,
+                    )
+                )
+            func = getattr(pandas_postprocessing, op_name)
+            df = func(df, **op_options)
         return df
 
     @staticmethod
