@@ -419,14 +419,38 @@ class DatasetDetailResult(ModelStruct):
 
     @classmethod
     def _resolve_time_grain_sqla(cls, obj: Any) -> list[Any]:
-        return []
+        # 1:1 with ``SqlaTable.time_grain_sqla`` (connectors/sqla/models.py):
+        # ``[(g.duration, g.name) for g in database.grains()]`` — the choices
+        # for the Explore "Time Grain" control. Guard against an unloaded
+        # ``database`` relationship (sync lazy-load under asyncpg →
+        # MissingGreenlet); the detail handler eager-loads it. ``grains()`` is
+        # pure-CPU (reads the engine spec's ``_time_grain_expressions``), no I/O.
+        import sqlalchemy as _sa
+
+        try:
+            if _sa.inspect(obj).unloaded.intersection({"database"}):
+                return []
+        except Exception:  # noqa: BLE001, S110
+            pass
+        database = getattr(obj, "database", None)
+        if database is None or not hasattr(database, "grains"):
+            return []
+        try:
+            return [[g.duration, g.name] for g in (database.grains() or [])]
+        except Exception:  # noqa: BLE001
+            return []
 
     @classmethod
     def _resolve_column_formats(cls, obj: Any) -> dict[str, Any]:
         return {}
 
     @classmethod
-    def _resolve_select_star(cls, obj: Any) -> None:
+    def _resolve_select_star(cls, obj: Any) -> str | None:
+        # DEFERRED stub: ``SqlaTable.select_star`` → engine-spec ``select_star``
+        # → ``Database.compile_sqla_query`` which opens a SYNC engine via
+        # ``get_sqla_engine`` — unsafe to call here in the async response path
+        # for asyncpg-configured databases. Lower impact (a preview SQL string);
+        # left as ``None`` until a dialect-only compile path exists.
         return None
 
     @classmethod
