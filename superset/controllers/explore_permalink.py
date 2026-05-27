@@ -105,29 +105,37 @@ class ExplorePermalinkController(Controller):
            hashids using a persisted per-install salt
         """
         form_data = data.form_data or {}
+        # 1:1 with superset_old/commands/explore/permalink/create.py:41-60 — the
+        # original reads ``state["formData"]["datasource"]`` then
+        # ``d_id, d_type = self.datasource.split("__")`` / ``int(d_id)``. A
+        # missing/garbled datasource raises (KeyError/ValueError → 500); we keep
+        # the parse strict but surface a 422 ``CommandInvalidError`` for the
+        # missing/non-``__`` case. Crucially, ``check_chart_access`` is then
+        # invoked with the parsed integer id *unconditionally* (the original
+        # never skips the access check), closing the gap where a non-numeric
+        # datasource id previously bypassed access control.
         datasource_str = form_data.get("datasource") or ""
         if not datasource_str or "__" not in datasource_str:
             raise CommandInvalidError(
                 "formData.datasource is required (format: '<id>__<type>')"
             )
 
-        parts = datasource_str.split("__")
-        datasource_id = int(parts[0]) if parts[0].isdigit() else None
-        datasource_type = parts[1] if len(parts) >= 2 else "table"
+        d_id, d_type = datasource_str.split("__")
+        datasource_id = int(d_id)
+        datasource_type = d_type
         chart_id: int | None = form_data.get("slice_id")
 
         # 1:1 with original: check_chart_access before storing the permalink.
-        if datasource_id is not None:
-            await check_chart_access(
-                datasource_id=datasource_id,
-                chart_id=chart_id,
-                datasource_type=datasource_type,
-                dataset_dao=dataset_dao,
-                query_dao=query_dao,
-                chart_dao=chart_dao,
-                security_manager=security_manager,
-                user=current_user,
-            )
+        await check_chart_access(
+            datasource_id=datasource_id,
+            chart_id=chart_id,
+            datasource_type=datasource_type,
+            dataset_dao=dataset_dao,
+            query_dao=query_dao,
+            chart_dao=chart_dao,
+            security_manager=security_manager,
+            user=current_user,
+        )
 
         state = {
             "formData": form_data,
@@ -220,16 +228,20 @@ class ExplorePermalinkController(Controller):
                 or payload.get("datasource_type")
                 or "table"
             )
-            if datasource_id:
-                await check_chart_access(
-                    datasource_id=datasource_id,
-                    chart_id=chart_id,
-                    datasource_type=datasource_type,
-                    dataset_dao=dataset_dao,
-                    query_dao=query_dao,
-                    chart_dao=chart_dao,
-                    security_manager=security_manager,
-                    user=current_user,
-                )
+            # 1:1 with superset_old/commands/explore/permalink/get.py:48-57 —
+            # ``check_chart_access`` is invoked unconditionally whenever a stored
+            # value exists (with ``datasourceId or datasetId or 0``). The falsy
+            # ``datasource_id == 0`` case is rejected inside
+            # ``check_datasource_access`` rather than being silently skipped.
+            await check_chart_access(
+                datasource_id=datasource_id,
+                chart_id=chart_id,
+                datasource_type=datasource_type,
+                dataset_dao=dataset_dao,
+                query_dao=query_dao,
+                chart_dao=chart_dao,
+                security_manager=security_manager,
+                user=current_user,
+            )
             return payload
         return {"value": payload}

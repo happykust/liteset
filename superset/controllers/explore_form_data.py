@@ -36,7 +36,6 @@ from superset.commands.explore_form_data.utils import check_access
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError
 from superset.guards.rbac import (
-    deny_anon_with_403,
     require_authentication,
     require_permission,
 )
@@ -56,6 +55,29 @@ from superset.typing import (
 )
 
 DatasourceType = Literal["table", "dataset", "query", "saved_query", "view"]
+
+
+def _validate_form_data_json(form_data: str | None) -> None:
+    """Validate that ``form_data`` is well-formed JSON.
+
+    1:1 with the ``validate()`` hooks of the original
+    ``CreateFormDataCommand`` / ``UpdateFormDataCommand``
+    (``superset_old/commands/explore/form_data/{create,update}.py``):
+    ``validate_json(form_data)`` is run whenever ``form_data`` is truthy, and a
+    failure surfaces as a marshmallow ``ValidationError`` → HTTP 400. Here we
+    use ``superset.utils.json.validate_json`` (which raises ``JSONDecodeError``)
+    and re-raise it as a 400 with the original "JSON not valid" message.
+    """
+    from superset.exceptions import SupersetGenericErrorException
+    from superset.utils.json import JSONDecodeError, validate_json
+
+    if form_data:
+        try:
+            validate_json(form_data)
+        except JSONDecodeError as ex:
+            raise SupersetGenericErrorException(
+                "JSON not valid", status=400
+            ) from ex
 
 
 class FormDataPostSchema(msgspec.Struct):
@@ -122,17 +144,21 @@ class ExploreFormDataController(Controller):
             datasource_id: int = entry.get("datasource_id") or 0
             datasource_type: str = entry.get("datasource_type") or "table"
             chart_id: int | None = entry.get("chart_id")
-            if datasource_id:
-                await check_access(
-                    datasource_id=datasource_id,
-                    chart_id=chart_id,
-                    datasource_type=datasource_type,
-                    dataset_dao=dataset_dao,
-                    query_dao=query_dao,
-                    chart_dao=chart_dao,
-                    security_manager=security_manager,
-                    user=current_user,
-                )
+            # 1:1 with superset_old/commands/explore/form_data/get.py:48-53 —
+            # ``check_access`` is invoked unconditionally whenever state exists.
+            # The original lets ``check_datasource_access`` itself reject a falsy
+            # ``datasource_id`` (``DatasourceNotFoundValidationError``); do not
+            # short-circuit on ``datasource_id == 0`` here.
+            await check_access(
+                datasource_id=datasource_id,
+                chart_id=chart_id,
+                datasource_type=datasource_type,
+                dataset_dao=dataset_dao,
+                query_dao=query_dao,
+                chart_dao=chart_dao,
+                security_manager=security_manager,
+                user=current_user,
+            )
             if "value" in entry:
                 return {"form_data": entry["value"]}
 
@@ -141,8 +167,12 @@ class ExploreFormDataController(Controller):
     @post(
         "/",
         status_code=201,
+        # 1:1 with superset_old/explore/form_data/api.py:50-51 — ``@protect()``
+        # returns 401 (not 403) for anonymous callers. ``require_permission``
+        # raises ``NotAuthorizedException`` (401) for unauthenticated users that
+        # lack the Public-role permission, so we drop the ``deny_anon_with_403``
+        # guard which would otherwise 403 anonymous POSTs.
         guards=[
-            deny_anon_with_403,
             require_permission("can_write", "ExploreFormDataRestApi"),
         ],
     )
@@ -159,10 +189,11 @@ class ExploreFormDataController(Controller):
     ) -> dict[str, str]:
         """POST / — create new cached form_data.
 
-        1:1 with original CreateFormDataCommand: calls check_access before
-        storing so that users cannot cache form data for datasources they
-        cannot access.
+        1:1 with original CreateFormDataCommand: validates that ``form_data`` is
+        valid JSON (``validate()`` hook) and calls check_access before storing
+        so that users cannot cache form data for datasources they cannot access.
         """
+        _validate_form_data_json(data.form_data)
         await check_access(
             datasource_id=data.datasource_id,
             chart_id=data.chart_id,
@@ -211,11 +242,14 @@ class ExploreFormDataController(Controller):
     ) -> dict[str, str]:
         """PUT /{key} — update cached form_data.
 
-        1:1 with original UpdateFormDataCommand: calls check_access for the
-        new datasource/chart being saved, then checks that the requesting
-        user is the owner of the entry before allowing the update.
+        1:1 with original UpdateFormDataCommand: validates that ``form_data`` is
+        valid JSON (``validate()`` hook), calls check_access for the new
+        datasource/chart being saved, then checks that the requesting user is
+        the owner of the entry before allowing the update.
         """
         from litestar.exceptions import PermissionDeniedException
+
+        _validate_form_data_json(data.form_data)
 
         existing = await kv_dao.get_value(
             resource=self.resource,
@@ -306,17 +340,19 @@ class ExploreFormDataController(Controller):
             datasource_id: int = entry.get("datasource_id") or 0
             datasource_type: str = entry.get("datasource_type") or "table"
             chart_id: int | None = entry.get("chart_id")
-            if datasource_id:
-                await check_access(
-                    datasource_id=datasource_id,
-                    chart_id=chart_id,
-                    datasource_type=datasource_type,
-                    dataset_dao=dataset_dao,
-                    query_dao=query_dao,
-                    chart_dao=chart_dao,
-                    security_manager=security_manager,
-                    user=current_user,
-                )
+            # 1:1 with superset_old/commands/explore/form_data/delete.py:49-53 —
+            # ``check_access`` runs unconditionally when state exists; the falsy
+            # ``datasource_id`` case is handled inside ``check_datasource_access``.
+            await check_access(
+                datasource_id=datasource_id,
+                chart_id=chart_id,
+                datasource_type=datasource_type,
+                dataset_dao=dataset_dao,
+                query_dao=query_dao,
+                chart_dao=chart_dao,
+                security_manager=security_manager,
+                user=current_user,
+            )
             # Owner check — original raises TemporaryCacheAccessDeniedError
             # when state["owner"] != get_user_id().
             owner = entry.get("owner")

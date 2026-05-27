@@ -54,7 +54,6 @@ from superset.commands.importers.exceptions import NoValidFilesFoundError
 
 # DAO imports moved to provider functions (avoid Flask import chain)
 from superset.controllers.base import (
-    build_export_headers,
     build_rison_query_params,
     extract_ids,
     extract_ids_required,
@@ -478,6 +477,15 @@ class DashboardController(Controller):
         )
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
+
+        # 1:1 with superset_old/daos/dashboard.py:71-75 — after the access
+        # filter, the original performs a secondary ``dashboard.raise_for_access()``
+        # which maps a ``SupersetSecurityException`` to ``DashboardAccessDeniedError``
+        # → HTTP 403 (vs. the 404 returned by the filter miss above). The async
+        # ``raise_for_access`` raises ``SupersetSecurityException`` (403) directly.
+        await security_manager.raise_for_access(
+            dashboard=dashboard, user=current_user
+        )
 
         await event_logger.alog_with_context(
             "dashboard.get", object_ref=f"dashboard:{id_or_slug}"
@@ -1104,11 +1112,28 @@ class DashboardController(Controller):
         await event_logger.alog_with_context(
             "dashboard.export", extra={"count": len(ids)}
         )
+        # 1:1 with ``superset_old/dashboards/api.py:1008-1031``: the ZIP is named
+        # ``dashboard_export_{YYYYMMDDTHHMMSS}.zip`` and — when a ``token`` query
+        # param is present — a cookie *named by the token value* is set to
+        # ``done`` (``response.set_cookie(token, "done", max_age=600)``) so the
+        # frontend can detect download completion. The shared
+        # ``build_export_headers`` helper hard-codes both the filename and the
+        # cookie name, so we build the headers inline here to preserve the
+        # original contract.
+        from datetime import datetime as _datetime
+
+        timestamp = _datetime.now().strftime("%Y%m%dT%H%M%S")
+        filename = f"dashboard_export_{timestamp}.zip"
+        headers: dict[str, str] = {
+            "Content-Disposition": f"attachment; filename={filename}",
+        }
+        if token:
+            headers["Set-Cookie"] = f"{token}=done; Path=/; Max-Age=600; SameSite=Lax"
         return Stream(
             stream_zip(buf),
             status_code=200,
             media_type="application/zip",
-            headers=build_export_headers("dashboards_export.zip", token=token),
+            headers=headers,
         )
 
     # ------------------------------------------------------------------
@@ -1448,6 +1473,11 @@ class DashboardController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             return FavoriteStatusResponse()
+        # 1:1 with superset_old/dashboards/api.py:1404-1406 — resolve the
+        # requested ids first and 404 when none of them exist.
+        dashboards = await dao.find_by_ids(ids)
+        if not dashboards:
+            raise ObjectNotFoundError("Dashboard")
         fav_ids = set(await dao.favorited_ids(ids, current_user.id))
         return FavoriteStatusResponse(
             result=[FavoriteStatusItem(id=i, value=i in fav_ids) for i in ids],
@@ -1718,7 +1748,10 @@ class DashboardController(Controller):
     # ------------------------------------------------------------------
     @delete(
         "/{id_or_slug:str}/embedded",
-        guards=[require_permission("can_write", "Dashboard")],
+        # 1:1 with original ``superset_old/dashboards/api.py:1761`` —
+        # ``@permission_name("set_embedded")`` gates this on the granular
+        # ``can_set_embedded`` permission (not ``can_write``).
+        guards=[require_permission("can_set_embedded", "Dashboard")],
         status_code=200,
     )
     async def delete_embedded(
@@ -1839,12 +1872,40 @@ class DashboardController(Controller):
         guards=[require_permission("can_read", "DashboardPermalinkRestApi")],
     )
     async def get_permalink(
-        self, key: str, kv_dao: KeyValueDAOProtocol
+        self,
+        key: str,
+        kv_dao: KeyValueDAOProtocol,
+        dao: DashboardDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
         cmd = GetDashboardPermalinkCommand(
             dao=cast("AsyncKeyValueDAO", kv_dao), key=key
         )
         state = await cmd.execute()
+
+        # 1:1 with superset_old/commands/dashboard/permalink/get.py:47-48 — after
+        # the stored value is read, the original re-resolves the dashboard via
+        # ``DashboardDAO.get_by_id_or_slug(value["dashboardId"])`` so that a
+        # permalink pointing at a deleted dashboard 404s and one pointing at a
+        # now-inaccessible dashboard 403s, instead of leaking the saved state.
+        dashboard_id = state.get("dashboardId") if isinstance(state, dict) else None
+        if dashboard_id is not None:
+            from superset.db.filters import dashboard_access_filters
+
+            access_filters = await dashboard_access_filters(
+                security_manager, current_user
+            )
+            dashboard = await dao.get_full_by_id_or_slug(
+                str(dashboard_id),
+                extra_filters=access_filters,
+            )
+            if not dashboard:
+                raise ObjectNotFoundError("Dashboard", dashboard_id)
+            await security_manager.raise_for_access(
+                dashboard=dashboard, user=current_user
+            )
+
         await event_logger.alog_with_context(
             "dashboard.get_permalink", object_ref=f"permalink:{key}"
         )
