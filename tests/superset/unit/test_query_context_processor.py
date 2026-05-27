@@ -544,3 +544,69 @@ async def test_cache_set_exception_does_not_propagate(
     )
     # Should not raise
     await proc._cache_set("some-key", {"data": [1]}, 300)
+
+
+async def test_get_df_payload_propagates_failed_query(
+    mock_settings, mock_security_manager, mock_datasource
+):
+    """A failed query result (status=error / error_message) surfaces as a
+    failed payload instead of a silent empty success — so the chart-data
+    command can turn it into a 400.
+    """
+    proc = AsyncQueryContextProcessor(
+        datasource=mock_datasource,
+        settings=mock_settings,
+        security_manager=mock_security_manager,
+    )
+    qo = AsyncQueryObject(datasource={"type": "table", "id": 1}, columns=["col1"])
+    err_result = {
+        "df": pd.DataFrame(),
+        "query": "",
+        "status": "error",
+        "error_message": "boom",
+    }
+    with patch.object(
+        proc, "_get_query_result", new_callable=AsyncMock, return_value=err_result
+    ):
+        payload = await proc.get_payload([qo])
+
+    q = payload["queries"][0]
+    assert q["status"] == "failed"
+    assert "boom" in (q["error"] or "")
+
+
+async def test_ensure_totals_propagates_failed_query(
+    mock_settings, mock_security_manager, mock_datasource
+):
+    """A failed contribution-totals query propagates (1:1 with the original
+    ``ensure_totals_available``, which has no try/except) rather than being
+    swallowed into empty totals (→ wrong contribution %).
+    """
+    from superset.exceptions import QueryObjectValidationError
+
+    proc = AsyncQueryContextProcessor(
+        datasource=mock_datasource,
+        settings=mock_settings,
+        security_manager=mock_security_manager,
+    )
+    contrib_qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        columns=["col1"],
+        metrics=["m"],
+        post_processing=[{"operation": "contribution", "options": {}}],
+    )
+    # totals query: no columns, has metrics, no post-processing
+    totals_qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        metrics=["m"],
+    )
+    err_result = {
+        "df": pd.DataFrame(),
+        "status": "error",
+        "error_message": "totals boom",
+    }
+    with patch.object(
+        proc, "_get_query_result", new_callable=AsyncMock, return_value=err_result
+    ):
+        with pytest.raises(QueryObjectValidationError, match="totals boom"):
+            await proc._ensure_totals_available([contrib_qo, totals_qo])

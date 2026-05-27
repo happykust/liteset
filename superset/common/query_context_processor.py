@@ -286,8 +286,20 @@ class AsyncQueryContextProcessor:
         totals_query.row_limit = None
 
         # Execute totals query to get actual column sums
+        from superset.exceptions import QueryObjectValidationError
+
         try:
             result = await self._get_query_result(totals_query)
+            # Surface a failed totals query instead of silently using empty
+            # totals (→ wrong contribution %). 1:1 with the original
+            # ``ensure_totals_available``, which has no try/except and lets
+            # ``get_query_result`` propagate the error.
+            if result.get("status") in ("error", "failed") or result.get(
+                "error_message"
+            ):
+                raise QueryObjectValidationError(
+                    result.get("error_message") or "Contribution totals query failed"
+                )
             totals_df = result.get("df", pd.DataFrame())
             if not totals_df.empty:
                 # Use column sums, not iloc[0] — totals query may return
@@ -297,6 +309,10 @@ class AsyncQueryContextProcessor:
                     options = pp.get("options", {})
                     options["contribution_totals"] = totals_dict
                     pp["options"] = options
+        except QueryObjectValidationError:
+            # Propagate a genuine query failure (caught by ``get_payload`` →
+            # command → 400); only unexpected errors below are best-effort.
+            raise
         except Exception:  # noqa: BLE001
             logger.warning("Failed to compute totals for contribution", exc_info=True)
 
@@ -1647,8 +1663,20 @@ class AsyncQueryContextProcessor:
             query_object_clone.row_limit = None
             query_object_clone.row_offset = 0
 
-            # Execute the shifted query (errors propagate, 1:1 — NOT swallowed).
+            # Execute the shifted query. A failed offset query propagates (1:1
+            # with the original, where ``datasource.query`` raises a build error
+            # out of ``processing_time_offsets`` → the main query fails) instead
+            # of silently producing NaN comparison columns. ``get_df_payload``'s
+            # ``except`` (the caller) turns it into a failed payload → 400.
             result = await self._get_query_result(query_object_clone)
+            if result.get("status") in ("error", "failed") or result.get(
+                "error_message"
+            ):
+                from superset.exceptions import QueryObjectValidationError
+
+                raise QueryObjectValidationError(
+                    result.get("error_message") or "Time-offset query failed"
+                )
             offset_metrics_df = result.get("df", pd.DataFrame())
             queries.append(result.get("query", ""))
             cache_keys.append(None)
