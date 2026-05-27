@@ -27,6 +27,29 @@ from superset.databases.utils import make_url_safe
 from superset.schemas.base import ApiListResponse, ApiResponse, ModelStruct
 
 # ---------------------------------------------------------------------------
+# Backward-compat key normalization
+# ---------------------------------------------------------------------------
+
+
+def rename_encrypted_extra(data: dict[str, Any]) -> dict[str, Any]:
+    """Rename legacy ``encrypted_extra`` -> ``masked_encrypted_extra``.
+
+    1:1 port of ``superset_old/databases/schemas.py::rename_encrypted_extra``
+    (a Marshmallow ``@pre_load`` hook wired onto the POST / PUT /
+    TestConnection / ValidateParameters schemas).  PR #21248 renamed the
+    field for security reasons; this keeps older API clients working.
+
+    The rename only fires when the canonical ``masked_encrypted_extra`` key
+    is absent so an explicit new-style value is never clobbered.  Mutates and
+    returns ``data`` in place (matching the original).  The value itself is a
+    credential and is never logged here.
+    """
+    if "encrypted_extra" in data and "masked_encrypted_extra" not in data:
+        data["masked_encrypted_extra"] = data.pop("encrypted_extra")
+    return data
+
+
+# ---------------------------------------------------------------------------
 # Request bodies
 # ---------------------------------------------------------------------------
 

@@ -174,9 +174,42 @@ def _update_job(
     }
     payload = {"data": json.dumps(event)}
 
+    # Trim each stream on write via ``maxlen`` (1:1 with the original
+    # ``AsyncQueryManager.update_job`` which passed ``self._stream_limit`` /
+    # ``self._stream_limit_firehose`` to every ``xadd``; the web-process
+    # ``AsyncEventManager`` already does this).  Resolve the same settings the
+    # manager / ``_get_sync_redis`` use; a lookup failure must NOT break status
+    # publishing on this hot worker path, so we fall back to the model defaults
+    # (channel=1000, firehose=1000000).
+    channel_maxlen = 1000
+    firehose_maxlen = 1_000_000
+    try:
+        from superset.config import SupersetSettings
+
+        _settings = SupersetSettings()  # type: ignore[call-arg]
+        channel_maxlen = int(
+            getattr(
+                _settings,
+                "global_async_queries_redis_stream_limit",
+                channel_maxlen,
+            )
+        )
+        firehose_maxlen = int(
+            getattr(
+                _settings,
+                "global_async_queries_redis_stream_limit_firehose",
+                firehose_maxlen,
+            )
+        )
+    except Exception:  # noqa: BLE001 — never break event publishing on config errors
+        logger.debug(
+            "Could not resolve async-query stream limits; using defaults",
+            exc_info=True,
+        )
+
     scoped_stream = f"{stream_prefix}{channel_id}"
-    r.xadd(scoped_stream, payload)
-    r.xadd(global_stream_key, payload)
+    r.xadd(scoped_stream, payload, maxlen=channel_maxlen, approximate=True)
+    r.xadd(global_stream_key, payload, maxlen=firehose_maxlen, approximate=True)
 
     logger.debug("Updated job %s on channel %s: status=%s", job_id, channel_id, status)
 

@@ -63,6 +63,8 @@ class ImportExportController(Controller):
         current_user: UserProtocol,
     ) -> Response[bytes]:
         """GET /api/v1/assets/export/ -- export all assets as ZIP."""
+        from datetime import datetime
+
         from superset.importexport.manager import AsyncFullAssetManager
 
         manager = AsyncFullAssetManager(session)
@@ -70,11 +72,19 @@ class ImportExportController(Controller):
 
         await event_logger.alog_with_context("assets.export", user_id=current_user.id)
 
+        # Serve ``assets_export_<timestamp>.zip`` — 1:1 with the original
+        # ``superset_old/importexport/api.py::export`` (``timestamp =
+        # datetime.now().strftime("%Y%m%dT%H%M%S")``).  The manager already
+        # nests every entry under a matching ``assets_export_<ts>/`` root so the
+        # bundle round-trips through ``remove_root`` on re-import.
+        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        filename = f"assets_export_{timestamp}.zip"
+
         return Response(
             content=content,
             media_type="application/zip",
             headers={
-                "Content-Disposition": "attachment; filename=assets_export.zip",
+                "Content-Disposition": f"attachment; filename={filename}",
             },
         )
 

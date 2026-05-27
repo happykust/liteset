@@ -46,6 +46,15 @@ def test_update_job_writes_both_streams_no_publish():
     assert channel_call.args[0] == "async-events-ch-1"
     assert global_call.args[0] == "async-events-full"
 
+    # Both streams are trimmed on write via ``maxlen``/``approximate`` (1:1 with
+    # the original ``AsyncQueryManager.update_job`` which passed
+    # ``self._stream_limit`` / ``self._stream_limit_firehose``).  Defaults apply
+    # when settings resolution falls back: channel=1000, firehose=1000000.
+    assert channel_call.kwargs.get("approximate") is True
+    assert global_call.kwargs.get("approximate") is True
+    assert channel_call.kwargs.get("maxlen") == 1000
+    assert global_call.kwargs.get("maxlen") == 1_000_000
+
     # The payload carries the id-bearing event data shape under "data".
     payload = channel_call.args[1]
     event = json.loads(payload["data"])

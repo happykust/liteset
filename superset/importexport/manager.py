@@ -196,6 +196,15 @@ class AsyncFullAssetManager:
         Returns the bytes of the archive — the controller streams them
         back to the client with ``Content-Type: application/zip``.
         """
+        # Nest every entry under ``assets_export_<timestamp>/`` — 1:1 with the
+        # original ``superset_old/importexport/api.py::export`` which writes
+        # ``zf.writestr(f"{root}/{file_name}", ...)``.  The importer applies
+        # ``remove_root`` (``parts[1:]``) unconditionally, so a *flat* bundle is
+        # NOT round-trip-importable (the asset-type prefix would be stripped
+        # instead of the root).  The timestamp uses ``datetime.now()`` local
+        # time + the original ``"%Y%m%dT%H%M%S"`` format.
+        root = f"assets_export_{datetime.now().strftime('%Y%m%dT%H%M%S')}"
+
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             metadata = {
@@ -203,9 +212,14 @@ class AsyncFullAssetManager:
                 "type": "assets",
                 "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             }
-            zf.writestr("metadata.yaml", yaml.safe_dump(metadata, sort_keys=False))
+            zf.writestr(
+                f"{root}/metadata.yaml",
+                yaml.safe_dump(metadata, sort_keys=False),
+            )
 
             types_to_export = asset_types or list(_ASSET_TYPES)
+            # De-dupe on the *unprefixed* path so e.g. a database referenced by
+            # both a dashboard and a saved query isn't written twice.
             seen: set[str] = {"metadata.yaml"}
 
             for asset_type in types_to_export:
@@ -217,12 +231,10 @@ class AsyncFullAssetManager:
 
                 for filename, content in items:
                     # Files come back already prefixed (e.g. ``databases/foo.yaml``)
-                    # — the per-resource export commands handle that.  De-dupe
-                    # on the full path so e.g. a database referenced by both a
-                    # dashboard and a saved query isn't written twice.
+                    # — the per-resource export commands handle that.
                     if filename in seen:
                         continue
-                    zf.writestr(filename, content)
+                    zf.writestr(f"{root}/{filename}", content)
                     seen.add(filename)
 
         return buf.getvalue()

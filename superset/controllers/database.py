@@ -28,6 +28,7 @@ from typing import Any, cast, TYPE_CHECKING
 
 import msgspec
 from litestar import Controller, delete, get, post, put
+from litestar.connection import Request
 from litestar.datastructures import UploadFile
 from litestar.di import Provide
 from litestar.enums import RequestEncodingType
@@ -81,6 +82,7 @@ from superset.schemas.database import (
     DatabaseValidateParamsSchema,
     FileMetadataItem,
     FileMetadataResponse,
+    rename_encrypted_extra,
     SchemaAccessForUploadResponse,
     SchemasResponse,
     SelectStarResponse,
@@ -251,6 +253,30 @@ def _build_database_result(db: Any) -> DatabaseDetailResult:
     expanded response matching Superset's original API contract.
     """
     return DatabaseDetailResult.from_model(db, mask_uri=mask_uri_password)
+
+
+async def _decode_connection_body(
+    request: Request[Any, Any, Any], struct_cls: Any
+) -> Any:
+    """Decode a JSON body into ``struct_cls`` with the legacy alias applied.
+
+    The POST / PUT / TestConnection / ValidateParameters request bodies must
+    accept the legacy ``encrypted_extra`` key as an alias for
+    ``masked_encrypted_extra`` (1:1 with the original
+    ``rename_encrypted_extra`` ``@pre_load`` hook).  Litestar's typed-param
+    injection would silently drop the unknown legacy key, so we read the raw
+    body, normalize it, then ``msgspec.convert`` into the target struct (which
+    runs its ``__post_init__`` validation, e.g. URI safety + JSON validity).
+
+    The body value is a credential and is never logged here.  A malformed body
+    surfaces as :class:`msgspec.ValidationError` / :class:`msgspec.DecodeError`,
+    which Litestar maps to a 400 just as typed-param injection would.
+    """
+    raw = await request.body()
+    decoded: Any = msgspec.json.decode(raw) if raw else {}
+    if isinstance(decoded, dict):
+        decoded = rename_encrypted_extra(decoded)
+    return msgspec.convert(decoded, type=struct_cls)
 
 
 # ---------------------------------------------------------------------------
@@ -855,10 +881,16 @@ class DatabaseController(Controller):
     )
     async def create(
         self,
-        data: DatabasePostSchema,
+        request: Request[Any, Any, Any],
         dao: DatabaseDAOProtocol,
         current_user: UserProtocol,
     ) -> DatabaseGetResponse:
+        # Normalize the legacy ``encrypted_extra`` key -> ``masked_encrypted_extra``
+        # before validation (1:1 with the original ``rename_encrypted_extra``
+        # ``@pre_load`` hook) so older API clients keep working.
+        data: DatabasePostSchema = await _decode_connection_body(
+            request, DatabasePostSchema
+        )
         create_data: dict[str, Any] = filter_none(
             {
                 "database_name": data.database_name,
@@ -947,10 +979,16 @@ class DatabaseController(Controller):
     async def update(
         self,
         pk: int,
-        data: DatabasePutSchema,
+        request: Request[Any, Any, Any],
         dao: DatabaseDAOProtocol,
         current_user: UserProtocol,
     ) -> DatabaseGetResponse:
+        # Normalize the legacy ``encrypted_extra`` key -> ``masked_encrypted_extra``
+        # before validation (1:1 with the original ``rename_encrypted_extra``
+        # ``@pre_load`` hook) so older API clients keep working.
+        data: DatabasePutSchema = await _decode_connection_body(
+            request, DatabasePutSchema
+        )
         update_data = filter_unset(
             {
                 "database_name": data.database_name,
@@ -1810,9 +1848,15 @@ class DatabaseController(Controller):
     )
     async def test_connection(
         self,
-        data: DatabaseTestConnectionSchema,
+        request: Request[Any, Any, Any],
         dao: DatabaseDAOProtocol,
     ) -> dict[str, Any]:
+        # Normalize the legacy ``encrypted_extra`` key -> ``masked_encrypted_extra``
+        # before validation (1:1 with the original ``rename_encrypted_extra``
+        # ``@pre_load`` hook) so older API clients keep working.
+        data: DatabaseTestConnectionSchema = await _decode_connection_body(
+            request, DatabaseTestConnectionSchema
+        )
         cmd = DatabaseTestConnectionCommand(
             dao=cast("AsyncDatabaseDAO", dao),
             data={
@@ -2159,8 +2203,14 @@ class DatabaseController(Controller):
     )
     async def validate_parameters(
         self,
-        data: DatabaseValidateParamsSchema,
+        request: Request[Any, Any, Any],
     ) -> dict[str, Any]:
+        # Normalize the legacy ``encrypted_extra`` key -> ``masked_encrypted_extra``
+        # before validation (1:1 with the original ``rename_encrypted_extra``
+        # ``@pre_load`` hook) so older API clients keep working.
+        data: DatabaseValidateParamsSchema = await _decode_connection_body(
+            request, DatabaseValidateParamsSchema
+        )
         cmd = ValidateParametersCommand(
             data={
                 "engine": data.engine,

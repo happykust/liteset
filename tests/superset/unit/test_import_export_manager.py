@@ -94,8 +94,13 @@ async def test_export_creates_valid_zip(manager: AsyncFullAssetManager) -> None:
     assert isinstance(data, bytes)
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         names = zf.namelist()
-        assert "metadata.yaml" in names
-        metadata = yaml.safe_load(zf.read("metadata.yaml"))
+        # Entries are nested under ``assets_export_<ts>/`` so the bundle
+        # round-trips through the importer's unconditional ``remove_root``.
+        assert len(names) == 1
+        meta_name = names[0]
+        assert meta_name.startswith("assets_export_")
+        assert meta_name.endswith("/metadata.yaml")
+        metadata = yaml.safe_load(zf.read(meta_name))
         assert metadata["version"] == "1.0.0"
         assert metadata["type"] == "assets"
         assert "timestamp" in metadata
@@ -118,10 +123,20 @@ async def test_export_writes_per_resource_entries(
     with patch.object(manager, "_export_type", side_effect=fake_export_type):
         data = await manager.export_assets(asset_types=["charts"])
 
+    from superset.commands.importers.v1.utils import remove_root
+
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         names = sorted(zf.namelist())
-        assert names == ["charts/item_1.yaml", "charts/item_2.yaml", "metadata.yaml"]
-        item = yaml.safe_load(zf.read("charts/item_1.yaml"))
+        # Every entry is nested under a single ``assets_export_<ts>/`` root;
+        # after stripping it (as the importer does) the canonical layout is
+        # restored, making the bundle round-trip-importable.
+        roots = {name.split("/", 1)[0] for name in names}
+        assert len(roots) == 1
+        assert next(iter(roots)).startswith("assets_export_")
+        stripped = sorted(remove_root(name) for name in names)
+        assert stripped == ["charts/item_1.yaml", "charts/item_2.yaml", "metadata.yaml"]
+        item_name = next(n for n in names if n.endswith("charts/item_1.yaml"))
+        item = yaml.safe_load(zf.read(item_name))
         assert item == {"id": 1}
 
 
@@ -132,7 +147,11 @@ async def test_export_unknown_asset_type_skipped(
     with patch.object(manager_module, "_REGISTRY", {}):
         data = await manager.export_assets(asset_types=["does_not_exist"])
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        assert zf.namelist() == ["metadata.yaml"]
+        names = zf.namelist()
+        # Only the (nested) metadata entry is written for an unknown type.
+        assert len(names) == 1
+        assert names[0].startswith("assets_export_")
+        assert names[0].endswith("/metadata.yaml")
 
 
 async def test_import_handles_bad_zip(manager: AsyncFullAssetManager) -> None:
