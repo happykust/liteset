@@ -37,8 +37,15 @@ class AsyncExportModelsCommand(AsyncBaseCommand[io.BytesIO]):
 
     _resource_type: str = ""  # Override in subclasses
 
-    def __init__(self, model_ids: list[int]) -> None:
+    def __init__(self, model_ids: list[int], root: str | None = None) -> None:
         self._model_ids = model_ids
+        # Optional root folder under which every ZIP entry is nested. The
+        # original API handlers (e.g.
+        # ``superset_old/datasets/api.py:553-579``) build
+        # ``root = f"{type}_export_{timestamp}"`` and write each entry as
+        # ``f"{root}/{file_name}"``; the importer strips it back off via
+        # ``remove_root`` (``parts[1:]``).
+        self._root = root
 
     async def validate(self) -> None:
         pass
@@ -53,7 +60,10 @@ class AsyncExportModelsCommand(AsyncBaseCommand[io.BytesIO]):
                 "type": self._resource_type,
                 "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             }
-            zf.writestr("metadata.yaml", yaml.safe_dump(metadata, sort_keys=False))
+            zf.writestr(
+                self._with_root("metadata.yaml"),
+                yaml.safe_dump(metadata, sort_keys=False),
+            )
             seen.add("metadata.yaml")
 
             for model_id in self._model_ids:
@@ -68,10 +78,16 @@ class AsyncExportModelsCommand(AsyncBaseCommand[io.BytesIO]):
                     safe_name = re.sub(r'[\x00\\:*?"<>|]', "_", safe_name)
                     # Avoid duplicate entries (e.g. metadata.yaml from each model)
                     if safe_name not in seen:
-                        zf.writestr(safe_name, content)
+                        zf.writestr(self._with_root(safe_name), content)
                         seen.add(safe_name)
         buf.seek(0)
         return buf
+
+    def _with_root(self, file_name: str) -> str:
+        """Prefix ``file_name`` with the export root folder, when set."""
+        if self._root:
+            return f"{self._root}/{file_name}"
+        return file_name
 
     @abstractmethod
     async def _export_single(self, model_id: int) -> list[tuple[str, str]]:

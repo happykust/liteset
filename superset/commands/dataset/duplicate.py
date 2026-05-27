@@ -54,13 +54,13 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         if not getattr(self._source, "sql", None):
             raise CommandInvalidError("Only virtual datasets can be duplicated")
 
-        # Check that the new name doesn't already exist
-        is_unique = await self._dao.validate_uniqueness(
-            database_id=int(self._source.database_id),
-            table_name=self._table_name,
-            schema=getattr(self._source, "schema", None),
-        )
-        if not is_unique:
+        # Check that the new name doesn't already exist. Mirrors
+        # ``superset_old/commands/dataset/duplicate.py:118``: the original
+        # rejects the name if a dataset with that ``table_name`` exists in ANY
+        # database (``DatasetDAO.find_one_or_none(table_name=...)``), not just
+        # the source database/schema.
+        existing = await self._dao.find_one_or_none(table_name=self._table_name)
+        if existing is not None:
             raise CommandInvalidError(
                 f"Dataset with name '{self._table_name}' already exists"
             )
@@ -83,6 +83,15 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         if self._user_id is not None:
             new_dataset.created_by_fk = self._user_id
             new_dataset.changed_by_fk = self._user_id
+            # Mirrors ``superset_old/commands/dataset/duplicate.py:122`` which
+            # passes ``owners=self.populate_owners()`` to ``SqlaTable(...)``;
+            # ``CreateMixin.populate_owners`` defaults to the current user
+            # (``default_to_user=True``) when no owner ids are supplied.
+            from superset.models.security import User
+
+            current_user = await self._dao.session.get(User, self._user_id)
+            if current_user is not None:
+                new_dataset.owners = [current_user]
         self._dao.session.add(new_dataset)
         await self._dao.session.flush()
 

@@ -680,9 +680,16 @@ class DatasetController(Controller):
             object_ref=f"dataset:{dataset.id}",
             user_id=current_user.id,
         )
+        # Mirrors ``superset_old/datasets/api.py:635``:
+        # ``self.response(201, id=new_model.id, result=item)`` where ``item``
+        # is the loaded ``DatasetDuplicateSchema`` (``base_model_id`` +
+        # ``table_name``).
         return DatasetGetResponse(
             id=int(dataset.id),
-            result={"table_name": dataset.table_name},
+            result={
+                "base_model_id": data.base_model_id,
+                "table_name": data.table_name,
+            },
         )
 
     @put(
@@ -739,8 +746,11 @@ class DatasetController(Controller):
             user_id=current_user.id,
         )
         dataset_id = int(dataset.id)
+        # Mirrors ``superset_old/datasets/api.py:1016/1021``:
+        # ``self.response(200, result={"table_id": table.id})`` — no top-level
+        # ``id``. ``ApiResponse`` has ``omit_defaults=True`` so leaving ``id``
+        # unset omits it from the payload.
         return DatasetGetResponse(
-            id=dataset_id,
             result={"table_id": dataset_id},
         )
 
@@ -758,7 +768,18 @@ class DatasetController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
+        # 1:1 with ``superset_old/datasets/api.py:553-579``: build
+        # ``root = f"dataset_export_{timestamp}"`` (timestamp =
+        # ``datetime.now().strftime("%Y%m%dT%H%M%S")``), nest every ZIP entry
+        # under ``f"{root}/{file_name}"``, and name the download
+        # ``f"{root}.zip"``. The importer strips the root back off via
+        # ``remove_root`` (``parts[1:]``) so re-import still works.
+        from datetime import datetime as _datetime
+
+        timestamp = _datetime.now().strftime("%Y%m%dT%H%M%S")
+        root = f"dataset_export_{timestamp}"
         cmd = ExportDatasetsCommand(model_ids=ids, dao=cast("AsyncDatasetDAO", dao))
+        cmd._root = root  # noqa: SLF001
         buf = await cmd.execute()
         await event_logger.alog_with_context(
             "dataset.export", extra={"count": len(ids)}
@@ -767,7 +788,7 @@ class DatasetController(Controller):
             stream_zip(buf),
             status_code=200,
             media_type="application/zip",
-            headers=build_export_headers("datasets_export.zip", token=token),
+            headers=build_export_headers(f"{root}.zip", token=token),
         )
 
     @post(
