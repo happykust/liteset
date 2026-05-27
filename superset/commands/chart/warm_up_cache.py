@@ -141,10 +141,17 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
         import json as _stdlib_json
 
         from sqlalchemy import select as sa_select
+        from sqlalchemy.orm import selectinload
 
         from superset.models.dashboard import Dashboard
 
-        stmt = sa_select(Dashboard).where(Dashboard.id == dashboard_id)
+        # Eager-load ``slices`` — read synchronously just below; a bare select
+        # would trip MissingGreenlet on the async session.
+        stmt = (
+            sa_select(Dashboard)
+            .where(Dashboard.id == dashboard_id)
+            .options(selectinload(Dashboard.slices))
+        )
         dashboard = (await self._dao.session.execute(stmt)).scalars().one_or_none()
         if (
             dashboard is None

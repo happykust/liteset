@@ -108,9 +108,22 @@ class TagController(Controller):
 
     @get("/{pk:int}", guards=[require_permission("can_read", "Tag")])
     async def get_single(self, pk: int, dao: Any) -> dict[str, Any]:
-        from superset.exceptions import ObjectNotFoundError
+        from sqlalchemy.orm import selectinload
 
-        item = await dao.find_by_id(pk)
+        from superset.exceptions import ObjectNotFoundError
+        from superset.models.tags import Tag
+
+        # Eager-load changed_by/created_by so ``_serialize_item`` reads them
+        # without a sync lazy-load (MissingGreenlet) — ``find_by_id`` returns a
+        # bare row (the list endpoint already eager-loads these).
+        results = await dao.find_all(
+            filters=[Tag.id == pk],
+            options=[
+                selectinload(Tag.changed_by),
+                selectinload(Tag.created_by),
+            ],
+        )
+        item = results[0] if results else None
         if item is None:
             raise ObjectNotFoundError("Tag", pk)
         return {

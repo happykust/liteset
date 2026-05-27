@@ -118,7 +118,22 @@ class CssTemplateController(Controller):
         dao: CRUDDAOProtocol,
     ) -> CssTemplateResponseSchema:
         """GET /api/v1/css_template/<pk> — get a single CSS template."""
-        template = await dao.find_by_id(pk)
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.core import CssTemplate
+
+        # Eager-load changed_by/created_by so the response serialization below
+        # reads them without a sync lazy-load (MissingGreenlet) on the async
+        # session — ``find_by_id`` alone returns a bare row (the list endpoint
+        # already eager-loads these).
+        results = await dao.find_all(
+            filters=[CssTemplate.id == pk],
+            options=[
+                selectinload(CssTemplate.changed_by),
+                selectinload(CssTemplate.created_by),
+            ],
+        )
+        template = results[0] if results else None
         if not template:
             raise ObjectNotFoundError("CssTemplate", pk)
         from superset.schemas.css_template import UserRef
