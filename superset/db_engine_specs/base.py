@@ -25,6 +25,7 @@ and other Flask-only helpers are intentionally omitted.
 
 from __future__ import annotations
 
+import functools
 import json as _json
 import logging
 import re
@@ -130,6 +131,28 @@ builtin_time_grains: dict[str | None, str] = {
     TimeGrainConstants.WEEK_ENDING_SATURDAY: _("Week ending Saturday"),
     TimeGrainConstants.WEEK_ENDING_SUNDAY: _("Week ending Sunday"),
 }
+
+
+@functools.lru_cache(maxsize=1)
+def _time_grain_config() -> tuple[dict[str, dict[str, str]], tuple[str, ...]]:
+    """Cached ``(TIME_GRAIN_ADDON_EXPRESSIONS, TIME_GRAIN_DENYLIST)`` from config.
+
+    Mirrors the ``app.config[...]`` reads in the original
+    ``get_time_grain_expressions``. These are static at runtime, so the result
+    is cached to avoid rebuilding ``SupersetSettings`` on every call (this runs
+    per chart query). Falls back to the upstream defaults (``{}`` / ``()``) when
+    settings can't be loaded.
+    """
+    try:
+        from superset.config import SupersetSettings
+
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        return (
+            dict(getattr(settings, "time_grain_addon_expressions", {}) or {}),
+            tuple(getattr(settings, "time_grain_denylist", []) or []),
+        )
+    except Exception:  # noqa: BLE001
+        return {}, ()
 
 
 # ---------------------------------------------------------------------------
@@ -904,7 +927,14 @@ class BaseEngineSpec:  # noqa: PLR0904
 
         :return: All time grain expressions supported by the engine
         """
+        # 1:1 with superset_old/db_engine_specs/base.py:get_time_grain_expressions
+        # — merge any engine-specific addon expressions, then drop denylisted
+        # grains (both config-driven; defaults are empty).
         time_grain_expressions = cls._time_grain_expressions.copy()
+        addon_expressions, denylist = _time_grain_config()
+        time_grain_expressions.update(addon_expressions.get(cls.engine, {}))
+        for key in denylist:
+            time_grain_expressions.pop(key, None)
 
         return dict(
             sorted(

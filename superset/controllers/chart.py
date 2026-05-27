@@ -1771,23 +1771,19 @@ class ChartController(Controller):
 
         ds_ref = {"type": data.datasource.type, "id": data.datasource.id}
 
-        # RLS clauses for SQL preview / samples — both reveal generated
-        # SQL or table contents to the user, so they must respect Row
-        # Level Security to avoid leaking forbidden rows. Original
-        # Superset applies RLS inside ``BaseDatasource.get_query_str_extended``
-        # (preview) and ``get_samples_payload`` (samples).
-        #
-        # ``compose_rls_where_clauses`` returns ``list[ClauseElement]``
-        # (``TextClause`` / ``BooleanClauseList``); we hand those to
-        # ``_build_sql`` (which dialect-compiles them) for the ``query``
-        # path, and dialect-compile them inline below for the ``samples``
-        # raw SELECT — both produce SQL with proper quoting/translation.
+        # RLS clauses for the SQL-preview (``result_type=query``) path — the
+        # generated SQL is shown to the user, so it must respect Row Level
+        # Security. ``compose_rls_where_clauses`` returns ``list[ClauseElement]``
+        # which ``_build_sql`` dialect-compiles for proper quoting/translation.
+        # (``samples`` is NOT handled here — it falls through to the processor's
+        # faithful ``_get_samples`` → ``get_df_payload`` → ``_get_query_result``,
+        # which applies the same RLS as the ``full`` path.)
         from sqlalchemy.sql.elements import ClauseElement
 
         from superset.utils.rls import compose_rls_where_clauses
 
         rls_clauses_for_preview: list[ClauseElement] = []
-        if result_type in ("query", "samples"):
+        if result_type == "query":
             rls_clauses_for_preview = await compose_rls_where_clauses(
                 datasource,
                 user=current_user,
@@ -1816,89 +1812,15 @@ class ChartController(Controller):
                 media_type="application/json",
             )
 
-        if result_type == "samples":
-            # Build a samples query as a full SQLAlchemy AST: ``SELECT *
-            # FROM <tbl> [WHERE <rls>] LIMIT <n>``.  Mirrors the
-            # ``_build_sql`` AST pipeline so RLS clauses
-            # (``ClauseElement`` — ``TextClause`` / ``BooleanClauseList``)
-            # are integrated as native AST nodes and the dialect renders
-            # the entire tree with engine-correct identifier quoting.
-            import sqlalchemy as sa
-            from sqlalchemy import and_
-            from sqlalchemy.sql import literal_column, text as sa_text
-            from sqlalchemy.sql.elements import (
-                ClauseElement as _ClauseElement,
-            )
-
-            row_limit: int = (
-                data.queries[0].row_limit
-                if data.queries and getattr(data.queries[0], "row_limit", None)
-                else 1000
-            ) or 1000
-
-            # FROM clause uses the dataset's native AST node so the
-            # dialect handles quoting (``schema.table`` /
-            # ``"schema"."table"`` / virtual-dataset subquery) — same
-            # shape as ``_build_sql``.
-            from_clause, sample_cte = datasource._build_from_ast()  # noqa: SLF001
-            sample_qry: Any = sa.select(literal_column("*")).select_from(from_clause)
-
-            if rls_clauses_for_preview:
-                rls_elements: list[Any] = []
-                for clause in rls_clauses_for_preview:
-                    if isinstance(clause, str):
-                        stripped = clause.strip()
-                        if not stripped:
-                            continue
-                        clause = sa_text(stripped)
-                    if isinstance(clause, _ClauseElement):
-                        rls_elements.append(clause)
-                if rls_elements:
-                    sample_qry = sample_qry.where(and_(*rls_elements))
-
-            sample_qry = sample_qry.limit(row_limit)
-
-            dialect = datasource.database.get_dialect()
-            sql = str(
-                sample_qry.compile(
-                    dialect=dialect,
-                    compile_kwargs={"literal_binds": True},
-                )
-            )
-            # Hoist any virtual-dataset CTE above the SELECT (matches
-            # ``_build_sql`` behaviour for engines that disallow CTEs in
-            # subqueries).
-            sql = datasource._apply_cte(sql, sample_cte)  # noqa: SLF001
-
-            try:
-                df = await datasource._execute_sql(sql)
-                if not isinstance(df, pd.DataFrame):
-                    df = pd.DataFrame()
-            except Exception:
-                df = pd.DataFrame()
-
-            records = df.to_dict(orient="records")
-            # The original chart-data API serializes every JSON response as
-            # ``{"result": [...]}`` (``_send_chart_response`` JSON branch), and
-            # the frontend reads ``json.result`` — samples must use the same
-            # envelope, not ``{"queries": ...}``.
-            sample_result: dict[str, Any] = {
-                "result": [
-                    {
-                        "data": records,
-                        "colnames": list(df.columns),
-                        "coltypes": [],
-                        "indexnames": list(range(len(records))),
-                        "rowcount": len(records),
-                        "status": "success",
-                    }
-                ],
-            }
-            await event_logger.alog_with_context("chart.data_post")
-            return Response(
-                content=sample_result,
-                media_type="application/json",
-            )
+        # ``result_type=samples`` is NOT special-cased here — it falls through
+        # to the default JSON path, where the processor's ``_get_samples``
+        # (1:1 with ``superset_old/common/query_actions.py:_get_samples``)
+        # clears metrics/orderby/post-processing/time-window, selects every
+        # datasource column, and runs the full ``get_df_payload`` pipeline.
+        # That yields the same rich payload shape as ``full`` (data/colnames/
+        # real coltypes/label_map/applied_filters/…) and applies RLS via
+        # ``_get_query_result`` — unlike the previous inline ``SELECT *`` which
+        # returned a reduced dict with empty ``coltypes``.
 
         # --- result_format: csv / xlsx (early return) ----------------------------
 
