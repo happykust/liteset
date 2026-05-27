@@ -453,14 +453,11 @@ class DatasetDetailResult(ModelStruct):
 
     @classmethod
     def _resolve_select_star(cls, obj: Any) -> str | None:
-        # DEFERRED (low impact — a "View in SQL Lab" preview string): the
-        # ``SqlaTable.select_star`` chain compiles SQL through the engine spec,
-        # but doing so inside this async response path SUSPENDS the asyncpg
-        # greenlet context (sync engine/dialect work bound to the async
-        # session) — even a dialect-only compile hangs (no return, no
-        # exception). Safely populating it needs precomputation in the handler
-        # via ``asyncio.to_thread`` with a SYNC dialect; left as ``None``.
-        return None
+        # 1:1 with ``SqlaTable.select_star`` → ``Database.select_star`` — a
+        # ``SELECT * … LIMIT 100`` preview. The model property guards an
+        # unloaded ``database`` and opens a lazy sync engine (``create_engine``,
+        # no connection) for offline compilation — async-safe.
+        return getattr(obj, "select_star", None)
 
     @classmethod
     def _resolve_rendered_sql(cls, obj: Any) -> None:

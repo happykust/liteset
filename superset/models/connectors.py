@@ -886,33 +886,36 @@ class SqlaTable(
 
     @property
     def select_star(self) -> str | None:
-        """Generate a SELECT * query for this table.
+        """Generate a ``SELECT * … LIMIT 100`` preview for this table.
 
-        Matches original SqlaTable.select_star (line 1331-1338):
-        calls Database.select_star with show_cols=False and
-        latest_partition=False to avoid expensive DB inspection.
+        1:1 with the original ``SqlaTable.select_star`` (line 1331-1338):
+        delegates to ``Database.select_star`` with ``show_cols`` /
+        ``latest_partition`` False to skip the expensive DB inspection.
         """
+        # Guard against an unloaded ``database`` relationship — a sync
+        # lazy-load under asyncpg would raise MissingGreenlet.
         if sa.inspect(self).unloaded.intersection({"database"}):
             return None
         if self.database is None:
             return None
 
-        from superset.db_engine_specs.base import BaseEngineSpec
+        # IMPORTANT: the module-level ``Table`` is ``sqlalchemy.Table`` (an ORM
+        # construct whose 2nd positional arg is ``metadata``); the engine-spec
+        # expects ``superset.sql.parse.Table`` (table / schema / catalog). Using
+        # the wrong one raised ``AttributeError: 'str' object has no attribute
+        # 'schema'`` — silently swallowed → ``select_star`` was always None.
+        from superset.sql.parse import Table as ParsedTable
 
-        table = Table(
+        table = ParsedTable(
             str(self.table_name),
             self.schema or None,
             self.catalog or None,
         )
 
         try:
-            return BaseEngineSpec.select_star(
-                database=self.database,
-                table=table,
-                engine=None,  # Not needed when indent=False
-                limit=100,
+            return self.database.select_star(
+                table,
                 show_cols=False,
-                indent=False,
                 latest_partition=False,
             )
         except Exception:
