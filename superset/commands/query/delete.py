@@ -29,15 +29,40 @@ if TYPE_CHECKING:
 
 
 class DeleteSavedQueryCommand(AsyncBaseCommand[None]):
-    def __init__(self, dao: AsyncSavedQueryDAO, query_id: int) -> None:
+    def __init__(
+        self,
+        dao: AsyncSavedQueryDAO,
+        query_id: int,
+        security_manager: Any | None = None,
+        user: Any | None = None,
+    ) -> None:
         self._dao = dao
         self._query_id = query_id
+        self._security_manager = security_manager
+        self._user = user
         self._query: Any | None = None
 
     async def validate(self) -> None:
         self._query = await self._dao.find_by_id(self._query_id)
         if not self._query:
             raise ObjectNotFoundError("SavedQuery", self._query_id)
+        # Enforce owner-scope (1:1 with the original FAB base_filter, which
+        # applies ``SavedQueryFilter`` to single DELETE by pk → 404 for objects
+        # outside the caller's scope).  See
+        # ``superset_old/queries/saved_queries/api.py::base_filters``.
+        if self._security_manager is not None and self._user is not None:
+            from superset.db.filters import saved_query_access_filters
+            from superset.models.sql_lab import SavedQuery
+
+            base_filters = await saved_query_access_filters(
+                self._security_manager, self._user
+            )
+            if base_filters:
+                accessible = await self._dao.count(
+                    filters=[SavedQuery.id == self._query_id, *base_filters]
+                )
+                if not accessible:
+                    raise ObjectNotFoundError("SavedQuery", self._query_id)
 
     async def run(self) -> None:
         assert self._query is not None
@@ -76,5 +101,8 @@ class BulkDeleteSavedQueriesCommand(AsyncBaseCommand[None]):
 
     async def run(self) -> None:
         for q in self._queries:
+            # Remove implicit tags before deleting (async port of
+            # QueryUpdater.after_delete, which fires per-row on bulk delete too)
+            await delete_tagged_objects(self._dao.session, "query", q.id)
             await self._dao.session.delete(q)
         await self._dao.session.flush()

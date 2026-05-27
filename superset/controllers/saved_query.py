@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import io
+from datetime import datetime
 from typing import Any, cast, TYPE_CHECKING
 
 from litestar import Controller, delete, get, post, put
@@ -412,6 +413,7 @@ class SavedQueryController(Controller):
         pk: int,
         data: SavedQueryPutSchema,
         dao: CRUDDAOProtocol,
+        security_manager: Any,
         current_user: UserProtocol,
     ) -> SavedQueryGetResponse:
         """PUT /api/v1/saved_query/<pk> — update a saved query."""
@@ -432,6 +434,8 @@ class SavedQueryController(Controller):
             query_id=pk,
             data=update_data,
             user_id=current_user.id,
+            security_manager=security_manager,
+            user=current_user,
         )
         query = await cmd.execute()
         await event_logger.alog_with_context(
@@ -449,9 +453,20 @@ class SavedQueryController(Controller):
         guards=[require_permission("can_write", "SavedQuery")],
         status_code=200,
     )
-    async def delete_saved_query(self, pk: int, dao: CRUDDAOProtocol) -> dict[str, str]:
+    async def delete_saved_query(
+        self,
+        pk: int,
+        dao: CRUDDAOProtocol,
+        security_manager: Any,
+        current_user: UserProtocol,
+    ) -> dict[str, str]:
         """DELETE /api/v1/saved_query/<pk> — delete a single saved query."""
-        cmd = DeleteSavedQueryCommand(dao=cast("AsyncSavedQueryDAO", dao), query_id=pk)
+        cmd = DeleteSavedQueryCommand(
+            dao=cast("AsyncSavedQueryDAO", dao),
+            query_id=pk,
+            security_manager=security_manager,
+            user=current_user,
+        )
         await cmd.execute()
         await event_logger.alog_with_context(
             "saved_query.delete", object_ref=f"saved_query:{pk}"
@@ -481,7 +496,13 @@ class SavedQueryController(Controller):
         await event_logger.alog_with_context(
             "saved_query.bulk_delete", extra={"count": len(ids)}
         )
-        return {"message": "OK"}
+        num = len(ids)
+        msg = (
+            f"Deleted {num} saved query"
+            if num == 1
+            else f"Deleted {num} saved queries"
+        )
+        return {"message": msg}
 
     @get(
         "/export/",
@@ -502,16 +523,21 @@ class SavedQueryController(Controller):
         await event_logger.alog_with_context(
             "saved_query.export", extra={"count": len(ids)}
         )
+        # Mirror upstream download name: ``saved_query_export_<timestamp>.zip``
+        # (``superset_old/queries/saved_queries/api.py::export``).
+        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        filename = f"saved_query_export_{timestamp}.zip"
         return Stream(
             stream_zip(buf),
             status_code=200,
             media_type="application/zip",
-            headers=build_export_headers("saved_queries_export.zip", token=token),
+            headers=build_export_headers(filename, token=token),
         )
 
     @post(
         "/import/",
         guards=[require_permission("can_write", "SavedQuery")],
+        status_code=200,
     )
     async def import_queries(
         self,

@@ -65,8 +65,12 @@ class ExportChartsCommand(AsyncExportModelsCommand):
 
     @staticmethod
     def _file_name(model: Any) -> str:
-        slug = secure_filename(model.slice_name or "") or "unnamed"
-        return f"charts/{slug}_{model.id}.yaml"
+        # 1:1 with ``superset_old/utils/file.py::get_filename``: use
+        # ``<slug>_<id>`` when the slug is non-empty, else fall back to
+        # ``<id>`` (NOT ``unnamed_<id>``).
+        slug = secure_filename(model.slice_name or "")
+        file_name = f"{slug}_{model.id}" if slug else str(model.id)
+        return f"charts/{file_name}.yaml"
 
     @staticmethod
     def _file_content(model: Any) -> str:

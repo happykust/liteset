@@ -82,14 +82,19 @@ class CacheController(Controller):
 
     @post(
         "/invalidate",
-        guards=[require_permission("can_write", "CacheKey")],
+        # 1:1 with FAB: ``CacheRestApi`` exposes ``invalidate`` with
+        # ``class_permission_name = "CacheRestApi"`` and no
+        # ``method_permission_name`` override, so the resolved permission is
+        # ``("can_invalidate", "CacheRestApi")``
+        # (``superset_old/cachekeys/api.py:40-52``).
+        guards=[require_permission("can_invalidate", "CacheRestApi")],
         status_code=201,
     )
     async def invalidate(
         self,
         data: CacheInvalidateSchema,
         dao: AsyncCacheKeyDAO,
-    ) -> Response[dict[str, str]]:
+    ) -> Response[None]:
         """POST /api/v1/cachekey/invalidate -- invalidate cache keys.
 
         Takes a list of datasource UIDs (and/or datasource name tuples),
@@ -113,19 +118,15 @@ class CacheController(Controller):
                 datasource_uids.add(uid)
 
         if not datasource_uids:
-            return Response(
-                content={"message": "No matching datasources found"},
-                status_code=201,
-            )
+            # Original falls through to ``self.response(201)`` (empty body).
+            return Response(content=None, status_code=201)
 
         # -- 2. Find matching CacheKey rows ----------------------------
         cache_keys = await dao.find_keys_by_datasource_uids(datasource_uids)
 
         if not cache_keys:
-            return Response(
-                content={"message": "No cache keys found for given datasources"},
-                status_code=201,
-            )
+            # Original falls through to ``self.response(201)`` (empty body).
+            return Response(content=None, status_code=201)
 
         # -- 3. Actively evict keys from cache backend -----------------
         # Mirrors the original Flask ``cache_manager.cache.delete_many(*cache_keys)``
@@ -190,7 +191,5 @@ class CacheController(Controller):
                 "keys_invalidated": len(cache_keys),
             },
         )
-        return Response(
-            content={"message": f"Invalidated {len(cache_keys)} cache entries"},
-            status_code=201,
-        )
+        # 1:1 with the original ``return self.response(201)`` — empty body.
+        return Response(content=None, status_code=201)

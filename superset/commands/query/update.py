@@ -42,16 +42,42 @@ class UpdateSavedQueryCommand(AsyncBaseCommand["SavedQuery"]):
         query_id: int,
         data: dict[str, Any],
         user_id: int | None = None,
+        security_manager: Any | None = None,
+        user: Any | None = None,
     ) -> None:
         self._dao = dao
         self._query_id = query_id
         self._data = data
         self._user_id = user_id
+        self._security_manager = security_manager
+        self._user = user
         self._query: Any | None = None
 
     async def validate(self) -> None:
         self._query = await self._dao.find_by_id(self._query_id)
         if not self._query:
+            raise ObjectNotFoundError("SavedQuery", self._query_id)
+        # Enforce owner-scope (1:1 with the original FAB base_filter, which
+        # applies ``SavedQueryFilter`` to single PUT by pk → 404 for objects
+        # outside the caller's scope).  See
+        # ``superset_old/queries/saved_queries/api.py::base_filters``.
+        await self._assert_in_scope()
+
+    async def _assert_in_scope(self) -> None:
+        if self._security_manager is None or self._user is None:
+            return
+        from superset.db.filters import saved_query_access_filters
+        from superset.models.sql_lab import SavedQuery
+
+        base_filters = await saved_query_access_filters(
+            self._security_manager, self._user
+        )
+        if not base_filters:
+            return
+        accessible = await self._dao.count(
+            filters=[SavedQuery.id == self._query_id, *base_filters]
+        )
+        if not accessible:
             raise ObjectNotFoundError("SavedQuery", self._query_id)
 
     async def run(self) -> "SavedQuery":

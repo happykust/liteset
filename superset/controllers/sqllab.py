@@ -130,8 +130,16 @@ class SqlLabController(Controller):
                     pass
             databases[int(db_row.id)] = db_dict
 
-        tab_state_ids = await tab_state_dao.get_tab_state_ids(current_user.id)
-        active_tab = await tab_state_dao.get_active_tab(current_user.id)
+        # These are unnecessary if sqllab backend persistence is disabled.
+        # Mirrors ``superset_old/sqllab/utils.py::bootstrap_sqllab_data``: tab
+        # states are only loaded when ``SQLLAB_BACKEND_PERSISTENCE`` is enabled.
+        from superset.utils.feature_flags import feature_flag_manager
+
+        tab_state_ids: Any = []
+        active_tab: Any = None
+        if feature_flag_manager.is_feature_enabled("SQLLAB_BACKEND_PERSISTENCE"):
+            tab_state_ids = await tab_state_dao.get_tab_state_ids(current_user.id)
+            active_tab = await tab_state_dao.get_active_tab(current_user.id)
 
         await event_logger.alog_with_context(
             "sqllab.bootstrap", user_id=current_user.id

@@ -40,7 +40,7 @@ from superset.commands.chart.data.get_data_command import ChartDataCommand
 from superset.commands.chart.delete import BulkDeleteChartsCommand, DeleteChartCommand
 from superset.commands.chart.export import ExportChartsCommand
 from superset.commands.chart.fave import AddFavoriteChartCommand
-from superset.commands.chart.importers.v1 import ImportChartsCommand
+from superset.commands.chart.importers.dispatcher import ImportChartsCommand
 from superset.commands.chart.unfave import RemoveFavoriteChartCommand
 from superset.commands.chart.update import UpdateChartCommand
 from superset.commands.chart.warm_up_cache import WarmUpChartCacheCommand
@@ -1156,10 +1156,13 @@ class ChartController(Controller):
         dao: ChartDAOProtocol,
         current_user: UserProtocol,
         rison_params: list[int] | dict[str, Any] | None,
-    ) -> FavoriteStatusResponse:
+    ) -> FavoriteStatusResponse | Response[Any]:
         ids = extract_ids(rison_params)
-        if not ids:
-            return FavoriteStatusResponse()
+        # 1:1 with the original: load charts by id and 404 when none are
+        # found (``superset_old/charts/api.py:912-915``).
+        charts = await dao.find_by_ids(ids) if ids else []
+        if not charts:
+            return Response(content={"message": "Not found"}, status_code=404)
         fav_ids = set(await dao.favorited_ids(ids, current_user.id))
         return FavoriteStatusResponse(
             result=[FavoriteStatusItem(id=i, value=i in fav_ids) for i in ids],
@@ -1420,8 +1423,6 @@ class ChartController(Controller):
         force: str | None = None,
     ) -> dict[str, Any] | Response[Any]:
         """GET /api/v1/chart/{pk}/data/ — fetch data for a specific chart."""
-        from superset.exceptions import SupersetValidationException
-
         # BL-C2: Check GLOBAL_ASYNC_QUERIES feature flag
         settings: SupersetSettings = cast(
             "SupersetSettings", getattr(state, "settings", None)
@@ -1440,17 +1441,27 @@ class ChartController(Controller):
                 if not chart:
                     raise ObjectNotFoundError("Chart", pk)
 
+                # 1:1 with the original ``data`` view: both an empty/missing
+                # ``query_context`` and a JSON parse failure collapse to a
+                # single 400 with the same message
+                # (``superset_old/charts/data/api.py:129-139``).
                 query_context_str = getattr(chart, "query_context", None)
-                if not query_context_str:
-                    raise SupersetValidationException(
-                        "Chart has no query context saved"
+                form_data = None
+                if query_context_str:
+                    try:
+                        form_data = _json.loads(query_context_str)
+                    except (ValueError, TypeError):
+                        form_data = None
+                if form_data is None:
+                    return Response(
+                        content={
+                            "message": (
+                                "Chart has no query context saved. "
+                                "Please save the chart again."
+                            )
+                        },
+                        status_code=400,
                     )
-                try:
-                    form_data = _json.loads(query_context_str)
-                except (ValueError, TypeError) as exc:
-                    raise SupersetValidationException(
-                        "Chart has invalid query context"
-                    ) from exc
 
                 # Channel id MUST come from the request's ``async-token``
                 # cookie (the same claim the polling endpoint and the
@@ -1493,16 +1504,26 @@ class ChartController(Controller):
         if not chart:
             raise ObjectNotFoundError("Chart", pk)
 
+        # 1:1 with the original ``data`` view: both an empty/missing
+        # ``query_context`` and a JSON parse failure collapse to a single 400
+        # with the same message (``superset_old/charts/data/api.py:129-139``).
         query_context_str = getattr(chart, "query_context", None)
-        if not query_context_str:
-            raise SupersetValidationException("Chart has no query context saved")
-
-        try:
-            qc_data = _json.loads(query_context_str)
-        except (ValueError, TypeError) as exc:
-            raise SupersetValidationException(
-                "Chart has invalid query context"
-            ) from exc
+        qc_data = None
+        if query_context_str:
+            try:
+                qc_data = _json.loads(query_context_str)
+            except (ValueError, TypeError):
+                qc_data = None
+        if qc_data is None:
+            return Response(
+                content={
+                    "message": (
+                        "Chart has no query context saved. "
+                        "Please save the chart again."
+                    )
+                },
+                status_code=400,
+            )
 
         # Apply query param overrides
         if format is not None:
@@ -2154,6 +2175,16 @@ class ChartController(Controller):
         if form is None:
             # Original returned ``response_404()`` on ``ChartDataCacheLoadError``.
             raise ObjectNotFoundError("ChartCachedData", cache_key)
+
+        # Set form_data context as a fallback for async queries with jinja
+        # context (1:1 with the original ``g.form_data = cached_data`` —
+        # ``superset_old/charts/data/api.py:308-310``). The
+        # ``_form_data_ctx`` ContextVar exposed by ``set_form_data`` is the
+        # Liteset equivalent of the Flask ``g.form_data`` global.
+        if isinstance(form, dict):
+            from superset.jinja_context import set_form_data
+
+            set_form_data(form)
 
         # 2. Rebuild the query context from the cached form (reuses the worker's
         # helper so the deserialization is identical to the submit path).
