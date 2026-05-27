@@ -49,6 +49,7 @@ from superset.controllers.base import (
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError
 from superset.guards.rbac import require_permission
+from superset.i18n import gettext as _
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_theme_dao
 from superset.schemas.theme import ThemePostSchema, ThemePutSchema
@@ -183,7 +184,15 @@ class ThemeController(Controller):
         await event_logger.alog_with_context(
             "theme.create", object_ref=str(theme.id), user_id=current_user.id
         )
-        return {"id": theme.id, "result": {"id": theme.id}}
+        # Mirror FAB ``post_headless``: ``{"id": <pk>, "result": <add_columns
+        # dump of submitted fields>}`` (add_columns = ["json_data", "theme_name"]).
+        return {
+            "id": theme.id,
+            "result": {
+                "theme_name": data.theme_name,
+                "json_data": data.json_data,
+            },
+        }
 
     # ------------------------------------------------------------------
     # PUT — update theme
@@ -200,15 +209,32 @@ class ThemeController(Controller):
         current_user: UserProtocol,
     ) -> dict[str, Any]:
         """PUT /api/v1/theme/{pk} — update a theme."""
+        from litestar.response import Response
         from msgspec import structs as _structs
 
         payload = filter_unset(_structs.asdict(data))
+        # Mirror superset_old/themes/api.py ``put``:
+        # ``if not request.json: return self.response_400(...)`` — reject an
+        # empty request body (no set fields) with HTTP 400.
+        if not payload:
+            return Response(  # type: ignore[return-value]
+                content={"message": "Request body is required"},
+                status_code=400,
+            )
         cmd = UpdateThemeCommand(dao=dao, pk=pk, data=payload)  # type: ignore[arg-type]
         theme = await cmd.execute()
         await event_logger.alog_with_context(
             "theme.update", object_ref=str(pk), user_id=current_user.id
         )
-        return {"id": theme.id, "result": {"id": theme.id}}
+        # Mirror FAB ``put_headless`` envelope: ``{"result": <edit_columns
+        # dump>}`` (no top-level ``id``). edit_columns = ["json_data",
+        # "theme_name"]; the values reflect the persisted record.
+        return {
+            "result": {
+                "theme_name": theme.theme_name,
+                "json_data": getattr(theme, "json_data", "") or "",
+            },
+        }
 
     # ------------------------------------------------------------------
     # DELETE — delete theme
@@ -230,7 +256,8 @@ class ThemeController(Controller):
         await event_logger.alog_with_context(
             "theme.delete", object_ref=str(pk), user_id=current_user.id
         )
-        return {"message": "OK"}
+        # Mirror superset_old/themes/api.py ``delete``: ngettext with num=1.
+        return {"message": _("Deleted %(num)d theme", num=1)}
 
     # ------------------------------------------------------------------
     # PUT — set system default
@@ -253,7 +280,8 @@ class ThemeController(Controller):
         await event_logger.alog_with_context(
             "theme.set_system_default", object_ref=str(pk), user_id=current_user.id
         )
-        return {"id": theme.id, "result": {"id": theme.id}}
+        # Mirror superset_old/themes/api.py: response(200, id=..., result="success").
+        return {"id": theme.id, "result": "success"}
 
     # ------------------------------------------------------------------
     # DELETE — unset system default
@@ -298,7 +326,15 @@ class ThemeController(Controller):
             extra={"count": count},
             user_id=current_user.id,
         )
-        return {"message": f"Deleted {count} themes"}
+        # Mirror superset_old/themes/api.py ``bulk_delete``: ngettext keyed
+        # on len(item_ids) (singular form for N == 1).
+        num = len(ids)
+        message = (
+            _("Deleted %(num)d theme", num=num)
+            if num == 1
+            else _("Deleted %(num)d themes", num=num)
+        )
+        return {"message": message}
 
     @put(
         "/{pk:int}/set_system_dark",
@@ -320,7 +356,8 @@ class ThemeController(Controller):
             object_ref=str(pk),
             user_id=current_user.id,
         )
-        return {"id": theme.id, "result": {"id": theme.id}}
+        # Mirror superset_old/themes/api.py: response(200, id=..., result="success").
+        return {"id": theme.id, "result": "success"}
 
     @delete(
         "/unset_system_dark",

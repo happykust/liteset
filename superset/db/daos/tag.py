@@ -65,7 +65,9 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         from superset.models.tags import ObjectType
 
         obj_type = ObjectType[object_type]
-        for name in tag_names:
+        # striping and de-dupping (mirrors superset_old/daos/tag.py)
+        clean_tag_names: set[str] = {tag.strip() for tag in tag_names}
+        for name in clean_tag_names:
             tag = await self.get_by_name(name, "custom")
             tag_id: int = tag.id  # type: ignore[assignment]
             existing = await self._find_tagged_object(obj_type.name, object_id, tag_id)

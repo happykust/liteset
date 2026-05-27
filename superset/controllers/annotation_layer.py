@@ -39,6 +39,7 @@ from superset.controllers.base import (
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError
 from superset.guards.rbac import require_permission
+from superset.i18n import gettext as _
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_annotation_layer_dao
 from superset.schemas.annotation import (
@@ -241,7 +242,13 @@ class AnnotationLayerController(Controller):
         await event_logger.alog_with_context(
             "annotation_layer.bulk_delete", extra={"count": len(ids)}
         )
-        return {"message": "OK"}
+        num = len(ids)
+        message = (
+            _("Deleted %(num)d annotation layer", num=num)
+            if num == 1
+            else _("Deleted %(num)d annotation layers", num=num)
+        )
+        return {"message": message}
 
     @get(
         "/_info",

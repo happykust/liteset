@@ -39,6 +39,7 @@ from superset.controllers.base import (
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError
 from superset.guards.rbac import require_permission
+from superset.i18n import gettext as _
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_css_template_dao
 from superset.schemas.css_template import (
@@ -159,8 +160,12 @@ class CssTemplateController(Controller):
         data: CssTemplatePostSchema,
         dao: CRUDDAOProtocol,
         current_user: UserProtocol,
-    ) -> CssTemplateResponseSchema:
-        """POST /api/v1/css_template/ — create a CSS template."""
+    ) -> dict[str, Any]:
+        """POST /api/v1/css_template/ — create a CSS template.
+
+        Mirrors FAB ``post_headless`` envelope:
+        ``{"id": <pk>, "result": <add_columns dump of submitted fields>}``.
+        """
         cmd = CreateCssTemplateCommand(
             dao=dao,
             data={
@@ -174,13 +179,13 @@ class CssTemplateController(Controller):
             object_ref=f"css_template:{template.id}",
             user_id=current_user.id,
         )
-        return CssTemplateResponseSchema(
-            id=template.id,
-            template_name=template.template_name,
-            css=template.css,
-            created_on=str(getattr(template, "created_on", "")),
-            changed_on=str(getattr(template, "changed_on", "")),
-        )
+        return {
+            "id": template.id,
+            "result": {
+                "template_name": data.template_name,
+                "css": data.css,
+            },
+        }
 
     @put(
         "/{pk:int}",
@@ -192,8 +197,15 @@ class CssTemplateController(Controller):
         data: CssTemplatePutSchema,
         dao: CRUDDAOProtocol,
         current_user: UserProtocol,
-    ) -> CssTemplateResponseSchema:
-        """PUT /api/v1/css_template/<pk> — update a CSS template."""
+    ) -> dict[str, Any]:
+        """PUT /api/v1/css_template/<pk> — update a CSS template.
+
+        Mirrors FAB ``put_headless`` envelope: ``{"result": <edit_columns
+        dump of the merged item>}`` (no top-level ``id``). FAB merges the
+        submitted fields onto the existing record (PATCH semantics) and
+        dumps the full ``edit_columns`` set, so the result reflects the
+        persisted values for every editable column.
+        """
         update_data = filter_unset(
             {
                 "template_name": data.template_name,
@@ -207,13 +219,12 @@ class CssTemplateController(Controller):
             object_ref=f"css_template:{pk}",
             user_id=current_user.id,
         )
-        return CssTemplateResponseSchema(
-            id=template.id,
-            template_name=template.template_name,
-            css=template.css,
-            created_on=str(getattr(template, "created_on", "")),
-            changed_on=str(getattr(template, "changed_on", "")),
-        )
+        return {
+            "result": {
+                "template_name": template.template_name,
+                "css": template.css,
+            },
+        }
 
     @delete(
         "/{pk:int}",
@@ -250,7 +261,13 @@ class CssTemplateController(Controller):
         await event_logger.alog_with_context(
             "css_template.bulk_delete", extra={"count": len(ids)}
         )
-        return {"message": "OK"}
+        num = len(ids)
+        message = (
+            _("Deleted %(num)d css template", num=num)
+            if num == 1
+            else _("Deleted %(num)d css templates", num=num)
+        )
+        return {"message": message}
 
     @get(
         "/_info",

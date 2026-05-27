@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from litestar import Controller, get
 from litestar.datastructures import State
 
@@ -32,7 +34,13 @@ class AvailableDomainsController(Controller):
         "/",
         guards=[require_permission("can_read", "AvailableDomains")],
     )
-    async def get_available_domains(self, state: State) -> dict[str, list[str]]:
-        """GET /api/v1/available_domains/ — return allowed domains from config."""
-        domains: list[str] = getattr(state.settings, "superset_webserver_domains", [])
-        return {"result": domains}
+    async def get_available_domains(self, state: State) -> dict[str, dict[str, Any]]:
+        """GET /api/v1/available_domains/ — return allowed domains from config.
+
+        Mirrors superset_old/available_domains/api.py ``get`` which dumps
+        ``AvailableDomainsSchema().dump({"domains": SUPERSET_WEBSERVER_DOMAINS})``
+        → ``{"result": {"domains": [...] | null}}``. The value is passed
+        through verbatim (``None`` when unset).
+        """
+        domains = getattr(state.settings, "superset_webserver_domains", None)
+        return {"result": {"domains": domains}}

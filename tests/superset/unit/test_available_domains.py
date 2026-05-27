@@ -30,20 +30,28 @@ _get = AvailableDomainsController.get_available_domains.fn
 
 @pytest.mark.asyncio
 async def test_returns_domains_from_settings() -> None:
-    """Controller returns the superset_webserver_domains from state settings."""
+    """Controller returns the superset_webserver_domains from state settings.
+
+    Matches the original ``AvailableDomainsSchema().dump`` envelope:
+    ``{"result": {"domains": [...]}}``.
+    """
     state = MagicMock()
     state.settings.superset_webserver_domains = ["example.com", "test.com"]
     result = await _get(self=None, state=state)  # type: ignore[arg-type]
-    assert result == {"result": ["example.com", "test.com"]}
+    assert result == {"result": {"domains": ["example.com", "test.com"]}}
 
 
 @pytest.mark.asyncio
-async def test_returns_empty_list_when_no_domains() -> None:
-    """Returns empty list when domains not configured."""
+async def test_returns_none_when_no_domains() -> None:
+    """Passes ``None`` through verbatim when domains not configured.
+
+    The original dumps ``{"domains": SUPERSET_WEBSERVER_DOMAINS}`` where the
+    config default is ``None``; marshmallow keeps the ``None`` value.
+    """
     state = MagicMock()
     state.settings = MagicMock(spec=[])  # no superset_webserver_domains attr
     result = await _get(self=None, state=state)  # type: ignore[arg-type]
-    assert result == {"result": []}
+    assert result == {"result": {"domains": None}}
 
 
 def test_controller_path() -> None:

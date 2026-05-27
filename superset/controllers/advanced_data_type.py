@@ -23,10 +23,12 @@ from typing import Any
 from litestar import Controller, get, post
 from litestar.datastructures import State
 from litestar.di import Provide
+from litestar.response import Response
 
 from superset.advanced_data_type.types import AdvancedDataType
 from superset.exceptions import SupersetValidationException
 from superset.guards.rbac import require_permission
+from superset.i18n import gettext as _
 from superset.params.rison import provide_rison_query
 from superset.schemas.advanced_data_type import (
     AdvancedDataTypeConvertRequest,
@@ -89,13 +91,21 @@ class AdvancedDataTypeController(Controller):
         self,
         data: AdvancedDataTypeConvertRequest,
         state: State,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | Response[dict[str, Any]]:
         """POST /api/v1/advanced_data_type/convert -- convert values."""
         registry = _get_registry(state)
         handler = registry.get(data.type)
         if handler is None:
-            raise SupersetValidationException(
-                f"Unknown advanced data type: {data.type}"
+            # Mirror superset_old/advanced_data_type/api.py ``get``:
+            # HTTP 400 "Invalid advanced data type: <type>".
+            return Response(
+                content={
+                    "message": _(
+                        "Invalid advanced data type: %(advanced_data_type)s",
+                        advanced_data_type=data.type,
+                    )
+                },
+                status_code=400,
             )
         result = _invoke_handler(handler, data.type, data.values)
         return {"result": result}
@@ -105,7 +115,7 @@ class AdvancedDataTypeController(Controller):
         self,
         rison_params: dict[str, Any] | None,
         state: State,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | Response[dict[str, Any]]:
         """GET /api/v1/advanced_data_type/convert -- convert via RISON params.
 
         Accepts ``type`` and ``values`` from the Rison query parameter,
@@ -123,6 +133,16 @@ class AdvancedDataTypeController(Controller):
         registry = _get_registry(state)
         handler = registry.get(adv_type)
         if handler is None:
-            raise SupersetValidationException(f"Unknown advanced data type: {adv_type}")
+            # Mirror superset_old/advanced_data_type/api.py ``get``:
+            # HTTP 400 "Invalid advanced data type: <type>".
+            return Response(
+                content={
+                    "message": _(
+                        "Invalid advanced data type: %(advanced_data_type)s",
+                        advanced_data_type=adv_type,
+                    )
+                },
+                status_code=400,
+            )
         result = _invoke_handler(handler, adv_type, values)
         return {"result": result}

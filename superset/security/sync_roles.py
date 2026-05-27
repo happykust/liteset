@@ -358,6 +358,7 @@ _STANDARD_VIEW_PERMISSIONS: list[tuple[str, str]] = [
     ("can_write", "DynamicPlugin"),
     ("can_read", "Theme"),
     ("can_write", "Theme"),
+    ("can_export", "Theme"),
     ("can_read", "Row Level Security"),
     ("can_write", "Row Level Security"),
     # SQL Lab

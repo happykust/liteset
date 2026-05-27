@@ -69,13 +69,21 @@ async def test_convert_success() -> None:
 
 @pytest.mark.asyncio
 async def test_convert_unknown_type() -> None:
+    """Unknown type returns HTTP 400 "Invalid advanced data type: <type>".
+
+    Mirrors superset_old/advanced_data_type/api.py ``get`` which returns
+    ``self.response(400, message="Invalid advanced data type: ...")``.
+    """
     state = _make_state_with_registry()
     request_data = AdvancedDataTypeConvertRequest(
         type="unknown_type",
         values=["test"],
     )
-    with pytest.raises(SupersetValidationException, match="Unknown"):
-        await _convert(self=None, data=request_data, state=state)  # type: ignore[arg-type]
+    response = await _convert(self=None, data=request_data, state=state)  # type: ignore[arg-type]
+    assert response.status_code == 400
+    assert response.content == {
+        "message": "Invalid advanced data type: unknown_type"
+    }
 
 
 @pytest.mark.asyncio
