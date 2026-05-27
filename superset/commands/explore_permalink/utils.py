@@ -55,7 +55,24 @@ async def check_dataset_access(
     if not dataset_id:
         raise ObjectNotFoundError("Dataset", dataset_id)
 
-    dataset = await dataset_dao.find_by_id(dataset_id)
+    # Eager-load ``owners`` + ``database`` so ``can_access_datasource`` can read
+    # the M2M ownership and the schema-access ``database`` relationship without
+    # triggering a sync lazy-load on the async session — those accesses raised
+    # ``MissingGreenlet`` for any user lacking ``all_datasource_access`` (the
+    # ``all_datasource_access`` fast-path returns before touching them, which is
+    # why it only surfaced for non-privileged users).  Mirrors the chart path
+    # below which already eager-loads ``Slice.owners``.
+    from sqlalchemy.orm import selectinload
+
+    from superset.models.connectors import SqlaTable
+
+    if hasattr(dataset_dao, "find_by_id_with_options"):
+        dataset = await dataset_dao.find_by_id_with_options(
+            dataset_id,
+            [selectinload(SqlaTable.owners), selectinload(SqlaTable.database)],
+        )
+    else:
+        dataset = await dataset_dao.find_by_id(dataset_id)
     if dataset is None:
         raise ObjectNotFoundError("Dataset", dataset_id)
 
