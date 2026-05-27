@@ -653,6 +653,18 @@ class AsyncQueryContextProcessor:
                 df = result.get("df", pd.DataFrame())
                 query_str = result.get("query", "")
 
+                # Surface a failed query (SQL error, "Empty query?", etc.) as a
+                # failed payload — caught below → status="failed" + error, which
+                # the command turns into a 400. 1:1 with the original where a
+                # ``QueryStatus.FAILED`` result propagates the error_message
+                # (otherwise an errored query silently returned 200 + empty df).
+                if result.get("status") in ("error", "failed") or result.get(
+                    "error_message"
+                ):
+                    raise QueryObjectValidationError(
+                        result.get("error_message") or "Query failed"
+                    )
+
                 # Process time comparison offsets before post-processing so
                 # that shifted metric columns (e.g. ``Births__28 days ago``)
                 # exist when post-processing operations like ``pivot`` look
@@ -959,10 +971,18 @@ class AsyncQueryContextProcessor:
         applied_filter_columns: list[Any] = []
         rejected_filter_columns: list[Any] = []
         applied_template_filters: list[str] = []
+        # Carry the query-execution status/error through so ``get_df_payload``
+        # can surface a failed query (e.g. SQL error, "Empty query?") instead
+        # of silently returning an empty success — 1:1 with the original where
+        # ``datasource.query`` returns ``QueryStatus.FAILED`` + error_message.
+        query_status: Any = "success"
+        query_error: str | None = None
 
         if hasattr(result, "df"):
             df = result.df
             query_str = getattr(result, "query", "")
+            query_status = getattr(result, "status", "success") or "success"
+            query_error = getattr(result, "error_message", None)
             applied_filter_columns = list(
                 getattr(result, "applied_filter_columns", []) or []
             )
@@ -975,6 +995,8 @@ class AsyncQueryContextProcessor:
         elif isinstance(result, dict):
             df = result.get("df", pd.DataFrame())
             query_str = result.get("query", "")
+            query_status = result.get("status", "success") or "success"
+            query_error = result.get("error_message")
             applied_filter_columns = list(
                 result.get("applied_filter_columns", []) or []
             )
@@ -1001,6 +1023,8 @@ class AsyncQueryContextProcessor:
         return {
             "df": df,
             "query": query_str,
+            "status": query_status,
+            "error_message": query_error,
             "applied_filter_columns": applied_filter_columns,
             "rejected_filter_columns": rejected_filter_columns,
             "applied_template_filters": applied_template_filters,

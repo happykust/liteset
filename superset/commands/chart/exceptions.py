@@ -45,14 +45,20 @@ class ChartDataQueryFailedError(CommandException):
     """A query inside the chart-data payload failed.
 
     1:1 port of ``superset_old.commands.chart.exceptions.ChartDataQueryFailedError``.
+    Maps to HTTP 400 like the original ``_get_data_response`` (``response_400``).
     """
+
+    status_code = 400
 
 
 class ChartDataCacheLoadError(CommandException):
     """Failed to (re)load chart data from cache.
 
     1:1 port of ``superset_old.commands.chart.exceptions.ChartDataCacheLoadError``.
+    Maps to HTTP 422 like the original ``_get_data_response`` (``response_422``).
     """
+
+    status_code = 422
 
 
 class ChartDeleteFailedReportsExistError(CommandInvalidError):
