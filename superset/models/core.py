@@ -25,6 +25,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import textwrap
 from copy import deepcopy
 from datetime import datetime
 from functools import lru_cache
@@ -159,7 +160,22 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     allow_cvas = Column(Boolean, default=False)
     allow_dml = Column(Boolean, default=False)
     force_ctas_schema = Column(String(250))
-    extra = Column(Text, default="{}")
+    # 1:1 with superset_old/models/core.py: Database.extra defaults to the
+    # full JSON template (not "{}"), so new databases expose the expected
+    # metadata_params/engine_params/metadata_cache_timeout/schemas_allowed keys.
+    extra = Column(
+        Text,
+        default=textwrap.dedent(
+            """\
+    {
+        "metadata_params": {},
+        "engine_params": {},
+        "metadata_cache_timeout": {},
+        "schemas_allowed_for_file_upload": []
+    }
+    """
+        ),
+    )
     encrypted_extra = Column(encrypted_field_factory.create(Text), nullable=True)
     impersonate_user = Column(Boolean, default=False)
     server_cert = Column(encrypted_field_factory.create(Text), nullable=True)

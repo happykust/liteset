@@ -746,7 +746,9 @@ class SqlaTable(
     sql = Column(MediumText())
     is_sqllab_view = Column(Boolean, default=False)
     template_params = Column(Text)
-    extra = Column(Text, default="{}")
+    # 1:1 with superset_old/connectors/sqla/models.py: SqlaTable.extra has no
+    # Python default (stays NULL), unlike Database.extra which has a template.
+    extra = Column(Text)
     normalize_columns = Column(Boolean, default=False)
     always_filter_main_dttm = Column(Boolean, default=False)
     folders = Column(JSON, nullable=True)
