@@ -38,17 +38,21 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         return list(result.scalars().all())
 
     async def get_by_name(self, name: str, type_name: str = "custom") -> Tag:
-        """Get tag by name, creating it if it doesn't exist."""
+        """Get tag by name, creating it if it doesn't exist.
+
+        1:1 with the original ``TagDAO.get_by_name``
+        (superset_old/daos/tag.py:113-126), which on a cache miss delegates
+        to ``superset.tags.models.get_tag`` — the savepoint-protected
+        fetch-or-create. Reuse the async port at
+        ``superset.tags.core.get_tag`` so a concurrent identical-name insert
+        only rolls back the SAVEPOINT instead of poisoning the outer
+        transaction with a UniqueViolation.
+        """
         from superset.models.tags import TagType
+        from superset.tags.core import get_tag
 
         tag_type = TagType[type_name] if isinstance(type_name, str) else type_name
-        tag = await self.find_one_or_none(name=name, type=tag_type)
-        if tag:
-            return tag
-        tag = Tag(name=name, type=tag_type)
-        self.session.add(tag)
-        await self.session.flush()
-        return tag
+        return await get_tag(name, self.session, tag_type)
 
     async def create_custom_tagged_objects(
         self,
@@ -109,16 +113,27 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         object_id: int,
         tag_name: str,
     ) -> None:
-        """Delete a tagged object by tag name."""
-        tag = await self.find_by_name(tag_name)
+        """Delete a tagged object by tag name.
+
+        1:1 with the original validation flow of
+        ``DeleteTaggedObjectCommand`` (superset_old/commands/tag/delete.py)
+        + ``TagRestApi.delete_object`` (superset_old/tags/api.py:459-467):
+        a missing tag (``TagNotFoundError``) or a missing tagged-object link
+        (``TaggedObjectNotFoundError``) surfaces as **404**, not a silent
+        no-op. The original ``TagDAO.delete_tagged_object`` raises
+        ``NoResultFound`` for both cases.
+        """
+        from superset.exceptions import ObjectNotFoundError
+
+        tag = await self.find_by_name(tag_name.strip())
         if not tag:
-            return
-        stmt = delete(TaggedObject).where(
-            TaggedObject.tag_id == tag.id,
-            TaggedObject.object_type == object_type,
-            TaggedObject.object_id == object_id,
+            raise ObjectNotFoundError("Tag", tag_name)
+        tagged_object = await self._find_tagged_object(
+            object_type, object_id, tag.id
         )
-        await self.session.execute(stmt)
+        if tagged_object is None:
+            raise ObjectNotFoundError("TaggedObject", tag_name)
+        await self.session.delete(tagged_object)
         await self.session.flush()
 
     async def delete_tags(self, tag_names: list[str]) -> None:

@@ -353,9 +353,9 @@ class TagController(Controller):
         except ValueError as exc:
             from superset.exceptions import SupersetValidationException
 
-            raise SupersetValidationException(
-                f"Invalid object type: {object_type}"
-            ) from exc
+            # 1:1 with superset_old/tags/api.py:407-408 — a TagInvalidError
+            # surfaces as 422 with the "Invalid tag" message.
+            raise SupersetValidationException("Invalid tag") from exc
 
         await dao.create_custom_tagged_objects(
             object_type=obj_type.name,
@@ -393,9 +393,11 @@ class TagController(Controller):
         except ValueError as exc:
             from superset.exceptions import SupersetValidationException
 
-            raise SupersetValidationException(
-                f"Invalid object type: {object_type}"
-            ) from exc
+            # 1:1 with superset_old/tags/api.py:462-463 — an invalid tag /
+            # object type maps to TagInvalidError → 422. A missing tag or
+            # tagged-object link instead raises ObjectNotFoundError (404)
+            # from dao.delete_tagged_object below.
+            raise SupersetValidationException("Invalid tag") from exc
 
         await dao.delete_tagged_object(
             object_type=obj_type.name,

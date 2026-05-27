@@ -215,11 +215,15 @@ class ExploreFormDataController(Controller):
                 "value": data.form_data,
             }
         )
+        # Thread the current user id into ``created_by_fk`` — 1:1 with the
+        # original CreateFormDataCommand, which writes ``get_user_id()`` via
+        # KeyValueDAO.create_entry (superset_old/daos/key_value.py:99).
         await kv_dao.set_value(
             resource=self.resource,
             resource_id=0,
             key=key,
             value=envelope,
+            user_id=current_user.id,  # type: ignore[call-arg]
         )
         await event_logger.alog_with_context(
             "explore_form_data.create",
@@ -292,11 +296,15 @@ class ExploreFormDataController(Controller):
                 "value": data.form_data,
             }
         )
+        # Thread the current user id into ``changed_by_fk`` — 1:1 with the
+        # original UpdateFormDataCommand, which writes ``get_user_id()`` via
+        # KeyValueDAO.upsert_entry (superset_old/daos/key_value.py:125).
         await kv_dao.set_value(
             resource=self.resource,
             resource_id=0,
             key=key,
             value=envelope,
+            user_id=current_user.id,  # type: ignore[call-arg]
         )
         await event_logger.alog_with_context(
             "explore_form_data.update",

@@ -149,11 +149,15 @@ class ExplorePermalinkController(Controller):
             "state": state,
         }
 
-        # Create entry with auto-generated integer id
+        # Create entry with auto-generated integer id. Thread the current
+        # user id into ``created_by_fk`` (1:1 with the original
+        # CreateExplorePermalinkCommand, which writes ``get_user_id()`` via
+        # KeyValueDAO.create_entry — superset_old/daos/key_value.py:99).
         dao = AsyncKeyValueDAO(session)
         entry = await dao.create_entry(
             resource=KeyValueResource.EXPLORE_PERMALINK.value,
             value=json.dumps(payload).encode("utf-8"),
+            user_id=current_user.id,
         )
         await session.flush()
         entry_id = entry.id

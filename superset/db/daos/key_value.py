@@ -55,6 +55,7 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         value: bytes,
         key: Key | None = None,
         expires_on: datetime | None = None,
+        user_id: int | None = None,
     ) -> KeyValueEntry:
         """Create a new key-value entry.
 
@@ -62,11 +63,16 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         superset_old/daos/key_value.py:84-111 — key is optional and may
         be ``int`` (becomes entry.id) or ``UUID`` (becomes entry.uuid).
         When key is None, the DB generates an auto-increment ``id``.
+
+        ``user_id`` populates ``created_by_fk`` (1:1 with the original,
+        which uses ``get_user_id()``). It is optional and defaults to
+        ``None`` to keep the signature backward-compatible.
         """
         entry = KeyValueEntry(
             resource=resource,
             value=value,
             created_on=datetime.now(),
+            created_by_fk=user_id,
             expires_on=expires_on,
         )
         if key is not None:
@@ -131,11 +137,18 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         entry_id: int,
         value: bytes,
         expires_on: datetime | None = None,
+        user_id: int | None = None,
     ) -> KeyValueEntry:
         """Update entry if exists, otherwise create.
 
         Uses SELECT FOR UPDATE to prevent TOCTOU race conditions
         under concurrent access within the same transaction isolation.
+
+        On update we populate ``changed_on`` / ``changed_by_fk`` and on
+        insert we thread ``user_id`` into ``created_by_fk`` — 1:1 with
+        the original KeyValueDAO.upsert_entry at
+        superset_old/daos/key_value.py:113-128 (which sets ``changed_on``
+        + ``changed_by_fk`` via ``get_user_id()`` on the update path).
         """
         stmt = (
             select(KeyValueEntry)
@@ -153,9 +166,13 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
                 {
                     "value": value,
                     "expires_on": expires_on,
+                    "changed_on": datetime.now(),
+                    "changed_by_fk": user_id,
                 },
             )
-        return await self.create_entry(resource, value, expires_on=expires_on)
+        return await self.create_entry(
+            resource, value, expires_on=expires_on, user_id=user_id
+        )
 
     async def delete_entry(
         self,
@@ -199,12 +216,19 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         resource_id: int,
         key: str,
         value: str,
+        user_id: int | None = None,
     ) -> None:
         """Store a string value keyed by resource name + UUID key.
 
         Raises ValueError if ``key`` is not a valid UUID; callers that
         accept arbitrary string keys must coerce them upstream (see
         the permalink/filter-state commands).
+
+        ``user_id`` (optional, default ``None`` for backward compat)
+        populates the audit columns: ``created_by_fk`` + ``created_on``
+        on insert and ``changed_by_fk`` + ``changed_on`` on update,
+        1:1 with the original KeyValueDAO.create_entry / upsert_entry
+        which thread ``get_user_id()`` into those columns.
         """
         key_uuid = self._coerce_uuid(key)
         if key_uuid is None:
@@ -225,11 +249,15 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         existing = result.scalars().one_or_none()
         if existing:
             existing.value = value.encode("utf-8")  # type: ignore[assignment]
+            existing.changed_on = datetime.now()  # type: ignore[assignment]
+            existing.changed_by_fk = user_id  # type: ignore[assignment]
         else:
             entry = KeyValueEntry(
                 resource=resource,
                 uuid=key_uuid,
                 value=value.encode("utf-8"),
+                created_on=datetime.now(),
+                created_by_fk=user_id,
             )
             self.session.add(entry)
         await self.session.flush()
