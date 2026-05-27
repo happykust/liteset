@@ -1661,6 +1661,10 @@ class AsyncSecurityManager:
         if not slices:
             return True
         for slc in slices:
+            # ``Slice.datasource`` proxies the ``table`` relationship; pre-load
+            # it so the sync access read doesn't trip a MissingGreenlet when the
+            # dashboard was fetched without eager-loading slice datasources.
+            await self._ensure_relationship_loaded(slc, "table")
             datasource = getattr(slc, "datasource", None)
             if datasource and await self.can_access_datasource(datasource, user=user):
                 return True

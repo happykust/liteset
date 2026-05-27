@@ -137,7 +137,7 @@ def _parse_import_upload(filename: str, contents: bytes) -> tuple[dict[str, str]
 # ---------------------------------------------------------------------------
 # Custom RISON filters for dashboards
 # ---------------------------------------------------------------------------
-def _dashboard_custom_filters(current_user: Any) -> dict[str, Any]:
+def _dashboard_custom_filters(current_user: Any) -> dict[str, Any]:  # noqa: C901
     def _dashboard_is_favorite(model_cls: Any, value: Any) -> Any:
         from sqlalchemy import select as sa_select
 
@@ -1496,13 +1496,17 @@ class DashboardController(Controller):
         pk: int,
         dao: DashboardDAOProtocol,
         current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
-        # 1:1 with original: route through AddFavoriteDashboardCommand which calls
-        # DashboardDAO.get_by_id_or_slug (access-checked) before favoriting.
+        # 1:1 with original: AddFavoriteDashboardCommand loads via the
+        # access-aware path and denies (403) when the user cannot access the
+        # dashboard — enforced here via ``can_access_dashboard``.
         cmd = AddFavoriteDashboardCommand(
             dao=cast("AsyncDashboardDAO", dao),
             dashboard_id=pk,
             user_id=current_user.id,
+            security_manager=security_manager,
+            user=current_user,
         )
         await cmd.execute()
         await event_logger.alog_with_context(
@@ -1525,13 +1529,16 @@ class DashboardController(Controller):
         pk: int,
         dao: DashboardDAOProtocol,
         current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
-        # 1:1 with original: route through RemoveFavoriteDashboardCommand which calls
-        # DashboardDAO.get_by_id_or_slug (access-checked) before unfavoriting.
+        # 1:1 with original: RemoveFavoriteDashboardCommand enforces dashboard
+        # access (403) before unfavoriting via ``can_access_dashboard``.
         cmd = RemoveFavoriteDashboardCommand(
             dao=cast("AsyncDashboardDAO", dao),
             dashboard_id=pk,
             user_id=current_user.id,
+            security_manager=security_manager,
+            user=current_user,
         )
         await cmd.execute()
         await event_logger.alog_with_context(

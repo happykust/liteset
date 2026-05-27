@@ -19,9 +19,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
+from superset.commands.dashboard.exceptions import DashboardAccessDeniedError
 from superset.exceptions import ObjectNotFoundError
 
 if TYPE_CHECKING:
@@ -31,9 +32,9 @@ if TYPE_CHECKING:
 class RemoveFavoriteDashboardCommand(AsyncBaseCommand[None]):
     """Remove a dashboard from a user's favorites.
 
-    Ported 1:1 from superset_old/commands/dashboard/unfave.py.
-    The original validates dashboard existence, then delegates
-    to DashboardDAO.remove_favorite.
+    Ported 1:1 from superset_old/commands/dashboard/unfave.py: the original
+    loads via the access-aware ``DashboardDAO.get_by_id_or_slug``. The async
+    port reproduces that access check explicitly via ``can_access_dashboard``.
     """
 
     def __init__(
@@ -41,15 +42,24 @@ class RemoveFavoriteDashboardCommand(AsyncBaseCommand[None]):
         dao: AsyncDashboardDAO,
         dashboard_id: int,
         user_id: int,
+        security_manager: Any | None = None,
+        user: Any | None = None,
     ) -> None:
         self._dao = dao
         self._dashboard_id = dashboard_id
         self._user_id = user_id
+        self._security_manager = security_manager
+        self._user = user
 
     async def validate(self) -> None:
-        dashboard = await self._dao.get_by_id_or_slug(self._dashboard_id)
+        dashboard = await self._dao.get_full_by_id_or_slug(self._dashboard_id)
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", self._dashboard_id)
+        if self._security_manager is not None and self._user is not None:
+            if not await self._security_manager.can_access_dashboard(
+                dashboard, user=self._user
+            ):
+                raise DashboardAccessDeniedError()
 
     async def run(self) -> None:
         await self._dao.remove_favorite(self._dashboard_id, user_id=self._user_id)
