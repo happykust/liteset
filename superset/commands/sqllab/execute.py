@@ -210,6 +210,35 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         query.executed_sql = rendered_sql
 
         # ------------------------------------------------------------------
+        # 6b. Reduce the effective limit to the SQL's own LIMIT when smaller
+        # and record which limit was binding (QUERY / DROPDOWN /
+        # QUERY_AND_DROPDOWN). 1:1 with the original
+        # ``ExecuteSqlCommand._set_query_limit`` (which runs on the rendered
+        # query); skipped only for CTAS when SQLLAB_CTAS_NO_LIMIT is set.
+        # Without this the SQL's own ``LIMIT`` was ignored — a ``LIMIT 3``
+        # query returned the full result set (capped only by the dropdown).
+        ctas_no_limit = False
+        if self._select_as_cta:
+            try:
+                from superset.config import SupersetSettings
+
+                ctas_no_limit = bool(
+                    getattr(SupersetSettings(), "sqllab_ctas_no_limit", False)
+                )
+            except Exception:  # noqa: BLE001
+                ctas_no_limit = False
+        if not (ctas_no_limit and self._select_as_cta) and effective_limit:
+            sql_limit = db_row.db_engine_spec.get_limit_from_sql(rendered_sql)
+            limits = [sql_limit, effective_limit]
+            if limits[0] is None or limits[0] > limits[1]:
+                query.limiting_factor = LimitingFactor.DROPDOWN
+            elif limits[1] > limits[0]:
+                query.limiting_factor = LimitingFactor.QUERY
+            else:  # limits[0] == limits[1]
+                query.limiting_factor = LimitingFactor.QUERY_AND_DROPDOWN
+            query.limit = min(lim for lim in limits if lim is not None)
+
+        # ------------------------------------------------------------------
         # 7. Async branch — dispatch to Celery and return immediately.
         # Mirrors ``ASynchronousSqlJsonExecutor.execute`` which returned
         # ``QUERY_IS_RUNNING`` so the API responded with 202.
