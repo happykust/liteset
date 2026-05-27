@@ -442,15 +442,24 @@ class DatasetDetailResult(ModelStruct):
 
     @classmethod
     def _resolve_column_formats(cls, obj: Any) -> dict[str, Any]:
-        return {}
+        # 1:1 with ``SqlaTable.column_formats``: the d3 number format per
+        # metric. Metrics are eager-loaded by the detail handler, so this is
+        # pure attribute access (async-safe).
+        return {
+            m.metric_name: m.d3format
+            for m in (getattr(obj, "metrics", None) or [])
+            if getattr(m, "d3format", None)
+        }
 
     @classmethod
     def _resolve_select_star(cls, obj: Any) -> str | None:
-        # DEFERRED stub: ``SqlaTable.select_star`` → engine-spec ``select_star``
-        # → ``Database.compile_sqla_query`` which opens a SYNC engine via
-        # ``get_sqla_engine`` — unsafe to call here in the async response path
-        # for asyncpg-configured databases. Lower impact (a preview SQL string);
-        # left as ``None`` until a dialect-only compile path exists.
+        # DEFERRED (low impact — a "View in SQL Lab" preview string): the
+        # ``SqlaTable.select_star`` chain compiles SQL through the engine spec,
+        # but doing so inside this async response path SUSPENDS the asyncpg
+        # greenlet context (sync engine/dialect work bound to the async
+        # session) — even a dialect-only compile hangs (no return, no
+        # exception). Safely populating it needs precomputation in the handler
+        # via ``asyncio.to_thread`` with a SYNC dialect; left as ``None``.
         return None
 
     @classmethod
