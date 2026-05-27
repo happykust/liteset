@@ -125,7 +125,8 @@ def create_guest_access_token(
         "type": _GUEST_TOKEN_TYPE,
         "iat": now,
         "exp": now + exp_seconds,
-        "aud": audience,  # always encode aud; matches superset_old/security/manager.py:2717
+        # always encode aud; matches superset_old/security/manager.py:2717
+        "aud": audience,
     }
     return jwt.encode(payload, secret_key, algorithm=_GUEST_TOKEN_ALGORITHM)
 
@@ -194,7 +195,8 @@ def validate_guest_token_resources_schema(
         List of validation error messages. Empty list means all valid.
     """
     errors: list[str] = []
-    supported_types = {"dashboard", "chart"}
+    # 1:1 with superset_old: GuestTokenResourceType has only DASHBOARD.
+    supported_types = {"dashboard"}
     for i, resource in enumerate(resources):
         if not isinstance(resource, dict):
             errors.append(f"Resource {i}: not a dict")

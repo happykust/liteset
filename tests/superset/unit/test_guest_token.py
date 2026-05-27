@@ -125,13 +125,25 @@ def test_guest_user_roles_empty():
 def test_validate_guest_token_resources_schema_valid():
     from superset.security.guest import validate_guest_token_resources_schema
 
+    # 1:1 with superset_old: ``GuestTokenResourceType`` has only DASHBOARD, so
+    # "dashboard" is the only supported resource type.
     errors = validate_guest_token_resources_schema(
         [
             {"type": "dashboard", "id": "uuid-1"},
-            {"type": "chart", "id": "uuid-2"},
+            {"type": "dashboard", "id": "uuid-2"},
         ]
     )
     assert errors == []
+
+
+def test_validate_guest_token_resources_schema_rejects_chart():
+    from superset.security.guest import validate_guest_token_resources_schema
+
+    # "chart" is NOT a supported guest-token resource type upstream.
+    errors = validate_guest_token_resources_schema(
+        [{"type": "chart", "id": "uuid-2"}]
+    )
+    assert len(errors) == 1
 
 
 def test_validate_guest_token_resources_schema_invalid():

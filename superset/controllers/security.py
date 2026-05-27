@@ -288,7 +288,8 @@ class SecurityController(Controller):
                 "(guest_token_jwt_secret or secret_key)"
             )
 
-        exp_seconds: int = getattr(settings, "guest_token_jwt_exp_seconds", 3600)
+        # 1:1 with superset_old config GUEST_TOKEN_JWT_EXP_SECONDS = 300 (5 min).
+        exp_seconds: int = getattr(settings, "guest_token_jwt_exp_seconds", 300)
 
         # Resolve audience: GUEST_TOKEN_JWT_AUDIENCE config or WEBDRIVER_BASEURL.
         # Mirrors original _get_guest_token_jwt_audience():
