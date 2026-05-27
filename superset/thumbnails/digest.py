@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from superset.tasks.exceptions import ExecutorNotFoundError
 from superset.tasks.types import ExecutorType
@@ -146,6 +146,55 @@ def _cached_settings() -> object:
     return cached_settings()
 
 
+def _query_dashboard_datasources(
+    session: "Any", dashboard_id: int
+) -> "list[SqlaTable]":
+    """Bulk-load the ``SqlaTable`` datasources backing a dashboard's charts.
+
+    1:1 with the original ``Dashboard.datasources`` property
+    (``superset_old/models/dashboard.py``) which grouped each slice's
+    ``datasource_id`` by its ``cls_model`` and bulk-loaded the rows. The async
+    port enumerates them through a synchronous metadata ``session`` keyed off
+    the dashboard id, so the lookup never depends on the relationship-load
+    state of the (possibly async-detached) ``Dashboard`` instance.
+
+    Only ``table``-type datasources are returned — the only ``cls_model`` the
+    port maps (``SqlaTable``).  ``SqlaTable.database`` is eager-loaded because
+    the sync RLS path (``get_sqla_row_level_filters`` →
+    ``compose_rls_text_clauses``) walks it to build the Jinja template
+    processor; the datasources stay attached to ``session`` for the rest of
+    the RLS evaluation.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from superset.models.connectors import SqlaTable
+    from superset.models.dashboard import dashboard_slices
+    from superset.models.slice import Slice
+
+    rows = session.execute(
+        select(Slice.datasource_id, Slice.datasource_type)
+        .join(dashboard_slices, dashboard_slices.c.slice_id == Slice.id)
+        .where(dashboard_slices.c.dashboard_id == dashboard_id)
+    ).all()
+    table_ids = {
+        ds_id
+        for ds_id, ds_type in rows
+        if ds_id is not None and (ds_type or "table") == "table"
+    }
+    if not table_ids:
+        return []
+    return list(
+        session.execute(
+            select(SqlaTable)
+            .where(SqlaTable.id.in_(table_ids))
+            .options(selectinload(SqlaTable.database))
+        )
+        .scalars()
+        .all()
+    )
+
+
 def get_dashboard_digest(dashboard: "Dashboard") -> str | None:
     """Return the cache-key digest for ``dashboard``.
 
@@ -175,15 +224,19 @@ def get_dashboard_digest(dashboard: "Dashboard") -> str | None:
     )
 
     unique_string = _adjust_string_for_executor(unique_string, executor_type, executor)
-    # TODO(liteset): ``Dashboard.datasources`` was a sync ``db.session.query``
-    # property in the original Flask code (pulled all attached datasources for
-    # RLS hashing). Reimplementing it in the async stack requires either
-    # eager-loading the datasources upstream or making this whole digest
-    # function async. Until that refactor lands, fall back to an empty list
-    # so the digest is computed without RLS contribution.
-    unique_string = _adjust_string_with_rls(
-        unique_string, getattr(dashboard, "datasources", []), executor
-    )
+    # Fold each attached datasource's RLS predicates into the digest so a
+    # dashboard thumbnail is cached per-RLS-context (a user who can only see
+    # their own rows must not be served another tenant's cached thumbnail).
+    # 1:1 with the original which hashed ``Dashboard.datasources`` here. The
+    # enumeration and RLS evaluation run inside one sync metadata session so
+    # the datasources stay attached for ``get_sqla_row_level_filters`` (which
+    # walks ``datasource.database`` and columns to build the template
+    # processor).
+    from superset.utils.rls import _metadata_sync_session
+
+    with _metadata_sync_session() as session:
+        datasources = _query_dashboard_datasources(session, dashboard.id)
+        unique_string = _adjust_string_with_rls(unique_string, datasources, executor)
 
     return md5_sha_from_str(unique_string)
 

@@ -14,126 +14,157 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Tests for AsyncThumbnailsDigest."""
+"""Unit tests for the thumbnail digest helpers.
+
+Covers the 1:1 port of ``superset_old/thumbnails/digest.py`` —
+``_adjust_string_for_executor`` (per-user thumbnails), the RLS-aware
+``_adjust_string_with_rls`` (a user who can only see their own rows must not
+be served another tenant's cached thumbnail), and the
+``_query_dashboard_datasources`` enumeration that feeds the dashboard digest
+its RLS contribution.
+"""
 
 from __future__ import annotations
 
-import hashlib
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
-from superset.thumbnails.digest import AsyncThumbnailsDigest
+from superset.tasks.types import ExecutorType
+from superset.thumbnails.digest import (
+    _adjust_string_for_executor,
+    _adjust_string_with_rls,
+    _query_dashboard_datasources,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
-async def test_compute_digest_returns_md5() -> None:
-    """compute_digest returns an MD5 hex digest of url_userId."""
-    digest = await AsyncThumbnailsDigest.compute_digest(
-        url="http://localhost/chart/1", user_id=42
-    )
-    expected = hashlib.md5(  # noqa: S324  # mirrors digest impl, not crypto
-        "http://localhost/chart/1_42".encode()
-    ).hexdigest()
-    assert digest == expected
+def _session_cm(user: object):
+    """Return a zero-arg context manager factory yielding a mock session whose
+    ``User`` lookup resolves to ``user`` — patches ``_metadata_sync_session``.
+    """
+
+    @contextmanager
+    def _cm():
+        session = MagicMock()
+        session.execute.return_value.scalars.return_value.one_or_none.return_value = (
+            user
+        )
+        yield session
+
+    return _cm
 
 
-async def test_compute_digest_different_urls() -> None:
-    """Different URLs produce different digests."""
-    d1 = await AsyncThumbnailsDigest.compute_digest(url="/chart/1", user_id=1)
-    d2 = await AsyncThumbnailsDigest.compute_digest(url="/chart/2", user_id=1)
-    assert d1 != d2
+def _rls_datasource(ds_id: int, filters: list[str]) -> MagicMock:
+    ds = MagicMock()
+    ds.is_rls_supported = True
+    ds.id = ds_id
+    ds.get_sqla_row_level_filters.return_value = filters
+    return ds
 
 
-async def test_compute_digest_different_users() -> None:
-    """Different user IDs produce different digests."""
-    d1 = await AsyncThumbnailsDigest.compute_digest(url="/chart/1", user_id=1)
-    d2 = await AsyncThumbnailsDigest.compute_digest(url="/chart/1", user_id=2)
-    assert d1 != d2
+# ---------------------------------------------------------------------------
+# _adjust_string_for_executor
+# ---------------------------------------------------------------------------
 
 
-async def test_trigger_screenshot_chart() -> None:
-    """trigger_screenshot dispatches chart thumbnail task for chart URLs."""
-    mock_task = MagicMock()
-    with patch.dict(
-        "sys.modules",
-        {
-            "superset.tasks": MagicMock(),
-            "superset.tasks.thumbnails": MagicMock(
-                cache_chart_thumbnail=mock_task,
-                cache_dashboard_thumbnail=MagicMock(),
-            ),
-        },
+def test_adjust_string_for_executor_current_user_appends():
+    """CURRENT_USER executor appends the executor id (per-user thumbnail)."""
+    out = _adjust_string_for_executor("base", ExecutorType.CURRENT_USER, "alice")
+    assert out == "base\nalice"
+
+
+def test_adjust_string_for_executor_other_unchanged():
+    """Non per-user executors do not change the unique string."""
+    out = _adjust_string_for_executor("base", ExecutorType.OWNER, "owner-1")
+    assert out == "base"
+
+
+# ---------------------------------------------------------------------------
+# _adjust_string_with_rls  (the RLS-isolation property)
+# ---------------------------------------------------------------------------
+
+
+def test_adjust_string_with_rls_no_user_unchanged():
+    """With no resolvable user the string is returned untouched."""
+    with (
+        patch("superset.utils.rls._metadata_sync_session", _session_cm(None)),
+        patch("superset.utils.core.get_current_user", return_value=None),
     ):
-        await AsyncThumbnailsDigest.trigger_screenshot(
-            url="http://localhost/chart/1",
-            digest="abc123",
-            user_id=1,
+        out = _adjust_string_with_rls(
+            "base", [_rls_datasource(1, ["tenant = 1"])], "ghost"
         )
-        mock_task.delay.assert_called_once_with(
-            "http://localhost/chart/1", "abc123", force=False
+    assert out == "base"
+
+
+def test_adjust_string_with_rls_appends_filters():
+    """A resolved user with RLS filters folds them into the digest string."""
+    with patch("superset.utils.rls._metadata_sync_session", _session_cm(object())):
+        out = _adjust_string_with_rls(
+            "base", [_rls_datasource(7, ["tenant_id = 1"])], "alice"
         )
+    assert out == "base\n7\ttenant_id = 1\n"
 
 
-async def test_trigger_screenshot_dashboard() -> None:
-    """trigger_screenshot dispatches dashboard thumbnail task for non-chart URLs."""
-    mock_task = MagicMock()
-    with patch.dict(
-        "sys.modules",
-        {
-            "superset.tasks": MagicMock(),
-            "superset.tasks.thumbnails": MagicMock(
-                cache_chart_thumbnail=MagicMock(),
-                cache_dashboard_thumbnail=mock_task,
-            ),
-        },
-    ):
-        await AsyncThumbnailsDigest.trigger_screenshot(
-            url="http://localhost/dashboard/5",
-            digest="def456",
-            user_id=2,
+def test_adjust_string_with_rls_differentiates_filters():
+    """Different RLS filters MUST produce different digest strings.
+
+    This is the cross-tenant isolation guarantee: two users whose RLS
+    predicates differ must not share a cached thumbnail.
+    """
+    with patch("superset.utils.rls._metadata_sync_session", _session_cm(object())):
+        out_a = _adjust_string_with_rls(
+            "base", [_rls_datasource(7, ["tenant_id = 1"])], "alice"
         )
-        mock_task.delay.assert_called_once_with(
-            "http://localhost/dashboard/5", "def456", force=False
+    with patch("superset.utils.rls._metadata_sync_session", _session_cm(object())):
+        out_b = _adjust_string_with_rls(
+            "base", [_rls_datasource(7, ["tenant_id = 2"])], "bob"
         )
+    assert out_a != out_b
 
 
-async def test_trigger_screenshot_slice_url() -> None:
-    """trigger_screenshot treats /slice/ URLs as chart thumbnails."""
-    mock_task = MagicMock()
-    with patch.dict(
-        "sys.modules",
-        {
-            "superset.tasks": MagicMock(),
-            "superset.tasks.thumbnails": MagicMock(
-                cache_chart_thumbnail=mock_task,
-                cache_dashboard_thumbnail=MagicMock(),
-            ),
-        },
-    ):
-        await AsyncThumbnailsDigest.trigger_screenshot(
-            url="http://localhost/slice/3",
-            digest="ghi789",
-            user_id=1,
-            force=True,
-        )
-        mock_task.delay.assert_called_once_with(
-            "http://localhost/slice/3", "ghi789", force=True
-        )
+def test_adjust_string_with_rls_skips_non_rls_datasource():
+    """A datasource that does not support RLS contributes nothing."""
+    ds = MagicMock()
+    ds.is_rls_supported = False
+    with patch("superset.utils.rls._metadata_sync_session", _session_cm(object())):
+        out = _adjust_string_with_rls("base", [ds], "alice")
+    assert out == "base"
+    ds.get_sqla_row_level_filters.assert_not_called()
 
 
-async def test_trigger_screenshot_handles_import_error() -> None:
-    """trigger_screenshot logs warning when Celery tasks are unavailable."""
-    import builtins
+# ---------------------------------------------------------------------------
+# _query_dashboard_datasources
+# ---------------------------------------------------------------------------
 
-    real_import = builtins.__import__
 
-    def _fail_on_thumbnails(name: str, *args: object, **kwargs: object) -> object:
-        if name == "superset.tasks.thumbnails":
-            raise ImportError("no celery")
-        return real_import(name, *args, **kwargs)
+def test_query_dashboard_datasources_table_type_only():
+    """Only ``table``-type, non-null datasource ids are loaded."""
+    session = MagicMock()
+    rows_result = MagicMock()
+    rows_result.all.return_value = [(1, "table"), (2, "query"), (None, "table")]
+    ds_result = MagicMock()
+    sentinel_table = object()
+    ds_result.scalars.return_value.all.return_value = [sentinel_table]
+    session.execute.side_effect = [rows_result, ds_result]
 
-    with patch.object(builtins, "__import__", side_effect=_fail_on_thumbnails):
-        # This should not raise — ImportError is caught internally
-        await AsyncThumbnailsDigest.trigger_screenshot(
-            url="http://localhost/chart/1",
-            digest="abc",
-            user_id=1,
-        )
+    result = _query_dashboard_datasources(session, dashboard_id=99)
+
+    assert result == [sentinel_table]
+    # Two queries: slice rows, then the SqlaTable bulk load.
+    assert session.execute.call_count == 2
+
+
+def test_query_dashboard_datasources_empty_when_no_tables():
+    """No table-type slices → empty result and no second (bulk-load) query."""
+    session = MagicMock()
+    rows_result = MagicMock()
+    rows_result.all.return_value = [(2, "query"), (None, "table")]
+    session.execute.side_effect = [rows_result]
+
+    result = _query_dashboard_datasources(session, dashboard_id=99)
+
+    assert result == []
+    assert session.execute.call_count == 1
