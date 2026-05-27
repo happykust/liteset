@@ -1604,13 +1604,13 @@ class ChartController(Controller):
             datasource=datasource,
             queries=query_objects,
             force=qc_data.get("force", False),
-            # Honor a ``?type=results`` override (applied to ``qc_data`` above)
-            # so the processor skips post-processing and the response is
-            # truncated to the 5 RESULTS keys. Other types keep the historical
-            # default path (the GET endpoint previously ignored ``?type=``).
-            result_type=(
-                "results" if qc_data.get("result_type") == "results" else None
-            ),
+            # Honor the ``?type=`` override (applied to ``qc_data`` above) so
+            # the processor runs the matching result-type branch — 1:1 with the
+            # original ``query_obj.result_type or query_context.result_type``
+            # precedence. (The GET endpoint previously ignored ``?type=`` and
+            # always ran ``full``.)
+            result_type=qc_data.get("result_type"),
+            result_format=qc_data.get("result_format"),
         )
         processor = AsyncQueryContextProcessor(
             datasource=datasource,
@@ -2042,13 +2042,12 @@ class ChartController(Controller):
                 queries=query_objects,
                 force=data.force,
                 result_format=result_format,
-                # Propagate ``results`` so the processor skips post-processing
-                # for that type (1:1 with the original ``_get_results`` →
-                # ``_get_full`` path). Other non-default types
-                # (columns/timegrains/drill_detail) keep the historical default
-                # path here — their dedicated processor branches are handled
-                # elsewhere / not yet ported (e.g. ``Database.grains``).
-                result_type="results" if result_type == "results" else None,
+                # Propagate result_type so the processor runs the matching
+                # branch (``results`` skips post-processing; columns/timegrains
+                # return datasource metadata) — 1:1 with the original
+                # ``query_obj.result_type or query_context.result_type``
+                # precedence, instead of silently defaulting to ``full``.
+                result_type=result_type,
             )
             processor = AsyncQueryContextProcessor(
                 datasource=datasource,

@@ -40,8 +40,10 @@ from sqlalchemy.sql import literal_column, quoted_name, text
 from sqlalchemy.sql.expression import ColumnClause, Select, TextClause
 from sqlalchemy.sql.type_api import TypeEngine
 
+from superset.constants import TimeGrain as TimeGrainConstants
 from superset.databases.utils import make_url_safe
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+from superset.i18n import gettext as _
 from superset.sql.parse import LimitMethod, RLSMethod, SQLScript, SQLStatement, Table
 from superset.utils.hashing import md5_sha_from_str
 from superset.utils.json import redact_sensitive, reveal_sensitive
@@ -93,6 +95,41 @@ class MetricType(TypedDict, total=False):
     currency: str | None
     warning_text: str | None
     extra: str | None
+
+
+# ---------------------------------------------------------------------------
+# Time grains (ported 1:1 from superset_old/db_engine_specs/base.py:117-144)
+# ---------------------------------------------------------------------------
+
+
+class TimeGrain(NamedTuple):
+    name: str  # TODO: redundant field, remove
+    label: str
+    function: str
+    duration: str | None
+
+
+builtin_time_grains: dict[str | None, str] = {
+    TimeGrainConstants.SECOND: _("Second"),
+    TimeGrainConstants.FIVE_SECONDS: _("5 second"),
+    TimeGrainConstants.THIRTY_SECONDS: _("30 second"),
+    TimeGrainConstants.MINUTE: _("Minute"),
+    TimeGrainConstants.FIVE_MINUTES: _("5 minute"),
+    TimeGrainConstants.TEN_MINUTES: _("10 minute"),
+    TimeGrainConstants.FIFTEEN_MINUTES: _("15 minute"),
+    TimeGrainConstants.THIRTY_MINUTES: _("30 minute"),
+    TimeGrainConstants.HOUR: _("Hour"),
+    TimeGrainConstants.SIX_HOURS: _("6 hour"),
+    TimeGrainConstants.DAY: _("Day"),
+    TimeGrainConstants.WEEK: _("Week"),
+    TimeGrainConstants.MONTH: _("Month"),
+    TimeGrainConstants.QUARTER: _("Quarter"),
+    TimeGrainConstants.YEAR: _("Year"),
+    TimeGrainConstants.WEEK_STARTING_SUNDAY: _("Week starting Sunday"),
+    TimeGrainConstants.WEEK_STARTING_MONDAY: _("Week starting Monday"),
+    TimeGrainConstants.WEEK_ENDING_SATURDAY: _("Week ending Saturday"),
+    TimeGrainConstants.WEEK_ENDING_SUNDAY: _("Week ending Sunday"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -880,6 +917,25 @@ class BaseEngineSpec:  # noqa: PLR0904
                 ),
             )
         )
+
+    @classmethod
+    def get_time_grains(cls) -> tuple[TimeGrain, ...]:
+        """
+        Generate a tuple of supported time grains.
+
+        1:1 with ``superset_old/db_engine_specs/base.py:get_time_grains``. The
+        ``TIME_GRAIN_ADDONS`` merge is omitted (this classmethod has no access
+        to ``SupersetSettings``; the upstream default is an empty mapping).
+
+        :return: All time grains supported by the engine
+        """
+        ret_list = []
+        time_grains = builtin_time_grains.copy()
+        for duration, func in cls.get_time_grain_expressions().items():
+            if duration in time_grains:
+                name = time_grains[duration]
+                ret_list.append(TimeGrain(name, _(name), func, duration))
+        return tuple(ret_list)
 
     # ------------------------------------------------------------------
     # Epoch to datetime SQL expressions

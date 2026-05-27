@@ -51,6 +51,7 @@ from sqlalchemy.sql import expression
 from superset.constants import LRU_CACHE_MAX_SIZE, PASSWORD_MASK
 from superset.databases.utils import DatabaseInvalidError, make_url_safe
 from superset.db_engine_specs import BaseEngineSpec, get_engine_spec
+from superset.db_engine_specs.base import TimeGrain
 from superset.extensions import encrypted_field_factory
 from superset.models.helpers import (
     AuditMixinNullable,
@@ -836,6 +837,15 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
             driver = None
 
         return get_engine_spec(backend, driver)
+
+    def grains(self) -> tuple[TimeGrain, ...]:
+        """Defines time granularity database-specific expressions.
+
+        1:1 with ``superset_old/models/core.py:Database.grains`` — delegates to
+        the engine spec's ``get_time_grains``. Consumed by the chart-data
+        ``result_type=timegrains`` branch.
+        """
+        return self.db_engine_spec.get_time_grains()
 
     # ------------------------------------------------------------------
     # Extra / encrypted_extra helpers
