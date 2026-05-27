@@ -937,12 +937,21 @@ class AsyncSecurityManager:
         user_perms = getattr(user, "permissions", None)
         if isinstance(user_perms, (set, frozenset)):
             return (permission_name, view_name) in user_perms
-        # Slow path: DAO query for ORM users
-        role_ids = [r.id for r in getattr(user, "roles", [])]
+        # Slow path: DAO query for ORM users. Resolve permissions across both
+        # the user's direct roles AND group-inherited roles — 1:1 with FAB's
+        # ``_has_view_access`` which walks ``ab_user_role`` + ``ab_user_group``
+        # → ``ab_group_role``. Without the group roles a user whose access is
+        # granted solely via a group would get a spurious 403.
+        role_ids: set[int] = {r.id for r in getattr(user, "roles", [])}
+        user_id = getattr(user, "id", None)
+        if user_id is not None:
+            for grp in await self.dao.get_user_groups(user_id):
+                for grp_role in await self.dao.get_group_roles(grp[0]):
+                    role_ids.add(grp_role[0])
         if not role_ids:
             return False
         return await self.dao.has_permission_view(
-            permission_name, view_name, role_ids=role_ids
+            permission_name, view_name, role_ids=list(role_ids)
         )
 
     async def can_access(
@@ -1923,7 +1932,14 @@ class AsyncSecurityManager:
 
         Returns ``[db].[catalog].[schema]`` or ``[db].[schema]``.
         """
-        db_name = getattr(database, "database_name", str(database))
+        # 1:1 with the original: ``raise_for_access`` passes the Database
+        # OBJECT here, so ``str(database)`` resolves to
+        # ``Database.__repr__`` → ``name`` (``verbose_name or database_name``),
+        # while the PVM-creation callers (sync_permissions / permission_manager)
+        # pass a ``database_name`` *string* — ``str`` of which is the string
+        # itself. This split exactly mirrors upstream (object on the access
+        # check, name string on creation).
+        db_name = str(database)
         if catalog:
             return f"[{db_name}].[{catalog}].[{schema}]"
         return f"[{db_name}].[{schema}]"

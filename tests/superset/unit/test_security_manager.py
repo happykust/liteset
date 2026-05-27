@@ -502,3 +502,70 @@ async def test_can_access_dashboard_rbac_published_no_matching_role(mock_dao):
 
     result = await mgr.can_access_dashboard(dashboard, user=gamma_user)
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# has_access slow path: group-inherited roles  (audit MEDIUM)
+# ---------------------------------------------------------------------------
+
+
+async def test_has_access_includes_group_roles(manager, mock_dao):
+    """A user with no direct roles is granted via a group-inherited role.
+
+    1:1 with FAB ``_has_view_access`` which resolves permissions across both
+    ``ab_user_role`` and ``ab_user_group`` → ``ab_group_role``.
+    """
+    user = MockUser(id=5, roles=[])  # no direct roles
+    mock_dao.get_user_groups = AsyncMock(return_value=[(10, "grp1")])
+    mock_dao.get_group_roles = AsyncMock(return_value=[(99, "GroupRole")])
+    mock_dao.has_permission_view = AsyncMock(return_value=True)
+
+    result = await manager.has_access(
+        "datasource_access", "[examples].[t](id:1)", user=user
+    )
+
+    assert result is True
+    mock_dao.get_user_groups.assert_awaited_once_with(5)
+    mock_dao.get_group_roles.assert_awaited_once_with(10)
+    _, kwargs = mock_dao.has_permission_view.call_args
+    assert 99 in kwargs["role_ids"]
+
+
+async def test_has_access_combines_direct_and_group_roles(manager, mock_dao):
+    """Direct roles and group-inherited roles are both checked."""
+    user = MockUser(id=5, roles=[MockGammaRole()])  # direct role id 2
+    mock_dao.get_user_groups = AsyncMock(return_value=[(10, "grp1")])
+    mock_dao.get_group_roles = AsyncMock(return_value=[(99, "GroupRole")])
+    mock_dao.has_permission_view = AsyncMock(return_value=True)
+
+    await manager.has_access("can_read", "Chart", user=user)
+
+    _, kwargs = mock_dao.has_permission_view.call_args
+    assert set(kwargs["role_ids"]) == {2, 99}
+
+
+# ---------------------------------------------------------------------------
+# get_schema_perm: object → verbose_name, string → as-is  (audit MEDIUM)
+# ---------------------------------------------------------------------------
+
+
+def test_get_schema_perm_object_uses_name(manager):
+    """A Database OBJECT resolves via ``str(database)`` → name
+    (``verbose_name or database_name``), 1:1 with the original access check.
+    """
+    db = MagicMock()
+    db.__str__.return_value = "Prod DB"  # mimics Database.__repr__ → name
+    assert manager.get_schema_perm(db, "public") == "[Prod DB].[public]"
+
+
+def test_get_schema_perm_string_used_as_is(manager):
+    """A plain ``database_name`` string (PVM-creation callers) is used verbatim."""
+    assert manager.get_schema_perm("examples", "public") == "[examples].[public]"
+
+
+def test_get_schema_perm_with_catalog(manager):
+    """Catalog is interpolated as ``[db].[catalog].[schema]``."""
+    assert (
+        manager.get_schema_perm("examples", "public", catalog="cat")
+        == "[examples].[cat].[public]"
+    )
