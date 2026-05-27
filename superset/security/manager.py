@@ -1614,6 +1614,11 @@ class AsyncSecurityManager:
         perm = getattr(datasource, "perm", None)
         if perm and await self.has_access(DATASOURCE_ACCESS, perm, user=user):
             return True
+        # Pre-load the relationships the ownership + schema checks below read
+        # synchronously (``owners``, ``database``) so a bare-fetched datasource
+        # doesn't trip a MissingGreenlet on the AsyncSession.
+        await self._ensure_relationship_loaded(datasource, "owners")
+        await self._ensure_relationship_loaded(datasource, "database")
         # Ownership check — mirrors original raise_for_access line 2429
         if self.is_owner(datasource, user):
             return True
@@ -1684,6 +1689,42 @@ class AsyncSecurityManager:
             return False
         owners = getattr(resource, "owners", [])
         return any(getattr(o, "id", None) == user_id for o in owners)
+
+    @staticmethod
+    async def _ensure_relationship_loaded(resource: Any, attr: str) -> None:
+        """Async-load a lazy relationship before a *synchronous* access check.
+
+        The sync ``is_owner`` / ``can_access_datasource`` helpers walk ORM
+        relationships (``owners``, ``database``).  When the caller fetched the
+        resource without eager-loading them (a bare ``dao.find_by_id``),
+        touching the attribute on an object bound to an ``AsyncSession`` emits a
+        sync lazy-load → ``MissingGreenlet`` → HTTP 500.  This pre-loads the
+        attribute through the object's own async session so the subsequent sync
+        read is a no-op DB-wise.
+
+        Safe no-op when ``resource`` is not an ORM instance (MagicMock/dict),
+        the model has no such relationship (``Query``/``Database`` have no
+        ``owners``), the attribute is already loaded, or the object is detached.
+        """
+        from sqlalchemy import inspect as sa_inspect
+        from sqlalchemy.ext.asyncio import async_object_session
+
+        state = sa_inspect(resource, raiseerr=False)
+        if state is None:
+            return
+        if attr not in state.mapper.relationships:
+            return
+        if attr not in state.unloaded:
+            return
+        session = async_object_session(resource)
+        if session is None:
+            return
+        try:
+            await session.refresh(resource, attribute_names=[attr])
+        except Exception:  # noqa: BLE001 — best-effort; sync read falls back
+            logger.debug(
+                "Could not pre-load %s for access check", attr, exc_info=True
+            )
 
     async def get_schemas_accessible_by_user(
         self,
@@ -2283,19 +2324,47 @@ class AsyncSecurityManager:
         Admin users bypass the ownership check entirely, mirroring
         Superset's ``raise_for_ownership()`` behaviour.
         """
+        # 1:1 with the original ``raise_for_ownership``: a missing-ownership
+        # denial carries a ``SupersetError(MISSING_OWNERSHIP_ERROR)`` payload.
+        # ``SupersetSecurityException`` takes that error object positionally —
+        # the previous ``message=`` kwarg raised ``TypeError`` (→ HTTP 500)
+        # whenever the check actually denied; it was masked only because the
+        # ``is_owner`` lazy-load of ``owners`` crashed first.
         if user_id is None:
             raise SupersetSecurityException(
-                message="Authentication required to modify this resource."
+                SupersetError(
+                    error_type=SupersetErrorType.MISSING_OWNERSHIP_ERROR,
+                    message="Authentication required to modify this resource.",
+                    level=ErrorLevel.ERROR,
+                )
             )
         # Fetch user to check admin role
         user = await self.find_user_by_id(user_id)
         if user is not None and self.is_admin(user):
             return
+        # Pre-load ``owners`` so the sync ``is_owner`` read below doesn't trip a
+        # MissingGreenlet when the command fetched the resource without
+        # eager-loading owners (e.g. bare ``dao.find_by_id`` in the delete /
+        # refresh / column-metric commands).
+        await self._ensure_relationship_loaded(resource, "owners")
         if self.is_owner(resource, user_id):
             return
+        # Friendly resource label (the original relied on the datasource
+        # ``__repr__`` → name; the new models have none, so derive from the
+        # standard name columns rather than leaking a raw object repr).
+        resource_label = (
+            getattr(resource, "table_name", None)
+            or getattr(resource, "slice_name", None)
+            or getattr(resource, "dashboard_title", None)
+            or getattr(resource, "database_name", None)
+            or type(resource).__name__
+        )
         raise SupersetSecurityException(
-            message="You don't have permission to edit this resource. "
-            "Only owners and admins can modify it."
+            SupersetError(
+                error_type=SupersetErrorType.MISSING_OWNERSHIP_ERROR,
+                message=f"You don't have the rights to alter {resource_label}",
+                level=ErrorLevel.ERROR,
+            )
         )
 
     # --- Guest user checks ---

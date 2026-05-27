@@ -1843,10 +1843,16 @@ class ChartController(Controller):
             if not await security_manager.can_access(
                 "can_csv", "Superset", user=current_user
             ):
-                from superset.exceptions import SupersetSecurityException
-
-                raise SupersetSecurityException(
-                    message="You don't have permission to download data"
+                # 1:1 with superset_old/charts/data/api.py:364 — a missing
+                # ``can_csv`` permission returns a plain 403 (the previous
+                # ``SupersetSecurityException(message=...)`` raised TypeError →
+                # 500 because that exception takes a SupersetError, not a
+                # ``message`` kwarg).
+                return Response(
+                    content={
+                        "message": "You don't have permission to download data"
+                    },
+                    status_code=403,
                 )
 
             query_objects = [

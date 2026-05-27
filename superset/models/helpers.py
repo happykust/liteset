@@ -48,6 +48,7 @@ from sqlalchemy.sql.expression import Label, Select, TextAsFrom
 from sqlalchemy.sql.selectable import Alias, TableClause
 
 from superset.constants import EMPTY_STRING, NULL_STRING
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import (
     AdvancedDataTypeResponseError,
     ColumnNotFoundException,
@@ -543,8 +544,14 @@ def validate_adhoc_subquery(
     parsed_statement = SQLStatement(sql, engine)
     if parsed_statement.has_subquery():
         if not feature_flag_manager.is_feature_enabled("ALLOW_ADHOC_SUBQUERY"):
+            # 1:1 with superset_old/models/helpers.py:127-131 — a SupersetError
+            # payload (not a ``message`` kwarg, which raises TypeError → 500).
             raise SupersetSecurityException(
-                message="Custom SQL fields cannot contain sub-queries.",
+                SupersetError(
+                    error_type=SupersetErrorType.ADHOC_SUBQUERY_NOT_ALLOWED_ERROR,
+                    message="Custom SQL fields cannot contain sub-queries.",
+                    level=ErrorLevel.ERROR,
+                )
             )
 
         # enforce RLS rules in any relevant tables
