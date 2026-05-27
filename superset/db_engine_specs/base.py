@@ -644,6 +644,20 @@ class BaseEngineSpec:  # noqa: PLR0904
             return True
         return driver in cls.drivers
 
+    @classmethod
+    def get_impersonation_key(cls, user: Any | None) -> Any:
+        """Construct an impersonation key — by default the given username.
+
+        1:1 with ``superset_old/db_engine_specs/base.py:get_impersonation_key``.
+        Used by the per-user query cache key (``CACHE_IMPERSONATION`` /
+        ``CACHE_QUERY_BY_USER``) so cached results are not shared across users
+        when impersonation is in effect.
+
+        :param user: logged-in user
+        :returns: username if a user is given, else ``None``
+        """
+        return user.username if user else None
+
     # ------------------------------------------------------------------
     # Catalog / schema helpers
     # ------------------------------------------------------------------

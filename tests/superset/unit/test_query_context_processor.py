@@ -34,6 +34,11 @@ def mock_settings():
     settings.excel_export = {}
     settings.data_cache_config = {}
     settings.samples_row_limit = 1000
+    # Feature flags are a real (empty) dict — off by default, exactly as in
+    # production. Leaving this as an auto-MagicMock would make
+    # ``flags.get("CACHE_IMPERSONATION")`` truthy and spuriously enter the
+    # per-user impersonation cache-key branch.
+    settings.feature_flags = {}
     return settings
 
 

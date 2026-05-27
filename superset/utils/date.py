@@ -863,6 +863,27 @@ def humanize_timedelta(dt: datetime) -> str:
     return _humanize.naturaltime(delta)
 
 
+@lru_cache(maxsize=1)
+def _default_relative_times() -> tuple[str, str]:
+    """Return the configured ``(DEFAULT_RELATIVE_START_TIME, ...END_TIME)``.
+
+    Mirrors the original helper which read these straight off
+    ``flask.current_app.config``.  Cached because the values are static after
+    startup; falls back to ``"today"`` (the upstream default) if settings
+    cannot be constructed (e.g. outside an initialised app).
+    """
+    try:
+        from superset.config import SupersetSettings
+
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        return (
+            settings.default_relative_start_time or "today",
+            settings.default_relative_end_time or "today",
+        )
+    except Exception:  # noqa: BLE001
+        return ("today", "today")
+
+
 def get_since_until_from_time_range(
     time_range: str | None = None,
     time_shift: str | None = None,
@@ -871,14 +892,16 @@ def get_since_until_from_time_range(
     """Compute ``(since, until)`` from a *time_range* string.
 
     Flask-free replacement for the original helper that lived in
-    ``superset.common.utils.time_range_utils``.  Instead of reading
-    ``DEFAULT_RELATIVE_START_TIME`` / ``DEFAULT_RELATIVE_END_TIME`` from
-    ``flask.current_app.config`` we fall back to sensible defaults
-    (``"today"``), which callers can override via the *extras* dict.
+    ``superset.common.utils.time_range_utils``.  The relative-time defaults
+    come from ``DEFAULT_RELATIVE_START_TIME`` / ``DEFAULT_RELATIVE_END_TIME``
+    (``settings.default_relative_start_time`` / ``...end_time``) — 1:1 with the
+    original which read ``current_app.config[...]`` — and can be overridden
+    per-request via the *extras* dict.
     """
+    default_start, default_end = _default_relative_times()
     return get_since_until(
-        relative_start=(extras or {}).get("relative_start", "today"),
-        relative_end=(extras or {}).get("relative_end", "today"),
+        relative_start=(extras or {}).get("relative_start", default_start),
+        relative_end=(extras or {}).get("relative_end", default_end),
         time_range=time_range,
         time_shift=time_shift,
         instant_time_comparison_range=(extras or {}).get(

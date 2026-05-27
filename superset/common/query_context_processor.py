@@ -801,14 +801,32 @@ class AsyncQueryContextProcessor:
                 "changed_on": getattr(datasource, "changed_on", None),
             }
         )
-        # Add impersonation key for per-user cache isolation
+        # Add an impersonation key to cache if impersonation is enabled on the
+        # db or if the CACHE_QUERY_BY_USER flag is on — 1:1 with the original
+        # ``QueryObject.cache_key`` (``superset_old/common/query_object.py:456-474``).
+        # The CACHE_IMPERSONATION branch additionally requires the database to
+        # actually impersonate users, and the value comes from the engine-spec
+        # ``get_impersonation_key`` (overridable per dialect) rather than a bare
+        # username, so the key matches upstream.
         if hasattr(self._settings, "feature_flags"):
             flags = self._settings.feature_flags or {}
-            if flags.get("CACHE_IMPERSONATION") or flags.get("CACHE_QUERY_BY_USER"):
-                if self._user is not None:
-                    cache_dict["impersonation_key"] = getattr(
-                        self._user, "username", str(getattr(self._user, "id", ""))
-                    )
+            try:
+                database = datasource.database  # type: ignore[union-attr]
+                if (
+                    flags.get("CACHE_IMPERSONATION")
+                    and getattr(database, "impersonate_user", False)
+                ) or flags.get("CACHE_QUERY_BY_USER"):
+                    if key := database.db_engine_spec.get_impersonation_key(
+                        self._user
+                    ):
+                        logger.debug(
+                            "Adding impersonation key to QueryObject cache dict: %s",
+                            key,
+                        )
+                        cache_dict["impersonation_key"] = key
+            except AttributeError:
+                # datasource or database do not exist
+                pass
 
         return _generate_cache_key(cache_dict, "df-")
 
