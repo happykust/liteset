@@ -23,7 +23,11 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
-from superset.exceptions import ForbiddenError, ObjectNotFoundError
+from superset.exceptions import (
+    ForbiddenError,
+    ObjectNotFoundError,
+    SupersetSecurityException,
+)
 
 if TYPE_CHECKING:
     from superset.db.daos.chart import AsyncChartDAO
@@ -58,13 +62,17 @@ class RemoveFavoriteChartCommand(AsyncBaseCommand[None]):
         if not chart:
             raise ObjectNotFoundError("Chart", self._chart_id)
 
-        # 1:1 with original: security_manager.raise_for_ownership(chart)
-        if self._security_manager is not None and self._user is not None:
+        # 1:1 with original: ``raise_for_ownership`` takes the user *id*
+        # positionally and raises ``SupersetSecurityException`` for non-owners
+        # → 403. (The previous ``user=`` kwarg raised ``TypeError`` that the
+        # broad ``except Exception`` masked as a 403 for everyone, owners
+        # included.)
+        if self._security_manager is not None:
             try:
                 await self._security_manager.raise_for_ownership(
-                    chart, user=self._user
+                    chart, self._user_id
                 )
-            except Exception as ex:  # noqa: BLE001
+            except SupersetSecurityException as ex:
                 raise ForbiddenError(
                     f"User is not an owner of chart {self._chart_id}"
                 ) from ex

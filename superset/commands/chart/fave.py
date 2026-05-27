@@ -23,7 +23,11 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
-from superset.exceptions import ForbiddenError, ObjectNotFoundError
+from superset.exceptions import (
+    ForbiddenError,
+    ObjectNotFoundError,
+    SupersetSecurityException,
+)
 
 if TYPE_CHECKING:
     from superset.db.daos.chart import AsyncChartDAO
@@ -59,15 +63,21 @@ class AddFavoriteChartCommand(AsyncBaseCommand[None]):
         if not chart:
             raise ObjectNotFoundError("Chart", self._chart_id)
 
-        # 1:1 with original: security_manager.raise_for_ownership(chart)
-        # raises SupersetSecurityException → ChartForbiddenError when not owner.
-        if self._security_manager is not None and self._user is not None:
+        # 1:1 with original: ``security_manager.raise_for_ownership(chart)``
+        # takes the user *id* positionally and raises ``SupersetSecurityException``
+        # when the caller is not an owner — caught and re-raised as a 403.
+        # (The previous ``raise_for_ownership(chart, user=...)`` passed the wrong
+        # kwarg → ``TypeError``, which the over-broad ``except Exception`` masked
+        # as a 403 for *everyone*, including the chart's own owner.)
+        if self._security_manager is not None:
             try:
                 await self._security_manager.raise_for_ownership(
-                    chart, user=self._user
+                    chart, self._user_id
                 )
-            except Exception as ex:  # noqa: BLE001
-                raise ForbiddenError(f"User is not an owner of chart {self._chart_id}") from ex
+            except SupersetSecurityException as ex:
+                raise ForbiddenError(
+                    f"User is not an owner of chart {self._chart_id}"
+                ) from ex
 
         self._chart = chart
 
