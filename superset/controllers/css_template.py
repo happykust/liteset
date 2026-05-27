@@ -45,7 +45,6 @@ from superset.providers import provide_css_template_dao
 from superset.schemas.css_template import (
     CssTemplatePostSchema,
     CssTemplatePutSchema,
-    CssTemplateResponseSchema,
 )
 from superset.typing import CRUDDAOProtocol, UserProtocol
 from superset.utils import filter_unset
@@ -116,8 +115,16 @@ class CssTemplateController(Controller):
         self,
         pk: int,
         dao: CRUDDAOProtocol,
-    ) -> CssTemplateResponseSchema:
-        """GET /api/v1/css_template/<pk> — get a single CSS template."""
+    ) -> dict[str, Any]:
+        """GET /api/v1/css_template/<pk> — get a single CSS template.
+
+        Mirrors the FAB ``get_headless`` envelope ``{"id": <pk>, "result":
+        {...}}`` (the original ``CssTemplateRestApi`` uses the standard FAB
+        ``get``). ``result`` carries exactly the original ``show_columns``:
+        id / template_name / css / changed_on_delta_humanized + nested
+        changed_by / created_by — NOT the full timestamps (which aren't in
+        ``show_columns``).
+        """
         from sqlalchemy.orm import selectinload
 
         from superset.models.core import CssTemplate
@@ -136,34 +143,29 @@ class CssTemplateController(Controller):
         template = results[0] if results else None
         if not template:
             raise ObjectNotFoundError("CssTemplate", pk)
-        from superset.schemas.css_template import UserRef
 
-        changed_by = getattr(template, "changed_by", None)
-        created_by = getattr(template, "created_by", None)
-        return CssTemplateResponseSchema(
-            id=template.id,
-            template_name=template.template_name,
-            css=template.css,
-            created_on=str(getattr(template, "created_on", "") or ""),
-            changed_on=str(getattr(template, "changed_on", "") or ""),
-            changed_on_delta_humanized=getattr(
-                template, "changed_on_delta_humanized", None
-            ),
-            changed_by=UserRef(
-                id=changed_by.id,
-                first_name=getattr(changed_by, "first_name", ""),
-                last_name=getattr(changed_by, "last_name", ""),
-            )
-            if changed_by
-            else None,
-            created_by=UserRef(
-                id=created_by.id,
-                first_name=getattr(created_by, "first_name", ""),
-                last_name=getattr(created_by, "last_name", ""),
-            )
-            if created_by
-            else None,
-        )
+        def _user_ref(user: Any) -> dict[str, Any] | None:
+            if not user:
+                return None
+            return {
+                "id": user.id,
+                "first_name": getattr(user, "first_name", ""),
+                "last_name": getattr(user, "last_name", ""),
+            }
+
+        return {
+            "id": template.id,
+            "result": {
+                "id": template.id,
+                "template_name": template.template_name,
+                "css": template.css,
+                "changed_on_delta_humanized": getattr(
+                    template, "changed_on_delta_humanized", None
+                ),
+                "changed_by": _user_ref(getattr(template, "changed_by", None)),
+                "created_by": _user_ref(getattr(template, "created_by", None)),
+            },
+        }
 
     @post(
         "/",

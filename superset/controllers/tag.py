@@ -126,7 +126,10 @@ class TagController(Controller):
         item = results[0] if results else None
         if item is None:
             raise ObjectNotFoundError("Tag", pk)
+        # FAB ``get_headless`` envelope is ``{"id": <pk>, "result": {...}}`` —
+        # the top-level ``id`` was missing.
         return {
+            "id": item.id,
             "result": _serialize_item(
                 item,
                 [
