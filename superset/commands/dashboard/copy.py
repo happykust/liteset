@@ -49,7 +49,10 @@ class CopyDashboardCommand(AsyncBaseCommand["Dashboard"]):
         self._dashboard: Any | None = None
 
     async def validate(self) -> None:
-        self._dashboard = await self._dao.get_by_id_or_slug(self._dashboard_id)
+        # Eager-load ``owners`` (via the full loader) so the DASHBOARD_RBAC
+        # ``is_owner`` check below reads the M2M without a sync lazy-load
+        # (MissingGreenlet) on the async session.
+        self._dashboard = await self._dao.get_full_by_id_or_slug(self._dashboard_id)
         if not self._dashboard:
             raise ObjectNotFoundError("Dashboard", self._dashboard_id)
         if not self._data.get("dashboard_title"):

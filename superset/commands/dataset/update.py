@@ -112,9 +112,22 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         # crashes with MissingGreenlet under asyncpg.
         sql = self._data.get("sql")
         if sql and sql != self._dataset.sql and self._security_manager is not None:
+            from superset.exceptions import SupersetSecurityException
+
             await self._dao.session.refresh(self._dataset, ["database"])
             database = getattr(self._dataset, "database", None)
-            if database and hasattr(self._security_manager, "raise_for_access"):
+            if database:
+                # ``raise_for_access`` takes a User OBJECT (``is_admin`` /
+                # ``can_access`` read its roles + perms). Passing the bare
+                # ``user_id`` int — as before — made every check fall through to
+                # "no roles/perms" and silently denied the SQL update for
+                # everyone, owner and admin included. Resolve the user like
+                # ``CreateDatasetCommand`` does.
+                user = (
+                    await self._security_manager.find_user_by_id(self._user_id)
+                    if self._user_id is not None
+                    else None
+                )
                 schema = self._data.get("schema") or getattr(
                     self._dataset, "schema", None
                 )
@@ -123,9 +136,9 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                         database=database,
                         schema=schema,
                         sql=sql,
-                        user=self._user_id,
+                        user=user,
                     )
-                except Exception as exc:
+                except SupersetSecurityException as exc:
                     raise CommandInvalidError(
                         "Access denied: insufficient SQL access"
                     ) from exc

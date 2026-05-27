@@ -41,7 +41,7 @@ from litestar.response import Response
 from superset.common.query_context import AsyncQueryContext
 from superset.common.query_context_processor import AsyncQueryContextProcessor
 from superset.common.query_object import AsyncQueryObject
-from superset.exceptions import ObjectNotFoundError, SupersetException
+from superset.exceptions import SupersetException
 from superset.guards.rbac import require_authentication
 from superset.providers import provide_datasource_dao
 from superset.sql.parse import Table
@@ -620,7 +620,7 @@ class LegacyDatasourceController(Controller):
         media_type="application/json",
         status_code=200,
     )
-    async def save(
+    async def save(  # noqa: C901
         self,
         request: Request[Any, Any, Any],
         ds_dao: DatasourceDAOProtocol,
@@ -687,12 +687,22 @@ class LegacyDatasourceController(Controller):
                 request.app.state,
             )
 
-            # Raise for ownership if the model declares an owner_class
+            # Raise for ownership if the model declares an owner_class.
+            # 1:1 with superset_old/views/datasource/views.py:93-98: pass the
+            # current user id (a REQUIRED positional arg) and catch only the
+            # security exception. The previous bare ``raise_for_ownership(
+            # orm_datasource)`` raised ``TypeError`` (missing ``user_id``) that
+            # the over-broad ``except Exception`` masked as a 403 for everyone —
+            # owners and admins included — so saving a datasource with owners
+            # always failed.
             if getattr(orm_datasource, "owner_class", None) is not None:
+                from superset.exceptions import SupersetSecurityException
+
                 try:
-                    if hasattr(sec_mgr, "raise_for_ownership"):
-                        await sec_mgr.raise_for_ownership(orm_datasource)
-                except Exception:  # noqa: BLE001
+                    await sec_mgr.raise_for_ownership(
+                        orm_datasource, current_user.id
+                    )
+                except SupersetSecurityException:
                     return Response(
                         content={"message": "Datasource access is restricted."},
                         status_code=403,
@@ -728,7 +738,9 @@ class LegacyDatasourceController(Controller):
 
         # Sync ORM instance from the editor payload
         try:
-            await asyncio.to_thread(_update_from_object, orm_datasource, datasource_dict)
+            await asyncio.to_thread(
+                _update_from_object, orm_datasource, datasource_dict
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to update datasource from object")
             return Response(
@@ -833,7 +845,8 @@ class LegacyDatasourceController(Controller):
           - ``normalize_columns`` (optional bool)
           - ``always_filter_main_dttm`` (optional bool)
 
-        Mirrors ``superset_old/views/datasource/views.py:Datasource.external_metadata_by_name``.
+        Mirrors ``superset_old/views/datasource/views.py``
+        ``Datasource.external_metadata_by_name``.
         """
         import rison as _rison
 
