@@ -64,9 +64,9 @@ class EncryptedType(SqlaEncryptedType):
         decrypts when the row value comes back as ``bytes`` — it falls
         through with the raw cipher-text whenever the driver hands us a
         ``str``.  psycopg2 happens to return ``bytes`` for the
-        ``VARCHAR`` columns ApplyHasing.scriptaculousrset stores
-        encrypted secrets in (because ``bytea`` was bound), so the
-        original works.  asyncpg, however, decodes ``VARCHAR`` to
+        ``VARCHAR`` columns Superset stores encrypted secrets in
+        (because ``bytea`` was bound), so the original works.
+        asyncpg, however, decodes ``VARCHAR`` to
         ``str`` and ships the cipher-text round-trip unchanged.
         Without this override every async read of ``Database.password``
         / ``encrypted_extra`` / ``server_cert`` returns the encrypted

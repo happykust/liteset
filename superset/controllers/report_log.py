@@ -23,7 +23,10 @@ from typing import Any
 from litestar import Controller, get
 from litestar.di import Provide
 
-from superset.controllers.base import extract_pagination, serialize_list_response
+from superset.controllers.base import (
+    build_rison_query_params,
+    serialize_list_response,
+)
 from superset.exceptions import ObjectNotFoundError
 from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
@@ -61,10 +64,22 @@ class ReportExecutionLogController(Controller):
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """GET /api/v1/report/{pk}/log/ -- list logs for a report."""
-        page, page_size = extract_pagination(rison_params)
         model_cls = dao.model_cls
-        filters = [model_cls.report_schedule_id == pk]
-        items = await dao.find_all(filters=filters, page=page, page_size=page_size)
+        # 1:1 with the original ``ReportScheduleLogRestApi`` (FAB
+        # ``get_list_headless``): honor the user-supplied rison ``filters`` and
+        # ``order_column``/``order_direction`` (order_columns: state, value,
+        # error_message, end_dttm, start_dttm, scheduled_dttm) in addition to
+        # the mandatory ``report_schedule_id == pk`` scope.
+        rison_filters, order_by, page, page_size = build_rison_query_params(
+            model_cls, rison_params
+        )
+        filters = [model_cls.report_schedule_id == pk] + (rison_filters or [])
+        items = await dao.find_all(
+            filters=filters,
+            page=page,
+            page_size=page_size,
+            order_by=order_by,
+        )
         total = await dao.count(filters=filters)
         return serialize_list_response(
             items,
