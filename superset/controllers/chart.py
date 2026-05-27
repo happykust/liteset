@@ -1872,6 +1872,14 @@ class ChartController(Controller):
                     elif q.get("data"):
                         frames.append(pd.DataFrame(q["data"]))
 
+            # Timestamped download filename — 1:1 with the original
+            # ``generate_download_headers`` (``views/base.py``) which uses
+            # ``datetime.now().strftime("%Y%m%d_%H%M%S").<ext>`` (was a static
+            # ``data.csv`` / ``data.xlsx`` / ``chart_data.zip``).
+            from datetime import datetime as _dt
+
+            _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+
             if len(frames) <= 1:
                 # Single query (or no data): return file directly
                 df = frames[0] if frames else pd.DataFrame()
@@ -1881,14 +1889,16 @@ class ChartController(Controller):
                         content=csv_content,
                         media_type="text/csv",
                         headers={
-                            "Content-Disposition": "attachment; filename=data.csv"
+                            "Content-Disposition": f"attachment; filename={_ts}.csv"
                         },
                     )
                 xlsx_data = AsyncQueryContextProcessor.get_data(df, "xlsx")
                 return Response(
                     content=xlsx_data,
                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={"Content-Disposition": 'attachment; filename="data.xlsx"'},
+                    headers={
+                        "Content-Disposition": f"attachment; filename={_ts}.xlsx"
+                    },
                 )
 
             # Multiple queries: bundle individual files into a ZIP
@@ -1907,7 +1917,7 @@ class ChartController(Controller):
             return Response(
                 content=zip_buf.getvalue(),
                 media_type="application/zip",
-                headers={"Content-Disposition": "attachment; filename=chart_data.zip"},
+                headers={"Content-Disposition": f"attachment; filename={_ts}.zip"},
             )
 
         # --- post_processed branch — 1:1 with superset_old/charts/data/api.py ---
