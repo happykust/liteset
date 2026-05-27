@@ -1878,8 +1878,12 @@ class ChartController(Controller):
                 df = pd.DataFrame()
 
             records = df.to_dict(orient="records")
+            # The original chart-data API serializes every JSON response as
+            # ``{"result": [...]}`` (``_send_chart_response`` JSON branch), and
+            # the frontend reads ``json.result`` — samples must use the same
+            # envelope, not ``{"queries": ...}``.
             sample_result: dict[str, Any] = {
-                "queries": [
+                "result": [
                     {
                         "data": records,
                         "colnames": list(df.columns),
