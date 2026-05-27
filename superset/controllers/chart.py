@@ -928,12 +928,19 @@ class ChartController(Controller):
         if not feature_flags.get("THUMBNAILS", False):
             return Response(content={"message": "Not found"}, status_code=404)
 
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.slice import Slice
         from superset.utils.screenshots import (
             ChartScreenshot,
             ScreenshotCachePayload,
         )
 
-        chart = await dao.find_by_id(pk)
+        # Eager-load the datasource (``table``) so ``chart.digest`` →
+        # get_chart_digest can read ``chart.datasource`` without a sync
+        # lazy-load (MissingGreenlet) on the async session (this endpoint is
+        # only reachable with THUMBNAILS enabled, mirroring the list loader).
+        chart = await dao.find_by_id_with_options(pk, [selectinload(Slice.table)])
         if not chart:
             raise ObjectNotFoundError("Chart", pk)
 
@@ -1066,13 +1073,18 @@ class ChartController(Controller):
         if not feature_flags.get("THUMBNAILS", False):
             return Response(content=b"", status_code=404, media_type="image/png")
 
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.slice import Slice
         from superset.utils.screenshots import (
             ChartScreenshot,
             ScreenshotCachePayload,
             ScreenshotImageNotAvailableException,
         )
 
-        chart = await dao.find_by_id(pk)
+        # Eager-load the datasource (``table``) so the ``chart.digest`` read
+        # below doesn't trip a sync lazy-load (MissingGreenlet).
+        chart = await dao.find_by_id_with_options(pk, [selectinload(Slice.table)])
         if not chart:
             raise ObjectNotFoundError("Chart", pk)
 
