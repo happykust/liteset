@@ -253,7 +253,13 @@ async def test_get_chart_data_executes_command(
 
     mock_chart_data_command_cls.assert_called_once()
     mock_cmd.execute.assert_awaited_once()
-    assert result == {"queries": [{"data": [1]}]}
+    # get_chart_data renders the command output via _render_chart_data_payload:
+    # a Response carrying ``{"result": [<query>, ...]}`` (1:1 with the original
+    # ``_send_chart_response`` JSON branch), not the raw command dict.
+    import msgspec as _msgspec
+
+    payload = _msgspec.json.decode(result.content)
+    assert payload["result"][0]["data"] == [1]
 
 
 # ---------------------------------------------------------------------------
@@ -262,19 +268,36 @@ async def test_get_chart_data_executes_command(
 
 
 @pytest.fixture
-def mock_chart_data_body():
-    body = MagicMock()
-    body.datasource = MagicMock()
-    body.datasource.type = "table"
-    body.datasource.id = 1
-    body.queries = [MagicMock()]
-    body.force = False
-    return body
+def post_body_bytes() -> bytes:
+    """A POST /data JSON body that routes through the default (full) branch.
+
+    The ``data`` handler no longer accepts a typed ``data`` parameter — it
+    reads and ``msgspec``-decodes the raw body off ``request`` (1:1 with the
+    original ``request.form.get("form_data")`` / JSON dispatch), so tests must
+    drive it with real bytes rather than a pre-built struct.
+    """
+    return json.dumps(
+        {
+            "datasource": {"id": 1, "type": "table"},
+            "queries": [{"columns": ["col1"]}],
+            "result_format": "json",
+            "result_type": "full",
+        }
+    ).encode("utf-8")
+
+
+def _make_post_request(body: bytes) -> MagicMock:
+    """Mock a Litestar request exposing a JSON body + content-type."""
+    request = MagicMock()
+    request.scope = {"headers": []}
+    request.content_type = ("application/json",)
+    request.body = AsyncMock(return_value=body)
+    return request
 
 
 async def test_data_datasource_not_found(
     controller,
-    mock_chart_data_body,
+    post_body_bytes,
     mock_ds_dao,
     mock_security_manager,
     mock_user,
@@ -285,8 +308,7 @@ async def test_data_datasource_not_found(
     with pytest.raises(ObjectNotFoundError):
         await _data(
             controller,
-            data=mock_chart_data_body,
-            request=MagicMock(),
+            request=_make_post_request(post_body_bytes),
             ds_dao=mock_ds_dao,
             security_manager=mock_security_manager,
             current_user=mock_user,
@@ -298,7 +320,7 @@ async def test_data_datasource_not_found(
 async def test_data_executes_command(
     mock_chart_data_command_cls,
     controller,
-    mock_chart_data_body,
+    post_body_bytes,
     mock_ds_dao,
     mock_security_manager,
     mock_user,
@@ -307,15 +329,21 @@ async def test_data_executes_command(
     """POST /data creates and executes a ChartDataCommand."""
     datasource = MagicMock()
     mock_ds_dao.get_datasource = AsyncMock(return_value=datasource)
+    # Non-guest user: the response keeps the raw query untouched.
+    mock_security_manager.is_guest_user = MagicMock(return_value=False)
 
     mock_cmd = AsyncMock()
-    mock_cmd.execute = AsyncMock(return_value={"queries": [{"data": [99]}]})
+    # Realistic query result: ``data`` is a list of record dicts (the shape
+    # ``df.to_dict(orient="records")`` produces), which the handler's
+    # NaN/Decimal cleanup pass iterates over.
+    mock_cmd.execute = AsyncMock(
+        return_value={"queries": [{"data": [{"value": 99}]}]}
+    )
     mock_chart_data_command_cls.return_value = mock_cmd
 
     result = await _data(
         controller,
-        data=mock_chart_data_body,
-        request=MagicMock(),
+        request=_make_post_request(post_body_bytes),
         ds_dao=mock_ds_dao,
         security_manager=mock_security_manager,
         current_user=mock_user,
@@ -324,10 +352,9 @@ async def test_data_executes_command(
 
     mock_chart_data_command_cls.assert_called_once()
     mock_cmd.execute.assert_awaited_once()
-    # T2-23: endpoint now returns a Response object for CSV/XLSX support
-    from litestar.response import Response as LitestarResponse
+    # The default JSON path serializes the command output as a Response
+    # carrying ``{"result": [<query>, ...]}``.
+    import msgspec as _msgspec
 
-    if isinstance(result, LitestarResponse):
-        assert result.content == {"queries": [{"data": [99]}]}
-    else:
-        assert result == {"queries": [{"data": [99]}]}
+    payload = _msgspec.json.decode(result.content)
+    assert payload["result"][0]["data"] == [{"value": 99}]
