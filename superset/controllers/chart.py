@@ -91,6 +91,37 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Chart data response serialization
 # ---------------------------------------------------------------------------
+def _truncate_results_query(q: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a ``result_type=results`` query payload to the five keys the
+    original emits for ``RESULTS`` (data / colnames / coltypes / rowcount /
+    sql_rowcount). 1:1 with
+    ``superset_old/common/query_actions.py:_get_full`` lines 138-145.
+    Only applied to non-failed queries by the caller.
+    """
+    return {
+        "data": q.get("data"),
+        "colnames": q.get("colnames"),
+        "coltypes": q.get("coltypes"),
+        "rowcount": q.get("rowcount"),
+        "sql_rowcount": q.get("sql_rowcount"),
+    }
+
+
+def _effective_result_types(result: dict[str, Any], n: int) -> list[str]:
+    """Per-query effective result_type, mirroring the original
+    ``query_obj.result_type or query_context.result_type`` precedence
+    (``superset_old/common/query_context_processor.py:1064``)."""
+    qc = result.get("query_context")
+    ctx_rt = getattr(qc, "result_type", None)
+    qos = list(getattr(qc, "queries", []) or [])
+    return [
+        (getattr(qos[i], "result_type", None) if i < len(qos) else None)
+        or ctx_rt
+        or "full"
+        for i in range(n)
+    ]
+
+
 def _render_chart_data_payload(  # noqa: C901
     result: dict[str, Any],
     *,
@@ -194,6 +225,16 @@ def _render_chart_data_payload(  # noqa: C901
     for q in queries:
         if isinstance(q, dict):
             q["indexnames"] = list(range(len(q.get("data", []))))
+
+    # 4. result_type=results truncation — 1:1 with the original ``_get_full``
+    # RESULTS branch (5 keys only, for non-failed queries).
+    result_types = _effective_result_types(result, len(queries))
+    queries = [
+        _truncate_results_query(q)
+        if isinstance(q, dict) and rt == "results" and q.get("status") != "failed"
+        else q
+        for q, rt in zip(queries, result_types, strict=True)
+    ]
 
     def _enc_hook(obj: Any) -> Any:
         if isinstance(obj, pd.Timestamp):
@@ -1563,6 +1604,13 @@ class ChartController(Controller):
             datasource=datasource,
             queries=query_objects,
             force=qc_data.get("force", False),
+            # Honor a ``?type=results`` override (applied to ``qc_data`` above)
+            # so the processor skips post-processing and the response is
+            # truncated to the 5 RESULTS keys. Other types keep the historical
+            # default path (the GET endpoint previously ignored ``?type=``).
+            result_type=(
+                "results" if qc_data.get("result_type") == "results" else None
+            ),
         )
         processor = AsyncQueryContextProcessor(
             datasource=datasource,
@@ -1990,6 +2038,13 @@ class ChartController(Controller):
                 queries=query_objects,
                 force=data.force,
                 result_format=result_format,
+                # Propagate ``results`` so the processor skips post-processing
+                # for that type (1:1 with the original ``_get_results`` →
+                # ``_get_full`` path). Other non-default types
+                # (columns/timegrains/drill_detail) keep the historical default
+                # path here — their dedicated processor branches are handled
+                # elsewhere / not yet ported (e.g. ``Database.grains``).
+                result_type="results" if result_type == "results" else None,
             )
             processor = AsyncQueryContextProcessor(
                 datasource=datasource,
@@ -2112,6 +2167,16 @@ class ChartController(Controller):
         for q in result.get("queries", []):
             if isinstance(q, dict):
                 q["indexnames"] = list(range(len(q.get("data", []))))
+
+        # result_type=results truncation — 1:1 with the original ``_get_full``
+        # RESULTS branch (5 keys only, for non-failed queries).
+        if result_type == "results":
+            result["queries"] = [
+                _truncate_results_query(q)
+                if isinstance(q, dict) and q.get("status") != "failed"
+                else q
+                for q in result.get("queries", [])
+            ]
 
         await event_logger.alog_with_context("chart.data_post")
         # Frontend expects {"result": [...]} not {"queries": [...]}
