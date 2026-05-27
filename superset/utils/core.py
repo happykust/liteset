@@ -347,6 +347,71 @@ def split_adhoc_filters_into_base_filters(
 
 
 # ---------------------------------------------------------------------------
+# Extra-filter enums + time-filter status (ported 1:1 from
+# superset_old/utils/core.py). Used by the chart-data response shape
+# (``applied_filters`` / ``rejected_filters``) in
+# ``common/query_context_processor.py``.
+# ---------------------------------------------------------------------------
+class ExtraFiltersTimeColumnType(StrEnum):
+    TIME_COL = "__time_col"
+    TIME_GRAIN = "__time_grain"
+    TIME_ORIGIN = "__time_origin"
+    TIME_RANGE = "__time_range"
+
+
+class ExtraFiltersReasonType(StrEnum):
+    NO_TEMPORAL_COLUMN = "no_temporal_column"
+    COL_NOT_IN_DATASOURCE = "not_in_datasource"
+
+
+def get_time_filter_status(
+    datasource: Any,
+    applied_time_extras: dict[str, str],
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    temporal_columns: set[Any] = {
+        col.column_name for col in datasource.columns if col.is_dttm
+    }
+    applied: list[dict[str, str]] = []
+    rejected: list[dict[str, str]] = []
+    if time_column := applied_time_extras.get(ExtraFiltersTimeColumnType.TIME_COL):
+        if time_column in temporal_columns:
+            applied.append({"column": ExtraFiltersTimeColumnType.TIME_COL})
+        else:
+            rejected.append(
+                {
+                    "reason": ExtraFiltersReasonType.COL_NOT_IN_DATASOURCE,
+                    "column": ExtraFiltersTimeColumnType.TIME_COL,
+                }
+            )
+
+    if ExtraFiltersTimeColumnType.TIME_GRAIN in applied_time_extras:
+        # are there any temporal columns to assign the time grain to?
+        if temporal_columns:
+            applied.append({"column": ExtraFiltersTimeColumnType.TIME_GRAIN})
+        else:
+            rejected.append(
+                {
+                    "reason": ExtraFiltersReasonType.NO_TEMPORAL_COLUMN,
+                    "column": ExtraFiltersTimeColumnType.TIME_GRAIN,
+                }
+            )
+
+    if applied_time_extras.get(ExtraFiltersTimeColumnType.TIME_RANGE):
+        # are there any temporal columns to assign the time range to?
+        if temporal_columns:
+            applied.append({"column": ExtraFiltersTimeColumnType.TIME_RANGE})
+        else:
+            rejected.append(
+                {
+                    "reason": ExtraFiltersReasonType.NO_TEMPORAL_COLUMN,
+                    "column": ExtraFiltersTimeColumnType.TIME_RANGE,
+                }
+            )
+
+    return applied, rejected
+
+
+# ---------------------------------------------------------------------------
 # FilterOperator enum (ported from superset_old/utils/core.py)
 # ---------------------------------------------------------------------------
 class FilterOperator(StrEnum):

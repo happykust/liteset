@@ -712,30 +712,83 @@ class AsyncQueryContextProcessor:
                 error_message = str(ex)
                 status = "failed"
 
-        # Compute label_map from DataFrame columns
-        label_map = {col: [col] for col in df.columns}
+        # Build the label_map (delta D3 — 1:1 with
+        # ``superset_old/common/query_context_processor.py:180-225``).
+        # The N-dimensional DataFrame has been flattened by the ``flatten``
+        # operator, escaping commas inside column names via
+        # ``escape_separator``; the result columns must be unescaped and each
+        # flattened label split back into its component dimension/metric
+        # labels. Adhoc columns/metrics additionally map to their SQL
+        # expression rather than their label.
+        from superset.utils.column import (
+            get_column_name,
+            get_column_names,
+            get_metric_names,
+            is_adhoc_column,
+            is_adhoc_metric,
+        )
+        from superset.utils.core import (
+            ExtraFiltersReasonType,
+            get_time_filter_status,
+        )
+        from superset.utils.pandas_postprocessing.utils import unescape_separator
+
+        label_map = {
+            unescape_separator(col): [
+                unescape_separator(c) for c in re.split(r"(?<!\\),\s", col)
+            ]
+            for col in df.columns.values
+        }
+        # Adhoc column/metric expression keys arrive in either camelCase
+        # (raw request) or snake_case (after msgspec ``rename="camel"``
+        # normalization), so read both — matching the dual-key convention
+        # in ``utils/column.py`` (see [[feedback_camelcase_snake]]).
+        def _adhoc_expr(obj: Any) -> Any:
+            return obj.get("sqlExpression") or obj.get("sql_expression")
+
+        def _adhoc_expr_type(obj: Any) -> Any:
+            return obj.get("expressionType") or obj.get("expression_type")
+
+        column_names = get_column_names(query_object.columns)
+        label_map.update(
+            {
+                column_name: [
+                    (
+                        str(query_object.columns[idx])
+                        if not is_adhoc_column(query_object.columns[idx])
+                        else _adhoc_expr(query_object.columns[idx])
+                    ),
+                ]
+                for idx, column_name in enumerate(column_names)
+            }
+        )
+        metric_names = get_metric_names(query_object.metrics or [])
+        label_map.update(
+            {
+                metric_name: [
+                    (
+                        str(query_object.metrics[idx])
+                        if not is_adhoc_metric(query_object.metrics[idx])
+                        else (
+                            str(_adhoc_expr(query_object.metrics[idx]))
+                            if _adhoc_expr_type(query_object.metrics[idx]) == "SQL"
+                            else metric_name
+                        )
+                    ),
+                ]
+                for idx, metric_name in enumerate(metric_names)
+                if query_object and query_object.metrics
+            }
+        )
+        df.columns = [unescape_separator(col) for col in df.columns.values]
 
         # Compute coltypes from DataFrame dtypes
         coltypes = self._extract_coltypes(df)
 
-        # Extract applied/rejected filters from query_object
-        applied_filters = [
-            {"column": f.get("col", ""), "op": f.get("op", "")}
-            for f in (query_object.filters or [])
-        ]
-        rejected_filters: list[dict[str, str]] = []
-
-        # Surfaced metadata from the SQL build pipeline. Mirrors the
-        # original ``superset_old/connectors/sqla/models.py`` chart-data
-        # response shape (delta #19) — filter columns the dataset
-        # actually applied vs. silently dropped, plus the names of any
-        # filters absorbed by Jinja templates inside the virtual
-        # dataset.  Two paths:
-        #
-        # - Cache hit: values were stored in the payload alongside the
-        #   DataFrame, so we propagate them straight through.
+        # Surfaced filter metadata from the SQL build pipeline. Two sources:
+        # - Cache hit: stored in the payload alongside the DataFrame.
         # - Cache miss: ``result`` is the freshly-computed dict from
-        #   :meth:`_get_query_result` — read the metadata directly.
+        #   :meth:`_get_query_result`.
         applied_filter_columns_meta: list[Any] = list(cached_applied_filter_columns)
         rejected_filter_columns_meta: list[Any] = list(cached_rejected_filter_columns)
         applied_template_filters_meta: list[str] = list(cached_applied_template_filters)
@@ -750,14 +803,33 @@ class AsyncQueryContextProcessor:
                 result.get("applied_template_filters") or []
             )
 
+        # Build ``applied_filters`` / ``rejected_filters`` (delta D1/D2 — 1:1
+        # with ``superset_old/common/query_actions.py:_get_full`` lines
+        # 119-136): combine the dataset-applied / dataset-rejected filter
+        # columns with the time-extra filter status. The raw
+        # ``applied_filter_columns`` / ``rejected_filter_columns`` lists are
+        # consumed here and NOT surfaced in the response (the original deletes
+        # them from the payload).
+        applied_time_columns, rejected_time_columns = get_time_filter_status(
+            self._datasource, dict(query_object.applied_time_extras or {})
+        )
+        applied_filters = [
+            {"column": get_column_name(col)} for col in applied_filter_columns_meta
+        ] + applied_time_columns
+        rejected_filters = [
+            {
+                "reason": ExtraFiltersReasonType.COL_NOT_IN_DATASOURCE,
+                "column": get_column_name(col),
+            }
+            for col in rejected_filter_columns_meta
+        ] + rejected_time_columns
+
         return {
             "cache_key": cache_key,
             "cached_dttm": None,
             "cache_timeout": timeout,
             "df": df,
             "applied_template_filters": applied_template_filters_meta,
-            "applied_filter_columns": applied_filter_columns_meta,
-            "rejected_filter_columns": rejected_filter_columns_meta,
             "annotation_data": annotation_data,
             "error": error_message,
             "is_cached": is_cached,
