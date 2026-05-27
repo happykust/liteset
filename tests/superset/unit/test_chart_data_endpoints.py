@@ -127,23 +127,29 @@ async def test_get_chart_data_no_query_context(
     mock_user,
     mock_state,
 ):
-    """get_chart_data raises validation error when chart has no query_context."""
-    from superset.exceptions import SupersetValidationException
+    """get_chart_data returns a 400 response when chart has no query_context.
 
+    1:1 with the original ``data(pk)`` view
+    (``superset_old/charts/data/api.py:134-139``): a missing/empty
+    ``query_context`` collapses to ``json_body is None`` →
+    ``response_400("Chart has no query context saved...")`` — a returned 400,
+    not a raised exception.
+    """
     chart = MagicMock()
     chart.query_context = None
     mock_chart_dao.find_by_id = AsyncMock(return_value=chart)
-    with pytest.raises(SupersetValidationException, match="no query context"):
-        await _get_chart_data(
-            controller,
-            request=MagicMock(),
-            pk=1,
-            dao=mock_chart_dao,
-            ds_dao=mock_ds_dao,
-            security_manager=mock_security_manager,
-            current_user=mock_user,
-            state=mock_state,
-        )
+    result = await _get_chart_data(
+        controller,
+        request=MagicMock(),
+        pk=1,
+        dao=mock_chart_dao,
+        ds_dao=mock_ds_dao,
+        security_manager=mock_security_manager,
+        current_user=mock_user,
+        state=mock_state,
+    )
+    assert result.status_code == 400
+    assert "query context" in result.content["message"].lower()
 
 
 async def test_get_chart_data_invalid_json(
@@ -154,23 +160,26 @@ async def test_get_chart_data_invalid_json(
     mock_user,
     mock_state,
 ):
-    """get_chart_data raises validation error when query_context is invalid JSON."""
-    from superset.exceptions import SupersetValidationException
+    """get_chart_data returns a 400 response when query_context is invalid JSON.
 
+    1:1 with the original: a JSON parse failure also collapses to
+    ``json_body is None`` → the same ``response_400`` message.
+    """
     chart = MagicMock()
     chart.query_context = "not valid json {"
     mock_chart_dao.find_by_id = AsyncMock(return_value=chart)
-    with pytest.raises(SupersetValidationException, match="invalid query context"):
-        await _get_chart_data(
-            controller,
-            request=MagicMock(),
-            pk=1,
-            dao=mock_chart_dao,
-            ds_dao=mock_ds_dao,
-            security_manager=mock_security_manager,
-            current_user=mock_user,
-            state=mock_state,
-        )
+    result = await _get_chart_data(
+        controller,
+        request=MagicMock(),
+        pk=1,
+        dao=mock_chart_dao,
+        ds_dao=mock_ds_dao,
+        security_manager=mock_security_manager,
+        current_user=mock_user,
+        state=mock_state,
+    )
+    assert result.status_code == 400
+    assert "query context" in result.content["message"].lower()
 
 
 async def test_get_chart_data_datasource_not_found(
