@@ -86,7 +86,15 @@ class AdvancedDataTypeController(Controller):
         registry = _get_registry(state)
         return {"result": list(registry.keys())}
 
-    @post("/convert", guards=[require_permission("can_read", "AdvancedDataType")])
+    @post(
+        "/convert",
+        guards=[require_permission("can_read", "AdvancedDataType")],
+        # Upstream only ships GET /convert (advanced_data_type/api.py:53);
+        # this POST variant exists for clients that prefer a body over a
+        # rison query string. Either way it returns the conversion result
+        # — no resource is created — so 200, not Litestar's default 201.
+        status_code=200,
+    )
     async def convert(
         self,
         data: AdvancedDataTypeConvertRequest,
