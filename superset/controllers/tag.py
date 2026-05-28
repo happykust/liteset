@@ -176,7 +176,11 @@ class TagController(Controller):
         await event_logger.alog_with_context(
             "tag.update", object_ref=str(pk), user_id=current_user.id
         )
-        return {"result": {"name": getattr(item, "name", "")}}
+        # FAB ``put_headless`` envelope: ``{"id": <pk>, "result": <edit_columns
+        # dump>}``. 1:1 with the original ``response(200, id=changed_model.id,
+        # result=item)`` — the port previously dropped ``id`` and reduced
+        # ``result`` to just ``{"name": …}``.
+        return {"id": item.id, "result": raw}
 
     @delete(
         "/{pk:int}",
