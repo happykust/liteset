@@ -40,19 +40,31 @@ def _sanitize_slug(slug: str | None) -> str | None:
     return slug or None
 
 
-def _validate_json_string(field_name: str, value: Any) -> None:
+def _validate_json_string(
+    field_name: str,
+    value: Any,
+    *,
+    allow_empty: bool = True,
+) -> None:
     """Raise ``msgspec.ValidationError`` if value is not parseable JSON.
 
     Mirrors upstream's ``validate_json`` /  ``validate_json_metadata`` at
-    superset_old/dashboards/schemas.py:99-115 — invalid JSON in
-    ``position_json`` / ``json_metadata`` would silently persist as a
-    broken string and break dashboard render on next GET. Port skipped
-    this; add the same up-front check.
+    superset_old/dashboards/schemas.py:99-115. Empty string is rejected
+    when ``allow_empty=False`` (matches marshmallow's ``validate_json``
+    on required fields like temporary-cache ``value``); for nullable
+    update fields (``json_metadata``, ``position_json``) we accept empty
+    as "no change" — the controller layer translates it to None.
     """
-    if value is None or value is msgspec.UNSET or value == "":
+    if value is None or value is msgspec.UNSET:
         return
     if not isinstance(value, (str, bytes, bytearray)):
         return
+    if value == "" or value == b"":
+        if allow_empty:
+            return
+        raise msgspec.ValidationError(
+            f"{field_name} cannot be empty"
+        )
     import json as _json
 
     try:
@@ -192,10 +204,22 @@ class DashboardPermalinkSchema(msgspec.Struct, rename="camel"):
 
 
 class FilterStateSchema(msgspec.Struct):
-    """POST/PUT filter state value."""
+    """POST/PUT filter state value.
+
+    1:1 with upstream ``TemporaryCachePostSchema`` /
+    ``TemporaryCachePutSchema``
+    (superset_old/temporary_cache/schemas.py:22-37): ``value`` is
+    required, non-empty, and must be parseable JSON (``validate=
+    validate_json``). The temporary-cache store doesn't enforce JSON at
+    the DB layer, but the frontend loads the value with ``JSON.parse``
+    on retrieval — a malformed payload poisons the dashboard URL.
+    """
 
     value: str
     tab_id: int | None = None
+
+    def __post_init__(self) -> None:
+        _validate_json_string("value", self.value, allow_empty=False)
 
 
 # ---------------------------------------------------------------------------
