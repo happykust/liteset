@@ -848,7 +848,10 @@ class LegacyDatasourceController(Controller):
         Mirrors ``superset_old/views/datasource/views.py``
         ``Datasource.external_metadata_by_name``.
         """
-        import rison as _rison
+        # The port uses ``prison`` (a maintained fork) for Rison decoding;
+        # the unmaintained ``rison`` pypi package is not installed, so
+        # importing it raises ``ModuleNotFoundError`` → 500 on every call.
+        import prison as _rison
 
         q_raw = request.query_params.get("q") or ""
         try:
