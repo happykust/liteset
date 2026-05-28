@@ -27,7 +27,7 @@ The Litestar-specific exception handlers live at the bottom of this file.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any, TYPE_CHECKING
 
 from litestar import MediaType, Request, Response
 
@@ -976,6 +976,12 @@ def integrity_error_handler(
     rather than ``500 Internal Server Error``.
     """
     detail = str(getattr(exc, "orig", exc)) or "Integrity error"
+    # Sanitize ``<class 'X'>: msg`` prefixes that some SQLAlchemy 2.0 +
+    # asyncpg combos produce — they leak the DBAPI exception class repr into
+    # the user-visible toast (e.g. ``<class 'asyncpg.exceptions.ForeignKey…``).
+    import re as _re
+
+    detail = _re.sub(r"^<class '[^']+'>:\s*", "", detail)
     logger.warning("IntegrityError on %s %s: %s", request.method, request.url, detail)
     return Response(
         content={
