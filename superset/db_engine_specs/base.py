@@ -1225,6 +1225,14 @@ class BaseEngineSpec:  # noqa: PLR0904
         import re as _re
 
         raw = _re.sub(r"<class '[^']+'>:\s*", "", raw)
+        # ``(builtins.NoneType) None`` / ``(builtins.ValueError) msg`` —
+        # SA-2.0 wraps DBAPI errors with the builtin-class repr when the
+        # underlying message is empty (e.g. an asyncpg ``Error`` with no
+        # detail). The remaining ``(builtins.X) Y`` is noise; collapse
+        # to just ``Y`` (or empty when Y is the literal ``None`` repr).
+        raw = _re.sub(r"^\(builtins\.[A-Za-z_]+\)\s*", "", raw)
+        if raw.lower() == "none":
+            raw = ""
         return raw
 
     @classmethod

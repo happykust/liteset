@@ -196,7 +196,24 @@ class SupersetErrorsException(SupersetException):
         chosen = status if status is not None else status_code
         if chosen is not None:
             self.status_code = chosen
-        super().__init__(message=message or str(self.errors))
+        # Pick the first error's message for ``self.message`` (FAB compat —
+        # most consumers display this in a toast). Falls back to
+        # ``str(self.errors)`` only when no errors were supplied at all,
+        # not when the list has structured dict/SupersetError elements
+        # (otherwise the user sees the Python repr of the list, e.g.
+        # ``"[{'error_type': '...', 'message': '...', 'level': '...'}]"``).
+        if not message:
+            from superset.errors import SupersetError as _SupersetError
+
+            if self.errors:
+                first = self.errors[0]
+                if isinstance(first, _SupersetError):
+                    message = str(getattr(first, "message", "")) or ""
+                elif isinstance(first, dict):
+                    message = str(first.get("message", "")) or ""
+                else:
+                    message = str(first)
+        super().__init__(message=message or "")
 
     def _errors_as_dicts(self) -> list[dict[str, Any]]:
         from superset.errors import SupersetError as _SupersetError
