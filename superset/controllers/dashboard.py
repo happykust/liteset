@@ -1887,7 +1887,11 @@ class DashboardController(Controller):
         await event_logger.alog_with_context(
             "dashboard.create_permalink", object_ref=f"dashboard:{pk}"
         )
-        return {"key": key, "url": f"/api/v1/dashboard/permalink/{key}"}
+        # 1:1 with superset_old/dashboards/permalink/api.py:170:
+        # ``url_for("Superset.dashboard_permalink", key=key, _external=True)``
+        # resolves to ``/superset/dashboard/p/{key}/`` (the SPA route the
+        # frontend redirects to / copies). Do NOT hand back the API endpoint.
+        return {"key": key, "url": f"/superset/dashboard/p/{key}/"}
 
     @get(
         "/permalink/{key:str}",
