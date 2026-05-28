@@ -82,9 +82,20 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
           ``self._configs.get("metadata.yaml")`` always misses and we
           return the bogus "Missing metadata.yaml" error even though the
           bundle contains it under the export folder.
+        * Raises ``CommandInvalidError`` (422) for malformed uploads
+          instead of leaking ``zipfile.BadZipFile`` as 500 — matches
+          upstream's ``IncorrectFormatError`` for the same condition
+          (``charts/api.py::import_``: ``if not is_zipfile(upload):
+          raise IncorrectFormatError("Not a ZIP file")``).
         """
+        try:
+            zf_ctx = zipfile.ZipFile(self._contents)
+        except zipfile.BadZipFile as ex:
+            raise CommandInvalidError(
+                "Uploaded file is not a valid ZIP archive."
+            ) from ex
         configs: dict[str, dict[str, Any]] = {}
-        with zipfile.ZipFile(self._contents) as zf:
+        with zf_ctx as zf:
             entries = [n for n in zf.namelist() if not n.endswith("/")]
             if len(entries) > MAX_ZIP_ENTRIES:
                 raise ValueError(
