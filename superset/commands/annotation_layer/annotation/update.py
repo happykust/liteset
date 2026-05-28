@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
-from superset.exceptions import ObjectNotFoundError
+from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 
 if TYPE_CHECKING:
     from superset.models.annotations import Annotation
@@ -40,6 +40,18 @@ class UpdateAnnotationCommand(AsyncBaseCommand["Annotation"]):
         self._annotation = await self._dao.find_by_id(self._pk)
         if not self._annotation:
             raise ObjectNotFoundError("Annotation", self._pk)
+
+        # Mirror upstream date-sanity check (superset_old/commands/annotation_
+        # layer/annotation/update.py:82-84). Falls back to the stored value
+        # when the incoming payload omits one side of the range.
+        existing_start = getattr(self._annotation, "start_dttm", None)
+        existing_end = getattr(self._annotation, "end_dttm", None)
+        start_dttm = self._data.get("start_dttm", existing_start)
+        end_dttm = self._data.get("end_dttm", existing_end)
+        if start_dttm and end_dttm and end_dttm < start_dttm:
+            raise CommandInvalidError(
+                "end_dttm must be greater or equal to start_dttm"
+            )
 
     async def run(self) -> "Annotation":
         assert self._annotation is not None

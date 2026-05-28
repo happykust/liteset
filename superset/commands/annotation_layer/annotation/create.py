@@ -50,6 +50,17 @@ class CreateAnnotationCommand(AsyncBaseCommand["Annotation"]):
         if not short_descr or not short_descr.strip():
             raise CommandInvalidError("short_descr is required")
 
+        # Mirror upstream validations (superset_old/commands/annotation_layer/
+        # annotation/create.py:67-72) — `end_dttm < start_dttm` → 422
+        # AnnotationDatesValidationError; uniqueness handled at the DAO/DB
+        # level so it surfaces as the IntegrityError 422 envelope.
+        start_dttm = self._data.get("start_dttm")
+        end_dttm = self._data.get("end_dttm")
+        if start_dttm and end_dttm and end_dttm < start_dttm:
+            raise CommandInvalidError(
+                "end_dttm must be greater or equal to start_dttm"
+            )
+
     async def run(self) -> "Annotation":
         self._data["layer_id"] = self._layer_pk
         item = await self._dao.create(self._data)
