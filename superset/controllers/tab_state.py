@@ -64,14 +64,19 @@ class TabStateController(Controller):
         "table_schema_dao": Provide(_provide_table_schema_dao, sync_to_thread=False),
     }
 
-    @post("/")
+    @post("/", status_code=200)
     async def create(
         self,
         request: Request[Any, Any, Any],
         dao: AsyncTabStateDAO,
         current_user: UserProtocol,
     ) -> Response[str]:
-        """POST /tabstateview/ — create a new tab state."""
+        """POST /tabstateview/ — create a new tab state.
+
+        Upstream's Flask view returns 200 via ``json_success`` (which sets
+        no explicit status_code, so Werkzeug defaults to 200). Override
+        Litestar's @post default of 201 to match.
+        """
         try:
             form = await request.form()
             query_editor = json.loads(form["queryEditor"])
@@ -180,14 +185,17 @@ class TabStateController(Controller):
             media_type="application/json",
         )
 
-    @post("/{tab_state_id:int}/activate")
+    @post("/{tab_state_id:int}/activate", status_code=200)
     async def activate(
         self,
         tab_state_id: int,
         dao: AsyncTabStateDAO,
         current_user: UserProtocol,
     ) -> Response[str]:
-        """POST /tabstateview/<id>/activate — activate a tab."""
+        """POST /tabstateview/<id>/activate — activate a tab.
+
+        Upstream returns 200 via ``json_success``; override Litestar default.
+        """
         owner_id = await dao.get_owner_id(tab_state_id)
         if owner_id is None:
             return Response(
@@ -254,7 +262,7 @@ class TabStateController(Controller):
                 media_type="application/json",
             )
 
-    @post("/{tab_state_id:int}/migrate_query")
+    @post("/{tab_state_id:int}/migrate_query", status_code=200)
     async def migrate_query(
         self,
         tab_state_id: int,
@@ -355,13 +363,16 @@ class TableSchemaController(Controller):
         "dao": Provide(_provide_table_schema_dao, sync_to_thread=False),
     }
 
-    @post("/")
+    @post("/", status_code=200)
     async def create(
         self,
         request: Request[Any, Any, Any],
         dao: AsyncTableSchemaDAO,
     ) -> Response[str]:
-        """POST /tableschemaview/ — create or replace a table schema entry."""
+        """POST /tableschemaview/ — create or replace a table schema entry.
+
+        Upstream returns 200 via ``json_success``; override Litestar default.
+        """
         try:
             form = await request.form()
             raw_table = form.get("table", "{}")
@@ -439,7 +450,7 @@ class TableSchemaController(Controller):
                 media_type="application/json",
             )
 
-    @post("/{table_schema_id:int}/expanded")
+    @post("/{table_schema_id:int}/expanded", status_code=200)
     async def set_expanded(
         self,
         table_schema_id: int,
