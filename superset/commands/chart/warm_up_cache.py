@@ -98,6 +98,11 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
             .where(Slice.id == self._chart_id)
             .options(
                 selectinload(Slice.table).selectinload(SqlaTable.database),
+                # Eager-load columns + metrics — the query build later reads
+                # them, and a sync lazy-load on the async session raises
+                # ``greenlet_spawn has not been called``.
+                selectinload(Slice.table).selectinload(SqlaTable.columns),
+                selectinload(Slice.table).selectinload(SqlaTable.metrics),
                 selectinload(Slice.owners),
             )
         )
@@ -274,21 +279,27 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
     # Branch B — modern ``query_context`` (AsyncQueryContextProcessor)
     # ------------------------------------------------------------------
 
-    def _build_queries(self, qc_dict: dict[str, Any]) -> list[Any]:
-        """Build AsyncQueryObject list from stored query_context dict."""
+    def _build_queries(
+        self, qc_dict: dict[str, Any], datasource: Any
+    ) -> list[Any]:
+        """Build AsyncQueryObject list from stored query_context dict.
+
+        ``AsyncQueryObject.datasource`` is a required dataclass field; the
+        stored query_context's per-query dicts don't include it (it lives at
+        the top level), so construct via ``from_request`` with the chart's
+        datasource — this matches how the chart-data controller builds queries.
+        """
         import json as _stdlib_json
 
         from superset.common.query_object import AsyncQueryObject
 
+        ds_dict = {
+            "type": getattr(datasource, "type", "table"),
+            "id": getattr(datasource, "id", 0),
+        }
         queries: list[AsyncQueryObject] = []
         for q in qc_dict.get("queries", []):
-            qo = AsyncQueryObject(
-                **{
-                    k: v
-                    for k, v in q.items()
-                    if k in AsyncQueryObject.__dataclass_fields__
-                }
-            )
+            qo = AsyncQueryObject.from_request(q, ds_dict)
             queries.append(qo)
 
         if not queries:
@@ -324,7 +335,7 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
         if not datasource:
             raise CommandInvalidError("Chart's datasource does not exist")
 
-        queries = self._build_queries(qc_dict)
+        queries = self._build_queries(qc_dict, datasource)
 
         query_context = AsyncQueryContext(
             datasource=datasource,
@@ -336,7 +347,13 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
         processor = AsyncQueryContextProcessor(
             datasource=datasource,
             settings=SupersetSettings(),
-            security_manager=None,
+            # ``security_manager`` was hardcoded ``None`` — the processor
+            # unconditionally calls ``self._security_manager.get_rls_cache_key``
+            # in ``_get_cache_key``, which then ``NoneType``-errored. The
+            # controller already injects a real security_manager into the
+            # command, so pass it through.
+            security_manager=self._security_manager,
+            user=self._current_user,
             query_context=query_context,
         )
 
