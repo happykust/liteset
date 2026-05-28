@@ -102,7 +102,7 @@ class BulkDeleteDashboardsCommand(AsyncBaseCommand[None]):
         found_ids = {int(d.id) for d in self._dashboards}
         missing = set(self._dashboard_ids) - found_ids
         if missing:
-            raise ObjectNotFoundError("Dashboard", str(missing))
+            raise ObjectNotFoundError("Dashboard", str(sorted(missing)))
         # Check there are no associated ReportSchedules — 1:1 with the
         # original ``DeleteDashboardCommand``, which raises BEFORE the
         # ownership check.

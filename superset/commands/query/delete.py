@@ -94,7 +94,7 @@ class BulkDeleteSavedQueriesCommand(AsyncBaseCommand[None]):
         found_ids = {int(q.id) for q in self._queries}
         missing = set(self._ids) - found_ids
         if missing:
-            raise ObjectNotFoundError("SavedQuery", str(missing))
+            raise ObjectNotFoundError("SavedQuery", str(sorted(missing)))
         if self._security_manager is not None:
             for query in self._queries:
                 await self._security_manager.raise_for_ownership(query, self._user_id)

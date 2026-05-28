@@ -99,7 +99,7 @@ class BulkDeleteCssTemplateCommand(AsyncBaseCommand[None]):
         found_ids = {int(t.id) for t in self._templates}
         missing = set(self._ids) - found_ids
         if missing:
-            raise ObjectNotFoundError("CssTemplate", str(missing))
+            raise ObjectNotFoundError("CssTemplate", str(sorted(missing)))
 
     async def run(self) -> None:
         await self._dao.delete(self._templates)

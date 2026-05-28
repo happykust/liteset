@@ -576,7 +576,7 @@ class BulkDeleteReportScheduleCommand(AsyncBaseCommand[None]):
         found_ids = {int(r.id) for r in self._reports}
         missing = set(self._ids) - found_ids
         if missing:
-            raise ObjectNotFoundError("ReportSchedule", str(missing))
+            raise ObjectNotFoundError("ReportSchedule", str(sorted(missing)))
 
         # Check ownership for every report — 1:1 with
         # ``superset_old/commands/report/delete.py:53-58``.

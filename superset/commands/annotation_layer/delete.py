@@ -63,7 +63,7 @@ class BulkDeleteAnnotationLayerCommand(AsyncBaseCommand[None]):
         found_ids = {layer.id for layer in self._layers}
         missing = set(self._ids) - found_ids
         if missing:
-            raise ObjectNotFoundError("AnnotationLayer", str(missing))
+            raise ObjectNotFoundError("AnnotationLayer", str(sorted(missing)))
         has_children = await self._dao.has_annotations(self._ids)
         if has_children:
             raise CommandInvalidError(

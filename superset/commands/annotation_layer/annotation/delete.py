@@ -58,7 +58,7 @@ class BulkDeleteAnnotationCommand(AsyncBaseCommand[None]):
         found_ids = {a.id for a in self._annotations}
         missing = set(self._ids) - found_ids
         if missing:
-            raise ObjectNotFoundError("Annotation", str(missing))
+            raise ObjectNotFoundError("Annotation", str(sorted(missing)))
 
     async def run(self) -> None:
         await self._dao.delete(self._annotations)

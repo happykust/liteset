@@ -86,7 +86,7 @@ class BulkDeleteDatasetsCommand(AsyncBaseCommand[None]):
         found_ids = {int(d.id) for d in self._datasets}
         missing = set(self._dataset_ids) - found_ids
         if missing:
-            raise ObjectNotFoundError("Dataset", str(missing))
+            raise ObjectNotFoundError("Dataset", str(sorted(missing)))
         if self._security_manager is not None:
             for dataset in self._datasets:
                 await self._security_manager.raise_for_ownership(dataset, self._user_id)

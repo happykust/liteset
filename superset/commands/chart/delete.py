@@ -97,7 +97,9 @@ class BulkDeleteChartsCommand(AsyncBaseCommand[None]):
         found_ids = {int(c.id) for c in self._charts}
         missing = set(self._chart_ids) - found_ids
         if missing:
-            raise ObjectNotFoundError("Chart", str(missing))
+            # ``str({99998, 99999})`` would render as the Python set repr;
+            # frontend message comparisons (and unit tests) expect a list.
+            raise ObjectNotFoundError("Chart", str(sorted(missing)))
         # Check there are no associated ReportSchedules (1:1 with the original
         # ``DeleteChartCommand``; the bulk path previously skipped this check).
         from superset.db.daos.report import AsyncReportScheduleDAO
