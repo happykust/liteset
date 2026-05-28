@@ -92,6 +92,16 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             current_user = await self._dao.session.get(User, self._user_id)
             if current_user is not None:
                 new_dataset.owners = [current_user]
+        # Initialise the *new* dataset's collections BEFORE ``session.add``
+        # so SQLAlchemy registers them as already-loaded — otherwise a
+        # subsequent ``.append(...)`` (or any read access) triggers a sync
+        # lazy-load against asyncpg and dies with ``MissingGreenlet``. The
+        # default ``lazy="select"`` strategy fires the SELECT eagerly on
+        # first attribute touch even for an obviously-empty collection on a
+        # transient instance.
+        new_dataset.columns = []
+        new_dataset.metrics = []
+
         self._dao.session.add(new_dataset)
         await self._dao.session.flush()
 
