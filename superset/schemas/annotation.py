@@ -30,17 +30,26 @@ from msgspec import Meta
 
 
 class AnnotationLayerPostSchema(msgspec.Struct):
-    """POST /api/v1/annotation_layer/"""
+    """POST /api/v1/annotation_layer/
 
-    name: Annotated[str, Meta(min_length=1)]
-    descr: str = ""
+    Upstream's AnnotationLayerPostSchema enforces ``Length(1, 250)`` on
+    both ``name`` and ``descr``
+    (superset_old/annotation_layers/schemas.py:47-58).
+    """
+
+    name: Annotated[str, Meta(min_length=1, max_length=250)]
+    descr: Annotated[str, Meta(max_length=250)] = ""
 
 
 class AnnotationLayerPutSchema(msgspec.Struct):
     """PUT /api/v1/annotation_layer/<pk>"""
 
-    name: str | None | msgspec.UnsetType = msgspec.UNSET
-    descr: str | None | msgspec.UnsetType = msgspec.UNSET
+    name: (
+        Annotated[str, Meta(min_length=1, max_length=250)] | None | msgspec.UnsetType
+    ) = msgspec.UNSET
+    descr: (
+        Annotated[str, Meta(max_length=250)] | None | msgspec.UnsetType
+    ) = msgspec.UNSET
 
 
 # ---------------------------------------------------------------------------

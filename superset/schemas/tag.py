@@ -25,13 +25,23 @@ from msgspec import Meta
 
 
 class TagPostSchema(msgspec.Struct):
-    name: Annotated[str, Meta(min_length=1)]
+    # Upstream's TagObjectSchema enforces ``Length(min=1)`` on ``name``
+    # (superset_old/tags/schemas.py:75). The ``tag.name`` DB column is
+    # ``VARCHAR(250)``; cap at the DB limit so a long string is rejected
+    # cleanly instead of failing in the asyncpg StringDataRightTruncation
+    # path (now caught by the global DBAPI handler as 400, but it's nicer
+    # to reject up-front with the field name).
+    name: Annotated[str, Meta(min_length=1, max_length=250)]
     description: str | None = None
     objects_to_tag: list[list[str | int]] = []
 
 
 class TagPutSchema(msgspec.Struct):
-    name: str | None | msgspec.UnsetType = msgspec.UNSET
+    # PUT keeps the field optional via msgspec.UNSET, but if supplied it
+    # still has to satisfy the same length constraint as POST.
+    name: (
+        Annotated[str, Meta(min_length=1, max_length=250)] | None | msgspec.UnsetType
+    ) = msgspec.UNSET
     description: str | None | msgspec.UnsetType = msgspec.UNSET
     objects_to_tag: list[list[str | int]] | msgspec.UnsetType = msgspec.UNSET
 

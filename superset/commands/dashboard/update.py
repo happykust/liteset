@@ -148,15 +148,17 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
                 self._data.get("owners"),
             )
 
-        # Resolve roles
-        role_ids = self._data.get("roles", [])
-        if role_ids and self._security_manager is not None:
-            roles = []
-            for rid in role_ids:
-                role = await self._security_manager.find_role_by_id(rid)
-                if role:
-                    roles.append(role)
-            self._dashboard.roles = roles
+        # Resolve roles — use the shared ``populate_roles`` helper so a
+        # missing role id raises ``RolesNotFoundValidationError`` (422)
+        # instead of being silently dropped. Upstream's
+        # superset_old/commands/dashboard/update.py:116 uses the same
+        # helper for exactly this reason.
+        if "roles" in self._data:
+            from superset.commands.utils import populate_roles
+
+            self._dashboard.roles = await populate_roles(
+                self._dao.session, self._data["roles"]
+            )
 
         await self._dao.session.flush()
 
