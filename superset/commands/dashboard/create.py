@@ -70,9 +70,11 @@ class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         self._dao.session.add(dashboard)
         await self._dao.session.flush()
 
-        # Resolve owners — refresh first to avoid MissingGreenlet
-        # on the lazy-loaded collection in async context.
-        await self._dao.session.refresh(dashboard, ["owners"])
+        # Resolve owners + roles — refresh first to avoid MissingGreenlet
+        # on the lazy-loaded collections in async context. Both are M2M
+        # and the post-flush ``dashboard.<rel> = [...]`` assignment
+        # otherwise triggers SA's diff-load (sync IO → asyncpg crash).
+        await self._dao.session.refresh(dashboard, ["owners", "roles"])
         resolved_owner_ids: list[int] = []
         if self._security_manager is not None:
             owners = await populate_owner_list(
@@ -84,15 +86,17 @@ class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
             dashboard.owners = owners
             resolved_owner_ids = [o.id for o in owners]
 
-        # Resolve roles
-        role_ids = self._data.get("roles", [])
-        if role_ids and self._security_manager is not None:
-            roles = []
-            for rid in role_ids:
-                role = await self._security_manager.find_role_by_id(rid)
-                if role:
-                    roles.append(role)
-            dashboard.roles = roles
+        # Resolve roles — 1:1 with upstream
+        # ``superset_old/commands/dashboard/create.py`` which calls
+        # ``populate_roles(roles_ids)`` (raises ``RolesNotFoundValidation
+        # Error`` 422 on a missing id). Previous loop silently dropped
+        # invalid ids, allowing a POST with ``roles=[99999]`` to create
+        # a dashboard with no roles attached at all.
+        role_ids = self._data.get("roles")
+        if role_ids:
+            from superset.commands.utils import populate_roles
+
+            dashboard.roles = await populate_roles(self._dao.session, role_ids)
 
         # Add implicit type: and owner: tags
         # (async port of DashboardUpdater.after_insert)
