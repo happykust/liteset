@@ -123,15 +123,38 @@ class BinaryUUID(sa_types.TypeDecorator[uuid.UUID]):
     def process_result_value(
         self, value: bytes | memoryview | None, dialect: Any
     ) -> uuid.UUID | None:
+        """Decode bytea → UUID. Tolerate corrupt DB rows.
+
+        A single bad uuid byte string (e.g. legacy data, a manual SQL
+        repair stored as text-as-bytea, or column-width mismatch) used
+        to abort the whole result row via ``ValueError: bytes is not a
+        16-char string`` — which propagated to ``GET /api/v1/chart/`` /
+        ``/dashboard/`` list endpoints as a 500. Log a warning and
+        return ``None`` so the rest of the row still loads — the caller
+        can decide whether a NULL uuid is fatal for *that* model.
+        """
         if value is None:
             return None
         if isinstance(value, memoryview):
             value = bytes(value)
-        if isinstance(value, bytes):
-            return uuid.UUID(bytes=value)
-        if isinstance(value, uuid.UUID):
-            return value
-        return uuid.UUID(str(value))
+        try:
+            if isinstance(value, bytes):
+                if len(value) == 16:
+                    return uuid.UUID(bytes=value)
+                # ``bytea`` storing a UUID-string form (e.g. legacy/manual
+                # repair). Try string parse before giving up.
+                return uuid.UUID(value.decode("ascii", errors="replace"))
+            if isinstance(value, uuid.UUID):
+                return value
+            return uuid.UUID(str(value))
+        except (ValueError, TypeError):
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "UUIDType: malformed bytes in DB (len=%s) — returning None",
+                len(value) if hasattr(value, "__len__") else "?",
+            )
+            return None
 
 
 # ---------------------------------------------------------------------------

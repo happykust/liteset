@@ -78,13 +78,28 @@ def build_order_by(
     order_column: str | None,
     order_direction: str = "asc",
 ) -> list[Any] | None:
-    """Build SQLAlchemy order_by clauses from rison order params."""
+    """Build SQLAlchemy order_by clauses from rison order params.
+
+    ``InstrumentedAttribute`` for a *relationship* (``Slice.owners``,
+    ``Slice.tags``, ``Slice.changed_by``) advertises ``.desc()`` /
+    ``.asc()`` but those raise ``NotImplementedError`` when the query
+    compiles — sorting by a relationship makes no SQL sense without a
+    join. Filter to ColumnProperty-backed attributes only; unknown
+    or relationship columns return ``None`` so the caller falls back
+    to the default (PK tiebreak) order. Matches FAB's behavior where
+    sorts referencing a non-column field silently no-op.
+    """
     if not order_column:
         return None
     # Resolve computed columns to their underlying DB column
     resolved = _COMPUTED_ORDER_COLUMNS.get(order_column, order_column)
     col = getattr(model_cls, resolved, None)
-    if col is None or not hasattr(col, "desc"):
+    if col is None:
+        return None
+    col_prop = getattr(col, "property", None)
+    if col_prop is None or getattr(col_prop, "columns", None) is None:
+        # ``owners``/``tags``/``changed_by`` etc. — relationship, not a
+        # column. Sorting needs a join the caller didn't ask for.
         return None
     if order_direction == "desc":
         return [col.desc()]
