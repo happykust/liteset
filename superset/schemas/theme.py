@@ -18,10 +18,33 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 import msgspec
 from msgspec import Meta
+
+
+def _validate_theme_json(value: Any) -> None:
+    """Mirror upstream's ``ThemeBaseSchema.validate_json_data``.
+
+    Upstream rejects unparseable JSON in ``json_data`` up-front
+    (superset_old/themes/schemas.py:70-76). Port skipped this, so a
+    PUT with ``json_data='{invalid'`` silently persisted broken text;
+    subsequent reads fed it to the SPA's ``JSON.parse`` and crashed
+    the theme picker.
+    """
+    if value is None or value is msgspec.UNSET:
+        return
+    if not isinstance(value, str) or value == "":
+        return
+    import json as _json
+
+    try:
+        _json.loads(value)
+    except (ValueError, TypeError) as ex:
+        raise msgspec.ValidationError(
+            f"json_data is not valid JSON: {ex}"
+        ) from ex
 
 
 class ThemePostSchema(msgspec.Struct):
@@ -37,9 +60,15 @@ class ThemePostSchema(msgspec.Struct):
     theme_name: Annotated[str, Meta(min_length=1)]
     json_data: str
 
+    def __post_init__(self) -> None:
+        _validate_theme_json(self.json_data)
+
 
 class ThemePutSchema(msgspec.Struct):
     """PUT /api/v1/theme/<pk>"""
 
     theme_name: str | None | msgspec.UnsetType = msgspec.UNSET
     json_data: str | None | msgspec.UnsetType = msgspec.UNSET
+
+    def __post_init__(self) -> None:
+        _validate_theme_json(self.json_data)
