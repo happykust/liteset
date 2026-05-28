@@ -307,26 +307,14 @@ def _engine_select_star_sync(database: Any, table: Table) -> str:
     catalog = getattr(database, "get_default_catalog", lambda: None)()
     qualified = Table(table.table, table.schema, table.catalog or catalog)
 
-    # Pre-fetch columns through the engine's Inspector so the
-    # ``select_star`` call doesn't recurse into ``database.get_columns``
-    # (which is not yet ported on the new ``Database`` model).  When
-    # column probing fails we fall back to ``cols=[]`` +
-    # ``latest_partition=False``.
-    cols: list[dict[str, Any]] = []
-    try:
-        with database.get_inspector(  # type: ignore[attr-defined]
-            catalog=qualified.catalog,
-            schema=qualified.schema,
-        ) as inspector:
-            cols = db_engine_spec.get_columns(inspector, qualified)
-    except Exception:  # noqa: BLE001
-        _log.warning(
-            "select_star: failed to introspect columns for %s",
-            qualified,
-            exc_info=True,
-        )
-
-    latest_partition = bool(cols)
+    # The /select_star/ endpoint always asks for ``show_cols=False`` and
+    # the partition rewrite only fires when ``latest_partition=True``;
+    # ``BaseEngineSpec.select_star`` only calls ``database.get_columns``
+    # when *either* is true (``if (show_cols or latest_partition) and not
+    # cols``). So with both off we can skip the pre-fetch entirely —
+    # eliminates the spurious ``failed to introspect columns`` warnings
+    # for non-existent tables (upstream's API behaves the same: returns
+    # plain ``SELECT * FROM table LIMIT 100`` without any introspection).
     try:
         with database.get_sqla_engine(  # type: ignore[attr-defined]
             catalog=qualified.catalog,
@@ -339,8 +327,8 @@ def _engine_select_star_sync(database: Any, table: Table) -> str:
                 limit=100,
                 show_cols=False,
                 indent=True,
-                latest_partition=latest_partition,
-                cols=cols or None,
+                latest_partition=False,
+                cols=None,
             )
     except Exception:  # noqa: BLE001
         if hasattr(db_engine_spec, "quote_table"):
