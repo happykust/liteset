@@ -1190,14 +1190,25 @@ class ChartController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
+        # 1:1 with ``superset_old/charts/api.py:849-850`` — nest every ZIP entry
+        # under ``chart_export_{timestamp}/`` so the v1 importer's
+        # ``remove_root`` (parts[1:]) strips it back off and the re-import
+        # round-trip works. Without the root prefix ``remove_root("metadata.yaml")``
+        # returns ``"."`` and the bundle fails validation with
+        # ``Missing metadata.yaml``.
+        from datetime import datetime as _datetime
+
+        timestamp = _datetime.now().strftime("%Y%m%dT%H%M%S")
+        root = f"chart_export_{timestamp}"
         cmd = ExportChartsCommand(model_ids=ids, dao=cast("AsyncChartDAO", dao))
+        cmd._root = root  # noqa: SLF001
         buf = await cmd.execute()
         await event_logger.alog_with_context("chart.export", extra={"count": len(ids)})
         return Stream(
             stream_zip(buf),
             status_code=200,
             media_type="application/zip",
-            headers=build_export_headers("charts_export.zip", token=token),
+            headers=build_export_headers(f"{root}.zip", token=token),
         )
 
     @get(

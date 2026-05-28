@@ -1107,23 +1107,30 @@ class DashboardController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
+        # 1:1 with ``superset_old/dashboards/api.py:1008-1031``: the ZIP is named
+        # ``dashboard_export_{YYYYMMDDTHHMMSS}.zip`` AND every entry inside is
+        # nested under that same ``dashboard_export_{ts}/`` folder — so the v1
+        # importer's ``remove_root`` (parts[1:]) strips it back off and the
+        # re-import round-trip works. The root-folder wrapping was missing →
+        # ``remove_root("metadata.yaml")`` returned ``"."`` → "Missing
+        # metadata.yaml" on re-import.
+        from datetime import datetime as _datetime
+
+        timestamp = _datetime.now().strftime("%Y%m%dT%H%M%S")
+        root = f"dashboard_export_{timestamp}"
         cmd = ExportDashboardsCommand(model_ids=ids, dao=cast("AsyncDashboardDAO", dao))
+        cmd._root = root  # noqa: SLF001
         buf = await cmd.execute()
         await event_logger.alog_with_context(
             "dashboard.export", extra={"count": len(ids)}
         )
-        # 1:1 with ``superset_old/dashboards/api.py:1008-1031``: the ZIP is named
-        # ``dashboard_export_{YYYYMMDDTHHMMSS}.zip`` and — when a ``token`` query
-        # param is present — a cookie *named by the token value* is set to
-        # ``done`` (``response.set_cookie(token, "done", max_age=600)``) so the
-        # frontend can detect download completion. The shared
-        # ``build_export_headers`` helper hard-codes both the filename and the
-        # cookie name, so we build the headers inline here to preserve the
-        # original contract.
-        from datetime import datetime as _datetime
-
-        timestamp = _datetime.now().strftime("%Y%m%dT%H%M%S")
-        filename = f"dashboard_export_{timestamp}.zip"
+        # When a ``token`` query param is present — a cookie *named by the
+        # token value* is set to ``done`` (``response.set_cookie(token, "done",
+        # max_age=600)``) so the frontend can detect download completion. The
+        # shared ``build_export_headers`` helper hard-codes both the filename
+        # and the cookie name, so we build the headers inline here to preserve
+        # the original contract.
+        filename = f"{root}.zip"
         headers: dict[str, str] = {
             "Content-Disposition": f"attachment; filename={filename}",
         }
