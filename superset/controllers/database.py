@@ -885,6 +885,13 @@ class DatabaseController(Controller):
         dao: DatabaseDAOProtocol,
         current_user: UserProtocol,
     ) -> DatabaseGetResponse:
+        # Bind the current user to the request-scoped ContextVar so downstream
+        # commands resolving ``get_current_user()`` (e.g. ``SyncPermissionsCommand``
+        # invoked from ``UpdateDatabaseCommand._sync_permissions``) find the
+        # logged-in user; without this they raise ``UserNotFoundInSessionError``.
+        from superset.utils.core import set_current_user
+
+        set_current_user(current_user)
         # Normalize the legacy ``encrypted_extra`` key -> ``masked_encrypted_extra``
         # before validation (1:1 with the original ``rename_encrypted_extra``
         # ``@pre_load`` hook) so older API clients keep working.
@@ -983,6 +990,13 @@ class DatabaseController(Controller):
         dao: DatabaseDAOProtocol,
         current_user: UserProtocol,
     ) -> DatabaseGetResponse:
+        # Bind the current user to the request-scoped ContextVar so downstream
+        # commands resolving ``get_current_user()`` (e.g. ``SyncPermissionsCommand``
+        # invoked from ``UpdateDatabaseCommand._sync_permissions``) find the
+        # logged-in user; without this they raise ``UserNotFoundInSessionError``.
+        from superset.utils.core import set_current_user
+
+        set_current_user(current_user)
         # Normalize the legacy ``encrypted_extra`` key -> ``masked_encrypted_extra``
         # before validation (1:1 with the original ``rename_encrypted_extra``
         # ``@pre_load`` hook) so older API clients keep working.
