@@ -26,8 +26,8 @@ Two controllers live here:
 from __future__ import annotations
 
 import json
-from urllib.parse import urlparse
 from typing import Any
+from urllib.parse import urlparse
 
 from litestar import Controller, get
 from litestar.connection import Request
@@ -64,6 +64,60 @@ class EmbeddedDashboardController(Controller):
     dependencies = {
         "embedded_dao": Provide(provide_embedded_dao, sync_to_thread=False),
     }
+
+    @get(
+        "/",
+        guards=[require_permission("can_read", "EmbeddedDashboard")],
+    )
+    async def get_list(
+        self,
+        state: State,
+        embedded_dao: Any,
+    ) -> dict[str, Any]:
+        """GET /api/v1/embedded_dashboard/ — list embedded dashboards.
+
+        1:1 with the original ``EmbeddedDashboardRestApi`` which inherits
+        ``BaseSupersetModelRestApi`` and auto-generates a GET ``/`` list.
+        """
+        from superset.controllers.base import (
+            build_rison_query_params,
+            serialize_list_response,
+        )
+        from superset.models.embedded_dashboard import EmbeddedDashboard
+
+        # Gate on the EMBEDDED_SUPERSET feature flag like the single-GET path
+        # (mirrors the original's ``@before_request ensure_embedded_enabled``).
+        feature_flags = getattr(state.settings, "feature_flags", {})
+        if not feature_flags.get("EMBEDDED_SUPERSET", False):
+            raise SupersetNotFoundError("Embedded dashboards are not enabled")
+
+        rison_filters, order_by, page, page_size = build_rison_query_params(
+            EmbeddedDashboard,
+            None,
+        )
+        items = await embedded_dao.find_all(
+            filters=rison_filters or None,
+            page=page,
+            page_size=page_size,
+            order_by=order_by,
+        )
+        total = await embedded_dao.count(filters=rison_filters or None)
+        # Match the original auto-list columns (no explicit ``list_columns``
+        # override, so FAB defaults to the model surface).
+        return serialize_list_response(
+            items,
+            total,
+            [
+                "uuid",
+                "dashboard_id",
+                "allow_domain_list",
+                "changed_on_delta_humanized",
+                "changed_by.first_name",
+                "changed_by.id",
+                "changed_by.last_name",
+            ],
+            list_title="List Embedded Dashboard",
+        )
 
     @get(
         "/{uuid:str}",
