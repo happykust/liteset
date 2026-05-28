@@ -29,6 +29,31 @@ from superset.schemas.base import ApiListResponse, ApiResponse, ModelStruct, Use
 # ---------------------------------------------------------------------------
 
 
+def _validate_uuid_field(field_name: str, value: Any) -> None:
+    """Reject malformed UUID strings before the SA UUID column does.
+
+    Mirrors upstream's ``fields.UUID(allow_none=True)`` — marshmallow
+    parses the string into ``UUID`` up-front and 400s on failure.
+    Without this gate a bad UUID propagates to ``process_bind_param``
+    which calls ``uuid.UUID(value)`` and crashes with
+    ``StatementError: badly formed hexadecimal UUID string`` (500).
+    """
+    if value is None or value is msgspec.UNSET:
+        return
+    if not isinstance(value, str):
+        return
+    if value == "":
+        return
+    import uuid as _uuid
+
+    try:
+        _uuid.UUID(value)
+    except (ValueError, TypeError) as ex:
+        raise msgspec.ValidationError(
+            f"{field_name} is not a valid UUID: {ex}"
+        ) from ex
+
+
 class DatasetPostSchema(msgspec.Struct):
     table_name: str
     database: int
@@ -43,6 +68,9 @@ class DatasetPostSchema(msgspec.Struct):
     catalog: str | None = None
     template_params: str | None = None
     uuid: str | None = None
+
+    def __post_init__(self) -> None:
+        _validate_uuid_field("uuid", self.uuid)
 
 
 class DatasetColumnsPut(msgspec.Struct):
@@ -107,6 +135,9 @@ class DatasetPutSchema(msgspec.Struct):
     catalog: str | None | msgspec.UnsetType = msgspec.UNSET
     uuid: str | None | msgspec.UnsetType = msgspec.UNSET
     folders: list[Any] | None | msgspec.UnsetType = msgspec.UNSET
+
+    def __post_init__(self) -> None:
+        _validate_uuid_field("uuid", self.uuid)
 
 
 class DatasetDuplicateSchema(msgspec.Struct):

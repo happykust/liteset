@@ -38,6 +38,7 @@ from sqlalchemy.exc import (
     DataError as _DataError,
     DBAPIError as _DBAPIError,
     IntegrityError as _IntegrityError,
+    StatementError as _StatementError,
 )
 
 from superset.config import SupersetSettings
@@ -59,6 +60,7 @@ from superset.exceptions import (
     data_error_handler,
     generic_exception_handler,
     integrity_error_handler,
+    statement_error_handler,
     superset_exception_handler,
     SupersetException,
     validation_error_handler,
@@ -99,6 +101,13 @@ def _build_exception_handlers() -> dict[Any, Any]:
         # exception's sqlstate (22xxx class = data exception → 400) and falls
         # through to the generic 500 for anything else.
         _DBAPIError: data_error_handler,
+        # SA StatementError (parent of DBAPIError) catches bind-param
+        # conversion failures BEFORE the DB sees the value — e.g. a
+        # malformed UUID string fed to a UUID column crashes in
+        # ``process_bind_param`` (uuid.UUID(value) → ValueError) and is
+        # re-raised as ``StatementError(builtins.ValueError)``. Treat it
+        # as a 400 client-side payload bug.
+        _StatementError: statement_error_handler,
         Exception: generic_exception_handler,
     }
 

@@ -1024,8 +1024,8 @@ def data_error_handler(
     """
     orig = getattr(exc, "orig", None)
     sqlstate = str(getattr(orig, "sqlstate", "") or "")
-    _CLIENT_CLASSES = ("22", "42")
-    if not any(sqlstate.startswith(c) for c in _CLIENT_CLASSES):
+    client_classes = ("22", "42")
+    if not any(sqlstate.startswith(c) for c in client_classes):
         # Non-client DBAPI error (08xxx connection, 53xxx insufficient
         # resources, real server bugs) — defer to the generic 500 path.
         return generic_exception_handler(request, exc)
@@ -1049,6 +1049,54 @@ def data_error_handler(
                     "error_type": "DATA_ERROR",
                     "level": "error",
                     "extra": {"sqlstate": sqlstate},
+                }
+            ],
+            "message": detail,
+            "detail": detail,
+        },
+        status_code=400,
+    )
+
+
+def statement_error_handler(
+    request: Request[Any, Any, Any], exc: Exception
+) -> Response[Any]:
+    """Translate SA StatementError to 400.
+
+    ``StatementError`` is the parent of ``DBAPIError`` plus a few
+    non-DBAPI failures, most notably bind-parameter conversion errors
+    (``process_bind_param`` raising ``ValueError`` / ``TypeError``).
+    Those *never* reach the DB — they're caught client-side by SA when
+    coercing the Python value to the column type.
+
+    Examples that ended in this handler: ``uuid.UUID('xxx')`` →
+    ``ValueError('badly formed hexadecimal UUID string')`` against a
+    UUID column, ``int('not-a-number')`` against an INTEGER column.
+
+    ``DBAPIError`` instances are already routed to ``data_error_handler``
+    via the more specific registration; this catches the remainder.
+    Strips the ``[SQL: …] [parameters: …]`` block so the bound values
+    don't leak to the frontend toast. Always 400 — by construction every
+    case is a client-supplied value that the schema let through but the
+    column type can't accept.
+    """
+    orig = getattr(exc, "orig", None)
+    detail = str(orig) if orig else str(exc) or "Statement error"
+    import re as _re
+
+    detail = detail.split("\n[SQL:")[0].strip()
+    detail = _re.sub(r"<class '[^']+'>:\s*", "", detail)
+    # ``(builtins.ValueError) msg`` → just ``msg``.
+    detail = _re.sub(r"^\(builtins\.[A-Za-z_]+\)\s*", "", detail)
+    logger.warning("StatementError on %s %s: %s", request.method, request.url, detail)
+    return Response(
+        content={
+            "errors": [
+                {
+                    "message": detail,
+                    "error_type": "STATEMENT_ERROR",
+                    "level": "error",
+                    "extra": {},
                 }
             ],
             "message": detail,
