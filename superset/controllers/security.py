@@ -208,6 +208,10 @@ class SecurityController(Controller):
     @post(
         "/guest_token/",
         guards=[require_permission("can_grant_guest_token", "SecurityRestApi")],
+        # Upstream returns 200 (security/api.py:192:
+        # ``return self.response(200, token=token)``), not Litestar's
+        # default 201 — short-lived JWT mint, no resource created.
+        status_code=200,
     )
     async def guest_token(
         self,
