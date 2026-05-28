@@ -268,15 +268,26 @@ async def _decode_connection_body(
     body, normalize it, then ``msgspec.convert`` into the target struct (which
     runs its ``__post_init__`` validation, e.g. URI safety + JSON validity).
 
-    The body value is a credential and is never logged here.  A malformed body
-    surfaces as :class:`msgspec.ValidationError` / :class:`msgspec.DecodeError`,
-    which Litestar maps to a 400 just as typed-param injection would.
+    The body value is a credential and is never logged here. Malformed JSON
+    or schema mismatches surface as Litestar ``ValidationException`` (mapped
+    to 422 by the global handler), matching upstream's ``response_400`` /
+    ``response_422`` for the same conditions. NB:
+    ``msgspec.ValidationError`` IS-A ``msgspec.DecodeError`` — catch the
+    narrower one first or you lose the field-level message.
     """
+    from litestar.exceptions import ValidationException
+
     raw = await request.body()
-    decoded: Any = msgspec.json.decode(raw) if raw else {}
+    try:
+        decoded: Any = msgspec.json.decode(raw) if raw else {}
+    except msgspec.DecodeError as ex:
+        raise ValidationException(detail=f"Body is not valid JSON: {ex}") from ex
     if isinstance(decoded, dict):
         decoded = rename_encrypted_extra(decoded)
-    return msgspec.convert(decoded, type=struct_cls)
+    try:
+        return msgspec.convert(decoded, type=struct_cls)
+    except msgspec.ValidationError as ex:
+        raise ValidationException(detail=f"Request is incorrect: {ex}") from ex
 
 
 # ---------------------------------------------------------------------------
