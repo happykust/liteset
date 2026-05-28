@@ -518,20 +518,23 @@ class SavedQueryController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
+        # 1:1 with ``superset_old/queries/saved_queries/api.py:286-296``:
+        # ``root = f"saved_query_export_{timestamp}"``, entries written as
+        # ``f"{root}/{file_name}"``, download named ``f"{root}.zip"``. The
+        # importer's ``remove_root`` (``parts[1:]``) strips it on re-import.
+        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        root = f"saved_query_export_{timestamp}"
         cmd = ExportSavedQueriesCommand(model_ids=ids, dao=dao)
+        cmd._root = root  # noqa: SLF001
         buf = await cmd.execute()
         await event_logger.alog_with_context(
             "saved_query.export", extra={"count": len(ids)}
         )
-        # Mirror upstream download name: ``saved_query_export_<timestamp>.zip``
-        # (``superset_old/queries/saved_queries/api.py::export``).
-        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-        filename = f"saved_query_export_{timestamp}.zip"
         return Stream(
             stream_zip(buf),
             status_code=200,
             media_type="application/zip",
-            headers=build_export_headers(filename, token=token),
+            headers=build_export_headers(f"{root}.zip", token=token),
         )
 
     @post(

@@ -1996,7 +1996,19 @@ class DatabaseController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
+        # 1:1 with ``superset_old/databases/api.py:1515-1539``: build
+        # ``root = f"database_export_{timestamp}"`` (timestamp =
+        # ``datetime.now().strftime("%Y%m%dT%H%M%S")``), nest every ZIP entry
+        # under ``f"{root}/{file_name}"``, and name the download
+        # ``f"{root}.zip"``. The importer strips the root via ``remove_root``
+        # (``parts[1:]``) so re-import still works — exports without a root
+        # produce a flat ZIP that ``remove_root`` reduces to "." and breaks.
+        from datetime import datetime as _datetime
+
+        timestamp = _datetime.now().strftime("%Y%m%dT%H%M%S")
+        root = f"database_export_{timestamp}"
         cmd = ExportDatabasesCommand(model_ids=ids, dao=cast("AsyncDatabaseDAO", dao))
+        cmd._root = root  # noqa: SLF001
         buf = await cmd.execute()
         await event_logger.alog_with_context(
             "database.export", extra={"count": len(ids)}
@@ -2005,7 +2017,7 @@ class DatabaseController(Controller):
             stream_zip(buf),
             status_code=200,
             media_type="application/zip",
-            headers=build_export_headers("databases_export.zip", token=token),
+            headers=build_export_headers(f"{root}.zip", token=token),
         )
 
     # ------------------------------------------------------------------
