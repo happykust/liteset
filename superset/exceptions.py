@@ -1003,26 +1003,31 @@ def integrity_error_handler(
 def data_error_handler(
     request: Request[Any, Any, Any], exc: Exception
 ) -> Response[Any]:
-    """Translate SQLAlchemy DataError / DBAPIError (22xxx) to 400.
+    """Translate SQLAlchemy DataError / DBAPIError (client-class) to 400.
 
-    Covers data-class SQLSTATE (``22xxx``): string-too-long
-    (``StringDataRightTruncationError``/22001), numeric out-of-range,
-    invalid datetime, etc. Every one is a client-side payload problem,
-    not a server bug. Upstream rejects them up-front via marshmallow
-    ``Length(...)`` / ``Range(...)`` validators; absent those caps the
-    asyncpg error would bubble to 500. Mirror upstream's
-    ``response_400`` for the same condition.
+    Covers PG SQLSTATE classes that are client-side bugs:
+
+    * ``22xxx`` data_exception — string-too-long
+      (``StringDataRightTruncationError``/22001), numeric out-of-range,
+      invalid datetime, etc.
+    * ``42xxx`` syntax_error_or_access_rule_violation — undefined
+      table/column/function (42P01/42703/42883), syntax error (42601).
+      These surface from user-supplied SQL in /sqllab/, /chart/data/,
+      /database/validate_sql/ and cost-estimate paths; without this
+      branch they 500 even though the cause is bad user input.
 
     asyncpg wraps PG errors as a raw ``DBAPIError`` (not the more
-    specific ``DataError``), so we register this for both — but only
-    treat 22xxx codes as client errors here. Anything else (e.g. real
-    connection failures) falls through to the generic 500 path.
+    specific ``DataError``), so we register this for both. Anything
+    *outside* the client-bug classes (e.g. 08xxx connection, 53xxx
+    insufficient resources) falls through to the generic 500 path so
+    legitimate server faults still surface.
     """
     orig = getattr(exc, "orig", None)
     sqlstate = str(getattr(orig, "sqlstate", "") or "")
-    if not sqlstate.startswith("22"):
-        # Non-data DBAPI error (08xxx connection, 53xxx insufficient
-        # resources, etc.) — defer to the generic 500 path.
+    _CLIENT_CLASSES = ("22", "42")
+    if not any(sqlstate.startswith(c) for c in _CLIENT_CLASSES):
+        # Non-client DBAPI error (08xxx connection, 53xxx insufficient
+        # resources, real server bugs) — defer to the generic 500 path.
         return generic_exception_handler(request, exc)
     detail = str(orig) if orig else str(exc) or "Data error"
     import re as _re
