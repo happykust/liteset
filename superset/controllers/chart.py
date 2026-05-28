@@ -1708,6 +1708,9 @@ class ChartController(Controller):
                     )
 
         if json_bytes is None:
+            # Body was not JSON-decodable and no form_data field was supplied —
+            # upstream's ``request.json`` returns None and the API responds
+            # with 400 "Request is not JSON" (charts/data/api.py:234).
             return Response(
                 content={"message": "Request is not JSON"},
                 status_code=400,
@@ -1715,9 +1718,21 @@ class ChartController(Controller):
 
         try:
             data = _msgspec.json.decode(json_bytes, type=ChartDataQueryContext)
-        except (_msgspec.ValidationError, _msgspec.DecodeError):
-            # Mirrors ``contextlib.suppress(TypeError, JSONDecodeError)`` +
-            # ``if json_body is None: return 400`` flow in the original.
+        except _msgspec.ValidationError as ex:
+            # NB: ``ValidationError`` is a subclass of ``DecodeError`` in
+            # msgspec — catch it FIRST or the more general except below
+            # swallows schema-mismatch errors and you lose field detail.
+            # Schema mismatch (wrong field type / unknown enum value / etc.).
+            # Upstream emits ``Request is incorrect: <field>: <message>`` via
+            # marshmallow's ``ValidationError.normalized_messages``; mirror
+            # that 400 with the underlying msgspec detail.
+            return Response(
+                content={"message": f"Request is incorrect: {ex}"},
+                status_code=400,
+            )
+        except _msgspec.DecodeError:
+            # Body wasn't valid JSON syntax — 400 "Request is not JSON"
+            # matches upstream's ``json.JSONDecodeError`` branch.
             return Response(
                 content={"message": "Request is not JSON"},
                 status_code=400,
