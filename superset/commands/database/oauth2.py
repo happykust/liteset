@@ -105,7 +105,7 @@ class OAuth2StoreTokenCommand(AsyncBaseCommand["DatabaseUserOAuth2Tokens"]):
         expires_in = int(token_response.get("expires_in", 0))
         expiration = datetime.now() + timedelta(seconds=expires_in)
 
-        return await self._dao.create(
+        token = await self._dao.create(
             {
                 "user_id": int(self._state["user_id"]),
                 "database_id": int(self._state["database_id"]),
@@ -114,3 +114,7 @@ class OAuth2StoreTokenCommand(AsyncBaseCommand["DatabaseUserOAuth2Tokens"]):
                 "refresh_token": token_response.get("refresh_token"),
             }
         )
+        # Flush so the row has its id populated for any caller reading it
+        # (matches the rest of the create commands).
+        await self._dao.session.flush()
+        return token

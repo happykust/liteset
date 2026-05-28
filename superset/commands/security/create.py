@@ -62,4 +62,9 @@ class CreateRLSRuleCommand(AsyncBaseCommand[Any]):
         self._properties["tables"] = tables
 
     async def run(self) -> Any:
-        return await self._dao.create(self._properties)
+        item = await self._dao.create(self._properties)
+        # Flush so the autoincrement ``id`` is populated before the controller
+        # builds ``{"id": item.id, "result": …}`` — without this, the create
+        # response carried ``"id": null``. Matches css_template / tag / theme.
+        await self._dao.session.flush()
+        return item
