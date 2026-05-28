@@ -1570,6 +1570,8 @@ class DashboardController(Controller):
         "/import/",
         guards=[require_permission("can_write", "Dashboard")],
         media_type="application/json",
+        # Upstream returns 200 "OK" (dashboards/api.py import_); align.
+        status_code=200,
     )
     async def import_dashboard(
         self,

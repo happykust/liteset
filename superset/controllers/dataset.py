@@ -795,6 +795,8 @@ class DatasetController(Controller):
         "/import/",
         guards=[require_permission("can_write", "Dataset")],
         media_type="application/json",
+        # Upstream returns 200 "OK" (datasets/api.py import_); align.
+        status_code=200,
     )
     async def import_dataset(
         self,

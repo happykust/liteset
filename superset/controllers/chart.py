@@ -1326,6 +1326,11 @@ class ChartController(Controller):
         "/import/",
         guards=[require_permission("can_write", "Chart")],
         media_type="application/json",
+        # Upstream returns 200 "OK" (superset_old/charts/api.py:1188:
+        # ``return self.response(200, message="OK")``), not Litestar's
+        # default 201 — import succeeds against an existing resource, no
+        # new top-level resource is created.
+        status_code=200,
     )
     async def import_chart(
         self,

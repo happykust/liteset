@@ -2015,6 +2015,8 @@ class DatabaseController(Controller):
         "/import/",
         guards=[require_permission("can_write", "Database")],
         media_type="application/json",
+        # Upstream returns 200 "OK" (databases/api.py import_); align.
+        status_code=200,
     )
     async def import_database(
         self,
