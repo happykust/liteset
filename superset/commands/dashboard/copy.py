@@ -59,6 +59,18 @@ class CopyDashboardCommand(AsyncBaseCommand["Dashboard"]):
             raise CommandInvalidError("dashboard_title is required for copy")
         if not self._data.get("json_metadata"):
             raise CommandInvalidError("json_metadata is required for copy")
+        # Validate ``json_metadata`` is parseable JSON now so the user gets a
+        # proper 422 — otherwise it bubbles all the way to
+        # ``AsyncDashboardDAO.copy_dashboard``'s ``loads(...)`` as an
+        # uncaught ``JSONDecodeError`` → 500.
+        try:
+            from superset.utils.json import loads as _json_loads
+
+            _json_loads(self._data["json_metadata"])
+        except Exception as ex:  # noqa: BLE001
+            raise CommandInvalidError(
+                f"json_metadata is not valid JSON: {ex}"
+            ) from ex
 
         # 1:1 with original superset_old/commands/dashboard/copy.py:
         # When DASHBOARD_RBAC is enabled, only owners of the original dashboard
