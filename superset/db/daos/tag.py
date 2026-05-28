@@ -16,6 +16,8 @@
 # under the License.
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy import delete, select
 
 from superset.db.base_dao import BaseAsyncDAO
@@ -152,8 +154,13 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         self,
         tag_names: list[str],
         obj_types: list[str] | None = None,
-    ) -> list[TaggedObject]:
-        """Get tagged objects by tag names with optional type filter."""
+    ) -> list[dict[str, Any]]:
+        """Get tagged objects by tag names with optional type filter.
+
+        Returns the entity-shaped dicts produced by
+        :meth:`get_tagged_objects_by_tag_ids` — see that method's docstring
+        for the contract.
+        """
         tags = await self.find_by_names(tag_names)
         tag_ids: list[int] = [t.id for t in tags]  # type: ignore[misc]
         return await self.get_tagged_objects_by_tag_ids(tag_ids, obj_types)
@@ -185,19 +192,127 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                 )
                 self.session.add(tagged)
 
-    async def get_tagged_objects_by_tag_ids(
+    async def get_tagged_objects_by_tag_ids(  # noqa: C901
         self,
         tag_ids: list[int],
         obj_types: list[str] | None = None,
-    ) -> list[TaggedObject]:
-        """Get tagged objects filtered by tag IDs and optionally by type."""
+    ) -> list[dict[str, Any]]:
+        """Get the *entities* tagged by the given tag ids.
+
+        Mirrors ``superset_old/daos/tag.py::TagDAO.get_tagged_objects_by_tag_ids``:
+        returns Dashboard / Chart / SavedQuery (and Dataset where wired)
+        rows shaped as
+        ``{id, type, name, url, changed_on, created_by, creator, tags,
+        owners}`` — *not* the raw ``TaggedObject`` link rows. Frontend
+        ``Tagged Objects`` page reads ``.type`` / ``.name`` / ``.url``
+        directly and breaks when given link metadata.
+        """
         if not tag_ids:
             return []
+        from sqlalchemy.orm import selectinload
+
         stmt = select(TaggedObject).where(TaggedObject.tag_id.in_(tag_ids))
         if obj_types:
+            # ``TaggedObject.object_type`` is an Enum column — pass the
+            # enum *names* (already strings in obj_types) and SA coerces.
             stmt = stmt.where(TaggedObject.object_type.in_(obj_types))
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        links = list(result.scalars().all())
+
+        # Group by type, then bulk-load each entity class once.
+        from collections import defaultdict
+
+        by_type: dict[str, list[int]] = defaultdict(list)
+        for link in links:
+            # Enum or already-str depending on dialect quirks; coerce.
+            t = link.object_type
+            t_name = getattr(t, "name", str(t)).rsplit(".", 1)[-1]
+            by_type[t_name].append(link.object_id)
+
+        results: list[dict[str, Any]] = []
+
+        async def _load(ids: list[int], model: Any) -> list[Any]:
+            if not ids:
+                return []
+            q = await self.session.execute(
+                select(model)
+                .where(model.id.in_(ids))
+                .options(selectinload(model.owners), selectinload(model.tags))  # type: ignore[attr-defined]
+            )
+            return list(q.scalars().all())
+
+        # Dashboards
+        if not obj_types or "dashboard" in obj_types:
+            from superset.models.dashboard import Dashboard
+
+            for d in await _load(by_type.get("dashboard", []), Dashboard):
+                results.append(
+                    {
+                        "id": d.id,
+                        "type": "dashboard",
+                        "name": getattr(d, "dashboard_title", None),
+                        "url": getattr(d, "url", None),
+                        "changed_on": getattr(d, "changed_on", None),
+                        "created_by": getattr(d, "created_by_fk", None),
+                        "creator": d.creator() if hasattr(d, "creator") else None,
+                        "tags": [t.name for t in getattr(d, "tags", []) or []],
+                        "owners": [o.id for o in getattr(d, "owners", []) or []],
+                    }
+                )
+
+        # Charts (Slice)
+        if not obj_types or "chart" in obj_types:
+            from superset.models.slice import Slice
+
+            for c in await _load(by_type.get("chart", []), Slice):
+                results.append(
+                    {
+                        "id": c.id,
+                        "type": "chart",
+                        "name": getattr(c, "slice_name", None),
+                        "url": getattr(c, "url", None),
+                        "changed_on": getattr(c, "changed_on", None),
+                        "created_by": getattr(c, "created_by_fk", None),
+                        "creator": c.creator() if hasattr(c, "creator") else None,
+                        "tags": [t.name for t in getattr(c, "tags", []) or []],
+                        "owners": [o.id for o in getattr(c, "owners", []) or []],
+                    }
+                )
+
+        # Saved queries
+        if (not obj_types or "query" in obj_types) and by_type.get("query"):
+            sq_ids = by_type["query"]
+            try:
+                from superset.models.sql_lab import (
+                    SavedQuery as _SavedQuery,  # noqa: N813
+                )
+            except ImportError:
+                _SavedQuery = None  # type: ignore[assignment]  # noqa: N806
+            if _SavedQuery is not None:
+                q = await self.session.execute(
+                    select(_SavedQuery).where(_SavedQuery.id.in_(sq_ids))
+                )
+                for sq in q.scalars().all():
+                    results.append(
+                        {
+                            "id": sq.id,
+                            "type": "query",
+                            "name": getattr(sq, "label", None),
+                            "url": (
+                                sq.url() if callable(getattr(sq, "url", None))
+                                else getattr(sq, "url", None)
+                            ),
+                            "changed_on": getattr(sq, "changed_on", None),
+                            "created_by": getattr(sq, "created_by_fk", None),
+                            "creator": (
+                                sq.creator() if hasattr(sq, "creator") else None
+                            ),
+                            "tags": [],
+                            "owners": [],
+                        }
+                    )
+
+        return results
 
     async def favorite_tag_by_id_for_current_user(
         self,

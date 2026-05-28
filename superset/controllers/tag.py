@@ -293,18 +293,14 @@ class TagController(Controller):
                 tag_names, obj_types=types_filter
             )
 
-        result: list[dict[str, Any]] = []
-        for obj in tagged_objects:
-            obj_type = getattr(obj, "object_type", None)
-            result.append(
-                {
-                    "tag_id": getattr(obj, "tag_id", None),
-                    "object_id": getattr(obj, "object_id", None),
-                    "object_type": str(obj_type) if obj_type else None,
-                }
-            )
-
-        return {"result": result}
+        # ``get_tagged_objects_by_tag_*`` now returns the entity-shaped dicts
+        # ``{id, type, name, url, changed_on, created_by, creator, tags,
+        # owners}`` matching upstream's ``TaggedObjectEntityResponseSchema``
+        # (superset_old/tags/schemas.py:48). Previous port shape — raw
+        # ``TaggedObject`` link rows ``{tag_id, object_id, object_type}`` —
+        # broke the Tagged Objects page which reads ``.type``/``.name``/
+        # ``.url`` from each entry. Pass-through unchanged.
+        return {"result": tagged_objects}
 
     @get("/{pk:int}/favorites/")
     async def check_favorite(
