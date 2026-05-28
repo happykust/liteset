@@ -47,10 +47,14 @@ class ChartPostSchema(msgspec.Struct):
     is optional (charts can be saved without a visualization picked).
     """
 
-    slice_name: Annotated[str, Meta(min_length=1)]
+    # ``slices.slice_name`` is ``VARCHAR(250)`` — overrun crashes asyncpg with
+    # ``StringDataRightTruncationError`` → DBAPI 500. Upstream's marshmallow
+    # ``Length(1, 250)`` validator rejects it as 400. Same for ``viz_type``
+    # (``Length(0, 250)``).
+    slice_name: Annotated[str, Meta(min_length=1, max_length=250)]
     datasource_id: int
     datasource_type: Literal["table", "query", "saved_query", "dataset", "view"]
-    viz_type: str | None = None
+    viz_type: Annotated[str, Meta(max_length=250)] | None = None
     params: str | None = None
     query_context: str | None = None
     query_context_generation: bool | None = None
@@ -81,8 +85,13 @@ class ChartPostSchema(msgspec.Struct):
 class ChartPutSchema(msgspec.Struct):
     """PUT /api/v1/chart/<pk>"""
 
-    slice_name: str | None | msgspec.UnsetType = msgspec.UNSET
-    viz_type: str | None | msgspec.UnsetType = msgspec.UNSET
+    # See ChartPostSchema comment — same VARCHAR(250) DB limit applies.
+    slice_name: (
+        Annotated[str, Meta(min_length=1, max_length=250)] | None | msgspec.UnsetType
+    ) = msgspec.UNSET
+    viz_type: (
+        Annotated[str, Meta(max_length=250)] | None | msgspec.UnsetType
+    ) = msgspec.UNSET
     datasource_id: int | None | msgspec.UnsetType = msgspec.UNSET
     datasource_type: (
         Literal["table", "query", "saved_query", "dataset", "view"]
