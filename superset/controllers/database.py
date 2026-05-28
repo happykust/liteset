@@ -277,6 +277,8 @@ async def _decode_connection_body(
     """
     from litestar.exceptions import ValidationException
 
+    from superset.databases.utils import DatabaseInvalidError
+
     raw = await request.body()
     try:
         decoded: Any = msgspec.json.decode(raw) if raw else {}
@@ -288,6 +290,17 @@ async def _decode_connection_body(
         return msgspec.convert(decoded, type=struct_cls)
     except msgspec.ValidationError as ex:
         raise ValidationException(detail=f"Request is incorrect: {ex}") from ex
+    except DatabaseInvalidError as ex:
+        # The schema's ``__post_init__`` calls ``make_url_safe`` on the
+        # ``sqlalchemy_uri`` field — an unparseable URI bubbles out as
+        # ``DatabaseInvalidError`` from inside ``msgspec.convert``. Without
+        # this catch the exception falls through to the generic 500 handler.
+        raise ValidationException(
+            detail=(
+                "Invalid SQLAlchemy URI — host/port/driver could not be "
+                "parsed; double-check your connection string."
+            ),
+        ) from ex
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ from contextlib import closing
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
+from superset.databases.utils import DatabaseInvalidError
 from superset.exceptions import CommandInvalidError
 from superset.i18n import gettext as _
 
@@ -153,7 +154,19 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
         if not uri:
             raise CommandInvalidError("sqlalchemy_uri is required for connection test")
 
-        await self._resolve_model_and_uri()
+        try:
+            await self._resolve_model_and_uri()
+        except DatabaseInvalidError as ex:
+            # ``make_url_safe`` raises this for any unparseable URI
+            # (e.g. ``not-a-valid-uri``). Upstream surfaces every
+            # ``set_sqlalchemy_uri`` / URL-parse failure inside the same
+            # outer try in run() and wraps it as
+            # ``DatabaseTestConnectionUnexpectedError`` → 422; do the same
+            # here so client toasts show a real message instead of 500.
+            raise CommandInvalidError(
+                "Invalid SQLAlchemy URI — host/port/driver could not be "
+                "parsed; double-check your connection string."
+            ) from ex
 
         # Matches ``TestConnectionDatabaseCommand.validate`` (lines 227-233):
         # an SSH tunnel requires the feature flag plus a non-empty port.
