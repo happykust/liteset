@@ -360,17 +360,24 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             create_data["created_by_fk"] = self._user_id
             create_data["changed_by_fk"] = self._user_id
 
-        report = await self._dao.create(create_data)
-
+        # Resolve owners BEFORE the model is added to the session, then
+        # bake them into ``create_data`` so the DAO's ``setattr(item,
+        # "owners", [...])`` runs on a TRANSIENT instance (no session
+        # attached → no lazy-load attempt). Without this, the post-create
+        # ``report.owners = owners`` assignment triggers SA's diff-load
+        # against asyncpg and crashes with ``MissingGreenlet``. Same
+        # pattern as [[sa-lazy-load-on-transient-asyncpg]] —
+        # relationship assignment on pending/persistent instances must
+        # be avoided under asyncpg.
         if self._security_manager is not None:
-            owners = await populate_owner_list(
+            create_data["owners"] = await populate_owner_list(
                 self._security_manager,
                 self._user_id,
                 owner_ids,
                 default_to_user=True,
             )
-            report.owners = owners
 
+        report = await self._dao.create(create_data)
         await self._dao.session.flush()
         return report
 
