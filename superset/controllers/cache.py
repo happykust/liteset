@@ -119,14 +119,14 @@ class CacheController(Controller):
 
         if not datasource_uids:
             # Original falls through to ``self.response(201)`` (empty body).
-            return Response(content=None, status_code=201)
+            return Response(content=b"", status_code=201, media_type="application/json")
 
         # -- 2. Find matching CacheKey rows ----------------------------
         cache_keys = await dao.find_keys_by_datasource_uids(datasource_uids)
 
         if not cache_keys:
             # Original falls through to ``self.response(201)`` (empty body).
-            return Response(content=None, status_code=201)
+            return Response(content=b"", status_code=201, media_type="application/json")
 
         # -- 3. Actively evict keys from cache backend -----------------
         # Mirrors the original Flask ``cache_manager.cache.delete_many(*cache_keys)``
@@ -192,4 +192,4 @@ class CacheController(Controller):
             },
         )
         # 1:1 with the original ``return self.response(201)`` — empty body.
-        return Response(content=None, status_code=201)
+        return Response(content=b"", status_code=201, media_type="application/json")
