@@ -1000,6 +1000,59 @@ def integrity_error_handler(
     )
 
 
+def data_error_handler(
+    request: Request[Any, Any, Any], exc: Exception
+) -> Response[Any]:
+    """Translate SQLAlchemy DataError / DBAPIError (22xxx) to 400.
+
+    Covers data-class SQLSTATE (``22xxx``): string-too-long
+    (``StringDataRightTruncationError``/22001), numeric out-of-range,
+    invalid datetime, etc. Every one is a client-side payload problem,
+    not a server bug. Upstream rejects them up-front via marshmallow
+    ``Length(...)`` / ``Range(...)`` validators; absent those caps the
+    asyncpg error would bubble to 500. Mirror upstream's
+    ``response_400`` for the same condition.
+
+    asyncpg wraps PG errors as a raw ``DBAPIError`` (not the more
+    specific ``DataError``), so we register this for both — but only
+    treat 22xxx codes as client errors here. Anything else (e.g. real
+    connection failures) falls through to the generic 500 path.
+    """
+    orig = getattr(exc, "orig", None)
+    sqlstate = str(getattr(orig, "sqlstate", "") or "")
+    if not sqlstate.startswith("22"):
+        # Non-data DBAPI error (08xxx connection, 53xxx insufficient
+        # resources, etc.) — defer to the generic 500 path.
+        return generic_exception_handler(request, exc)
+    detail = str(orig) if orig else str(exc) or "Data error"
+    import re as _re
+
+    detail = _re.sub(r"^<class '[^']+'>:\s*", "", detail)
+    # Strip the long ``[SQL: …] [parameters: …]`` block SQLAlchemy 2.0 appends
+    # to ``str(exc)``; ``orig`` already gives the bare DBAPI message but the
+    # repr-prefix regex above might miss multi-line payloads, so do it again.
+    detail = detail.split("\n[SQL:")[0].strip()
+    logger.warning(
+        "DataError sqlstate=%s on %s %s: %s",
+        sqlstate, request.method, request.url, detail,
+    )
+    return Response(
+        content={
+            "errors": [
+                {
+                    "message": detail,
+                    "error_type": "DATA_ERROR",
+                    "level": "error",
+                    "extra": {"sqlstate": sqlstate},
+                }
+            ],
+            "message": detail,
+            "detail": detail,
+        },
+        status_code=400,
+    )
+
+
 def generic_exception_handler(
     request: Request[Any, Any, Any], exc: Exception
 ) -> Response[Any]:

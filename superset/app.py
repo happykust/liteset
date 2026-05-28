@@ -34,7 +34,11 @@ from litestar.response import Response
 from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import IntegrityError as _IntegrityError
+from sqlalchemy.exc import (
+    DataError as _DataError,
+    DBAPIError as _DBAPIError,
+    IntegrityError as _IntegrityError,
+)
 
 from superset.config import SupersetSettings
 from superset.controllers.auth import AuthController
@@ -52,6 +56,7 @@ from superset.dependencies import (
     provide_security_manager,
 )
 from superset.exceptions import (
+    data_error_handler,
     generic_exception_handler,
     integrity_error_handler,
     superset_exception_handler,
@@ -76,11 +81,24 @@ def _build_exception_handlers() -> dict[Any, Any]:
       that contract tests expect.
     * SQLAlchemy ``IntegrityError`` is mapped to ``422`` so unique- and
       foreign-key violations don't surface as 500s.
+    * SQLAlchemy ``DataError`` (string-too-long, NOT-NULL, type mismatch)
+      is mapped to ``400`` — overrunning a VARCHAR cap or sending the wrong
+      type is a payload bug, not a server bug. Upstream catches it
+      up-front via marshmallow ``Length(...)`` validators; absent those
+      caps in the msgspec schemas the asyncpg error reached 500.
     """
     return {
         SupersetException: superset_exception_handler,
         _ValidationException: validation_error_handler,
         _IntegrityError: integrity_error_handler,
+        _DataError: data_error_handler,
+        # asyncpg wraps PG-side ``StringDataRightTruncationError`` (sqlstate
+        # 22001) as a raw ``DBAPIError`` rather than the more specific
+        # ``DataError`` — so registering only ``DataError`` misses it. Use the
+        # broader DBAPIError handler; it inspects the underlying ``orig``
+        # exception's sqlstate (22xxx class = data exception → 400) and falls
+        # through to the generic 500 for anything else.
+        _DBAPIError: data_error_handler,
         Exception: generic_exception_handler,
     }
 
