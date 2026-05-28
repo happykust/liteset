@@ -41,7 +41,7 @@ from superset.controllers.base import (
     serialize_list_response,
 )
 from superset.events import event_logger
-from superset.exceptions import SupersetValidationException
+from superset.exceptions import ObjectNotFoundError, SupersetValidationException
 from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_tag_dao
@@ -320,8 +320,15 @@ class TagController(Controller):
         dao: Any,
         current_user: UserProtocol,
     ) -> dict[str, str]:
-        """Add tag to favorites."""
-        await dao.favorite_tag_by_id_for_current_user(pk, current_user.id)
+        """Add tag to favorites.
+
+        1:1 with upstream superset_old/tags/api.py:689-693 which catches
+        TagNotFoundError → 404; the DAO returns ``False`` for an
+        unknown tag id, propagate as ObjectNotFoundError (also 404).
+        """
+        ok = await dao.favorite_tag_by_id_for_current_user(pk, current_user.id)
+        if not ok:
+            raise ObjectNotFoundError("Tag", pk)
         await event_logger.alog_with_context(
             "tag.add_favorite", object_ref=str(pk), user_id=current_user.id
         )
@@ -334,8 +341,10 @@ class TagController(Controller):
         dao: Any,
         current_user: UserProtocol,
     ) -> dict[str, str]:
-        """Remove tag from favorites."""
-        await dao.remove_user_favorite_tag(pk, current_user.id)
+        """Remove tag from favorites — symmetric 404 on missing tag."""
+        ok = await dao.remove_user_favorite_tag(pk, current_user.id)
+        if not ok:
+            raise ObjectNotFoundError("Tag", pk)
         await event_logger.alog_with_context(
             "tag.remove_favorite", object_ref=str(pk), user_id=current_user.id
         )
