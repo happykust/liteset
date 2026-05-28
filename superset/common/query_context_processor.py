@@ -737,7 +737,15 @@ class AsyncQueryContextProcessor:
             except Exception as ex:
                 logger.exception("Query execution failed")
                 df = pd.DataFrame()
-                error_message = str(ex)
+                # Sanitise the SA-2.0 + asyncpg ``<class '…'>:`` prefix and
+                # the ``\n[SQL: …]\n[parameters: …]`` block ``str(exc)``
+                # appends — without this the user-visible chart-data
+                # ``error`` field leaks the DBAPI exception-class repr
+                # AND the bound parameter values to the frontend toast.
+                _raw = str(ex).split("\n[SQL:")[0].strip()
+                import re as _re
+
+                error_message = _re.sub(r"<class '[^']+'>:\s*", "", _raw)
                 status = "failed"
 
         # Build the label_map (delta D3 — 1:1 with

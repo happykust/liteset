@@ -1200,14 +1200,32 @@ class BaseEngineSpec:  # noqa: PLR0904
 
     @classmethod
     def _extract_error_message(cls, ex: Exception) -> str:
-        """Extract error message for queries."""
+        """Extract error message for queries.
+
+        Sanitises two SQLAlchemy-2.0 + asyncpg artifacts that leak into
+        the user-visible toast:
+
+        * ``<class 'asyncpg.exceptions.XError'>: real-message`` — the
+          DBAPIError repr prefix for wrapped asyncpg exceptions; strip.
+        * ``\\n[SQL: ...]\\n[parameters: ...]`` — SA appends the offending
+          query (including bound parameters!) to ``str(exc)``; trim
+          everything from the first ``\\n[SQL:`` onward.
+        """
         msg = ""
         if hasattr(ex, "message"):
             if isinstance(ex.message, dict):  # type: ignore[union-attr]
                 msg = ex.message.get("message")  # type: ignore[union-attr]
             elif ex.message:  # type: ignore[union-attr]
                 msg = ex.message  # type: ignore[union-attr]
-        return str(msg) or str(ex)
+        raw = str(msg) or str(ex)
+        # Order matters: strip the [SQL:] payload first (it may contain
+        # ``<class '…'>`` substrings inside parameter values), then the
+        # leading exception-class repr.
+        raw = raw.split("\n[SQL:")[0].strip()
+        import re as _re
+
+        raw = _re.sub(r"<class '[^']+'>:\s*", "", raw)
+        return raw
 
     @classmethod
     def extract_errors(
