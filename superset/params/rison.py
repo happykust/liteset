@@ -33,12 +33,24 @@ async def provide_rison_query(request: Request[Any, Any, Any]) -> dict[str, Any]
     raw = request.query_params.get("q")
     if raw is None:
         return None
-    try:
-        return prison.loads(raw)
-    except Exception as ex:
-        from superset.exceptions import SupersetValidationException
+    from superset.exceptions import SupersetValidationException
 
+    try:
+        parsed = prison.loads(raw)
+    except Exception as ex:
         raise SupersetValidationException(
             message=f"Invalid Rison query parameter: {ex}",
             extra={"raw_value": raw[:200] if raw else ""},
         ) from ex
+    # ``prison.loads`` accepts top-level scalars / lists too (``"abc"`` parses
+    # to the bare string ``"abc"``), but every consumer here expects a dict —
+    # passing a string would later AttributeError on ``.get(...)`` → 500.
+    if not isinstance(parsed, dict):
+        raise SupersetValidationException(
+            message=(
+                "Invalid Rison query parameter: expected an object, "
+                f"got {type(parsed).__name__}"
+            ),
+            extra={"raw_value": raw[:200] if raw else ""},
+        )
+    return parsed
