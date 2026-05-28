@@ -268,13 +268,18 @@ class SqlLabController(Controller):
     )
     async def results(
         self,
-        rison_params: dict[str, Any] | None,
+        rison_params: dict[str, Any] | list[Any] | None,
         dao: QueryDAOProtocol,
         current_user: UserProtocol,
         security_manager: Any,
     ) -> Response[dict[str, Any]]:
-        key = (rison_params or {}).get("key", "")
-        rows = (rison_params or {}).get("rows")
+        # ``provide_rison_query`` accepts both dict and list rison roots
+        # (e.g. favorite_status uses ``!(1,2,3)``); ``/results/`` is
+        # dict-only, so reject the list shape with a clean 422 instead of
+        # letting msgspec raise 500 against the signature model.
+        params: dict[str, Any] = rison_params if isinstance(rison_params, dict) else {}
+        key = params.get("key", "")
+        rows = params.get("rows")
         cmd = GetSQLResultsCommand(key=key, rows=rows, dao=dao)
 
         from superset.exceptions import SupersetErrorException
