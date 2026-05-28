@@ -144,7 +144,15 @@ class CurrentUserController(Controller):
         current_user: UserProtocol,
         user_dao: Any,
     ) -> dict[str, Any]:
-        """PUT /api/v1/me/ — update current user (first_name, last_name, password)."""
+        """PUT /api/v1/me/ — update current user (first_name, last_name, password).
+
+        1:1 with ``superset_old/views/users/api.py::update_me``:
+        - empty payload → 400 ``At least one field must be provided.``;
+        - response body is ``{"result": user_response_schema.dump(user)}``
+          (full ``UserResponseSchema``, not a diff of just the patched keys).
+        """
+        from litestar.exceptions import HTTPException
+
         updates: dict[str, str] = {}
         if data.first_name is not None:
             updates["first_name"] = data.first_name
@@ -153,18 +161,38 @@ class CurrentUserController(Controller):
 
         has_password = data.password is not None
 
-        if updates or has_password:
-            hashed_password: str | None = None
-            if has_password:
-                from superset.utils.password import generate_password_hash
-
-                hashed_password = generate_password_hash(data.password or "")
-
-            await user_dao.update_profile(
-                user_id=current_user.id,
-                attributes=updates,
-                hashed_password=hashed_password,
+        if not updates and not has_password:
+            # Upstream uses ``self.response_400`` here, not 422.
+            raise HTTPException(
+                status_code=400,
+                detail="At least one field must be provided.",
             )
 
+        hashed_password: str | None = None
+        if has_password:
+            from superset.utils.password import generate_password_hash
+
+            hashed_password = generate_password_hash(data.password or "")
+
+        await user_dao.update_profile(
+            user_id=current_user.id,
+            attributes=updates,
+            hashed_password=hashed_password,
+        )
+
+        # Re-read so we serialise the persisted state (mirrors upstream's
+        # ``user_response_schema.dump(g.user)`` after ``db.session.commit()``).
+        fresh = await user_dao.get_by_id(current_user.id)
         await event_logger.alog_with_context("user.update_me", user_id=current_user.id)
-        return {"result": updates}
+        return {
+            "result": {
+                "id": fresh.id,
+                "username": fresh.username,
+                "email": getattr(fresh, "email", ""),
+                "first_name": getattr(fresh, "first_name", ""),
+                "last_name": getattr(fresh, "last_name", ""),
+                "is_active": bool(getattr(fresh, "is_active", True)),
+                "is_anonymous": False,
+                "login_count": int(getattr(fresh, "login_count", 0) or 0),
+            }
+        }

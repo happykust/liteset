@@ -24,11 +24,15 @@ import prison
 from litestar.connection import Request
 
 
-async def provide_rison_query(request: Request[Any, Any, Any]) -> dict[str, Any] | None:
+async def provide_rison_query(
+    request: Request[Any, Any, Any],
+) -> dict[str, Any] | list[Any] | None:
     """Decode Rison-encoded 'q' query parameter.
 
-    Frontend sends: GET /api/v1/chart/?q=(filters:!(...),page:0,page_size:25)
-    Returns None if 'q' absent. Raises 422 on parse error.
+    Frontend sends ``?q=(filters:!(...),page:0,page_size:25)`` (object) for
+    list endpoints, but a handful of handlers (e.g. ``/favorite_status/``)
+    receive ``?q=!(1,2,3)`` (list). Returns None if 'q' absent. Raises 422
+    on parse error or on top-level scalar.
     """
     raw = request.query_params.get("q")
     if raw is None:
@@ -42,13 +46,15 @@ async def provide_rison_query(request: Request[Any, Any, Any]) -> dict[str, Any]
             message=f"Invalid Rison query parameter: {ex}",
             extra={"raw_value": raw[:200] if raw else ""},
         ) from ex
-    # ``prison.loads`` accepts top-level scalars / lists too (``"abc"`` parses
-    # to the bare string ``"abc"``), but every consumer here expects a dict —
-    # passing a string would later AttributeError on ``.get(...)`` → 500.
-    if not isinstance(parsed, dict):
+    # ``prison.loads`` accepts top-level scalars too (``"abc"`` parses to the
+    # bare string ``"abc"``), which would later AttributeError on ``.get(...)``
+    # → 500. Lists are LEGAL for some handlers (e.g. /chart/favorite_status/
+    # takes ``q=!(1,2,3)``, typed ``list[int] | dict[str, Any] | None``), so
+    # only reject scalars; let handlers validate the shape they actually need.
+    if not isinstance(parsed, (dict, list)):
         raise SupersetValidationException(
             message=(
-                "Invalid Rison query parameter: expected an object, "
+                "Invalid Rison query parameter: expected an object or list, "
                 f"got {type(parsed).__name__}"
             ),
             extra={"raw_value": raw[:200] if raw else ""},
