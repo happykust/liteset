@@ -40,6 +40,29 @@ def _sanitize_slug(slug: str | None) -> str | None:
     return slug or None
 
 
+def _validate_json_string(field_name: str, value: Any) -> None:
+    """Raise ``msgspec.ValidationError`` if value is not parseable JSON.
+
+    Mirrors upstream's ``validate_json`` /  ``validate_json_metadata`` at
+    superset_old/dashboards/schemas.py:99-115 — invalid JSON in
+    ``position_json`` / ``json_metadata`` would silently persist as a
+    broken string and break dashboard render on next GET. Port skipped
+    this; add the same up-front check.
+    """
+    if value is None or value is msgspec.UNSET or value == "":
+        return
+    if not isinstance(value, (str, bytes, bytearray)):
+        return
+    import json as _json
+
+    try:
+        _json.loads(value)
+    except (ValueError, TypeError) as ex:
+        raise msgspec.ValidationError(
+            f"{field_name} is not valid JSON: {ex}"
+        ) from ex
+
+
 def _normalize_id_list(
     value: list[int | dict[str, Any]] | None | msgspec.UnsetType,
 ) -> list[int] | None | msgspec.UnsetType:
@@ -88,6 +111,8 @@ class DashboardPostSchema(msgspec.Struct):
         self.owners = _normalize_id_list(self.owners)  # type: ignore[assignment]
         self.roles = _normalize_id_list(self.roles)  # type: ignore[assignment]
         self.tags = _normalize_id_list(self.tags)  # type: ignore[assignment]
+        _validate_json_string("position_json", self.position_json)
+        _validate_json_string("json_metadata", self.json_metadata)
 
 
 class DashboardPutSchema(msgspec.Struct):
@@ -115,6 +140,8 @@ class DashboardPutSchema(msgspec.Struct):
         self.owners = _normalize_id_list(self.owners)  # type: ignore[assignment]
         self.roles = _normalize_id_list(self.roles)  # type: ignore[assignment]
         self.tags = _normalize_id_list(self.tags)  # type: ignore[assignment]
+        _validate_json_string("position_json", self.position_json)
+        _validate_json_string("json_metadata", self.json_metadata)
 
 
 class DashboardCopySchema(msgspec.Struct):
