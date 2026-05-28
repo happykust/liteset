@@ -720,7 +720,13 @@ class ChartController(Controller):
         current_user: UserProtocol,
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """GET /api/v1/chart/distinct/{column_name} — distinct values for filters."""
+        """GET /api/v1/chart/distinct/{column_name} — distinct values for filters.
+
+        Upstream ``ChartRestApi`` does not override ``allowed_distinct_fields`` →
+        inherits the empty default → every distinct request 404s. Mirror that
+        with ``allowed_fields=frozenset()`` rather than answering with stale or
+        broken (relationship column → ``NotImplementedError``) data.
+        """
         from superset.db.filters import chart_access_filters
 
         base_filters = await chart_access_filters(security_manager, current_user)
@@ -728,6 +734,7 @@ class ChartController(Controller):
             dao=dao,
             column_name=column_name,
             rison_params=rison_params,
+            allowed_fields=frozenset(),
             base_filters=base_filters or None,
         )
 

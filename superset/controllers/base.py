@@ -639,11 +639,16 @@ async def get_distinct_payload(
 
     Args:
         allowed_fields: If provided, only these column names are permitted.
-            Returns 404-style empty result for disallowed names, matching
-            Superset's ``allowed_distinct_fields`` behavior.
+            Disallowed names raise ``NotFoundException`` (HTTP 404), matching
+            upstream's ``allowed_distinct_fields`` behaviour — see
+            ``superset_old/views/base_api.py``: any column not in the set
+            short-circuits to ``self.response_404()``. Default upstream value
+            is an *empty* set, i.e. distinct is opt-in per resource.
     """
     if allowed_fields is not None and column_name not in allowed_fields:
-        return {"count": 0, "result": []}
+        from litestar.exceptions import NotFoundException
+
+        raise NotFoundException()
 
     if rison_params is not None:
         page, page_size = extract_pagination(rison_params)
@@ -651,12 +656,24 @@ async def get_distinct_payload(
 
     model_cls = getattr(dao, "model_cls", None)
     if model_cls is None or not hasattr(model_cls, column_name):
-        return {"count": 0, "result": []}
+        from litestar.exceptions import NotFoundException
+
+        raise NotFoundException()
 
     try:
         from sqlalchemy import func, select as sa_select
 
         col = getattr(model_cls, column_name)
+        # ``getattr(Model, "<relationship>")`` returns an InstrumentedAttribute
+        # whose ``is_not`` / ``ilike`` / ``distinct`` raise NotImplementedError —
+        # upstream sidesteps this via the ``allowed_distinct_fields`` gate, but
+        # callers can still reach here with stray names; treat as not-found.
+        col_prop = getattr(col, "property", None)
+        if col_prop is None or getattr(col_prop, "columns", None) is None:
+            from litestar.exceptions import NotFoundException
+
+            raise NotFoundException()
+
         # Match original ``DistinctFilter`` behaviour — drop NULL values
         # so ``{"text": "None", "value": null}`` doesn't pollute the
         # filter dropdown (and contract snapshots).
