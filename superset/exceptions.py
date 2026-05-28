@@ -1009,7 +1009,37 @@ def generic_exception_handler(
     while wrapping them in SIP-40 format. Logs unhandled non-HTTP
     exceptions for production diagnostics.
     """
-    from litestar.exceptions import HTTPException
+    from litestar.exceptions import HTTPException, InternalServerException
+
+    # Litestar wraps signature-model failures from *dependencies* (here,
+    # ``rison_params``) as ``InternalServerException`` — but a malformed
+    # rison root (``?q=!()`` on a dict-typed handler) is client input, not
+    # a server bug. Re-classify those msgspec mismatches as 422 so the user
+    # sees a useful validation error instead of 500. See
+    # ``litestar._signature.model._create_exception`` for the dep-vs-input
+    # split that produces this.
+    if isinstance(exc, InternalServerException):
+        cause = exc.__cause__
+        cause_msg = str(cause) if cause is not None else ""
+        if cause is not None and "$.rison_params" in cause_msg:
+            return Response(
+                content={
+                    "errors": [
+                        {
+                            "message": (
+                                "Invalid Rison query parameter: "
+                                f"{cause_msg.split(' - at')[0].strip()}"
+                            ),
+                            "error_type": "VALIDATION_ERROR",
+                            "level": "error",
+                            "extra": {},
+                        }
+                    ],
+                    "message": "Invalid Rison query parameter",
+                    "detail": cause_msg.split(" - at")[0].strip(),
+                },
+                status_code=422,
+            )
 
     if isinstance(exc, HTTPException):
         # Only expose detail for 4xx errors; mask 5xx internals
