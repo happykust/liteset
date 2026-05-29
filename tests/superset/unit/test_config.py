@@ -18,6 +18,28 @@ def test_default_settings() -> None:
     assert settings.debug is False
 
 
+def test_ws_url_default_targets_main_app_ws_events() -> None:
+    """The default GAQ WebSocket URL points at the main app's ``/ws/events``.
+
+    Liteset folds the WebSocket relay into the ASGI app (no Node sidecar), so
+    the default must target the in-app ``/ws/events`` path on the canonical
+    Superset port — NOT upstream's now-removed ``ws://127.0.0.1:8080/``
+    sidecar, which can never work here.
+    """
+    from urllib.parse import urlparse
+
+    from superset.websocket.events import AsyncQueryWebSocket
+
+    settings = SupersetSettings(secret_key="test-key-long-enough")
+    parsed = urlparse(settings.global_async_queries_websocket_url)
+    assert parsed.scheme == "ws"
+    assert parsed.path == "/ws/events"
+    # The path matches the registered WebSocket route (controller path "/" +
+    # handler "/ws/events"), and the port matches the app's default port.
+    assert AsyncQueryWebSocket.path == "/"
+    assert str(settings.port) in settings.global_async_queries_websocket_url
+
+
 def test_async_uri_conversion_postgresql() -> None:
     settings = SupersetSettings(
         secret_key="test-key-long-enough",

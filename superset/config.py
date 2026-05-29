@@ -989,7 +989,15 @@ class SupersetSettings(BaseSettings):
     # ── Global Async Queries ──
     global_async_queries_transport: str = "polling"
     global_async_queries_polling_delay: int = 500
-    global_async_queries_websocket_url: str = "ws://127.0.0.1:8080/"
+    # Liteset folds the WebSocket relay INTO the main ASGI app (controller
+    # ``AsyncQueryWebSocket`` at ``/ws/events``) — there is no separate Node
+    # ``superset-websocket`` sidecar. Upstream's default
+    # (``ws://127.0.0.1:8080/``) pointed at that now-removed sidecar and can
+    # never work here, so the default points at the main app's ``/ws/events``
+    # path on the canonical Superset port. Deployers behind a proxy / on a
+    # different host or port must override this to their external app URL
+    # + ``/ws/events`` (wss:// under TLS).
+    global_async_queries_websocket_url: str = "ws://127.0.0.1:8088/ws/events"
 
     # ── SQL Validators ──
     sql_validators_by_engine: dict[str, str] = {}
