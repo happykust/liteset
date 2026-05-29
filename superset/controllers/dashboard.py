@@ -476,9 +476,7 @@ class DashboardController(Controller):
     ) -> DashboardGetResponse:
         from superset.db.filters import dashboard_access_filters
 
-        access_filters = await dashboard_access_filters(
-            security_manager, current_user
-        )
+        access_filters = await dashboard_access_filters(security_manager, current_user)
         dashboard = await dao.get_full_by_id_or_slug(
             id_or_slug,
             extra_filters=access_filters,
@@ -491,9 +489,7 @@ class DashboardController(Controller):
         # which maps a ``SupersetSecurityException`` to ``DashboardAccessDeniedError``
         # → HTTP 403 (vs. the 404 returned by the filter miss above). The async
         # ``raise_for_access`` raises ``SupersetSecurityException`` (403) directly.
-        await security_manager.raise_for_access(
-            dashboard=dashboard, user=current_user
-        )
+        await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
 
         await event_logger.alog_with_context(
             "dashboard.get", object_ref=f"dashboard:{id_or_slug}"
@@ -1246,9 +1242,7 @@ class DashboardController(Controller):
             screenshot_obj.get_cache_key, window_size, thumb_size, permalink_key
         )
         cache_payload = (
-            await asyncio.to_thread(
-                DashboardScreenshot.get_from_cache_key, cache_key
-            )
+            await asyncio.to_thread(DashboardScreenshot.get_from_cache_key, cache_key)
             or ScreenshotCachePayload()
         )
         image_url = f"/api/v1/dashboard/{pk}/screenshot/{cache_key}/"
@@ -1351,7 +1345,14 @@ class DashboardController(Controller):
             try:
                 image = cache_payload.get_image()
             except ScreenshotImageNotAvailableException:
-                return Response(content=b"", status_code=404, media_type="image/png")
+                # JSON (not empty image/png) on miss — 1:1 with the original
+                # ``response_404()``; see the ImageLoader note on the thumbnail
+                # endpoint below.
+                return Response(
+                    content={"message": "Not found"},
+                    status_code=404,
+                    media_type="application/json",
+                )
 
             if download_format == "pdf":
                 from superset.utils.pdf import build_pdf_from_screenshots
@@ -1371,7 +1372,11 @@ class DashboardController(Controller):
                 status_code=200,
                 media_type="image/png",
             )
-        return Response(content=b"", status_code=404, media_type="image/png")
+        return Response(
+            content={"message": "Not found"},
+            status_code=404,
+            media_type="application/json",
+        )
 
     # ------------------------------------------------------------------
     # GET — thumbnail
@@ -1434,6 +1439,11 @@ class DashboardController(Controller):
             or ScreenshotCachePayload()
         )
 
+        # NB: every non-image response below returns JSON (``image/png`` ONLY on
+        # a real image) — 1:1 with the original (``response(202, ...)`` /
+        # ``response_404()``). The frontend ``ImageLoader`` fetches this URL and
+        # tests ``/image/.test(blob.type)``; an empty ``image/png`` body would
+        # pass that test and render a blank tile instead of the fallback.
         if cache_payload.should_trigger_task():
             # Mark as pending in cache and dispatch Celery task
             await asyncio.to_thread(
@@ -1449,10 +1459,19 @@ class DashboardController(Controller):
                 force=False,
                 cache_key=cache_key,
             )
+            # 1:1 with the original ``response(202, cache_key=..., dashboard_url=
+            # ..., image_url=..., task_updated_at=..., task_status=...)``
+            # (dashboards/api.py:1320).
             return Response(
-                content=b"",
+                content={
+                    "cache_key": cache_key,
+                    "dashboard_url": dashboard_url,
+                    "image_url": f"/api/v1/dashboard/{pk}/thumbnail/{cache_key}/",
+                    "task_updated_at": cache_payload.get_timestamp(),
+                    "task_status": cache_payload.get_status(),
+                },
                 status_code=202,
-                media_type="image/png",
+                media_type="application/json",
             )
 
         # Serve from cache
@@ -1460,12 +1479,24 @@ class DashboardController(Controller):
             image = cache_payload.get_image()
             # Validate the BytesIO object
             if not image or not hasattr(image, "read"):
-                return Response(content=b"", status_code=404, media_type="image/png")
+                return Response(
+                    content={"message": "Not found"},
+                    status_code=404,
+                    media_type="application/json",
+                )
             if image.getbuffer().nbytes == 0:
-                return Response(content=b"", status_code=404, media_type="image/png")
+                return Response(
+                    content={"message": "Not found"},
+                    status_code=404,
+                    media_type="application/json",
+                )
             image.seek(0)
         except ScreenshotImageNotAvailableException:
-            return Response(content=b"", status_code=404, media_type="image/png")
+            return Response(
+                content={"message": "Not found"},
+                status_code=404,
+                media_type="application/json",
+            )
         return Response(
             content=image.read(),
             status_code=200,

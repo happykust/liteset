@@ -198,9 +198,7 @@ def _render_chart_data_payload(  # noqa: C901
                 if not isinstance(row, dict):
                     continue
                 for key, val in row.items():
-                    if isinstance(val, float) and (
-                        math.isnan(val) or math.isinf(val)
-                    ):
+                    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
                         row[key] = None
                     elif isinstance(val, Decimal):
                         if val == val.to_integral_value():
@@ -461,9 +459,7 @@ def _chart_custom_filters(current_user: Any) -> dict[str, Any]:  # noqa: C901
         user_id = getattr(current_user, "id", None)
         if user_id is None:
             return None
-        owner_subq = sa_select(model_cls.id).where(
-            model_cls.owners.any(id=user_id)
-        )
+        owner_subq = sa_select(model_cls.id).where(model_cls.owners.any(id=user_id))
         fav_subq = sa_select(FavStar.obj_id).where(
             FavStar.class_name == "slice",
             FavStar.user_id == user_id,
@@ -1043,7 +1039,11 @@ class ChartController(Controller):
         # Gate on THUMBNAILS feature flag
         feature_flags = getattr(state.settings, "feature_flags", {})
         if not feature_flags.get("THUMBNAILS", False):
-            return Response(content={"message": "Not found"}, status_code=404)
+            return Response(
+                content={"message": "Not found"},
+                status_code=404,
+                media_type="application/json",
+            )
 
         from sqlalchemy.orm import selectinload
 
@@ -1130,9 +1130,20 @@ class ChartController(Controller):
         # Gate on the feature flag *before* importing screenshots — that
         # module pulls in webdriver/playwright/selenium which can raise
         # at import time in deployments without the optional deps.
+        #
+        # NB: every non-image response here returns JSON (``image/png`` ONLY on
+        # a real image) — 1:1 with the original which returns ``response_404()``
+        # (application/json) on every miss. The frontend ``ImageLoader``
+        # (packages/.../ListViewCard/ImageLoader.tsx) fetches the URL and tests
+        # ``/image/.test(blob.type)``; an empty ``image/png`` body would pass
+        # that test and render a blank/broken tile instead of the fallback.
         feature_flags = getattr(state.settings, "feature_flags", {})
         if not feature_flags.get("THUMBNAILS", False):
-            return Response(content=b"", status_code=404, media_type="image/png")
+            return Response(
+                content={"message": "Not found"},
+                status_code=404,
+                media_type="application/json",
+            )
 
         from superset.utils.screenshots import (
             ChartScreenshot,
@@ -1151,13 +1162,21 @@ class ChartController(Controller):
             try:
                 image = cache_payload.get_image()
             except ScreenshotImageNotAvailableException:
-                return Response(content=b"", status_code=404, media_type="image/png")
+                return Response(
+                    content={"message": "Not found"},
+                    status_code=404,
+                    media_type="application/json",
+                )
             return Response(
                 content=image.getvalue(),
                 status_code=200,
                 media_type="image/png",
             )
-        return Response(content=b"", status_code=404, media_type="image/png")
+        return Response(
+            content={"message": "Not found"},
+            status_code=404,
+            media_type="application/json",
+        )
 
     @get(
         "/{pk:int}/thumbnail/{digest:str}/",
@@ -1186,9 +1205,19 @@ class ChartController(Controller):
         # Gate on the feature flag *before* importing screenshots —
         # screenshots imports webdriver which depends on optional
         # extensions (machine_auth_provider_factory).
+        #
+        # NB: non-image responses (404 / 202) return JSON, not an empty
+        # ``image/png`` — the frontend ``ImageLoader`` keys off
+        # ``/image/.test(blob.type)`` and an empty image body would render a
+        # blank tile instead of the fallback. 1:1 with the original
+        # (``response_404()`` / ``response(202, task_*)``).
         feature_flags = getattr(state.settings, "feature_flags", {})
         if not feature_flags.get("THUMBNAILS", False):
-            return Response(content=b"", status_code=404, media_type="image/png")
+            return Response(
+                content={"message": "Not found"},
+                status_code=404,
+                media_type="application/json",
+            )
 
         from sqlalchemy.orm import selectinload
 
@@ -1235,17 +1264,27 @@ class ChartController(Controller):
                 chart_id=str(chart.id),
                 force=False,
             )
+            # 1:1 with the original ``response(202, task_updated_at=...,
+            # task_status=...)`` (charts/api.py:794) — JSON, NOT an empty
+            # ``image/png`` (see ImageLoader note above).
             return Response(
-                content=b"",
+                content={
+                    "task_updated_at": cache_payload.get_timestamp(),
+                    "task_status": cache_payload.get_status(),
+                },
                 status_code=202,
-                media_type="image/png",
+                media_type="application/json",
             )
 
         # Serve from cache
         try:
             image = cache_payload.get_image()
         except ScreenshotImageNotAvailableException:
-            return Response(content=b"", status_code=404, media_type="image/png")
+            return Response(
+                content={"message": "Not found"},
+                status_code=404,
+                media_type="application/json",
+            )
         return Response(
             content=image.getvalue(),
             status_code=200,
@@ -1302,7 +1341,11 @@ class ChartController(Controller):
         # found (``superset_old/charts/api.py:912-915``).
         charts = await dao.find_by_ids(ids) if ids else []
         if not charts:
-            return Response(content={"message": "Not found"}, status_code=404)
+            return Response(
+                content={"message": "Not found"},
+                status_code=404,
+                media_type="application/json",
+            )
         fav_ids = set(await dao.favorited_ids(ids, current_user.id))
         return FavoriteStatusResponse(
             result=[FavoriteStatusItem(id=i, value=i in fav_ids) for i in ids],
@@ -1695,8 +1738,7 @@ class ChartController(Controller):
             return Response(
                 content={
                     "message": (
-                        "Chart has no query context saved. "
-                        "Please save the chart again."
+                        "Chart has no query context saved. Please save the chart again."
                     )
                 },
                 status_code=400,
@@ -2003,9 +2045,7 @@ class ChartController(Controller):
                 # 500 because that exception takes a SupersetError, not a
                 # ``message`` kwarg).
                 return Response(
-                    content={
-                        "message": "You don't have permission to download data"
-                    },
+                    content={"message": "You don't have permission to download data"},
                     status_code=403,
                 )
 
@@ -2064,9 +2104,7 @@ class ChartController(Controller):
                 return Response(
                     content=xlsx_data,
                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={
-                        "Content-Disposition": f"attachment; filename={_ts}.xlsx"
-                    },
+                    headers={"Content-Disposition": f"attachment; filename={_ts}.xlsx"},
                 )
 
             # Multiple queries: bundle individual files into a ZIP
@@ -2095,9 +2133,7 @@ class ChartController(Controller):
         if result_type == "post_processed":
             from superset.charts.post_processing import apply_client_processing
 
-            _pp_qobjs = [
-                AsyncQueryObject.from_request(q, ds_ref) for q in data.queries
-            ]
+            _pp_qobjs = [AsyncQueryObject.from_request(q, ds_ref) for q in data.queries]
             _pp_qctx = AsyncQueryContext(
                 datasource=datasource,
                 queries=_pp_qobjs,
@@ -2133,7 +2169,6 @@ class ChartController(Controller):
 
         # --- Default JSON path (result_type: full / results / columns / etc.) ----
         else:
-
             query_objects = [
                 AsyncQueryObject.from_request(q, ds_ref) for q in data.queries
             ]
