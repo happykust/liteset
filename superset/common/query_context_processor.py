@@ -460,8 +460,23 @@ class AsyncQueryContextProcessor:
         datasource = self._datasource
         query_dict = query_object.to_dict()
 
-        if hasattr(datasource, "get_query_str"):
-            query_str = datasource.get_query_str(query_dict)
+        # IMPORTANT: route through ``_build_sql`` (which calls
+        # ``_adapt_query_dict_for_get_sqla_query`` first), NOT the raw
+        # ``get_query_str`` → ``get_query_str_extended`` →
+        # ``get_sqla_query(**query_dict)`` chain. The wire-format
+        # ``query_dict`` carries keys that ``get_sqla_query`` doesn't
+        # accept (``applied_time_extras``, ``filters``, ``url_params``,
+        # ``custom_form_data`` …) — splatting them raises
+        # ``TypeError: get_sqla_query() got an unexpected keyword
+        # argument 'applied_time_extras'`` → 500. ``_build_sql`` adapts
+        # the keys exactly like the execute path does, so ``type=query``
+        # produces the same SQL the chart would actually run, run in a
+        # worker thread (sync engine pipeline under asyncpg).
+        if hasattr(datasource, "_build_sql"):
+            sql, _from_dttm, _to_dttm = await asyncio.to_thread(
+                datasource._build_sql, query_dict, None  # noqa: SLF001
+            )
+            query_str = sql
         elif hasattr(datasource, "get_query_str_extended"):
             result = datasource.get_query_str_extended(query_dict)
             query_str = getattr(result, "sql", str(result))
