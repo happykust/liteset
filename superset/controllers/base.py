@@ -231,6 +231,22 @@ def build_rison_query_params(  # noqa: C901
             filters.append(col_attr.ilike(f"%{escape_like(str(value))}%"))
         elif op == "nct":
             filters.append(~col_attr.ilike(f"%{escape_like(str(value))}%"))
+        elif op == "nsw":
+            # Not-starts-with — 1:1 with FAB FilterNotStartsWith
+            # (flask_appbuilder/models/sqla/filters.py:101): ``~ilike(v%)``.
+            filters.append(~col_attr.ilike(f"{escape_like(str(value))}%"))
+        elif op == "new":
+            # Not-ends-with — FAB FilterNotEndsWith (:119): ``~ilike(%v)``.
+            filters.append(~col_attr.ilike(f"%{escape_like(str(value))}"))
+        elif op == "in":
+            # FAB FilterIn (:195): ``field.in_([...])``. RISON passes the
+            # value as a list ``!(a,b,c)``; tolerate a scalar too.
+            in_vals = value if isinstance(value, list) else [value]
+            filters.append(col_attr.in_(in_vals))
+        elif op == "not_in":
+            # FAB FilterNotIn (:207): ``~field.in_([...])``.
+            nin_vals = value if isinstance(value, list) else [value]
+            filters.append(~col_attr.in_(nin_vals))
         elif op == "gt":
             filters.append(col_attr > value)
         elif op == "lt":
