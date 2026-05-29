@@ -14,7 +14,24 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Locale middleware with user pref > cookie > Accept-Language > default."""
+"""Locale middleware.
+
+Resolves the active request locale the same way the original Flask-AppBuilder
+locale selector did: a chosen-language cookie (the ASGI equivalent of the
+``session["locale"]`` set by ``/lang/<locale>``) takes precedence, then the
+``Accept-Language`` header's best match, then the default.
+
+IMPORTANT — both the cookie and the ``Accept-Language`` match are constrained
+to the **configured** ``LANGUAGES`` (``settings.languages``), exactly like
+upstream's ``request.accept_languages.best_match(appbuilder.bm.languages) or
+BABEL_DEFAULT_LOCALE``.  This is what keeps the backend English when only
+English is enabled: without it a French/Chinese browser would get a
+half-translated UI (translated backend strings, English React frontend) even
+though the deployment never enabled those languages.  With the default
+English-only ``LANGUAGES`` the resolved locale is always ``en`` — 1:1 with
+upstream's default (where ``LANGUAGES = {}`` makes ``best_match`` return
+``None`` -> ``BABEL_DEFAULT_LOCALE``).
+"""
 
 from __future__ import annotations
 
@@ -23,33 +40,10 @@ from litestar.types import ASGIApp, Receive, Scope, Send
 
 from superset.i18n import _current_locale, set_locale
 
-# Supported locale codes; cookie values not in this set are ignored.
-SUPPORTED_LOCALES: frozenset[str] = frozenset(
-    {
-        "ar",
-        "cs",
-        "de",
-        "en",
-        "es",
-        "fr",
-        "he",
-        "it",
-        "ja",
-        "ko",
-        "nl",
-        "pl",
-        "pt",
-        "ru",
-        "sk",
-        "sl",
-        "uk",
-        "zh",
-    }
-)
-
 
 class LocaleMiddleware(ASGIMiddleware):
-    """Resolve locale per-request: cookie > Accept-Language > default."""
+    """Resolve locale per-request: cookie > Accept-Language > default,
+    bounded by the configured ``LANGUAGES``."""
 
     LANGUAGE_COOKIE_NAME = "language"
 
@@ -60,17 +54,24 @@ class LocaleMiddleware(ASGIMiddleware):
         if scope["type"] == "http":
             headers = dict(scope.get("headers", []))
 
-            # 1. Check ``language`` cookie
+            allowed, default = _resolve_language_config(scope)
+
+            # 1. Chosen-language cookie (ASGI analogue of session["locale"]).
             locale = _extract_cookie_locale(
                 headers.get(b"cookie", b""),
                 self.LANGUAGE_COOKIE_NAME,
+                allowed,
             )
 
-            # 2. Fall back to Accept-Language header
+            # 2. Accept-Language best match against the configured languages.
             if locale is None:
-                raw = headers.get(b"accept-language", b"en")
+                raw = headers.get(b"accept-language", b"")
                 accept = raw.decode("utf-8", errors="replace")
-                locale = _parse_accept_language(accept)
+                locale = _best_match(accept, allowed)
+
+            # 3. Default (BABEL_DEFAULT_LOCALE).
+            if locale is None:
+                locale = default
 
             token = set_locale(locale)
         try:
@@ -80,11 +81,49 @@ class LocaleMiddleware(ASGIMiddleware):
                 _current_locale.reset(token)
 
 
-def _extract_cookie_locale(raw_cookie: bytes, cookie_name: str) -> str | None:
-    """Extract locale from a specific cookie in the raw Cookie header.
+def _resolve_language_config(scope: Scope) -> tuple[set[str], str]:
+    """Return ``(allowed_languages, default_locale)`` from app settings.
 
-    Returns ``None`` if the cookie is absent or empty.
+    ``allowed_languages`` is the set of *configured* ``LANGUAGES`` keys
+    (``settings.languages``); ``default_locale`` is ``BABEL_DEFAULT_LOCALE``.
+    Falls back to ``(set(), "en")`` when settings are unavailable, which
+    resolves every request to the default — never a half-translated UI.
     """
+    default = "en"
+    allowed: set[str] = set()
+    app = scope.get("app")
+    settings = getattr(getattr(app, "state", None), "settings", None)
+    if settings is not None:
+        default = str(getattr(settings, "babel_default_locale", "en") or "en")
+        languages = getattr(settings, "languages", {}) or {}
+        try:
+            allowed = {str(k) for k in languages}
+        except TypeError:
+            allowed = set()
+    return allowed, default
+
+
+def _match_allowed(value: str, allowed: set[str]) -> str | None:
+    """Match a single language tag against the allowed set.
+
+    Tries the normalized tag (``fr-FR`` -> ``fr_FR``) then its primary subtag
+    (``fr``), case-insensitively, returning the canonical configured key.
+    """
+    if not value or not allowed:
+        return None
+    allowed_lower = {a.lower(): a for a in allowed}
+    norm = value.strip().replace("-", "_")
+    for candidate in (norm, norm.split("_", 1)[0]):
+        hit = allowed_lower.get(candidate.lower())
+        if hit is not None:
+            return hit
+    return None
+
+
+def _extract_cookie_locale(
+    raw_cookie: bytes, cookie_name: str, allowed: set[str]
+) -> str | None:
+    """Return the ``language`` cookie value if it is an allowed locale."""
     if not raw_cookie:
         return None
     cookie_str = raw_cookie.decode("utf-8", errors="replace")
@@ -94,22 +133,34 @@ def _extract_cookie_locale(raw_cookie: bytes, cookie_name: str) -> str | None:
             continue
         name, _, value = pair.partition("=")
         if name.strip() == cookie_name:
-            lang = value.strip()
-            if lang:
-                normalized = lang.split("-")[0].lower()
-                if normalized in SUPPORTED_LOCALES:
-                    return normalized
-                return None
+            return _match_allowed(value.strip(), allowed)
     return None
 
 
-def _parse_accept_language(header: str) -> str:
-    """Extract primary language tag from Accept-Language header."""
-    if not header:
-        return "en"
-    # Take the first language tag (highest priority)
-    first = header.split(",")[0].strip()
-    # Remove quality factor
-    lang = first.split(";")[0].strip()
-    # Normalize: "en-US" -> "en"
-    return lang.split("-")[0].lower() or "en"
+def _best_match(header: str, allowed: set[str]) -> str | None:
+    """Best-match an ``Accept-Language`` header against the allowed set.
+
+    Mirrors ``werkzeug``'s ``accept_languages.best_match(languages)``: parse
+    every ``tag;q=`` pair, sort by quality (descending, stable on header
+    order), and return the first tag that maps to an allowed locale.
+    """
+    if not header or not allowed:
+        return None
+    parsed: list[tuple[float, int, str]] = []
+    for index, part in enumerate(header.split(",")):
+        part = part.strip()
+        if not part:
+            continue
+        tag, _, q = part.partition(";q=")
+        try:
+            quality = float(q) if q else 1.0
+        except ValueError:
+            quality = 1.0
+        parsed.append((quality, index, tag.strip()))
+    # Highest quality first; ties keep the original header order.
+    parsed.sort(key=lambda item: (-item[0], item[1]))
+    for _quality, _index, tag in parsed:
+        hit = _match_allowed(tag, allowed)
+        if hit is not None:
+            return hit
+    return None
