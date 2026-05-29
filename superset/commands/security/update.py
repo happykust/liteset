@@ -61,6 +61,19 @@ class UpdateRLSRuleCommand(AsyncBaseCommand[Any]):
         if not self._model:
             raise RLSRuleNotFoundError()
 
+        # Eager-load the M2M relationships that ``run()`` re-assigns. Without
+        # this, ``dao.update``'s ``setattr(model, "roles", [...])`` triggers
+        # SA's diff-load of the existing collection — a sync SELECT under
+        # asyncpg → MissingGreenlet 500. Only refresh the ones the caller
+        # is actually replacing. See [[sa-lazy-load-on-transient-asyncpg]].
+        to_refresh = [
+            attr
+            for attr, supplied in (("roles", self._roles), ("tables", self._tables))
+            if supplied is not None
+        ]
+        if to_refresh:
+            await self._dao.session.refresh(self._model, to_refresh)
+
         # Only resolve roles/tables when the caller actually sent them —
         # ``RLSPutSchema`` lets clients PATCH a subset of fields.
         if self._roles is not None:
