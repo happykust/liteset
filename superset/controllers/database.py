@@ -2304,7 +2304,13 @@ class DatabaseController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/{pk:int}/upload/",
-        guards=[require_permission("can_write", "Database")],
+        # 1:1 with upstream: the ``upload`` method is NOT in
+        # ``MODEL_API_RW_METHOD_PERMISSION_MAP`` (only ``upload_metadata`` is,
+        # mapped to ``upload``), so FAB derives the permission from the method
+        # name → ``can_upload`` on Database — NOT ``can_write``. A role granted
+        # the dedicated ``can_upload`` permission (without ``can_write``) must
+        # be able to upload; the previous ``can_write`` gate wrongly denied it.
+        guards=[require_permission("can_upload", "Database")],
         media_type="application/json",
     )
     async def upload(

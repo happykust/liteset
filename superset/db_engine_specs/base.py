@@ -1469,6 +1469,39 @@ class BaseEngineSpec:  # noqa: PLR0904
     # ------------------------------------------------------------------
 
     @classmethod
+    def df_to_sql(
+        cls,
+        database: Any,
+        table: Any,
+        df: Any,
+        to_sql_kwargs: dict[str, Any],
+    ) -> None:
+        """Upload a pandas DataFrame to a database table via ``to_sql``.
+
+        1:1 port of ``superset_old/db_engine_specs/base.py:1157``. Uses the
+        database's SYNC engine (``get_sqla_engine`` — psycopg2 for the
+        examples DB) because pandas ``to_sql`` is blocking sync IO; the
+        caller (``UploadCommand.run``) MUST invoke this inside
+        ``asyncio.to_thread`` so it doesn't block the event loop.
+
+        Does NOT create SqlaTable metadata — that's the command's job.
+        """
+        to_sql_kwargs["name"] = table.table
+        if table.schema:
+            to_sql_kwargs["schema"] = table.schema
+
+        with database.get_sqla_engine(
+            catalog=getattr(table, "catalog", None),
+            schema=table.schema,
+        ) as engine:
+            if (
+                engine.dialect.supports_multivalues_insert
+                or cls.supports_multivalues_insert
+            ):
+                to_sql_kwargs["method"] = "multi"
+            df.to_sql(con=engine, **to_sql_kwargs)
+
+    @classmethod
     def _get_fields(cls, cols: list[ResultSetColumnType]) -> list[Any]:
         return [
             (

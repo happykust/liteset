@@ -187,27 +187,74 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
 
         table_name = self._data["table_name"]
         schema_name = self._data.get("schema")
-        file_type = self._data.get("file_type", "csv")
+        # The upload form sends ``type`` (csv/excel/columnar) — the schema
+        # field name — NOT ``file_type``. The previous code read
+        # ``file_type`` which is never populated by ``parse_upload_form``,
+        # so excel/columnar uploads silently fell back to the CSV reader and
+        # blew up with UnicodeDecodeError on the binary xlsx. Accept both
+        # keys; map ``type`` → reader.
+        file_type = self._data.get("file_type") or self._data.get("type") or "csv"
 
         # Read file into DataFrame
         df = self._read_file(file_type)
 
-        # Upload DataFrame to database
+        # Upload DataFrame to database. ``already_exists`` (fail/replace/
+        # append) is the UploadPostSchema field name; the pandas kwarg is
+        # ``if_exists`` (superset_old/commands/database/uploaders/base.py:114).
+        # Accept both so a "replace" request isn't silently downgraded to
+        # the "fail" default.
         data_table = Table(table=table_name, schema=schema_name)
         to_sql_kwargs = {
             "chunksize": 1000,
-            "if_exists": self._data.get("if_exists", "fail"),
+            "if_exists": (
+                self._data.get("if_exists")
+                or self._data.get("already_exists")
+                or "fail"
+            ),
             "index": self._data.get("dataframe_index", False),
         }
         if self._data.get("index_label") and self._data.get("dataframe_index"):
             to_sql_kwargs["index_label"] = self._data["index_label"]
 
-        self._database.db_engine_spec.df_to_sql(
-            self._database,
-            data_table,
-            df,
-            to_sql_kwargs=to_sql_kwargs,
-        )
+        # ``df_to_sql`` opens the SYNC engine + pandas ``to_sql`` (blocking IO);
+        # run it off the event loop. ``functools.partial`` because
+        # ``to_thread`` forwards positional args but ``df_to_sql`` takes a
+        # keyword ``to_sql_kwargs``.
+        #
+        # Error wrapping is 1:1 with
+        # ``superset_old/commands/database/uploaders/base.py::_dataframe_to_database``:
+        # a pandas ``ValueError`` (the common "Table already exists" with
+        # ``if_exists='fail'``) → ``DatabaseUploadFailed`` (422) with the
+        # actionable strategy message; any other error → 422 with its message.
+        # Without this the bare pandas ValueError surfaced as a 500.
+        import asyncio
+        import functools
+
+        try:
+            await asyncio.to_thread(
+                functools.partial(
+                    self._database.db_engine_spec.df_to_sql,
+                    self._database,
+                    data_table,
+                    df,
+                    to_sql_kwargs=to_sql_kwargs,
+                )
+            )
+        except ValueError as ex:
+            raise DatabaseUploadFailed(
+                _(
+                    "Table already exists. You can change your "
+                    "'if table already exists' strategy to append or "
+                    "replace or provide a different Table Name to use."
+                )
+            ) from ex
+        except Exception as ex:
+            message = (
+                ex.message  # type: ignore[attr-defined]
+                if hasattr(ex, "message") and ex.message
+                else str(ex)
+            )
+            raise DatabaseUploadFailed(message) from ex
 
         # Create or update SqlaTable entry
         from sqlalchemy import select
