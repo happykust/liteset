@@ -2134,7 +2134,17 @@ class AsyncSecurityManager:
         )
 
     async def can_access_all_datasources(self, *, user: Any) -> bool:
-        """Check if user has the all_datasource_access permission."""
+        """Check if user can access all datasources.
+
+        1:1 with ``superset_old/security/manager.py::can_access_all_datasources``
+        (line 498): ``all_database_access OR all_datasource_access``. The port
+        previously only checked ``all_datasource_access``, so a user granted
+        the broader ``all_database_access`` (e.g. the stock Alpha role, which
+        has BOTH but the dataset-list filter keyed off this method) was wrongly
+        treated as having no global access.
+        """
+        if await self.can_access_all_databases(user=user):
+            return True
         return await self.has_access(
             ALL_DATASOURCE_ACCESS, ALL_DATASOURCE_ACCESS, user=user
         )

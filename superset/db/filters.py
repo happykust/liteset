@@ -383,22 +383,48 @@ async def dataset_access_filters(
 ) -> list[Any]:
     """Return SQLAlchemy filters restricting datasets to those the user can access.
 
-    Mirrors Superset's DatasourceFilter: admins see all, others see datasets
-    on databases they can access.
+    1:1 with ``superset_old/views/base.py::DatasourceFilter.apply`` +
+    ``superset_old/utils/filters.py::get_dataset_access_filters``:
+
+    * ``can_access_all_datasources()`` (admin / all_datasource_access /
+      all_database_access) → no filter (see everything). The port previously
+      only short-circuited on ``is_admin`` then filtered by
+      ``get_accessible_database_ids``, which returns ``[]`` for a user whose
+      access comes from the GLOBAL ``all_database_access`` perm (no per-DB
+      ``[db].(id:N)`` grant) → ``database_id.in_([])`` → ZERO datasets. That
+      wrongly hid every dataset from the stock Alpha role.
+    * otherwise: ``OR`` of accessible-database-ids, datasource_access perms,
+      catalog_access perms, schema_access perms — matching upstream's
+      ``get_dataset_access_filters`` (not just the database-id branch).
     """
     if security_manager.is_admin(user):
         return []
-
-    accessible_db_ids = await security_manager.get_accessible_database_ids(user)
-    if accessible_db_ids is None:
+    if await security_manager.can_access_all_datasources(user=user):
         return []
 
-    try:
-        from superset.models.connectors import SqlaTable
+    from sqlalchemy import or_
 
-        return [SqlaTable.database_id.in_(accessible_db_ids)]
-    except (ImportError, ModuleNotFoundError):
-        return []
+    from superset.models.connectors import SqlaTable
+
+    accessible_db_ids = await security_manager.get_accessible_database_ids(user) or []
+    datasource_perms = await security_manager.user_view_menu_names(
+        "datasource_access", user=user
+    )
+    schema_perms = await security_manager.user_view_menu_names(
+        "schema_access", user=user
+    )
+    catalog_perms = await security_manager.user_view_menu_names(
+        "catalog_access", user=user
+    )
+
+    return [
+        or_(
+            SqlaTable.database_id.in_(accessible_db_ids),
+            SqlaTable.perm.in_(datasource_perms),
+            SqlaTable.catalog_perm.in_(catalog_perms),
+            SqlaTable.schema_perm.in_(schema_perms),
+        )
+    ]
 
 
 async def query_access_filters(
