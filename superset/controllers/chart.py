@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import io
 import json as _json
+import logging
 import math
 import uuid
 from typing import Any, cast, TYPE_CHECKING
@@ -86,6 +87,8 @@ from superset.utils import filter_none, filter_unset
 if TYPE_CHECKING:
     from superset.config import SupersetSettings
     from superset.db.daos.chart import AsyncChartDAO
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +272,72 @@ def _resolve_async_channel_id(
     from superset.middleware.async_token import resolve_async_channel_id_from_request
 
     return resolve_async_channel_id_from_request(request, settings)
+
+
+async def _try_cached_chart_data(
+    *,
+    query_context: AsyncQueryContext,
+    datasource: Any,
+    settings: Any,
+    security_manager: Any,
+    current_user: Any,
+) -> Response[Any] | None:
+    """Cache-first short-circuit for the GLOBAL_ASYNC_QUERIES submit path.
+
+    1:1 with the original ``ChartDataRestApi._run_async``
+    (``superset_old/charts/data/api.py:329-333``): *before* dispatching a
+    background Celery job, run the command with ``force_cached=True`` and, on a
+    cache hit, return the already-computed result inline (HTTP 200) so a chart
+    whose data is already cached skips the whole async round-trip.
+
+    ``validate()`` (``raise_for_access``) runs first — exactly as the original
+    calls ``command.validate()`` *before* ``_run_async`` — so an inline cache
+    hit can never bypass the access check (a denial propagates as 403).
+
+    Returns the rendered ``Response`` on a cache hit, or ``None`` on a cache
+    miss / any failure (the caller then dispatches the background job and
+    returns 202).
+
+    The whole attempt is best-effort: the original suppresses only
+    ``ChartDataCacheLoadError`` on a miss, but liteset's processor signals a
+    ``force_cached`` miss by *returning* a per-query failed-dict (and may raise
+    other errors building/running against the query context).  Since the
+    async-dispatch path is the proven fallback — and access is independently
+    enforced by the Celery worker and the ``GET /data/<cache_key>`` read — ANY
+    failure here simply falls through to dispatch.  An inline ``Response`` is
+    only ever returned after ``validate()`` (``raise_for_access``) has passed,
+    so a cache hit can never bypass the access check.
+    """
+    from superset.extensions import cache_manager
+
+    try:
+        processor = AsyncQueryContextProcessor(
+            datasource=datasource,
+            settings=settings,
+            security_manager=security_manager,
+            user=current_user,
+            cache_manager=cache_manager,
+            query_context=query_context,
+        )
+        cmd = ChartDataCommand(query_context=query_context, processor=processor)
+        # Access check first — 1:1 with the original ``command.validate()``
+        # before ``_run_async``.
+        await cmd.validate()
+        result = await cmd.run(force_cached=True)
+    except Exception:  # noqa: BLE001 — best-effort; fall through to dispatch
+        logger.debug("GAQ cache-first probe missed/failed", exc_info=True)
+        return None
+    # A per-query failed status is a miss too (the processor returns a
+    # failed-dict rather than raising on a ``force_cached`` miss).
+    queries = result.get("queries", [])
+    if not queries or any(
+        isinstance(q, dict) and q.get("status") == "failed" for q in queries
+    ):
+        return None
+    return _render_chart_data_payload(
+        result,
+        is_guest=security_manager.is_guest_user(current_user),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1539,6 +1608,38 @@ class ChartController(Controller):
                         status_code=400,
                     )
 
+                # Cache-first short-circuit — 1:1 with the original
+                # ``_run_async``: if this chart's data is already cached, return
+                # it inline (200) and skip the async round-trip entirely.
+                ds_ref = form_data.get("datasource", {}) or {}
+                ds_dict = {
+                    "type": ds_ref.get("type", "table"),
+                    "id": ds_ref.get("id", 0),
+                }
+                datasource = await ds_dao.get_datasource(ds_dict["type"], ds_dict["id"])
+                if not datasource:
+                    raise ObjectNotFoundError("Datasource", ds_dict["id"])
+                query_objects = [
+                    AsyncQueryObject.from_request(q, ds_dict)
+                    for q in form_data.get("queries", [])
+                ]
+                query_context = AsyncQueryContext(
+                    datasource=datasource,
+                    queries=query_objects,
+                    force=form_data.get("force", False),
+                    result_type="full",
+                    result_format="json",
+                )
+                cached_response = await _try_cached_chart_data(
+                    query_context=query_context,
+                    datasource=datasource,
+                    settings=settings,
+                    security_manager=security_manager,
+                    current_user=current_user,
+                )
+                if cached_response is not None:
+                    return cached_response
+
                 # Channel id MUST come from the request's ``async-token``
                 # cookie (the same claim the polling endpoint and the
                 # WebSocket relay read from) — NOT a random uuid. A random
@@ -1760,6 +1861,35 @@ class ChartController(Controller):
                     maybe_forward_guest_token,
                 )
                 from superset.tasks.async_queries import load_chart_data_into_cache
+
+                # Cache-first short-circuit — 1:1 with the original
+                # ``_run_async``: if this query's data is already cached, return
+                # it inline (200) and skip the async round-trip entirely.
+                ds_ref = {"type": data.datasource.type, "id": data.datasource.id}
+                datasource = await ds_dao.get_datasource(
+                    data.datasource.type, data.datasource.id
+                )
+                if not datasource:
+                    raise ObjectNotFoundError("Datasource", data.datasource.id)
+                query_objects = [
+                    AsyncQueryObject.from_request(q, ds_ref) for q in data.queries
+                ]
+                query_context = AsyncQueryContext(
+                    datasource=datasource,
+                    queries=query_objects,
+                    force=data.force,
+                    result_type="full",
+                    result_format="json",
+                )
+                cached_response = await _try_cached_chart_data(
+                    query_context=query_context,
+                    datasource=datasource,
+                    settings=settings,
+                    security_manager=security_manager,
+                    current_user=current_user,
+                )
+                if cached_response is not None:
+                    return cached_response
 
                 # Channel id MUST come from the request's ``async-token``
                 # cookie (the same claim the polling endpoint and the

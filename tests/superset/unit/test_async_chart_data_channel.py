@@ -432,6 +432,93 @@ async def test_post_data_async_missing_cookie_401(
 
 
 # ---------------------------------------------------------------------------
+# Cache-first short-circuit: an already-cached chart returns its data inline
+# (HTTP 200) and does NOT dispatch a background job — 1:1 with the original
+# ``_run_async`` (charts/data/api.py:329-333).
+# ---------------------------------------------------------------------------
+
+
+@patch("superset.controllers.chart._try_cached_chart_data")
+@patch("superset.tasks.async_queries.load_chart_data_into_cache")
+async def test_get_chart_data_async_cache_hit_returns_inline(
+    mock_task: MagicMock,
+    mock_cache_first: MagicMock,
+    controller: ChartController,
+    mock_user: MagicMock,
+    mock_security_manager: MagicMock,
+    async_state: MagicMock,
+    chart_query_context: str,
+) -> None:
+    """A cache hit returns the inline payload and skips the Celery dispatch."""
+    from litestar import Response
+
+    mock_task.delay = MagicMock()
+    sentinel = Response(
+        content={"result": [{"data": []}]}, media_type="application/json"
+    )
+    mock_cache_first.return_value = sentinel
+
+    chart = MagicMock()
+    chart.query_context = chart_query_context
+    dao = AsyncMock()
+    dao.find_by_id = AsyncMock(return_value=chart)
+
+    # No cookie needed — a cache hit short-circuits before channel resolution.
+    request = _make_request([])
+
+    result = await _get_chart_data(
+        controller,
+        request=request,
+        pk=1,
+        dao=dao,
+        ds_dao=AsyncMock(),
+        security_manager=mock_security_manager,
+        current_user=mock_user,
+        state=async_state,
+    )
+
+    assert result is sentinel
+    mock_cache_first.assert_awaited_once()
+    mock_task.delay.assert_not_called()
+
+
+@patch("superset.controllers.chart._try_cached_chart_data")
+@patch("superset.tasks.async_queries.load_chart_data_into_cache")
+async def test_post_data_async_cache_hit_returns_inline(
+    mock_task: MagicMock,
+    mock_cache_first: MagicMock,
+    controller: ChartController,
+    mock_user: MagicMock,
+    mock_security_manager: MagicMock,
+    async_state: MagicMock,
+    post_body_bytes: bytes,
+) -> None:
+    """POST: a cache hit returns inline and skips the Celery dispatch."""
+    from litestar import Response
+
+    mock_task.delay = MagicMock()
+    sentinel = Response(
+        content={"result": [{"data": []}]}, media_type="application/json"
+    )
+    mock_cache_first.return_value = sentinel
+
+    request = _make_post_request([], post_body_bytes)
+
+    result = await _data(
+        controller,
+        request=request,
+        ds_dao=AsyncMock(),
+        security_manager=mock_security_manager,
+        current_user=mock_user,
+        state=async_state,
+    )
+
+    assert result is sentinel
+    mock_cache_first.assert_awaited_once()
+    mock_task.delay.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Reader parity: the channel the submit path writes equals the channel the
 # polling endpoint derives from the SAME cookie.
 # ---------------------------------------------------------------------------
