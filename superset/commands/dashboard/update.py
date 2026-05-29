@@ -213,30 +213,38 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         if not deleted_tabs:
             return
 
-        # Lazy-import the report DAO to avoid circular dependencies
+        # 1:1 with ``superset_old/commands/dashboard/update.py::process_tab_diff``:
+        # for each deleted tab, find reports whose ``extra_json`` *contains*
+        # the tab id (``ReportScheduleDAO.find_by_extra_metadata`` →
+        # ``extra_json LIKE '%tab%'``) and deactivate them. The previous port
+        # loaded only this dashboard's reports and checked ``extra["anchor"]``
+        # — but the anchor actually lives at ``extra["dashboard"]["anchor"]``
+        # as a JSON-encoded LIST (see ``_validate_report_extra``), so the
+        # top-level string check never matched → reports were never
+        # deactivated. The substring search matches the tab id wherever it
+        # sits in the metadata (anchor list, activeTabs, …), exactly upstream.
         from superset.db.daos.report import AsyncReportScheduleDAO
 
         report_dao = AsyncReportScheduleDAO(session=self._dao.session)
-        reports = await report_dao.find_by_dashboard_id(self._dashboard_id)
-
-        for report in reports:
-            extra_raw = getattr(report, "extra", None) or "{}"
-            try:
-                extra = _json.loads(extra_raw)
-            except (ValueError, TypeError):
-                continue
-
-            anchor = extra.get("anchor")
-            if anchor and anchor in deleted_tabs:
+        seen_ids: set[int] = set()
+        for tab in deleted_tabs:
+            for report in await report_dao.find_by_extra_metadata(tab):
+                if report.id in seen_ids:
+                    continue
+                seen_ids.add(report.id)
                 report.active = False  # type: ignore[assignment]
                 logger.info(
-                    "Deactivated report schedule %s (id=%s) — anchor tab "
-                    "'%s' was removed from dashboard %s",
+                    "Deactivated report schedule %s (id=%s) — tab '%s' was "
+                    "removed from dashboard %s",
                     report.name,
                     report.id,
-                    anchor,
+                    tab,
                     self._dashboard_id,
                 )
+        # NOTE: upstream also emails each report owner ("dashboard tab used in
+        # this report has been deleted"). Deferred — SMTP side-effect that the
+        # async stack routes through Celery; deactivation (the data change) is
+        # the contract-relevant behaviour.
 
 
 class UpdateDashboardFiltersCommand(AsyncBaseCommand[list[dict[str, Any]]]):
