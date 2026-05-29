@@ -250,7 +250,31 @@ def _sync_resolve_user_role_ids(user: Any) -> list[int] | None:
         or not getattr(user, "is_authenticated", True)
     )
     if not is_anonymous:
-        return [r.id for r in (getattr(user, "roles", []) or [])]
+        # ``user.roles`` is a lazy relationship. In the report/alert
+        # execution path the executor user (set via ``override_user``) is
+        # NOT bound to the session active during chart-digest RLS
+        # computation, so the lazy load raises ``DetachedInstanceError``.
+        # Re-query the role ids by ``user.id`` through the metadata sync
+        # session as a fallback — identical result for an attached user,
+        # robust for a detached one. (Flask upstream never hit this: its
+        # ``g.user`` is always bound to the request-scoped session.)
+        from sqlalchemy.orm.exc import DetachedInstanceError
+
+        try:
+            return [r.id for r in (getattr(user, "roles", []) or [])]
+        except DetachedInstanceError:
+            user_id = getattr(user, "id", None)
+            if user_id is None:
+                return []
+            from superset.models.security import ab_user_role
+
+            with _metadata_sync_session() as session:
+                rows = session.execute(
+                    select(ab_user_role.c.role_id).where(
+                        ab_user_role.c.user_id == user_id
+                    )
+                ).scalars()
+                return [int(rid) for rid in rows]
 
     settings = _cached_settings()
     public_role_name = settings.auth_role_public or "Public"
