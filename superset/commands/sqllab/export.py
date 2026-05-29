@@ -88,6 +88,19 @@ class SqlResultExportCommand(AsyncBaseCommand[SqlExportResult]):
                 status=404,
             )
 
+        # Eager-load the ``database`` relationship NOW (async context) so the
+        # sync ``_fetch_dataframe_via_get_df`` worker thread — which calls
+        # ``self._query.database.get_df(...)`` — doesn't trip a lazy-load
+        # against asyncpg and crash with ``MissingGreenlet``. The
+        # results-backend fast path doesn't need it, but the get_df fallback
+        # does, and we can't tell which path will run until run().
+        try:
+            await self._dao.session.refresh(self._query, ["database"])
+        except Exception:  # noqa: BLE001
+            # Some Query rows may have no FK / a detached state; the get_df
+            # path will surface a clearer error than a refresh failure.
+            logger.debug("Could not eager-load query.database", exc_info=True)
+
         # Permission gate — security manager based, mirroring the original
         # ``query.raise_for_access()`` which delegates to
         # ``security_manager.raise_for_access(query=...)``.
