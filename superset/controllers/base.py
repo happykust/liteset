@@ -190,29 +190,40 @@ def build_rison_query_params(  # noqa: C901
                 filters.append(clause)
             continue
 
-        # 2. Relationship filters: rel_m_m and rel_o_m
+        # 2. Relationship filters: rel_m_m / nrel_m_m / rel_o_m / nrel_o_m
         #    RISON passes IDs as strings (e.g. value:'1').  asyncpg is
         #    strict about types, so we must cast to int for integer PKs.
-        if op == "rel_m_m" and col_name in valid_rels:
+        if op in ("rel_m_m", "nrel_m_m") and col_name in valid_rels:
             rel = valid_rels[col_name]
             rel_model = rel.mapper.class_
             typed_value = _cast_pk(value)
             rel_attr = getattr(model_cls, col_name)
-            filters.append(rel_attr.any(rel_model.id == typed_value))
+            clause = rel_attr.any(rel_model.id == typed_value)
+            # FAB FilterRelationManyToMany has no negated arg_name, but the
+            # symmetry with nrel_o_m is useful and harmless; keep parity by
+            # supporting it explicitly.
+            filters.append(~clause if op == "nrel_m_m" else clause)
             continue
 
-        if op == "rel_o_m" and col_name in valid_rels:
-            # For many-to-one relationships, filter by the FK column directly
+        if op in ("rel_o_m", "nrel_o_m") and col_name in valid_rels:
+            # Many-to-one: filter by the FK column directly when present.
+            # ``nrel_o_m`` (FAB FilterRelationOneToManyNotEqual,
+            # flask_appbuilder/models/sqla/filters.py:238) negates it.
             typed_value = _cast_pk(value)
             fk_col_name = f"{col_name}_fk"
             if hasattr(model_cls, fk_col_name):
-                filters.append(getattr(model_cls, fk_col_name) == typed_value)
+                fk_col = getattr(model_cls, fk_col_name)
+                filters.append(
+                    fk_col != typed_value if op == "nrel_o_m"
+                    else fk_col == typed_value
+                )
             else:
                 # Fallback: try .has() for scalar relationships
                 rel = valid_rels[col_name]
                 rel_model = rel.mapper.class_
                 rel_attr = getattr(model_cls, col_name)
-                filters.append(rel_attr.has(rel_model.id == typed_value))
+                has_clause = rel_attr.has(rel_model.id == typed_value)
+                filters.append(~has_clause if op == "nrel_o_m" else has_clause)
             continue
 
         # 3. Simple column filters
