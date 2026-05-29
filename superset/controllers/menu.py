@@ -112,9 +112,12 @@ def _build_menu_tree(settings: Any) -> list[MenuItem]:
             cond=lambda: bool(logo_target_path),
         ),
         # -- Data category --
+        # The Data *category* has no icon — upstream's
+        # ``add_view(DatabaseView, ..., category="Data")`` sets only the
+        # ``icon`` on the Databases item, not ``category_icon`` (which
+        # defaults to ""). The ``fa-database`` icon belongs on the child.
         MenuItem(
             name="Data",
-            icon="fa-database",
             label="Data",
             childs=[
                 MenuItem(
@@ -175,18 +178,22 @@ def _build_menu_tree(settings: Any) -> list[MenuItem]:
                     label="List Groups",
                     cond=lambda: bool(superset_security_view_menu),
                 ),
-                MenuItem(
-                    name="Row Level Security",
-                    href="/rowlevelsecurity/list/",
-                    icon="fa-lock",
-                    label="Row Level Security",
-                ),
+                # Registration order in the original
+                # ``initialization/__init__.py``: Action Log (line 455) is
+                # added to the Security category BEFORE Row Level Security
+                # (line 493), so it renders first.
                 MenuItem(
                     name="Action Log",
                     href="/actionlog/list",
                     icon="fa-list-ol",
                     label="Action Log",
                     cond=lambda: bool(fab_add_security_views and superset_log_view),
+                ),
+                MenuItem(
+                    name="Row Level Security",
+                    href="/rowlevelsecurity/list/",
+                    icon="fa-lock",
+                    label="Row Level Security",
                 ),
             ],
         ),
