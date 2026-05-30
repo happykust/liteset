@@ -23,19 +23,34 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import yaml
 
-from superset.commands.query import (
+from superset.commands.query.create import CreateSavedQueryCommand
+from superset.commands.query.delete import (
     BulkDeleteSavedQueriesCommand,
-    CreateSavedQueryCommand,
     DeleteSavedQueryCommand,
-    ExportSavedQueriesCommand,
-    StopQueryCommand,
-    UpdateSavedQueryCommand,
 )
+from superset.commands.query.export import ExportSavedQueriesCommand
+from superset.commands.query.stop import StopQueryCommand
+from superset.commands.query.update import UpdateSavedQueryCommand
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import (
     CommandInvalidError,
     ObjectNotFoundError,
     SupersetSecurityException,
 )
+
+
+def _security_exception(msg: str = "denied") -> SupersetSecurityException:
+    """Build a SupersetSecurityException the way production code does.
+
+    The exception takes a ``SupersetError`` positionally (not ``message=``).
+    """
+    return SupersetSecurityException(
+        SupersetError(
+            error_type=SupersetErrorType.MISSING_OWNERSHIP_ERROR,
+            message=msg,
+            level=ErrorLevel.ERROR,
+        )
+    )
 
 
 @pytest.fixture
@@ -44,6 +59,18 @@ def mock_query_dao():
     dao.session = AsyncMock()
     dao.session.flush = AsyncMock()
     dao.session.delete = AsyncMock()
+    dao.session.add = MagicMock()
+    # Owner-tagging (superset.tags.core.get_tag / owner-tag sync) issues
+    # ``(await session.execute(stmt)).scalars().one_or_none()`` and ``.all()``
+    # — both SYNC calls on the awaited result. A bare AsyncMock session makes
+    # ``.scalars()`` a coroutine; configure a concrete result instead so the
+    # tagging path is a no-op (no existing tags) rather than crashing the test.
+    _exec_result = MagicMock()
+    _exec_result.scalars.return_value.one_or_none.return_value = None
+    _exec_result.scalars.return_value.all.return_value = []
+    dao.session.execute = AsyncMock(return_value=_exec_result)
+    # ``async with session.begin_nested():`` — a no-op async context manager.
+    dao.session.begin_nested = MagicMock(return_value=AsyncMock())
     return dao
 
 
@@ -95,7 +122,7 @@ async def test_bulk_delete_saved_queries_not_owner(mock_query_dao):
     mock_query_dao.find_by_ids = AsyncMock(return_value=[mock_q])
     security_manager = AsyncMock()
     security_manager.raise_for_ownership = AsyncMock(
-        side_effect=SupersetSecurityException(message="You don't have permission")
+        side_effect=_security_exception("You don't have permission")
     )
     cmd = BulkDeleteSavedQueriesCommand(
         dao=mock_query_dao, ids=[1], security_manager=security_manager, user_id=99
@@ -106,16 +133,29 @@ async def test_bulk_delete_saved_queries_not_owner(mock_query_dao):
 
 async def test_export_saved_queries(mock_query_dao):
     mock_q = MagicMock()
-    mock_q.label = "Test Query"
-    mock_q.sql = "SELECT 1"
-    mock_q.schema = "public"
-    mock_q.uuid = None
+    mock_q.label = "Test Query"  # used by _file_name (secure_filename needs str)
+    mock_q.uuid = "sq-uuid-1"
+    mock_q.schema = "public"  # _file_name branches on schema (None vs str)
+    # The export builds its payload from ``export_to_dict`` (not field reads),
+    # so it must return a real, YAML-serializable dict.
+    mock_q.export_to_dict.return_value = {
+        "label": "Test Query",
+        "sql": "SELECT 1",
+        "schema": "public",
+    }
     mock_db = MagicMock()
     mock_db.database_name = "test_db"
-    mock_db.sqlalchemy_uri = "sqlite:///test.db"
-    mock_db.uuid = None
+    mock_db.uuid = "db-uuid-1"
+    mock_db.export_to_dict.return_value = {
+        "database_name": "test_db",
+        "sqlalchemy_uri": "sqlite:///test.db",
+    }
     mock_q.database = mock_db
-    mock_query_dao.find_by_id = AsyncMock(return_value=mock_q)
+    # The export command loads the query via ``session.execute(...).scalars()
+    # .one_or_none()`` (eager-loads database) — not ``find_by_id``.
+    _res = MagicMock()
+    _res.scalars.return_value.one_or_none.return_value = mock_q
+    mock_query_dao.session.execute = AsyncMock(return_value=_res)
     cmd = ExportSavedQueriesCommand(model_ids=[1], dao=mock_query_dao)
     buf = await cmd.execute()
     assert isinstance(buf, io.BytesIO)
@@ -167,7 +207,10 @@ async def test_create_saved_query_success(mock_query_dao):
         result = await cmd.execute()
         assert result.id == 42
         assert result.created_by_fk == 5
-        mock_query_dao.session.add.assert_called_once_with(mock_instance)
+        # ``session.add`` is now called more than once (the SavedQuery plus the
+        # new owner Tag created by the owner-tagging path), so assert the
+        # SavedQuery instance was among the adds.
+        mock_query_dao.session.add.assert_any_call(mock_instance)
         mock_query_dao.session.flush.assert_awaited()
 
 
