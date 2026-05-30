@@ -22,10 +22,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from superset.commands.annotation import (
-    BulkDeleteAnnotationCommand,
+from superset.commands.annotation_layer.annotation.create import (
     CreateAnnotationCommand,
+)
+from superset.commands.annotation_layer.annotation.delete import (
+    BulkDeleteAnnotationCommand,
     DeleteAnnotationCommand,
+)
+from superset.commands.annotation_layer.annotation.update import (
     UpdateAnnotationCommand,
 )
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError

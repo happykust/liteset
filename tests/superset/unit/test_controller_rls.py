@@ -36,11 +36,9 @@ from unittest.mock import AsyncMock, MagicMock
 import msgspec
 import pytest
 
-from superset.commands.rls import (
-    CreateRLSRuleCommand,
-    DeleteRLSRuleCommand,
-    UpdateRLSRuleCommand,
-)
+from superset.commands.security.create import CreateRLSRuleCommand
+from superset.commands.security.delete import DeleteRLSRuleCommand
+from superset.commands.security.update import UpdateRLSRuleCommand
 from superset.controllers.rls import RLSController
 from superset.exceptions import (
     DatasourceNotFoundValidationError,
