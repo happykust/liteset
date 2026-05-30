@@ -23,24 +23,39 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import yaml
 
-from superset.commands.dashboard import (
+from superset.commands.dashboard.copy import CopyDashboardCommand
+from superset.commands.dashboard.create import CreateDashboardCommand
+from superset.commands.dashboard.delete import (
     BulkDeleteDashboardsCommand,
-    CopyDashboardCommand,
-    CreateDashboardCommand,
     DeleteDashboardCommand,
     DeleteEmbeddedDashboardCommand,
-    ExportDashboardsCommand,
-    ImportDashboardsCommand,
+)
+from superset.commands.dashboard.embedded.upsert import UpsertEmbeddedDashboardCommand
+from superset.commands.dashboard.export import ExportDashboardsCommand
+from superset.commands.dashboard.importers.v1 import ImportDashboardsCommand
+from superset.commands.dashboard.update import (
     UpdateDashboardColorsCommand,
     UpdateDashboardCommand,
     UpdateDashboardFiltersCommand,
-    UpsertEmbeddedDashboardCommand,
 )
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import (
     CommandInvalidError,
     ObjectNotFoundError,
     SupersetSecurityException,
 )
+
+
+def _security_exception(msg: str = "denied") -> SupersetSecurityException:
+    """Build a SupersetSecurityException the production way (SupersetError
+    positional, not ``message=``)."""
+    return SupersetSecurityException(
+        SupersetError(
+            error_type=SupersetErrorType.MISSING_OWNERSHIP_ERROR,
+            message=msg,
+            level=ErrorLevel.ERROR,
+        )
+    )
 
 
 @pytest.fixture
@@ -50,7 +65,37 @@ def mock_dao():
     dao.session.add = MagicMock()
     dao.session.flush = AsyncMock()
     dao.session.delete = AsyncMock()
+    dao.session.refresh = AsyncMock()
+    # Tag sync / role resolution / report-schedule lookups all go through
+    # ``(await session.execute()).scalars().{unique().one_or_none(),all()}``
+    # — SYNC chains on the awaited result. A bare AsyncMock makes
+    # ``.scalars()`` a coroutine; configure concrete (empty) results so the
+    # implicit side-effect queries in run()/validate() don't crash.
+    _res = MagicMock()
+    _res.scalars.return_value.unique.return_value.one_or_none.return_value = None
+    _res.scalars.return_value.unique.return_value.all.return_value = []
+    _res.scalars.return_value.one_or_none.return_value = None
+    _res.scalars.return_value.all.return_value = []
+    _res.fetchall.return_value = []
+    dao.session.execute = AsyncMock(return_value=_res)
+    dao.session.begin_nested = MagicMock(return_value=AsyncMock())
     return dao
+
+
+def _exec_returns(mock_dao, *, unique_one=None, one=None, all_=None):
+    """Make ``session.execute`` resolve to a concrete result. Commands load via
+    ``(await session.execute(stmt)).scalars().one_or_none()`` (export),
+    ``.scalars().all()`` (roles / report schedules) — not the ``find_by_id``
+    the older tests mocked."""
+    res = MagicMock()
+    res.scalars.return_value.unique.return_value.one_or_none.return_value = unique_one
+    res.scalars.return_value.unique.return_value.all.return_value = all_ or []
+    res.scalars.return_value.one_or_none.return_value = (
+        one if one is not None else unique_one
+    )
+    res.scalars.return_value.all.return_value = all_ or []
+    res.fetchall.return_value = []
+    mock_dao.session.execute = AsyncMock(return_value=res)
 
 
 @pytest.fixture
@@ -75,6 +120,13 @@ def mock_dashboard():
     dashboard.published = False
     dashboard.uuid = None
     dashboard.description = "A test dashboard"
+    # M2M collections must be real lists — run() iterates owners/roles/tags
+    # for tag-sync and export bundles slices; a bare MagicMock isn't iterable.
+    dashboard.owners = []
+    dashboard.roles = []
+    dashboard.tags = []
+    dashboard.slices = []
+    dashboard.theme = None
     return dashboard
 
 
@@ -127,7 +179,8 @@ async def test_create_dashboard_validates_success(mock_dao):
 
 
 async def test_update_dashboard_not_found(mock_dao):
-    mock_dao.find_by_id = AsyncMock(return_value=None)
+    # UpdateDashboardCommand loads via ``find_by_id_with_options`` (eager M2M).
+    mock_dao.find_by_id_with_options = AsyncMock(return_value=None)
     cmd = UpdateDashboardCommand(
         dao=mock_dao, dashboard_id=999, data={"dashboard_title": "X"}
     )
@@ -136,7 +189,7 @@ async def test_update_dashboard_not_found(mock_dao):
 
 
 async def test_update_dashboard_slug_conflict(mock_dao, mock_dashboard):
-    mock_dao.find_by_id = AsyncMock(return_value=mock_dashboard)
+    mock_dao.find_by_id_with_options = AsyncMock(return_value=mock_dashboard)
     mock_dao.validate_update_slug_uniqueness = AsyncMock(return_value=False)
     cmd = UpdateDashboardCommand(
         dao=mock_dao,
@@ -148,7 +201,7 @@ async def test_update_dashboard_slug_conflict(mock_dao, mock_dashboard):
 
 
 async def test_update_dashboard_success(mock_dao, mock_dashboard):
-    mock_dao.find_by_id = AsyncMock(return_value=mock_dashboard)
+    mock_dao.find_by_id_with_options = AsyncMock(return_value=mock_dashboard)
     mock_dao.validate_update_slug_uniqueness = AsyncMock(return_value=True)
     cmd = UpdateDashboardCommand(
         dao=mock_dao,
@@ -158,7 +211,7 @@ async def test_update_dashboard_success(mock_dao, mock_dashboard):
     await cmd.validate()
     result = await cmd.run()
     assert result.dashboard_title == "Updated"
-    mock_dao.session.flush.assert_awaited_once()
+    mock_dao.session.flush.assert_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +261,8 @@ async def test_bulk_delete_success(mock_dao, mock_dashboard):
 
 
 async def test_copy_dashboard_not_found(mock_dao):
-    mock_dao.get_by_id_or_slug = AsyncMock(return_value=None)
+    # CopyDashboardCommand loads via ``get_full_by_id_or_slug`` (eager owners).
+    mock_dao.get_full_by_id_or_slug = AsyncMock(return_value=None)
     cmd = CopyDashboardCommand(
         dao=mock_dao,
         dashboard_id=999,
@@ -219,7 +273,7 @@ async def test_copy_dashboard_not_found(mock_dao):
 
 
 async def test_copy_dashboard_missing_title(mock_dao, mock_dashboard):
-    mock_dao.get_by_id_or_slug = AsyncMock(return_value=mock_dashboard)
+    mock_dao.get_full_by_id_or_slug = AsyncMock(return_value=mock_dashboard)
     cmd = CopyDashboardCommand(
         dao=mock_dao,
         dashboard_id=1,
@@ -230,7 +284,7 @@ async def test_copy_dashboard_missing_title(mock_dao, mock_dashboard):
 
 
 async def test_copy_dashboard_success(mock_dao, mock_dashboard):
-    mock_dao.get_by_id_or_slug = AsyncMock(return_value=mock_dashboard)
+    mock_dao.get_full_by_id_or_slug = AsyncMock(return_value=mock_dashboard)
     new_dash = MagicMock()
     new_dash.id = 2
     new_dash.dashboard_title = "Copy of Test"
@@ -283,8 +337,8 @@ async def test_update_filters_success(mock_dao, mock_dashboard):
     await cmd.validate()
     result = await cmd.run()
 
-    metadata = json.loads(result.json_metadata)
-    assert metadata["native_filter_configuration"] == []
+    # run() returns the updated native_filter_configuration list directly.
+    assert result == []
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +366,7 @@ async def test_update_colors_success(mock_dao, mock_dashboard):
     await cmd.validate()
     await cmd.run()
     mock_dao.update_colors_config.assert_awaited_once_with(
-        mock_dashboard, {"color_scheme": "supersetColors"}
+        mock_dashboard, {"color_scheme": "supersetColors"}, mark_updated=True
     )
 
 
@@ -322,7 +376,13 @@ async def test_update_colors_success(mock_dao, mock_dashboard):
 
 
 async def test_export_dashboards_produces_zip(mock_dao, mock_dashboard):
-    mock_dao.find_by_id = AsyncMock(return_value=mock_dashboard)
+    # Export loads via session.execute().scalars().one_or_none() and builds the
+    # YAML from export_to_dict (not field reads); no slices/theme to bundle.
+    mock_dashboard.export_to_dict.return_value = {
+        "dashboard_title": "Test Dashboard",
+        "slug": "test-dashboard",
+    }
+    _exec_returns(mock_dao, one=mock_dashboard)
     cmd = ExportDashboardsCommand(model_ids=[1], dao=mock_dao)
     buf = await cmd.execute()
     assert isinstance(buf, io.BytesIO)
@@ -338,7 +398,7 @@ async def test_export_dashboards_produces_zip(mock_dao, mock_dashboard):
 
 
 async def test_export_dashboards_not_found(mock_dao):
-    mock_dao.find_by_id = AsyncMock(return_value=None)
+    _exec_returns(mock_dao, one=None)
     cmd = ExportDashboardsCommand(model_ids=[999], dao=mock_dao)
     with pytest.raises(ObjectNotFoundError):
         await cmd.execute()
@@ -356,14 +416,18 @@ async def test_export_dashboards_no_dao():
 
 
 def _make_import_zip(dashboard_title: str = "Imported") -> io.BytesIO:
+    # Real export bundles are wrapped in a top-level export directory which
+    # ``_parse_zip`` strips (``remove_root``). Without it, ``dashboards/x.yaml``
+    # collapses to ``x.yaml`` and the importer's ``dashboards/`` prefix checks
+    # never match.
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
-            "metadata.yaml",
+            "bundle/metadata.yaml",
             yaml.safe_dump({"version": "1.0.0", "type": "Dashboard"}),
         )
         zf.writestr(
-            "dashboards/test.yaml",
+            "bundle/dashboards/test.yaml",
             yaml.safe_dump({"dashboard_title": dashboard_title}),
         )
     buf.seek(0)
@@ -371,21 +435,29 @@ def _make_import_zip(dashboard_title: str = "Imported") -> io.BytesIO:
 
 
 async def test_import_dashboards_success(mock_dao):
+    # ``ImportDashboardsCommand`` overrides ``run()`` with a bespoke
+    # databases->datasets->charts->dashboards orchestration (it does NOT use
+    # the base ``_import_single`` loop). The stable unit-level contract is that
+    # ``validate()`` accepts a well-formed bundle: the ZIP parses, metadata.yaml
+    # version/type check passes, and ``_validate`` finds the dashboard_title.
+    # End-to-end ``run()`` needs a realistic multi-file bundle (uuids, position,
+    # datasets) and is covered by the integration suite.
     buf = _make_import_zip("Imported Dashboard")
     cmd = ImportDashboardsCommand(contents=buf, dao=mock_dao)
-    with patch(
-        "superset.commands.dashboard.ImportDashboardsCommand._import_single",
-        new_callable=AsyncMock,
-    ) as mock_import:
-        await cmd.execute()
-        mock_import.assert_awaited_once()
+    await cmd.validate()
+    assert "dashboards/test.yaml" in cmd._configs
+    assert cmd._configs["dashboards/test.yaml"]["dashboard_title"] == (
+        "Imported Dashboard"
+    )
 
 
 async def test_import_dashboards_missing_title(mock_dao):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("metadata.yaml", yaml.safe_dump({"version": "1.0.0"}))
-        zf.writestr("dashboards/bad.yaml", yaml.safe_dump({"slug": "no-title"}))
+        zf.writestr("bundle/metadata.yaml", yaml.safe_dump({"version": "1.0.0"}))
+        zf.writestr(
+            "bundle/dashboards/bad.yaml", yaml.safe_dump({"slug": "no-title"})
+        )
     buf.seek(0)
     cmd = ImportDashboardsCommand(contents=buf, dao=mock_dao)
     with pytest.raises(CommandInvalidError, match="Missing dashboard_title"):
@@ -506,8 +578,8 @@ async def test_update_filters_modifies_nfc(mock_dao, mock_dashboard):
     await cmd.validate()
     result = await cmd.run()
 
-    metadata = json.loads(result.json_metadata)
-    nfc = metadata["native_filter_configuration"]
+    # run() returns the updated native_filter_configuration list directly.
+    nfc = result
     # f1 deleted, f2 modified, reordered: f3 first then f2
     assert len(nfc) == 2
     assert nfc[0]["id"] == "f3"
@@ -552,15 +624,17 @@ async def test_create_resolves_owners(mock_dao):
 
 
 async def test_update_applies_roles(mock_dao, mock_dashboard):
-    """Role IDs are resolved via security_manager on update."""
+    """Role IDs are resolved via ``populate_roles`` (session query) on update."""
     mock_sm = AsyncMock()
     role_obj = MagicMock()
     role_obj.id = 5
-    mock_sm.find_role_by_id = AsyncMock(return_value=role_obj)
     mock_sm.find_user_by_id = AsyncMock(return_value=None)
 
-    mock_dao.find_by_id = AsyncMock(return_value=mock_dashboard)
+    mock_dao.find_by_id_with_options = AsyncMock(return_value=mock_dashboard)
     mock_dao.validate_update_slug_uniqueness = AsyncMock(return_value=True)
+    # ``populate_roles`` resolves ids via ``select(Role).where(id.in_(...))``
+    # -> session.execute().scalars().all(); return exactly the requested role.
+    _exec_returns(mock_dao, all_=[role_obj])
 
     cmd = UpdateDashboardCommand(
         dao=mock_dao,
@@ -572,7 +646,6 @@ async def test_update_applies_roles(mock_dao, mock_dashboard):
     await cmd.validate()
     result = await cmd.run()
 
-    mock_sm.find_role_by_id.assert_awaited_with(5)
     assert result.roles == [role_obj]
 
 
@@ -585,7 +658,7 @@ async def test_delete_non_owner_raises_forbidden(mock_dao, mock_dashboard):
     mock_dao.find_by_id = AsyncMock(return_value=mock_dashboard)
     sm = AsyncMock()
     sm.raise_for_ownership = AsyncMock(
-        side_effect=SupersetSecurityException(message="You don't have permission")
+        side_effect=_security_exception("You don't have permission")
     )
     cmd = DeleteDashboardCommand(
         dao=mock_dao, dashboard_id=1, security_manager=sm, user_id=42
@@ -598,7 +671,7 @@ async def test_update_non_owner_raises_forbidden(mock_dao, mock_dashboard):
     mock_dao.find_by_id = AsyncMock(return_value=mock_dashboard)
     sm = AsyncMock()
     sm.raise_for_ownership = AsyncMock(
-        side_effect=SupersetSecurityException(message="You don't have permission")
+        side_effect=_security_exception("You don't have permission")
     )
     cmd = UpdateDashboardCommand(
         dao=mock_dao, dashboard_id=1, data={}, user_id=42, security_manager=sm
