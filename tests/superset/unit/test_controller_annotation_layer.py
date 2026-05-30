@@ -22,12 +22,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from superset.commands.annotation import (
+from superset.commands.annotation_layer.create import CreateAnnotationLayerCommand
+from superset.commands.annotation_layer.delete import (
     BulkDeleteAnnotationLayerCommand,
-    CreateAnnotationLayerCommand,
     DeleteAnnotationLayerCommand,
-    UpdateAnnotationLayerCommand,
 )
+from superset.commands.annotation_layer.update import UpdateAnnotationLayerCommand
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 
 
@@ -50,6 +50,27 @@ def mock_layer():
     layer.created_on = None
     layer.changed_on = None
     return layer
+
+
+# ---------------------------------------------------------------------------
+# GET single — result.id parity (upstream show_columns = [id, name, descr])
+# ---------------------------------------------------------------------------
+
+
+async def test_get_single_includes_result_id(mock_dao, mock_layer):
+    """The detail ``result`` carries ``id`` (upstream show_columns has it),
+    not only the FAB envelope top-level ``id``."""
+    from superset.controllers.annotation_layer import AnnotationLayerController
+
+    mock_dao.find_by_id = AsyncMock(return_value=mock_layer)
+    handler = AnnotationLayerController.get_single
+    fn = handler.fn if hasattr(handler, "fn") else handler
+
+    resp = await fn(AnnotationLayerController(owner=MagicMock()), pk=1, dao=mock_dao)
+
+    assert resp["id"] == 1
+    assert resp["result"]["id"] == 1
+    assert resp["result"]["name"] == "Test Layer"
 
 
 # ---------------------------------------------------------------------------

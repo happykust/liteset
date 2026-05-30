@@ -132,6 +132,9 @@ class AnnotationLayerController(Controller):
         return {
             "id": layer.id,
             "result": {
+                # ``id`` is in upstream's show_columns ([id, name, descr]) so it
+                # belongs inside ``result`` too, not only the FAB envelope.
+                "id": layer.id,
                 "name": layer.name,
                 "descr": getattr(layer, "descr", "") or "",
                 "created_on": created_on.isoformat() if created_on else None,
