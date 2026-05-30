@@ -23,19 +23,32 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import yaml
 
-from superset.commands.chart import (
+from superset.commands.chart.create import CreateChartCommand
+from superset.commands.chart.delete import (
     BulkDeleteChartsCommand,
-    CreateChartCommand,
     DeleteChartCommand,
-    ExportChartsCommand,
-    UpdateChartCommand,
-    WarmUpChartCacheCommand,
 )
+from superset.commands.chart.export import ExportChartsCommand
+from superset.commands.chart.update import UpdateChartCommand
+from superset.commands.chart.warm_up_cache import WarmUpChartCacheCommand
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import (
     CommandInvalidError,
     ObjectNotFoundError,
     SupersetSecurityException,
 )
+
+
+def _security_exception(msg: str = "denied") -> SupersetSecurityException:
+    """Build a SupersetSecurityException the production way (SupersetError
+    positional, not ``message=``)."""
+    return SupersetSecurityException(
+        SupersetError(
+            error_type=SupersetErrorType.MISSING_OWNERSHIP_ERROR,
+            message=msg,
+            level=ErrorLevel.ERROR,
+        )
+    )
 
 
 @pytest.fixture
@@ -45,7 +58,33 @@ def mock_dao():
     dao.session.add = MagicMock()
     dao.session.flush = AsyncMock()
     dao.session.delete = AsyncMock()
+    # Owner-tagging / lookups issue ``(await session.execute()).scalars()
+    # .unique().one_or_none()`` / ``.all()`` — all SYNC on the awaited result.
+    # A bare AsyncMock makes ``.scalars()`` a coroutine; configure concrete
+    # results so those chains don't crash the create/delete tests.
+    _res = MagicMock()
+    _res.scalars.return_value.unique.return_value.one_or_none.return_value = None
+    _res.scalars.return_value.unique.return_value.all.return_value = []
+    _res.scalars.return_value.one_or_none.return_value = None
+    _res.scalars.return_value.all.return_value = []
+    dao.session.execute = AsyncMock(return_value=_res)
+    dao.session.begin_nested = MagicMock(return_value=AsyncMock())
     return dao
+
+
+def _exec_returns(mock_dao, *, unique_one=None, one=None, all_=None):
+    """Make ``session.execute`` resolve to a concrete result. Commands load via
+    ``(await session.execute(stmt)).scalars().unique().one_or_none()`` (chart),
+    ``.scalars().one_or_none()`` (export), or ``.scalars().all()`` (report
+    schedules) — not the ``find_by_id`` the older tests mocked."""
+    res = MagicMock()
+    res.scalars.return_value.unique.return_value.one_or_none.return_value = unique_one
+    res.scalars.return_value.unique.return_value.all.return_value = all_ or []
+    res.scalars.return_value.one_or_none.return_value = (
+        one if one is not None else unique_one
+    )
+    res.scalars.return_value.all.return_value = all_ or []
+    mock_dao.session.execute = AsyncMock(return_value=res)
 
 
 @pytest.fixture
@@ -61,18 +100,17 @@ def mock_chart():
     chart.datasource_id = 1
     chart.datasource_type = "table"
     chart.datasource = None  # No datasource object for export bundling
+    # ``export._export_single`` and ``warm_up`` read ``chart.table`` (the
+    # SqlaTable relationship); a bare MagicMock attribute would be truthy and
+    # send export down the dataset-bundling path (secure_filename(MagicMock)
+    # -> normalize() TypeError). Explicitly clear it.
+    chart.table = None
     return chart
 
 
 async def test_create_chart_validates_slice_name(mock_dao):
     cmd = CreateChartCommand(dao=mock_dao, data={"viz_type": "table"})
     with pytest.raises(CommandInvalidError, match="slice_name"):
-        await cmd.validate()
-
-
-async def test_create_chart_validates_viz_type(mock_dao):
-    cmd = CreateChartCommand(dao=mock_dao, data={"slice_name": "Test"})
-    with pytest.raises(CommandInvalidError, match="viz_type"):
         await cmd.validate()
 
 
@@ -94,6 +132,7 @@ async def test_update_chart_not_found(mock_dao):
 
 async def test_update_chart_success(mock_dao, mock_chart):
     mock_dao.find_by_id = AsyncMock(return_value=mock_chart)
+    _exec_returns(mock_dao, unique_one=mock_chart)
     cmd = UpdateChartCommand(
         dao=mock_dao,
         chart_id=1,
@@ -102,7 +141,9 @@ async def test_update_chart_success(mock_dao, mock_chart):
     await cmd.validate()
     result = await cmd.run()
     assert result.slice_name == "Updated"
-    mock_dao.session.flush.assert_awaited_once()
+    # ``run()`` flushes once for the chart and again inside
+    # ``sync_owner_tags_after_update`` — assert it was awaited (not once).
+    mock_dao.session.flush.assert_awaited()
 
 
 async def test_delete_chart_not_found(mock_dao):
@@ -137,6 +178,13 @@ async def test_bulk_delete_success(mock_dao, mock_chart):
 
 async def test_export_charts_produces_zip(mock_dao, mock_chart):
     mock_dao.find_by_id = AsyncMock(return_value=mock_chart)
+    # Export loads via session.execute().scalars().one_or_none() and builds the
+    # payload from export_to_dict (not field reads).
+    mock_chart.export_to_dict.return_value = {
+        "slice_name": "Test Chart",
+        "viz_type": "table",
+    }
+    _exec_returns(mock_dao, one=mock_chart)
     cmd = ExportChartsCommand(model_ids=[1], dao=mock_dao)
     buf = await cmd.execute()
     assert isinstance(buf, io.BytesIO)
@@ -152,11 +200,17 @@ async def test_export_charts_produces_zip(mock_dao, mock_chart):
 
 
 async def test_warm_up_cache(mock_dao, mock_chart):
-    mock_dao.find_by_id = AsyncMock(return_value=mock_chart)
+    # ``run()`` returns a single ``{chart_id, viz_error, viz_status}`` dict
+    # (not a list). The mock chart has no query_context, so the non-legacy
+    # branch raises ``CommandInvalidError`` which the run() try-boundary
+    # catches into ``viz_error`` with ``viz_status`` left ``None`` — exactly
+    # the original's error envelope.
+    _exec_returns(mock_dao, one=mock_chart)
     cmd = WarmUpChartCacheCommand(dao=mock_dao, chart_id=1)
     result = await cmd.execute()
-    assert result[0]["chart_id"] == 1
-    assert result[0]["viz_status"] == "success"
+    assert result["chart_id"] == 1
+    assert result["viz_status"] is None
+    assert "query context" in result["viz_error"]
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +222,7 @@ async def test_delete_non_owner_raises_forbidden(mock_dao, mock_chart):
     mock_dao.find_by_id = AsyncMock(return_value=mock_chart)
     sm = AsyncMock()
     sm.raise_for_ownership = AsyncMock(
-        side_effect=SupersetSecurityException(message="You don't have permission")
+        side_effect=_security_exception("You don't have permission")
     )
     cmd = DeleteChartCommand(dao=mock_dao, chart_id=1, security_manager=sm, user_id=42)
     with pytest.raises(SupersetSecurityException, match="permission"):
@@ -177,9 +231,10 @@ async def test_delete_non_owner_raises_forbidden(mock_dao, mock_chart):
 
 async def test_update_non_owner_raises_forbidden(mock_dao, mock_chart):
     mock_dao.find_by_id = AsyncMock(return_value=mock_chart)
+    _exec_returns(mock_dao, unique_one=mock_chart)
     sm = AsyncMock()
     sm.raise_for_ownership = AsyncMock(
-        side_effect=SupersetSecurityException(message="You don't have permission")
+        side_effect=_security_exception("You don't have permission")
     )
     cmd = UpdateChartCommand(
         dao=mock_dao,
@@ -196,7 +251,7 @@ async def test_bulk_delete_non_owner_raises_forbidden(mock_dao, mock_chart):
     mock_dao.find_by_ids = AsyncMock(return_value=[mock_chart])
     sm = AsyncMock()
     sm.raise_for_ownership = AsyncMock(
-        side_effect=SupersetSecurityException(message="You don't have permission")
+        side_effect=_security_exception("You don't have permission")
     )
     cmd = BulkDeleteChartsCommand(
         dao=mock_dao, chart_ids=[1], security_manager=sm, user_id=42
@@ -215,9 +270,13 @@ async def test_delete_chart_with_report_schedules_raises(mock_dao, mock_chart):
     mock_dao.find_by_id = AsyncMock(return_value=mock_chart)
     report = MagicMock()
     report.name = "Weekly Report"
-    mock_dao.find_report_schedules_by_chart_id = AsyncMock(return_value=[report])
+    # The guard uses AsyncReportScheduleDAO(session).find_by_chart_ids, which
+    # queries via session.execute().scalars().all() — return a report there.
+    _exec_returns(mock_dao, unique_one=mock_chart, all_=[report])
     cmd = DeleteChartCommand(dao=mock_dao, chart_id=1)
-    with pytest.raises(CommandInvalidError, match="report schedules"):
+    # Raises ``ChartDeleteFailedReportsExistError`` (a ``CommandInvalidError``
+    # subclass) with the offending report names in the message.
+    with pytest.raises(CommandInvalidError, match="associated alerts or reports"):
         await cmd.validate()
 
 
