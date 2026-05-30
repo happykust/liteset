@@ -194,6 +194,13 @@ class DashboardCopySchema(msgspec.Struct):
     css: str | None = None
     duplicate_slices: bool = False
 
+    def __post_init__(self) -> None:
+        # ``copy_dashboard`` does ``metadata = loads(json_metadata)`` then feeds
+        # it to ``set_dash_metadata`` as the ``data`` arg (``data.get(...)``) —
+        # a non-object value (``[1,2]`` / ``"s"``) → AttributeError → HTTP 500.
+        _validate_json_string("json_metadata", self.json_metadata)
+        _validate_json_object("json_metadata", self.json_metadata)
+
 
 class DashboardFiltersUpdateSchema(msgspec.Struct):
     """PUT /api/v1/dashboard/<pk>/filters"""

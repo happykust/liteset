@@ -206,3 +206,22 @@ def test_dashboard_model_params_dict_position_coerce_non_object() -> None:
     d.position_json = '{"ROOT_ID": {"type": "ROOT"}}'
     assert d.params_dict == {"color_scheme": "x"}
     assert d.position == {"ROOT_ID": {"type": "ROOT"}}
+
+
+def test_dashboard_copy_rejects_non_object_json_metadata() -> None:
+    # copy_dashboard feeds parsed json_metadata to set_dash_metadata as its
+    # ``data`` arg (``data.get(...)``); a non-object would 500. Reject at schema.
+    from superset.schemas.dashboard import DashboardCopySchema
+
+    for bad in ['"[]"', '"\\"s\\""', '"5"']:
+        payload = (
+            b'{"dashboard_title": "c", "json_metadata": ' + bad.encode() + b"}"
+        )
+        with pytest.raises(msgspec.ValidationError, match="json_metadata must be"):
+            msgspec.json.decode(payload, type=DashboardCopySchema)
+    # A real object is accepted.
+    ok = msgspec.json.decode(
+        b'{"dashboard_title": "c", "json_metadata": "{}"}',
+        type=DashboardCopySchema,
+    )
+    assert ok.json_metadata == "{}"

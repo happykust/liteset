@@ -332,7 +332,12 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         dash.dashboard_title = data["dashboard_title"]
         dash.css = data.get("css")
 
+        # ``metadata`` is fed to ``set_dash_metadata`` as its ``data`` arg
+        # (``data.get(...)``); coerce a non-object parse to {} so a malformed
+        # json_metadata doesn't crash the copy (the schema also rejects it 4xx).
         metadata = loads(data["json_metadata"])
+        if not isinstance(metadata, dict):
+            metadata = {}
         old_to_new_slice_ids: dict[int, int] = {}
 
         # Explicitly load lazy relationship to avoid MissingGreenlet in async context
