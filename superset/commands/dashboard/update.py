@@ -279,7 +279,11 @@ class UpdateDashboardFiltersCommand(AsyncBaseCommand[list[dict[str, Any]]]):
         metadata: dict[str, Any] = {}
         if self._dashboard.json_metadata:
             try:
-                metadata = json.loads(self._dashboard.json_metadata)
+                parsed = json.loads(self._dashboard.json_metadata)
+                # Coerce a non-object value (imported/legacy ``[1,2]`` / ``"s"``)
+                # to {} so ``metadata.get(...)`` below doesn't raise → 500.
+                if isinstance(parsed, dict):
+                    metadata = parsed
             except (json.JSONDecodeError, TypeError):
                 metadata = {}
 
