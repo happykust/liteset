@@ -96,6 +96,14 @@ def _validate_extra(value: str | None) -> None:
             f"Field cannot be decoded by JSON. {ex}"
         ) from ex
 
+    # ``extra`` must be a JSON object. Upstream's ``extra_validator`` calls
+    # ``extra_.get("metadata_params", …)`` unguarded, so a valid-but-non-object
+    # value (``[1,2]`` / ``5`` / ``"s"``) raises ``AttributeError`` → HTTP 500.
+    # Reject it as a clean 4xx instead (consistent with the metadata_params
+    # validation below, which already returns 422 for malformed input).
+    if extra_ is not None and not isinstance(extra_, dict):
+        raise CommandInvalidError("The Extra field must be a JSON object.")
+
     metadata_signature = inspect.signature(MetaData)
     for key in (extra_ or {}).get("metadata_params", {}):
         if key not in metadata_signature.parameters:

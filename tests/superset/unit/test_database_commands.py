@@ -114,6 +114,41 @@ def mock_database():
 
 
 # ---------------------------------------------------------------------------
+# _validate_extra — the ``extra`` JSON field must be an object
+#
+# Regression: a valid-but-non-object ``extra`` (``[1,2]`` / ``5`` / ``"s"``)
+# made ``extra_.get("metadata_params", …)`` raise AttributeError → HTTP 500
+# (live-probed via PUT /database/1). Must be a clean 4xx CommandInvalidError.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_extra_rejects_non_object() -> None:
+    from superset.commands.database.utils import _validate_extra
+
+    for bad in ("[1, 2, 3]", "5", '"a string"', "true"):
+        with pytest.raises(CommandInvalidError, match="must be a JSON object"):
+            _validate_extra(bad)
+
+
+def test_validate_extra_accepts_object_and_empty() -> None:
+    from superset.commands.database.utils import _validate_extra
+
+    # None/empty/null and a plain object all pass without raising.
+    _validate_extra(None)
+    _validate_extra("")
+    _validate_extra("null")
+    _validate_extra("{}")
+    _validate_extra('{"metadata_params": {}}')
+
+
+def test_validate_extra_bad_metadata_params_key() -> None:
+    from superset.commands.database.utils import _validate_extra
+
+    with pytest.raises(CommandInvalidError, match="metadata_params"):
+        _validate_extra('{"metadata_params": {"not_a_real_kwarg": 1}}')
+
+
+# ---------------------------------------------------------------------------
 # CreateDatabaseCommand
 # ---------------------------------------------------------------------------
 
