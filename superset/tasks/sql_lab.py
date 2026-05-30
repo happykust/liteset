@@ -299,8 +299,8 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
         # Execute
         # ------------------------------------------------------------------
         result_set = None
-        from superset.utils.core import QuerySource
         from superset.constants import QUERY_CANCEL_KEY
+        from superset.utils.core import QuerySource
 
         with database.get_sqla_engine(
             catalog=query.catalog,
@@ -671,7 +671,12 @@ def _apply_ctas(query: Any, statement: Any) -> Any:
         # by 1000 for the POSIX-seconds value ``fromtimestamp`` expects.  NOTE:
         # the original ``apply_ctas`` omitted this division (a latent
         # ms-as-seconds bug → far-future tmp-table name); the port corrects it.
-        start_dttm = datetime.fromtimestamp(query.start_time / 1000)
+        # ``query.start_time`` is a ``Numeric`` column → SQLAlchemy returns a
+        # ``Decimal``, which ``fromtimestamp`` rejects ("'decimal.Decimal'
+        # object cannot be interpreted as an integer") — cast to ``float``.
+        # Without this, a CTAS with an empty ``tmp_table_name`` (server
+        # auto-generates the name) 500'd.
+        start_dttm = datetime.fromtimestamp(float(query.start_time) / 1000)
         prefix = f"tmp_{query.user_id}_table"
         query.tmp_table_name = start_dttm.strftime(f"{prefix}_%Y_%m_%d_%H_%M_%S")
 
