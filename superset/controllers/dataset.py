@@ -248,8 +248,13 @@ class DatasetController(Controller):
         for item in payload["result"]:
             item["datasource_type"] = "table"
             item["kind"] = "physical" if not item.get("sql") else "virtual"
+            # ``explore_url`` is *derived* from ``default_endpoint`` (1:1 with
+            # the ``SqlaTable.explore_url`` property), but ``default_endpoint``
+            # itself stays in the row — upstream's ``list_columns`` returns both
+            # (and the dataset edit modal's ``default_endpoint`` field reads it).
+            # Use ``get`` not ``pop`` so the field is not dropped from the list.
             item["explore_url"] = (
-                item.pop("default_endpoint", None)
+                item.get("default_endpoint")
                 or f"/explore/?datasource_type=table&datasource_id={item['id']}"
             )
         return DatasetListResponse(

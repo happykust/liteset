@@ -16,14 +16,41 @@
 # under the License.
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import msgspec
 
 from superset.schemas.query import (
     ImportV1SavedQuery,
     QueryDatabaseInfo,
     QueryResponse,
+    SavedQueryDetailResult,
     StopQuerySchema,
 )
+
+
+def test_saved_query_detail_includes_id() -> None:
+    """``id`` is in upstream show_columns -> must appear inside ``result``.
+
+    The Saved Queries preview modal spreads ``json.result`` and needs the id.
+    """
+    obj = SimpleNamespace(
+        id=7,
+        label="my query",
+        schema="public",
+        sql="SELECT 1",
+        db_id=3,
+        description=None,
+        template_parameters=None,
+        catalog=None,
+        changed_on=None,
+        changed_by=None,
+        created_by=None,
+        database=None,
+    )
+    result = SavedQueryDetailResult.from_model(obj)
+    assert result.id == 7
+    assert result.label == "my query"
 
 
 def test_query_response_defaults():

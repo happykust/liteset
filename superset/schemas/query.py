@@ -119,6 +119,10 @@ class SavedQueryDatabaseRef(ModelStruct):
 class SavedQueryDetailResult(ModelStruct):
     """Full saved query detail returned by GET /api/v1/saved_query/{pk}."""
 
+    # ``id`` is in upstream's ``show_columns`` so it appears inside ``result``
+    # (not only in the FAB envelope). The Saved Queries preview modal spreads
+    # ``json.result`` and needs the id for its row actions.
+    id: int | None = None
     label: str = ""
     schema: str | None = None
     sql: str = ""
