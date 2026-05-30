@@ -145,6 +145,9 @@ class RecipientRef(ModelStruct):
 class ReportDetailResult(ModelStruct):
     """Full report schedule detail returned by GET /api/v1/report/{pk}."""
 
+    # ``id`` is in upstream's ``show_columns`` so it appears inside ``result``
+    # (not only the FAB envelope) — the Alerts/Reports edit modal reads it.
+    id: int | None = None
     name: str = ""
     type: str = ""
     description: str | None = None
