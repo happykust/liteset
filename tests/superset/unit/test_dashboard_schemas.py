@@ -146,3 +146,41 @@ def test_dashboard_json_metadata_stagger():
     )
     assert meta.stagger_refresh is True
     assert meta.filter_bar_orientation == "VERTICAL"
+
+
+# ---------------------------------------------------------------------------
+# Regression: ``json_metadata`` must be a JSON *object*.
+#
+# A valid-but-non-object json_metadata (``"[]"`` / ``"\"s\""`` / ``"5"``)
+# previously sailed past the parse-only check and later crashed
+# ``DashboardDAO.set_dash_metadata`` (``md.pop`` / ``md.setdefault`` on a
+# list/str) → HTTP 500. Upstream rejects it via ``validate_json_metadata``
+# (DashboardJSONMetadataSchema().validate → "Invalid input type"); we reject
+# it in the schema validator. See live-probe fix.
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("bad", ['"[]"', '"\\"s\\""', '"5"', '"true"'])
+def test_dashboard_post_rejects_non_object_json_metadata(bad: str) -> None:
+    payload = (
+        b'{"dashboard_title": "x", "json_metadata": ' + bad.encode() + b"}"
+    )
+    with pytest.raises(msgspec.ValidationError, match="json_metadata must be"):
+        msgspec.json.decode(payload, type=DashboardPostSchema)
+
+
+@pytest.mark.parametrize("bad", ['"[]"', '"\\"s\\""', '"5"'])
+def test_dashboard_put_rejects_non_object_json_metadata(bad: str) -> None:
+    payload = b'{"json_metadata": ' + bad.encode() + b"}"
+    with pytest.raises(msgspec.ValidationError, match="json_metadata must be"):
+        msgspec.json.decode(payload, type=DashboardPutSchema)
+
+
+def test_dashboard_put_accepts_object_json_metadata() -> None:
+    body = msgspec.json.decode(
+        b'{"json_metadata": "{\\"color_scheme\\": \\"x\\"}"}',
+        type=DashboardPutSchema,
+    )
+    assert body.json_metadata == '{"color_scheme": "x"}'

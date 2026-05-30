@@ -75,6 +75,34 @@ def _validate_json_string(
         ) from ex
 
 
+def _validate_json_object(field_name: str, value: Any) -> None:
+    """Reject a ``json_metadata`` value that isn't a JSON *object*.
+
+    Mirrors upstream's ``validate_json_metadata``
+    (superset_old/dashboards/schemas.py:106) which runs the parsed value
+    through ``DashboardJSONMetadataSchema().validate(...)`` — a non-mapping
+    (``[]`` / ``"str"`` / ``5``) yields ``{"_schema": ["Invalid input
+    type."]}`` → 422. Without this, a valid-but-non-object json_metadata
+    sails past ``_validate_json_string`` and later crashes
+    ``DashboardDAO.set_dash_metadata`` (``md.pop`` / ``md.setdefault`` on a
+    list/str) → HTTP 500.
+    """
+    if value is None or value is msgspec.UNSET:
+        return
+    if not isinstance(value, (str, bytes, bytearray)) or value in ("", b""):
+        return
+    import json as _json
+
+    try:
+        parsed = _json.loads(value)
+    except (ValueError, TypeError):
+        return  # parse errors are reported by _validate_json_string
+    if not isinstance(parsed, dict):
+        raise msgspec.ValidationError(
+            f"{field_name} must be a JSON object"
+        )
+
+
 def _normalize_id_list(
     value: list[int | dict[str, Any]] | None | msgspec.UnsetType,
 ) -> list[int] | None | msgspec.UnsetType:
@@ -125,6 +153,7 @@ class DashboardPostSchema(msgspec.Struct):
         self.tags = _normalize_id_list(self.tags)  # type: ignore[assignment]
         _validate_json_string("position_json", self.position_json)
         _validate_json_string("json_metadata", self.json_metadata)
+        _validate_json_object("json_metadata", self.json_metadata)
 
 
 class DashboardPutSchema(msgspec.Struct):
@@ -154,6 +183,7 @@ class DashboardPutSchema(msgspec.Struct):
         self.tags = _normalize_id_list(self.tags)  # type: ignore[assignment]
         _validate_json_string("position_json", self.position_json)
         _validate_json_string("json_metadata", self.json_metadata)
+        _validate_json_object("json_metadata", self.json_metadata)
 
 
 class DashboardCopySchema(msgspec.Struct):

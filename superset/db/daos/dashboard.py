@@ -169,7 +169,13 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         md: dict[str, Any] = {}
         if dashboard.json_metadata:
             try:
-                md = loads(dashboard.json_metadata)  # type: ignore[arg-type]
+                parsed = loads(dashboard.json_metadata)  # type: ignore[arg-type]
+                # Only a JSON object is usable here — a list/str/number would
+                # crash the ``md.pop`` / ``md.setdefault`` calls below. The
+                # schema validator rejects non-object json_metadata (422), but
+                # guard the copy path and any legacy-stored value too.
+                if isinstance(parsed, dict):
+                    md = parsed
             except (ValueError, TypeError):
                 pass
 
