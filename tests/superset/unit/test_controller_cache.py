@@ -44,9 +44,34 @@ def test_cache_invalidate_body_empty_list():
 
 
 def test_cache_invalidate_body_missing_field():
-    """CacheInvalidateSchema requires datasource_uids."""
-    with pytest.raises(msgspec.ValidationError):
-        msgspec.convert({}, CacheInvalidateSchema)
+    """Both fields are optional (1:1 with upstream ``CacheInvalidationRequestSchema``,
+    where neither ``datasource_uids`` nor ``datasources`` is ``required``); an
+    empty body is valid and the handler falls through to a 201 no-op."""
+    body = msgspec.convert({}, CacheInvalidateSchema)
+    assert body.datasource_uids == []
+    assert body.datasources == []
+
+
+def test_cache_invalidate_body_snake_case_wire_contract():
+    """Regression: the wire fields are snake_case (upstream + OpenAPI). A
+    previous ``rename="camel"`` silently dropped a correctly-formed
+    ``datasource_uids`` body → 201 invalidating nothing."""
+    body = msgspec.convert(
+        {
+            "datasource_uids": ["table__1"],
+            "datasources": [
+                {
+                    "database_name": "examples",
+                    "datasource_name": "energy_usage",
+                    "datasource_type": "table",
+                }
+            ],
+        },
+        CacheInvalidateSchema,
+    )
+    assert body.datasource_uids == ["table__1"]
+    assert body.datasources[0].database_name == "examples"
+    assert body.datasources[0].datasource_name == "energy_usage"
 
 
 def test_cache_invalidate_body_wrong_type():

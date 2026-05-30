@@ -43,8 +43,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class DatasourceRef(msgspec.Struct, rename="camel"):
-    """A datasource identified by name rather than UID."""
+class DatasourceRef(msgspec.Struct):
+    """A datasource identified by name rather than UID.
+
+    NB: NO ``rename="camel"`` — upstream ``Datasource`` (marshmallow) uses
+    snake_case wire fields (``database_name``/``datasource_name``/
+    ``datasource_type``), which is also what the published OpenAPI spec
+    documents. Camel-renaming would silently drop the documented payload.
+    """
 
     database_name: str = ""
     datasource_name: str = ""
@@ -53,11 +59,15 @@ class DatasourceRef(msgspec.Struct, rename="camel"):
     schema: str | None = None
 
 
-class CacheInvalidateSchema(msgspec.Struct, rename="camel"):
+class CacheInvalidateSchema(msgspec.Struct):
     """Body for POST /api/v1/cachekey/invalidate.
 
-    Matches the original ``CacheInvalidationRequestSchema``:
-    accepts either direct UIDs or datasource name tuples (or both).
+    1:1 with the original ``CacheInvalidationRequestSchema`` — accepts either
+    direct UIDs or datasource name tuples (or both). The wire fields are
+    snake_case (``datasource_uids``/``datasources``); do NOT add
+    ``rename="camel"`` — upstream + the OpenAPI spec use snake_case, and
+    camel-renaming silently drops a correctly-formed ``datasource_uids`` body
+    (→ 201 invalidating nothing).
     """
 
     datasource_uids: list[str] = []
