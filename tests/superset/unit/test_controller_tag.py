@@ -93,15 +93,48 @@ async def test_create_tag_with_objects_to_tag(mock_dao: AsyncMock) -> None:
         dao=mock_dao,
         data={
             "name": "MyTag",
+            # ``[object_type, object_id]`` PAIRS — the shape the frontend
+            # (TagModal/BulkTagModal) and TagPostSchema use. (The previous
+            # dict shape made the command crash with TypeError -> HTTP 500.)
             "objects_to_tag": [
-                {"object_type": "chart", "object_id": 10},
-                {"object_type": "dashboard", "object_id": 20},
+                ["chart", 10],
+                ["dashboard", 20],
             ],
         },
     )
     await cmd.validate()
     await cmd.run()
     assert mock_dao.create_custom_tagged_objects.await_count == 2
+    mock_dao.create_custom_tagged_objects.assert_any_await(
+        object_type="chart", object_id=10, tag_names=["MyTag"]
+    )
+
+
+async def test_create_tag_invalid_object_type_raises(mock_dao: AsyncMock) -> None:
+    """An unknown object type is a 4xx CommandInvalidError, not a 500."""
+    tag = MagicMock()
+    tag.name = "MyTag"
+    mock_dao.get_by_name.return_value = tag
+    cmd = CreateTagCommand(
+        dao=mock_dao,
+        data={"name": "MyTag", "objects_to_tag": [["BADTYPE", 1]]},
+    )
+    with pytest.raises(CommandInvalidError, match="invalid object type"):
+        await cmd.run()
+    mock_dao.create_custom_tagged_objects.assert_not_awaited()
+
+
+async def test_create_tag_malformed_object_entry_raises(mock_dao: AsyncMock) -> None:
+    """A non-pair objects_to_tag entry is a 4xx, not a 500."""
+    tag = MagicMock()
+    tag.name = "MyTag"
+    mock_dao.get_by_name.return_value = tag
+    cmd = CreateTagCommand(
+        dao=mock_dao,
+        data={"name": "MyTag", "objects_to_tag": [{"object_type": "chart"}]},
+    )
+    with pytest.raises(CommandInvalidError, match="Invalid objects_to_tag"):
+        await cmd.run()
 
 
 async def test_update_tag_not_found(mock_dao: AsyncMock) -> None:

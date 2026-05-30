@@ -43,12 +43,32 @@ class CreateTagCommand(AsyncBaseCommand[Any]):
         tag = await self._dao.get_by_name(name, "custom")
         if description:
             tag.description = description
-        # Create tagged object associations if provided
-        objects_to_tag = self._data.get("objects_to_tag", [])
+        # Create tagged object associations if provided.
+        #
+        # Each entry is a ``[object_type, object_id]`` PAIR — the shape both
+        # the frontend (TagModal ``['dashboard', id]`` / BulkTagModal
+        # ``[resourceName, id]``) and ``TagPostSchema`` (``list[list[str|int]]``)
+        # use, NOT a dict. The previous ``obj["object_type"]`` indexed a list by
+        # a string key → ``TypeError`` → HTTP 500 on EVERY custom-tag-with-
+        # objects create (both ``POST /tag/`` and ``/tag/bulk_create``).
+        from superset.models.tags import ObjectType
+
+        objects_to_tag = self._data.get("objects_to_tag", []) or []
         for obj in objects_to_tag:
+            if not isinstance(obj, (list, tuple)) or len(obj) != 2:
+                raise CommandInvalidError(
+                    f"Invalid objects_to_tag entry: {obj!r} "
+                    "(expected [object_type, object_id])"
+                )
+            object_type, object_id = obj[0], obj[1]
+            # Validate the object type up front — ``create_custom_tagged_objects``
+            # does ``ObjectType[object_type]`` which would ``KeyError`` → 500 on
+            # an unknown type. Mirror upstream's ``invalid object type`` 4xx.
+            if str(object_type) not in ObjectType.__members__:
+                raise CommandInvalidError(f"invalid object type {object_type}")
             await self._dao.create_custom_tagged_objects(
-                object_type=obj["object_type"],
-                object_id=obj["object_id"],
+                object_type=str(object_type),
+                object_id=int(object_id),
                 tag_names=[name],
             )
         await self._dao.session.flush()
