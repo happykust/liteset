@@ -158,7 +158,13 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
         """
         form_data: dict[str, Any] = {}
         try:
-            form_data = json.loads(self.params) if self.params else {}
+            parsed = json.loads(self.params) if self.params else {}
+            # ``params`` is an unvalidated JSON string column — a valid-but-
+            # non-object value (``[1,2]`` / ``"s"`` / ``5``) would make the
+            # ``form_data.update(...)`` below raise AttributeError, and since
+            # the chart LIST endpoint builds form_data for every row, ONE bad
+            # chart 500s the whole list. Coerce to {} like ``params_dict``.
+            form_data = parsed if isinstance(parsed, dict) else {}
         except (TypeError, json.JSONDecodeError):
             logger.error("Malformed json in slice's params", exc_info=True)
 
@@ -180,11 +186,17 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
 
     @property
     def params_dict(self) -> dict[str, Any]:
-        """Parsed params as a dict."""
+        """Parsed params as a dict.
+
+        ``params`` is an unvalidated JSON string — coerce a non-object parse
+        (``[1,2]`` / ``"s"`` / ``5``) to ``{}`` so callers that treat the
+        result as a mapping don't raise (mirrors ``form_data``).
+        """
         try:
-            return json.loads(self.params or "{}") or {}
+            parsed = json.loads(self.params or "{}")
         except (TypeError, json.JSONDecodeError):
             return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     @property
     def data(self) -> dict[str, Any]:
