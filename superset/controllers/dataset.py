@@ -24,10 +24,9 @@ from typing import Any, cast, TYPE_CHECKING
 
 import msgspec
 from litestar import Controller, delete, get, post, put
-from litestar.datastructures import UploadFile
+from litestar.connection import Request
 from litestar.di import Provide
-from litestar.enums import RequestEncodingType
-from litestar.params import Body, Parameter
+from litestar.params import Parameter
 from litestar.response import Stream
 
 from superset.commands.dataset.columns.delete import DeleteDatasetColumnCommand
@@ -56,6 +55,7 @@ from superset.controllers.base import (
     get_distinct_payload,
     get_info_payload,
     get_related_payload,
+    parse_import_request,
     serialize_list_response,
     stream_zip,
 )
@@ -805,49 +805,34 @@ class DatasetController(Controller):
     )
     async def import_dataset(
         self,
+        request: Request[Any, Any, Any],
         dao: DatasetDAOProtocol,
-        data: UploadFile = Body(media_type=RequestEncodingType.MULTI_PART),  # noqa: B008
-        overwrite: bool = False,
-        passwords: str | None = None,
-        ssh_tunnel_passwords: str | None = None,
-        ssh_tunnel_private_keys: str | None = None,
-        ssh_tunnel_private_key_passwords: str | None = None,
-        sync_columns: bool = True,
-        sync_metrics: bool = True,
     ) -> dict[str, str]:
-        import json as _json
+        # Read the multipart body manually (see parse_import_request): the
+        # ``data: UploadFile = Body(MULTI_PART)`` injection 500'd when no file
+        # field was present (Litestar StopIteration). Missing upload -> 4xx.
+        (
+            _buf,
+            filename,
+            overwrite,
+            passwords_dict,
+            ssh_dict,
+            ssh_private_keys_dict,
+            ssh_private_key_passwords_dict,
+        ) = await parse_import_request(request)
+        contents = _buf.getvalue()
+        # sync_columns / sync_metrics are extra multipart fields (default True;
+        # only an explicit ``false`` disables). The form is cached by Litestar.
+        _form = await request.form()
 
-        contents = await data.read()
-        try:
-            passwords_dict: dict[str, str] = _json.loads(passwords) if passwords else {}
-        except (ValueError, _json.JSONDecodeError) as exc:
-            raise CommandInvalidError("Invalid JSON in 'passwords' field") from exc
-        try:
-            ssh_dict: dict[str, str] = (
-                _json.loads(ssh_tunnel_passwords) if ssh_tunnel_passwords else {}
-            )
-        except (ValueError, _json.JSONDecodeError) as exc:
-            raise CommandInvalidError(
-                "Invalid JSON in 'ssh_tunnel_passwords' field"
-            ) from exc
-        try:
-            ssh_private_keys_dict: dict[str, str] = (
-                _json.loads(ssh_tunnel_private_keys) if ssh_tunnel_private_keys else {}
-            )
-        except (ValueError, _json.JSONDecodeError) as exc:
-            raise CommandInvalidError(
-                "Invalid JSON in 'ssh_tunnel_private_keys' field"
-            ) from exc
-        try:
-            ssh_private_key_passwords_dict: dict[str, str] = (
-                _json.loads(ssh_tunnel_private_key_passwords)
-                if ssh_tunnel_private_key_passwords
-                else {}
-            )
-        except (ValueError, _json.JSONDecodeError) as exc:
-            raise CommandInvalidError(
-                "Invalid JSON in 'ssh_tunnel_private_key_passwords' field"
-            ) from exc
+        def _form_bool(name: str, default: bool = True) -> bool:
+            raw = _form.get(name)
+            if raw is None:
+                return default
+            return str(raw).strip().lower() not in ("false", "0", "no", "off")
+
+        sync_columns = _form_bool("sync_columns")
+        sync_metrics = _form_bool("sync_metrics")
 
         # Mirror ``superset_old/datasets/api.py:919-963``: a ZIP bundle is
         # parsed (remove_root + YAML filter) and dispatched v1-then-v0; a
@@ -856,7 +841,6 @@ class DatasetController(Controller):
         # command first and falls back to the sync v0 command on
         # ``IncorrectVersionError`` — matching the original
         # ``commands/dataset/importers/dispatcher.py``.
-        filename = data.filename or "import.json"
         parsed, is_zip = _parse_import_upload(filename, contents)
         if is_zip:
             dispatcher = LegacyImportDatasetsDispatcher(

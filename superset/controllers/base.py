@@ -38,15 +38,76 @@ from __future__ import annotations
 
 import functools
 import io
+import json
 import logging
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from litestar.connection import Request
+from litestar.datastructures import UploadFile
 from sqlalchemy.exc import SQLAlchemyError
 
-from superset.exceptions import SupersetValidationException
+from superset.exceptions import CommandInvalidError, SupersetValidationException
 
 logger = logging.getLogger(__name__)
+
+
+async def parse_import_request(
+    request: Request[Any, Any, Any],
+) -> tuple[
+    io.BytesIO,
+    str,
+    bool,
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+]:
+    """Extract the import bundle + options from a multipart import request.
+
+    Replaces the ``data: UploadFile = Body(MULTI_PART)`` parameter injection
+    used by the ``/import/`` endpoints. That injection crashed with
+    ``StopIteration`` -> ``RuntimeError`` -> HTTP 500 when the request carried
+    no file field, because Litestar's multipart extractor does
+    ``next(v for v in form.values() if isinstance(v, UploadFile))``. Reading the
+    form here lets a missing upload be a clean 4xx ``CommandInvalidError``.
+
+    Returns ``(contents, filename, overwrite, passwords, ssh_tunnel_passwords,
+    ssh_tunnel_private_keys, ssh_tunnel_private_key_passwords)`` — the JSON
+    option fields decoded to dicts (1:1 with the previous per-handler parsing).
+    ``filename`` is needed by the dashboard importer's ZIP-vs-JSON dispatch.
+    """
+    form = await request.form()
+    upload = next((v for v in form.values() if isinstance(v, UploadFile)), None)
+    if upload is None:
+        raise CommandInvalidError("No file uploaded for import")
+    contents = io.BytesIO(await upload.read())
+    filename = getattr(upload, "filename", None) or "import.zip"
+    overwrite = str(form.get("overwrite", "")).strip().lower() in (
+        "true",
+        "1",
+        "yes",
+        "on",
+    )
+
+    def _json_field(name: str) -> dict[str, str]:
+        raw = form.get(name)
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise CommandInvalidError(f"Invalid JSON in '{name}' field") from exc
+
+    return (
+        contents,
+        filename,
+        overwrite,
+        _json_field("passwords"),
+        _json_field("ssh_tunnel_passwords"),
+        _json_field("ssh_tunnel_private_keys"),
+        _json_field("ssh_tunnel_private_key_passwords"),
+    )
 
 
 def extract_pagination(rison_params: dict[str, Any] | None) -> tuple[int, int]:

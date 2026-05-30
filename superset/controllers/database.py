@@ -20,7 +20,6 @@ metadata, export/import, upload."""
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import logging
 import re
@@ -55,6 +54,7 @@ from superset.controllers.base import (
     extract_ids,
     get_info_payload,
     get_related_payload,
+    parse_import_request,
     serialize_list_response,
     stream_zip,
 )
@@ -2044,13 +2044,8 @@ class DatabaseController(Controller):
     )
     async def import_database(
         self,
+        request: Request,
         dao: DatabaseDAOProtocol,
-        data: UploadFile = Body(media_type=RequestEncodingType.MULTI_PART),  # noqa: B008
-        overwrite: bool = False,
-        passwords: str | None = None,
-        ssh_tunnel_passwords: str | None = None,
-        ssh_tunnel_private_keys: str | None = None,
-        ssh_tunnel_private_key_passwords: str | None = None,
     ) -> dict[str, str]:
         """Import database(s) from a ZIP bundle.
 
@@ -2062,28 +2057,20 @@ class DatabaseController(Controller):
         - ``ssh_tunnel_passwords`` — tunnel password, keyed by file name
         - ``ssh_tunnel_private_keys`` — PEM private key, keyed by file name
         - ``ssh_tunnel_private_key_passwords`` — private key passphrase
+
+        Reads the multipart body via ``parse_import_request`` (not a
+        ``data: UploadFile = Body(MULTI_PART)`` param, which 500'd on a missing
+        file field — Litestar StopIteration); a missing upload is a clean 4xx.
         """
-        contents = await data.read()
-        buf = io.BytesIO(contents)
-
-        def _parse_json_field(raw: str | None, field_name: str) -> dict[str, str]:
-            if not raw:
-                return {}
-            try:
-                return json.loads(raw)
-            except (ValueError, json.JSONDecodeError) as exc:
-                raise CommandInvalidError(
-                    f"Invalid JSON in '{field_name}' field"
-                ) from exc
-
-        passwords_dict = _parse_json_field(passwords, "passwords")
-        ssh_dict = _parse_json_field(ssh_tunnel_passwords, "ssh_tunnel_passwords")
-        ssh_private_keys = _parse_json_field(
-            ssh_tunnel_private_keys, "ssh_tunnel_private_keys"
-        )
-        ssh_private_key_passwords = _parse_json_field(
-            ssh_tunnel_private_key_passwords, "ssh_tunnel_private_key_passwords"
-        )
+        (
+            buf,
+            _filename,
+            overwrite,
+            passwords_dict,
+            ssh_dict,
+            ssh_private_keys,
+            ssh_private_key_passwords,
+        ) = await parse_import_request(request)
 
         cmd = ImportDatabasesCommand(
             contents=buf,
