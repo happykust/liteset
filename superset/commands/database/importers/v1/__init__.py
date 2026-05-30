@@ -49,7 +49,14 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
 
     async def _validate(self, configs: dict[str, dict[str, Any]]) -> None:
         for name, config in configs.items():
-            if name.startswith("databases/") and not config.get("database_name"):
+            # A bundled YAML file may parse to a non-dict (list/scalar); guard
+            # before ``.get`` so a malformed file is skipped (matching ``run()``'s
+            # ``isinstance`` checks) rather than raising AttributeError → HTTP 500.
+            if (
+                name.startswith("databases/")
+                and isinstance(config, dict)
+                and not config.get("database_name")
+            ):
                 raise CommandInvalidError(f"Missing database_name in {name}")
 
     async def run(self) -> None:

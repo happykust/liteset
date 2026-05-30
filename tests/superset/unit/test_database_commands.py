@@ -416,6 +416,18 @@ async def test_import_databases_success(mock_dao):
     assert cmd._configs["databases/test.yaml"]["database_name"] == "imported_db"
 
 
+async def test_import_databases_validate_skips_non_dict_config(mock_dao):
+    """Regression: a bundled YAML file parsing to a list/scalar must be skipped
+    in _validate (was ``config.get`` on a list → AttributeError → HTTP 500)."""
+    cmd = ImportDatabasesCommand(contents=io.BytesIO(b""), dao=mock_dao)
+    # A non-dict ``databases/`` config must not raise.
+    await cmd._validate({"databases/x.yaml": [1, 2, 3], "metadata.yaml": {}})
+    await cmd._validate({"databases/x.yaml": "a string"})
+    # A real dict still validated: missing database_name → CommandInvalidError.
+    with pytest.raises(CommandInvalidError, match="Missing database_name"):
+        await cmd._validate({"databases/y.yaml": {"sqlalchemy_uri": "sqlite://"}})
+
+
 async def test_import_databases_missing_name(mock_dao):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:

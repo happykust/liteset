@@ -375,3 +375,17 @@ async def test_create_chart_run_user_not_found(mock_dao):
     sm.find_user_by_id.assert_awaited_with(99)
     # owners should not have been set (no user found)
     assert result.owners == []
+
+
+async def test_import_charts_validate_skips_non_dict_config(mock_dao):
+    """Regression: a bundled YAML file parsing to a list/scalar must be skipped
+    in _validate (was ``config.get`` on a list → AttributeError → HTTP 500)."""
+    from superset.commands.chart.importers.v1 import ImportChartsCommand
+
+    cmd = ImportChartsCommand(contents=io.BytesIO(b""), dao=mock_dao)
+    # Non-dict ``charts/`` configs must not raise.
+    await cmd._validate({"charts/x.yaml": [1, 2, 3], "metadata.yaml": {}})
+    await cmd._validate({"charts/x.yaml": "a string"})
+    # A real dict still validated: missing slice_name → CommandInvalidError.
+    with pytest.raises(CommandInvalidError, match="Missing slice_name"):
+        await cmd._validate({"charts/y.yaml": {"viz_type": "table"}})
