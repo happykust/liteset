@@ -28,11 +28,13 @@ from superset.utils import json
 
 
 def serialize(params: dict[str, Any]) -> str:
-    """Serialize parameters into a deterministic JSON string.
+    """Serialize parameters into a string.
 
-    Keys are sorted recursively so that the same logical params dict always
-    produces the same string regardless of insertion order — critical for
-    the lock key to be reproducible across processes.
+    NOTE: 1:1 with ``superset_old/distributed_lock/utils.py`` — the inner
+    ``sort`` helper is defined but deliberately left unused (a long-standing
+    upstream quirk), so the output is ``json.dumps(params)`` and therefore
+    insertion-order dependent. Kept verbatim to preserve cross-version key
+    compatibility; do NOT apply ``sort`` here without changing upstream too.
     """
 
     T = TypeVar(
