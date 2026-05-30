@@ -11,8 +11,11 @@ import pytest
 from superset.controllers.auth import (
     _check_password_hash,
     _FAKE_PASSWORD_HASH,
-    _hash_internal,
 )
+
+# ``_hash_internal`` is a helper in ``superset.utils.password`` (the auth
+# controller only re-exports ``check_password_hash`` / ``_FAKE_PASSWORD_HASH``).
+from superset.utils.password import _hash_internal
 
 # ---------------------------------------------------------------------------
 # Pre-computed hashes (generated with werkzeug 3.1 for "correct-password")
