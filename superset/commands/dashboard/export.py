@@ -132,15 +132,19 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
             export_uuids=True,
         )
 
-        # Convert position_json + json_metadata strings to dicts.
+        # Convert position_json + json_metadata strings to dicts. A
+        # valid-but-non-object value (``[1,2]`` / ``"s"``) must be coerced to
+        # ``{}`` — otherwise the ``metadata.get(...)`` and
+        # ``find_chart_uuids(position)`` calls below raise → HTTP 500 on export.
         for key, new_name in _JSON_KEYS.items():
             value: str | None = payload.pop(key, None)
             if value:
                 try:
-                    payload[new_name] = _json.loads(value)
+                    parsed = _json.loads(value)
                 except (_json.JSONDecodeError, TypeError):
                     logger.info("Unable to decode `%s` field: %s", key, value)
-                    payload[new_name] = {}
+                    parsed = {}
+                payload[new_name] = parsed if isinstance(parsed, dict) else {}
 
         # Replace native filter dataset IDs with UUIDs.
         for native_filter in payload.get("metadata", {}).get(

@@ -197,20 +197,28 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
 
     @property
     def params_dict(self) -> dict[str, Any]:
-        """Parsed json_metadata as a dict."""
+        """Parsed json_metadata as a dict.
+
+        Coerce a non-object parse (``[1,2]`` / ``"s"`` / ``5``) to ``{}`` so
+        callers treating the result as a mapping don't raise. The schema now
+        rejects non-object json_metadata on write, but imports / legacy rows
+        may still carry one.
+        """
         try:
-            return json.loads(self.json_metadata or "{}") or {}
+            parsed = json.loads(self.json_metadata or "{}")
         except (TypeError, json.JSONDecodeError):
             return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     @property
     def position(self) -> dict[str, Any]:
-        """Parsed position_json as a dict."""
+        """Parsed position_json as a dict (non-object coerced to ``{}``)."""
         if self.position_json:
             try:
-                return json.loads(self.position_json)
+                parsed = json.loads(self.position_json)
             except (TypeError, json.JSONDecodeError):
                 return {}
+            return parsed if isinstance(parsed, dict) else {}
         return {}
 
     @property

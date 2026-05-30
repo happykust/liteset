@@ -404,6 +404,27 @@ async def test_export_dashboards_not_found(mock_dao):
         await cmd.execute()
 
 
+async def test_export_dashboards_non_object_position_json(mock_dao, mock_dashboard):
+    """Regression: a non-object position_json / json_metadata must not 500.
+
+    The exporter decodes these JSON-string fields then does dict ops
+    (``metadata.get(...)`` / ``find_chart_uuids(position)``). A valid-but-
+    non-object value (``"[1,2,3]"``) previously raised → HTTP 500 on export.
+    """
+    mock_dashboard.export_to_dict.return_value = {
+        "dashboard_title": "Test Dashboard",
+        "slug": "test-dashboard",
+        "position_json": "[1, 2, 3]",
+        "json_metadata": '"a string"',
+    }
+    _exec_returns(mock_dao, one=mock_dashboard)
+    cmd = ExportDashboardsCommand(model_ids=[1], dao=mock_dao)
+    buf = await cmd.execute()
+    assert isinstance(buf, io.BytesIO)
+    with zipfile.ZipFile(buf) as zf:
+        assert any(n.startswith("dashboards/") for n in zf.namelist())
+
+
 async def test_export_dashboards_no_dao():
     cmd = ExportDashboardsCommand(model_ids=[1], dao=None)
     with pytest.raises(CommandInvalidError, match="DAO not provided"):

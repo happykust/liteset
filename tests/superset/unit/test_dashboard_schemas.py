@@ -184,3 +184,25 @@ def test_dashboard_put_accepts_object_json_metadata() -> None:
         type=DashboardPutSchema,
     )
     assert body.json_metadata == '{"color_scheme": "x"}'
+
+
+# ---------------------------------------------------------------------------
+# Regression: Dashboard.params_dict / .position coerce non-object JSON to {}.
+# (position_json is only parseability-validated, so a list/str must not break
+# callers that treat the parsed value as a mapping.)
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_model_params_dict_position_coerce_non_object() -> None:
+    from superset.models.dashboard import Dashboard
+
+    d = Dashboard(dashboard_title="t")
+    d.json_metadata = "[1, 2, 3]"
+    d.position_json = '"a string"'
+    assert d.params_dict == {}
+    assert d.position == {}
+
+    d.json_metadata = '{"color_scheme": "x"}'
+    d.position_json = '{"ROOT_ID": {"type": "ROOT"}}'
+    assert d.params_dict == {"color_scheme": "x"}
+    assert d.position == {"ROOT_ID": {"type": "ROOT"}}
