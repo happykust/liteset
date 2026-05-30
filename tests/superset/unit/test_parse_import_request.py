@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from litestar.datastructures import UploadFile
+from litestar.exceptions import ValidationException
 
 from superset.controllers.base import parse_import_request
 from superset.exceptions import CommandInvalidError
@@ -47,13 +48,13 @@ def _upload(contents: bytes = b"zipbytes", filename: str = "x.zip") -> UploadFil
 
 
 async def test_no_file_raises_4xx() -> None:
-    """No UploadFile in the multipart body -> CommandInvalidError (4xx)."""
-    with pytest.raises(CommandInvalidError, match="No file uploaded"):
+    """No UploadFile -> ValidationException, mapped to 400 (upstream parity)."""
+    with pytest.raises(ValidationException, match="No file uploaded"):
         await parse_import_request(_request({"overwrite": "true"}))
 
 
 async def test_empty_form_raises_4xx() -> None:
-    with pytest.raises(CommandInvalidError, match="No file uploaded"):
+    with pytest.raises(ValidationException, match="No file uploaded"):
         await parse_import_request(_request({}))
 
 

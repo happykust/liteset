@@ -45,6 +45,7 @@ from typing import Any
 
 from litestar.connection import Request
 from litestar.datastructures import UploadFile
+from litestar.exceptions import ValidationException
 from sqlalchemy.exc import SQLAlchemyError
 
 from superset.exceptions import CommandInvalidError, SupersetValidationException
@@ -80,7 +81,10 @@ async def parse_import_request(
     form = await request.form()
     upload = next((v for v in form.values() if isinstance(v, UploadFile)), None)
     if upload is None:
-        raise CommandInvalidError("No file uploaded for import")
+        # 400 to match upstream exactly (``superset_old/charts/api.py:1146``:
+        # ``if not upload: return self.response_400()``). ValidationException
+        # is mapped to 400 by ``validation_error_handler``.
+        raise ValidationException("No file uploaded for import")
     contents = io.BytesIO(await upload.read())
     filename = getattr(upload, "filename", None) or "import.zip"
     overwrite = str(form.get("overwrite", "")).strip().lower() in (
