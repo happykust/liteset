@@ -192,7 +192,7 @@ async def test_get_chart_data_async_uses_cookie_channel(
     chart = MagicMock()
     chart.query_context = chart_query_context
     dao = AsyncMock()
-    dao.find_by_id = AsyncMock(return_value=chart)
+    dao.find_all = AsyncMock(return_value=[chart])
 
     request = _make_request(_cookie_header_bytes(channel))
 
@@ -244,7 +244,7 @@ async def test_get_chart_data_async_missing_cookie_401(
     chart = MagicMock()
     chart.query_context = chart_query_context
     dao = AsyncMock()
-    dao.find_by_id = AsyncMock(return_value=chart)
+    dao.find_all = AsyncMock(return_value=[chart])
 
     request = _make_request([])  # no cookie header
 
@@ -277,7 +277,7 @@ async def test_get_chart_data_async_wrong_secret_401(
     chart = MagicMock()
     chart.query_context = chart_query_context
     dao = AsyncMock()
-    dao.find_by_id = AsyncMock(return_value=chart)
+    dao.find_all = AsyncMock(return_value=[chart])
 
     # Cookie minted with a DIFFERENT secret than settings expects.
     request = _make_request(
@@ -328,7 +328,7 @@ async def test_get_chart_data_async_secretstr_secret(
     chart = MagicMock()
     chart.query_context = chart_query_context
     dao = AsyncMock()
-    dao.find_by_id = AsyncMock(return_value=chart)
+    dao.find_all = AsyncMock(return_value=[chart])
 
     request = _make_request(_cookie_header_bytes(channel))
 
@@ -461,7 +461,7 @@ async def test_get_chart_data_async_cache_hit_returns_inline(
     chart = MagicMock()
     chart.query_context = chart_query_context
     dao = AsyncMock()
-    dao.find_by_id = AsyncMock(return_value=chart)
+    dao.find_all = AsyncMock(return_value=[chart])
 
     # No cookie needed — a cache hit short-circuits before channel resolution.
     request = _make_request([])

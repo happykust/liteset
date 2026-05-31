@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from superset.controllers.chart import ChartController
 from superset.controllers.dashboard import DashboardController
 from superset.controllers.datasource import DatasourceController
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
@@ -153,3 +154,39 @@ async def test_dashboard_subendpoint_raise_for_access_denies(method):
                 current_user=MagicMock(),
             )
     sm.raise_for_access.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# GET /chart/{id}/data/ — access-scoped lookup → 404 (not 403 leaking ds name)
+# ---------------------------------------------------------------------------
+
+_get_chart_data = _fn(ChartController, "get_chart_data")
+
+
+async def test_chart_data_get_access_filtered_404():
+    """A chart the user can't access must 404 (access base-filter excludes it),
+    not 403 leaking the backing datasource name. Mirrors upstream
+    ``datamodel.get(pk, base_filters)``."""
+    controller = ChartController(owner=MagicMock())
+    dao = MagicMock()
+    dao.find_all = AsyncMock(return_value=[])  # access filter excludes the chart
+    sm = MagicMock()
+    state = MagicMock()
+    state.settings = MagicMock(global_async_queries=False)
+    with patch(
+        "superset.db.filters.chart_access_filters",
+        new=AsyncMock(return_value=[MagicMock()]),
+    ):
+        with pytest.raises(ObjectNotFoundError):
+            await _get_chart_data(
+                controller,
+                request=MagicMock(),
+                pk=3,
+                dao=dao,
+                ds_dao=MagicMock(),
+                security_manager=sm,
+                current_user=MagicMock(),
+                state=state,
+            )
+    # The lookup must be the access-scoped find_all, not an unfiltered find_by_id.
+    dao.find_all.assert_awaited_once()

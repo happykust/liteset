@@ -1586,6 +1586,23 @@ class ChartController(Controller):
         force: str | None = None,
     ) -> dict[str, Any] | Response[Any]:
         """GET /api/v1/chart/{pk}/data/ — fetch data for a specific chart."""
+        # Access-scoped lookup — 1:1 with upstream ``charts/data/api.py`` which
+        # fetches via ``datamodel.get(pk, base_filters)``, so a chart the user
+        # cannot access returns 404 (NOT a 403 that leaks the datasource name).
+        # ``find_by_id`` alone has no access filter; mirror the single-chart GET.
+        from superset.db.filters import chart_access_filters
+        from superset.models.slice import Slice
+
+        _chart_base_filters = await chart_access_filters(security_manager, current_user)
+        _chart_found = await dao.find_all(
+            filters=[Slice.id == pk] + (_chart_base_filters or []),
+            page=0,
+            page_size=1,
+        )
+        chart = _chart_found[0] if _chart_found else None
+        if not chart:
+            raise ObjectNotFoundError("Chart", pk)
+
         # BL-C2: Check GLOBAL_ASYNC_QUERIES feature flag
         settings: SupersetSettings = cast(
             "SupersetSettings", getattr(state, "settings", None)
@@ -1599,10 +1616,6 @@ class ChartController(Controller):
                     maybe_forward_guest_token,
                 )
                 from superset.tasks.async_queries import load_chart_data_into_cache
-
-                chart = await dao.find_by_id(pk)
-                if not chart:
-                    raise ObjectNotFoundError("Chart", pk)
 
                 # 1:1 with the original ``data`` view: both an empty/missing
                 # ``query_context`` and a JSON parse failure collapse to a
@@ -1695,10 +1708,7 @@ class ChartController(Controller):
                     status_code=202,
                 )
 
-        chart = await dao.find_by_id(pk)
-        if not chart:
-            raise ObjectNotFoundError("Chart", pk)
-
+        # ``chart`` was already fetched (access-scoped) at the top of the handler.
         # 1:1 with the original ``data`` view: both an empty/missing
         # ``query_context`` and a JSON parse failure collapse to a single 400
         # with the same message (``superset_old/charts/data/api.py:129-139``).

@@ -110,7 +110,8 @@ async def test_get_chart_data_chart_not_found(
     mock_state,
 ):
     """get_chart_data raises ObjectNotFoundError when chart is missing."""
-    mock_chart_dao.find_by_id = AsyncMock(return_value=None)
+    # The handler does an access-scoped lookup via find_all (not find_by_id).
+    mock_chart_dao.find_all = AsyncMock(return_value=[])
     with pytest.raises(ObjectNotFoundError):
         await _get_chart_data(
             controller,
@@ -142,7 +143,7 @@ async def test_get_chart_data_no_query_context(
     """
     chart = MagicMock()
     chart.query_context = None
-    mock_chart_dao.find_by_id = AsyncMock(return_value=chart)
+    mock_chart_dao.find_all = AsyncMock(return_value=[chart])
     result = await _get_chart_data(
         controller,
         request=MagicMock(),
@@ -172,7 +173,7 @@ async def test_get_chart_data_invalid_json(
     """
     chart = MagicMock()
     chart.query_context = "not valid json {"
-    mock_chart_dao.find_by_id = AsyncMock(return_value=chart)
+    mock_chart_dao.find_all = AsyncMock(return_value=[chart])
     result = await _get_chart_data(
         controller,
         request=MagicMock(),
@@ -203,7 +204,7 @@ async def test_get_chart_data_datasource_not_found(
             "queries": [],
         }
     )
-    mock_chart_dao.find_by_id = AsyncMock(return_value=chart)
+    mock_chart_dao.find_all = AsyncMock(return_value=[chart])
     mock_ds_dao.get_datasource = AsyncMock(return_value=None)
     with pytest.raises(ObjectNotFoundError):
         await _get_chart_data(
@@ -237,7 +238,7 @@ async def test_get_chart_data_executes_command(
             "force": False,
         }
     )
-    mock_chart_dao.find_by_id = AsyncMock(return_value=chart)
+    mock_chart_dao.find_all = AsyncMock(return_value=[chart])
     datasource = MagicMock()
     mock_ds_dao.get_datasource = AsyncMock(return_value=datasource)
 
