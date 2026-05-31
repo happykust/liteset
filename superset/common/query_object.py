@@ -102,11 +102,18 @@ class AsyncQueryObject:
         # charts (e.g. Treemap) aggregate across all years → wrong data.
         if self.time_range and (self.from_dttm is None or self.to_dttm is None):
             try:
-                from superset.utils.date import get_since_until
+                # 1:1 with upstream factory: use
+                # ``get_since_until_from_time_range(time_range, time_shift, extras)``
+                # — NOT bare ``get_since_until`` — so config-driven relative-time
+                # anchors (``default_relative_start_time``/``...end_time``) and
+                # per-request ``extras`` overrides (``relative_start``/
+                # ``relative_end``/``instant_time_comparison_range``) are honored.
+                from superset.utils.date import get_since_until_from_time_range
 
-                parsed_from, parsed_to = get_since_until(
-                    time_range=self.time_range,
-                    time_shift=self.time_shift,
+                parsed_from, parsed_to = get_since_until_from_time_range(
+                    self.time_range,
+                    self.time_shift,
+                    self.extras,
                 )
                 if self.from_dttm is None:
                     self.from_dttm = parsed_from

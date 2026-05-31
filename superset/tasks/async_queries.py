@@ -157,8 +157,14 @@ def _update_job(
     :class:`superset.async_events.manager.AsyncEventManager`.
     """
     r = _get_sync_redis()
+    # Stream prefix MUST be read from config, not hardcoded: every reader
+    # (app.py polling, the WS relay, AsyncEventManager) keys off
+    # ``global_async_queries_redis_stream_prefix``. With a non-default prefix a
+    # hardcoded worker would write status events to ``async-events-{channel}``
+    # while readers listen on ``{custom}{channel}`` → "done"/"error" events
+    # never arrive → async queries hang forever. Resolved below alongside the
+    # maxlen limits (defaults preserved on any lookup failure).
     stream_prefix = "async-events-"
-    global_stream_key = "async-events-full"
 
     channel_id = job_metadata.get("channel_id", "")
     job_id = job_metadata.get("job_id", "")
@@ -187,6 +193,13 @@ def _update_job(
         from superset.config import SupersetSettings
 
         _settings = SupersetSettings()  # type: ignore[call-arg]
+        stream_prefix = str(
+            getattr(
+                _settings,
+                "global_async_queries_redis_stream_prefix",
+                stream_prefix,
+            )
+        )
         channel_maxlen = int(
             getattr(
                 _settings,
@@ -203,10 +216,13 @@ def _update_job(
         )
     except Exception:  # noqa: BLE001 — never break event publishing on config errors
         logger.debug(
-            "Could not resolve async-query stream limits; using defaults",
+            "Could not resolve async-query stream config; using defaults",
             exc_info=True,
         )
 
+    # Firehose key derived from the prefix — 1:1 with upstream
+    # ``f"{self._stream_prefix}full"``.
+    global_stream_key = f"{stream_prefix}full"
     scoped_stream = f"{stream_prefix}{channel_id}"
     r.xadd(scoped_stream, payload, maxlen=channel_maxlen, approximate=True)
     r.xadd(global_stream_key, payload, maxlen=firehose_maxlen, approximate=True)

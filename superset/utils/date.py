@@ -757,7 +757,16 @@ def get_since_until(  # noqa: C901
             _since = _since if _since is None else (_since - time_delta_since)
             _until = _until if _until is None else (_until - time_delta_until)
 
-    if instant_time_comparison_range:
+    # ``instant_time_comparison_range`` is only honored behind the
+    # ``CHART_PLUGINS_EXPERIMENTAL`` feature flag — 1:1 with upstream
+    # ``date_parser.py:495-502``. The control is only surfaced in some plugins
+    # when the flag is on; without this gate a crafted request with the param
+    # set would rewrite the time bounds even on a default (flag-off) deployment.
+    from superset.utils.feature_flags import feature_flag_manager
+
+    if instant_time_comparison_range and feature_flag_manager.is_feature_enabled(
+        "CHART_PLUGINS_EXPERIMENTAL"
+    ):
         time_unit = ""
         delta_in_days = None
         if instant_time_comparison_range == InstantTimeComparison.YEAR:

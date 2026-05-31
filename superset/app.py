@@ -537,13 +537,18 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
                 except Exception:
                     logger.exception("Error during channel cleanup")
 
+        _aem_prefix = getattr(
+            settings,
+            "global_async_queries_redis_stream_prefix",
+            "async-events-",
+        )
         manager = AsyncEventManager(
             redis=app.state.redis,
-            stream_prefix=getattr(
-                settings,
-                "global_async_queries_redis_stream_prefix",
-                "async-events-",
-            ),
+            stream_prefix=_aem_prefix,
+            # Derive the firehose key from the prefix (1:1 upstream
+            # ``f"{self._stream_prefix}full"``) so a custom prefix is honored
+            # end-to-end rather than pinned to ``async-events-full``.
+            global_stream_key=f"{_aem_prefix}full",
             global_stream_limit=getattr(
                 settings,
                 "global_async_queries_redis_stream_limit_firehose",
@@ -796,13 +801,16 @@ def create_app(  # noqa: C901
 
     async def provide_event_manager(state: State) -> Any:
         _settings = getattr(state, "settings", None)
+        _aem_prefix = getattr(
+            _settings,
+            "global_async_queries_redis_stream_prefix",
+            "async-events-",
+        )
         return _aem_mod.AsyncEventManager(
             redis=state.redis,
-            stream_prefix=getattr(
-                _settings,
-                "global_async_queries_redis_stream_prefix",
-                "async-events-",
-            ),
+            stream_prefix=_aem_prefix,
+            # Firehose key derived from the prefix (see startup-manager note).
+            global_stream_key=f"{_aem_prefix}full",
             global_stream_limit=getattr(
                 _settings,
                 "global_async_queries_redis_stream_limit_firehose",
