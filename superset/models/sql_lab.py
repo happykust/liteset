@@ -137,6 +137,32 @@ class Query(Base, ExtraJSONMixin):
         foreign_keys=[user_id],
     )
 
+    @property
+    def tracking_url(self) -> str | None:
+        """Transform the tracking URL via ``TRACKING_URL_TRANSFORMER`` at read
+        time — 1:1 with ``superset_old/models/sql_lab.py::Query.tracking_url``.
+
+        The exact URL may depend on query properties (execution/finish time),
+        so the transform runs on read, not on store. For backward compatibility
+        a transformer may take only ``url`` or ``(url, query)``. Falls back to
+        the raw value when no transformer is configured (the default).
+        """
+        import inspect
+
+        from superset import config as _config
+
+        url = self.tracking_url_raw
+        try:
+            settings = _config.SupersetSettings()
+            transform = getattr(settings, "tracking_url_transformer", None)
+        except Exception:  # noqa: BLE001
+            transform = None
+        if url and transform:
+            sig = inspect.signature(transform)
+            args = [url, self][: len(sig.parameters)]
+            url = transform(*args)
+        return url
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize query to a dict matching the original camelCase contract.
 
@@ -196,7 +222,7 @@ class Query(Base, ExtraJSONMixin):
             "userId": self.user_id,
             "user": user_label,
             "resultsKey": self.results_key,
-            "trackingUrl": self.tracking_url_raw,
+            "trackingUrl": self.tracking_url,
             "extra": self.extra,
         }
 

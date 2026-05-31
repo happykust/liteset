@@ -41,6 +41,23 @@ class UpdateAnnotationCommand(AsyncBaseCommand["Annotation"]):
         if not self._annotation:
             raise ObjectNotFoundError("Annotation", self._pk)
 
+        # Short-descr uniqueness within the layer (excluding self) — 1:1 with
+        # upstream update.py. The model has only a non-unique index, so the
+        # check must be explicit.
+        short_descr = self._data.get(
+            "short_descr", getattr(self._annotation, "short_descr", None)
+        )
+        layer_id = getattr(self._annotation, "layer_id", None)
+        if short_descr and layer_id is not None:
+            if not await self._dao.validate_update_uniqueness(
+                layer_id, short_descr, annotation_id=self._pk
+            ):
+                from superset.commands.annotation_layer.annotation.exceptions import (
+                    AnnotationUniquenessValidationError,
+                )
+
+                raise AnnotationUniquenessValidationError()
+
         # Mirror upstream date-sanity check (superset_old/commands/annotation_
         # layer/annotation/update.py:82-84). Falls back to the stored value
         # when the incoming payload omits one side of the range.

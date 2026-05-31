@@ -50,10 +50,20 @@ class CreateAnnotationCommand(AsyncBaseCommand["Annotation"]):
         if not short_descr or not short_descr.strip():
             raise CommandInvalidError("short_descr is required")
 
+        # Short-descr uniqueness within the layer — 1:1 with upstream
+        # create.py:63-65. The model has only a NON-unique index (matching
+        # upstream), so there is no IntegrityError to lean on; the check must be
+        # explicit or duplicates are silently accepted.
+        from superset.commands.annotation_layer.annotation.exceptions import (
+            AnnotationUniquenessValidationError,
+        )
+
+        if not await self._dao.validate_update_uniqueness(self._layer_pk, short_descr):
+            raise AnnotationUniquenessValidationError()
+
         # Mirror upstream validations (superset_old/commands/annotation_layer/
         # annotation/create.py:67-72) — `end_dttm < start_dttm` → 422
-        # AnnotationDatesValidationError; uniqueness handled at the DAO/DB
-        # level so it surfaces as the IntegrityError 422 envelope.
+        # AnnotationDatesValidationError.
         start_dttm = self._data.get("start_dttm")
         end_dttm = self._data.get("end_dttm")
         if start_dttm and end_dttm and end_dttm < start_dttm:
