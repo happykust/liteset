@@ -31,7 +31,6 @@ from superset.commands.theme import (
 )
 from superset.exceptions import (
     CommandInvalidError,
-    DeleteFailedError,
     ObjectNotFoundError,
 )
 
@@ -55,6 +54,8 @@ def mock_theme():
     theme.json_metadata = "{}"
     theme.description = "A dark theme"
     theme.is_system_default = False
+    theme.is_system = False
+    theme.is_system_dark = False
     return theme
 
 
@@ -131,7 +132,9 @@ async def test_delete_system_default_blocked(mock_dao, mock_theme):
     mock_theme.is_system_default = True
     mock_dao.find_by_id.return_value = mock_theme
     cmd = DeleteThemeCommand(dao=mock_dao, pk=1)
-    with pytest.raises(DeleteFailedError, match="system default"):
+    # is_system_default/dark in use → 422 CommandInvalidError (1:1 upstream
+    # SystemThemeInUseError).
+    with pytest.raises(CommandInvalidError, match="system default"):
         await cmd.execute()
 
 
