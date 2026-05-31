@@ -297,3 +297,96 @@ async def test_dashboard_create_permalink_access_filtered_404():
                 security_manager=sm,
                 current_user=user,
             )
+
+
+# ---------------------------------------------------------------------------
+# explore — must raise_for_access(datasource=) → 403 (upstream get_explore)
+# ---------------------------------------------------------------------------
+
+
+async def test_explore_datasource_denied_returns_403():
+    from superset.controllers.explore import ExploreController
+
+    controller = ExploreController(owner=MagicMock())
+    request = MagicMock()
+    request.query_params = {"datasource_id": "1", "datasource_type": "table"}
+    dataset = MagicMock()
+    dataset.database = None
+    dataset_dao = MagicMock()
+    dataset_dao.find_all = AsyncMock(return_value=[dataset])
+    sm = MagicMock()
+    sm.raise_for_access = AsyncMock(side_effect=_denied())
+    result = await _fn(ExploreController, "get_explore")(
+        controller,
+        request=request,
+        chart_dao=MagicMock(),
+        dataset_dao=dataset_dao,
+        kv_dao=MagicMock(),
+        security_manager=sm,
+        current_user=MagicMock(),
+    )
+    assert result.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# database tables — must filter to accessible tables (gamma → empty), not leak
+# ---------------------------------------------------------------------------
+
+
+async def test_database_tables_filters_inaccessible():
+    from superset.controllers.database import DatabaseController
+
+    controller = DatabaseController(owner=MagicMock())
+    dao = MagicMock()
+    db = MagicMock()
+    dao.find_by_id = AsyncMock(return_value=db)
+    dao.get_table_extra_lookup = AsyncMock(return_value={})
+    sm = MagicMock()
+    # No DB access and no accessible schemas → table/view names must be dropped.
+    sm.can_access_database = AsyncMock(return_value=False)
+    sm.get_schemas_accessible_by_user = AsyncMock(return_value=[])
+
+    class _Spec:
+        async def get_table_names(self, conn, schema):
+            return ["secret_table", "ab_user"]
+
+        async def get_view_names(self, conn, schema):
+            return ["secret_view"]
+
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def _fake_conn(_db):
+        yield (MagicMock(), _Spec())
+
+    with patch("superset.controllers.database.get_async_connection", _fake_conn):
+        result = await _fn(DatabaseController, "tables")(
+            controller,
+            pk=1,
+            dao=dao,
+            security_manager=sm,
+            current_user=MagicMock(),
+            rison_params={"schema_name": "public"},
+        )
+    assert result["count"] == 0
+    assert result["result"] == []
+
+
+async def test_database_ssh_tunnel_get_denied_404():
+    from superset.controllers.database import DatabaseController
+
+    controller = DatabaseController(owner=MagicMock())
+    dao = MagicMock()
+    dao.find_by_id = AsyncMock(return_value=MagicMock())
+    sm = MagicMock()
+    sm.can_access_all_databases = AsyncMock(return_value=False)
+    sm.user_view_menu_names = AsyncMock(return_value=[])
+    sm.is_admin = MagicMock(return_value=False)
+    with pytest.raises(ObjectNotFoundError):
+        await _fn(DatabaseController, "get_ssh_tunnel")(
+            controller,
+            pk=1,
+            dao=dao,
+            security_manager=sm,
+            current_user=MagicMock(),
+        )

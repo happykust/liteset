@@ -23,6 +23,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 from superset.controllers.explore import ExploreController
 
+
+def _explore_sm() -> MagicMock:
+    """Security-manager mock whose datasource access check is awaitable +
+    permissive (get_explore now enforces datasource access; denial is covered
+    by the live RBAC probe / test_controller_rbac_access)."""
+    sm = MagicMock()
+    sm.raise_for_access = AsyncMock()
+    return sm
+
 # ---------------------------------------------------------------------------
 # Controller metadata
 # ---------------------------------------------------------------------------
@@ -55,6 +64,8 @@ async def test_get_explore_empty():
         chart_dao=chart_dao,
         dataset_dao=dataset_dao,
         kv_dao=kv_dao,
+        security_manager=AsyncMock(),
+        current_user=MagicMock(),
     )
     # On the empty-state path the handler fills form_data with explore
     # defaults (datasource/adhoc_filters/applied_time_extras/url_params) and
@@ -83,6 +94,8 @@ async def test_get_explore_with_form_data_key():
         chart_dao=chart_dao,
         dataset_dao=dataset_dao,
         kv_dao=kv_dao,
+        security_manager=AsyncMock(),
+        current_user=MagicMock(),
     )
     # The handler applies upstream transforms (convert_legacy_filters_into_adhoc
     # / merge_extra_filters / merge_request_params) on top of the loaded
@@ -124,6 +137,8 @@ async def test_get_explore_with_slice_id():
         chart_dao=chart_dao,
         dataset_dao=dataset_dao,
         kv_dao=kv_dao,
+        security_manager=AsyncMock(),
+        current_user=MagicMock(),
     )
     assert result["result"]["slice"]["slice_id"] == 10
     assert result["result"]["form_data"]["granularity"] == "day"
@@ -146,6 +161,8 @@ async def test_get_explore_chart_not_found():
         chart_dao=chart_dao,
         dataset_dao=dataset_dao,
         kv_dao=kv_dao,
+        security_manager=AsyncMock(),
+        current_user=MagicMock(),
     )
     assert result["result"]["slice"] is None
     assert "not found" in result["result"]["message"]

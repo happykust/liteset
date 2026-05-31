@@ -72,6 +72,7 @@ async def test_chart_thumbnail_flag_off_returns_json_404() -> None:
         dao=AsyncMock(),
         state=_state({}),  # THUMBNAILS off
         current_user=MagicMock(),
+        security_manager=AsyncMock(),
     )
     assert resp.status_code == 404
     assert resp.media_type == "application/json"
@@ -84,6 +85,8 @@ async def test_chart_screenshot_flag_off_returns_json_404() -> None:
         digest="d",
         dao=AsyncMock(),
         state=_state({}),
+        security_manager=AsyncMock(),
+        current_user=MagicMock(),
     )
     assert resp.status_code == 404
     assert resp.media_type == "application/json"
@@ -100,6 +103,7 @@ async def test_dashboard_thumbnail_flag_off_raises_not_found() -> None:
             dao=AsyncMock(),
             state=_state({}),
             current_user=MagicMock(),
+            security_manager=AsyncMock(),
         )
 
 
@@ -126,16 +130,22 @@ async def test_chart_thumbnail_pending_returns_json_202(
     chart.digest = "d"  # equals requested digest → no redirect
     chart.id = 1
     dao = AsyncMock()
-    dao.find_by_id_with_options = AsyncMock(return_value=chart)
+    # The handler now uses an access-scoped find_all (not find_by_id_with_options).
+    dao.find_all = AsyncMock(return_value=[chart])
 
-    resp = await _chart_thumbnail(
-        ChartController(owner=MagicMock()),
-        pk=1,
-        digest="d",
-        dao=dao,
-        state=_state({"THUMBNAILS": True}),
-        current_user=MagicMock(),
-    )
+    with patch(
+        "superset.db.filters.chart_access_filters",
+        new=AsyncMock(return_value=[]),
+    ):
+        resp = await _chart_thumbnail(
+            ChartController(owner=MagicMock()),
+            pk=1,
+            digest="d",
+            dao=dao,
+            state=_state({"THUMBNAILS": True}),
+            current_user=MagicMock(),
+            security_manager=AsyncMock(),
+        )
 
     assert resp.status_code == 202
     assert resp.media_type == "application/json"
@@ -160,16 +170,22 @@ async def test_dashboard_thumbnail_pending_returns_json_202(
     dashboard.digest = "d"
     dashboard.id = 7
     dao = AsyncMock()
-    dao.find_by_id = AsyncMock(return_value=dashboard)
+    # The handler now uses an access-scoped get_full_by_id_or_slug.
+    dao.get_full_by_id_or_slug = AsyncMock(return_value=dashboard)
 
-    resp = await _dashboard_thumbnail(
-        DashboardController(owner=MagicMock()),
-        pk=7,
-        digest="d",
-        dao=dao,
-        state=_state({"THUMBNAILS": True}),
-        current_user=MagicMock(),
-    )
+    with patch(
+        "superset.db.filters.dashboard_access_filters",
+        new=AsyncMock(return_value=[]),
+    ):
+        resp = await _dashboard_thumbnail(
+            DashboardController(owner=MagicMock()),
+            pk=7,
+            digest="d",
+            dao=dao,
+            state=_state({"THUMBNAILS": True}),
+            current_user=MagicMock(),
+            security_manager=AsyncMock(),
+        )
 
     assert resp.status_code == 202
     assert resp.media_type == "application/json"

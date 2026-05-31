@@ -1287,6 +1287,8 @@ class DatabaseController(Controller):
         self,
         pk: int,
         dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
         rison_params: dict[str, Any] | None,
         schema_name: str = Parameter(query="schema_name", default=""),
         catalog: str | None = Parameter(query="catalog", default=None),
@@ -1317,6 +1319,30 @@ class DatabaseController(Controller):
             async with get_async_connection(database) as (conn, engine_spec):
                 table_names = await engine_spec.get_table_names(conn, schema=schema)
                 view_names = await engine_spec.get_view_names(conn, schema=schema)
+
+            # Per-table access filtering — 1:1 with upstream
+            # ``TablesDatabaseCommand`` (``get_datasources_accessible_by_user``).
+            # Without it any ``can_read Database`` holder (e.g. Gamma) could
+            # enumerate every table/view name of a database they cannot access.
+            # Conservative port: database/catalog/schema access → all visible;
+            # otherwise nothing (upstream additionally surfaces individually
+            # ``datasource_access``-granted tables — a rare grant-without-schema
+            # case we deliberately under-expose rather than risk a leak).
+            if not await security_manager.can_access_database(
+                database, user=current_user
+            ):
+                _accessible_schemas = (
+                    await security_manager.get_schemas_accessible_by_user(
+                        database,
+                        [schema],
+                        catalog=_effective_catalog,
+                        user=current_user,
+                    )
+                )
+                if schema not in _accessible_schemas:
+                    table_names = []
+                    view_names = []
+
             # Batch-fetch extra (certification info) from SqlaTable for
             # all discovered tables/views so the frontend gets it.
             all_names = set(table_names) | set(view_names)
@@ -2532,9 +2558,21 @@ class DatabaseController(Controller):
         "/{pk:int}/ssh_tunnel/",
         guards=[require_permission("can_read", "Database")],
     )
-    async def get_ssh_tunnel(self, pk: int, dao: DatabaseDAOProtocol) -> dict[str, Any]:
+    async def get_ssh_tunnel(
+        self,
+        pk: int,
+        dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
         database = await dao.find_by_id(pk)
         if not database:
+            raise ObjectNotFoundError("Database", pk)
+        # This GET endpoint is liteset-added (upstream exposes only DELETE) and
+        # returns tunnel server_address/port/username — gate on database access
+        # (404 to hide existence, like get_database) so it can't leak the tunnel
+        # config of a database the user cannot access.
+        if not await _database_is_accessible(security_manager, current_user, database):
             raise ObjectNotFoundError("Database", pk)
         tunnel = await dao.get_ssh_tunnel(pk)
         if not tunnel:

@@ -21,13 +21,20 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from litestar import Controller, get
+from litestar import Controller, Response, get
 from litestar.connection import Request
 from litestar.di import Provide
 
+from superset.exceptions import SupersetSecurityException
 from superset.guards.rbac import require_permission
 from superset.providers import provide_chart_dao, provide_dataset_dao, provide_kv_dao
-from superset.typing import ChartDAOProtocol, DatasetDAOProtocol, KeyValueDAOProtocol
+from superset.typing import (
+    ChartDAOProtocol,
+    DatasetDAOProtocol,
+    KeyValueDAOProtocol,
+    SecurityManagerProtocol,
+    UserProtocol,
+)
 
 # Matches original ``superset_old/db_engine_specs/base.py:builtin_time_grains``
 # — the label shown in the ``Time grain`` dropdown for each ISO-8601 duration
@@ -130,7 +137,9 @@ class ExploreController(Controller):
         chart_dao: ChartDAOProtocol,
         dataset_dao: DatasetDAOProtocol,
         kv_dao: KeyValueDAOProtocol,
-    ) -> dict[str, Any]:
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any] | Response[Any]:
         """GET /api/v1/explore/ — assemble form_data from params.
 
         Query params: form_data_key, permalink_key, slice_id,
@@ -357,6 +366,24 @@ class ExploreController(Controller):
                 )
                 if results:
                     dataset = results[0]
+                    # Enforce datasource access — 1:1 with upstream
+                    # ``commands/explore/get.py`` which calls
+                    # ``security_manager.raise_for_access(datasource=...)``
+                    # before returning. Without it any ``can_read Explore`` user
+                    # (e.g. Gamma) could read the dataset name/columns/SQL and
+                    # the chart form_data of an inaccessible chart/datasource,
+                    # bypassing the chart/dataset 404. NB: ``return`` (not raise)
+                    # because this whole block is inside a broad ``except``.
+                    if hasattr(security_manager, "raise_for_access"):
+                        try:
+                            await security_manager.raise_for_access(
+                                datasource=dataset, user=current_user
+                            )
+                        except SupersetSecurityException as ex:
+                            return Response(
+                                content={"message": getattr(ex, "message", str(ex))},
+                                status_code=403,
+                            )
                     # Build dataset_data matching original datasource.data structure
                     db_obj = getattr(dataset, "database", None)
                     dataset_data = {

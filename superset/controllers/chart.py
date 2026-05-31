@@ -1025,6 +1025,7 @@ class ChartController(Controller):
         dao: ChartDAOProtocol,
         state: State,
         current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
         rison_params: dict[str, Any] | None,
     ) -> Response[Any]:
         """Compute and cache a chart screenshot.
@@ -1057,7 +1058,20 @@ class ChartController(Controller):
         # get_chart_digest can read ``chart.datasource`` without a sync
         # lazy-load (MissingGreenlet) on the async session (this endpoint is
         # only reachable with THUMBNAILS enabled, mirroring the list loader).
-        chart = await dao.find_by_id_with_options(pk, [selectinload(Slice.table)])
+        # Access-scoped lookup (1:1 upstream ``datamodel.get(pk, base_filters)``
+        # → 404 for an inaccessible chart) — the screenshot endpoints would
+        # otherwise serve images / trigger Celery compute for a chart the user
+        # cannot access.
+        from superset.db.filters import chart_access_filters
+
+        _base = await chart_access_filters(security_manager, current_user)
+        _found = await dao.find_all(
+            filters=[Slice.id == pk] + (_base or []),
+            page=0,
+            page_size=1,
+            options=[selectinload(Slice.table)],
+        )
+        chart = _found[0] if _found else None
         if not chart:
             raise ObjectNotFoundError("Chart", pk)
 
@@ -1117,7 +1131,13 @@ class ChartController(Controller):
         media_type="image/png",
     )
     async def screenshot(
-        self, pk: int, digest: str, dao: ChartDAOProtocol, state: State
+        self,
+        pk: int,
+        digest: str,
+        dao: ChartDAOProtocol,
+        state: State,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> Response[bytes]:
         """Get a computed screenshot from cache.
 
@@ -1151,7 +1171,19 @@ class ChartController(Controller):
             StatusValues,
         )
 
-        chart = await dao.find_by_id(pk)
+        # Access-scoped lookup (1:1 upstream → 404) — this endpoint serves the
+        # cached PNG bytes, so it must not return an image for a chart the user
+        # cannot access.
+        from superset.db.filters import chart_access_filters
+        from superset.models.slice import Slice
+
+        _base = await chart_access_filters(security_manager, current_user)
+        _found = await dao.find_all(
+            filters=[Slice.id == pk] + (_base or []),
+            page=0,
+            page_size=1,
+        )
+        chart = _found[0] if _found else None
         if not chart:
             raise ObjectNotFoundError("Chart", pk)
 
@@ -1190,6 +1222,7 @@ class ChartController(Controller):
         dao: ChartDAOProtocol,
         state: State,
         current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> Response[bytes]:
         """Compute or get already computed chart thumbnail from cache.
 
@@ -1230,7 +1263,17 @@ class ChartController(Controller):
 
         # Eager-load the datasource (``table``) so the ``chart.digest`` read
         # below doesn't trip a sync lazy-load (MissingGreenlet).
-        chart = await dao.find_by_id_with_options(pk, [selectinload(Slice.table)])
+        # Access-scoped lookup (1:1 upstream → 404 for an inaccessible chart).
+        from superset.db.filters import chart_access_filters
+
+        _base = await chart_access_filters(security_manager, current_user)
+        _found = await dao.find_all(
+            filters=[Slice.id == pk] + (_base or []),
+            page=0,
+            page_size=1,
+            options=[selectinload(Slice.table)],
+        )
+        chart = _found[0] if _found else None
         if not chart:
             raise ObjectNotFoundError("Chart", pk)
 
@@ -1898,6 +1941,17 @@ class ChartController(Controller):
                 )
                 if not datasource:
                     raise ObjectNotFoundError("Datasource", data.datasource.id)
+                # Enforce datasource access BEFORE dispatching the GAQ Celery
+                # job — 1:1 with upstream where ``command.validate()``
+                # (raise_for_access) runs unconditionally before the async
+                # ``_run_async`` dispatch. The sync path's check (below) is
+                # AFTER this early-return, and ``_try_cached_chart_data``
+                # swallows the access error in its broad ``except``, so without
+                # this gate a user with no datasource access could trigger
+                # background compute against it.
+                await security_manager.raise_for_access(
+                    datasource=datasource, user=current_user
+                )
                 query_objects = [
                     AsyncQueryObject.from_request(q, ds_ref) for q in data.queries
                 ]

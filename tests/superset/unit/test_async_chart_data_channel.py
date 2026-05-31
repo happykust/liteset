@@ -129,6 +129,9 @@ def mock_security_manager() -> MagicMock:
     # Regular (non-guest) user: the GAQ submit must not forward a guest token.
     # (A bare MagicMock would return a truthy is_guest_user.)
     sm.is_guest_user = MagicMock(return_value=False)
+    # The GAQ-submit branch now enforces datasource access before dispatch;
+    # make it awaitable + permissive (denial is covered by the live probe).
+    sm.raise_for_access = AsyncMock()
     return sm
 
 

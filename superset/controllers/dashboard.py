@@ -1205,6 +1205,7 @@ class DashboardController(Controller):
         kv_dao: KeyValueDAOProtocol,
         state: State,
         current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
         rison_params: dict[str, Any] | None,
     ) -> Response[Any]:
         """Compute and cache a dashboard screenshot.
@@ -1222,7 +1223,15 @@ class DashboardController(Controller):
             "ENABLE_DASHBOARD_SCREENSHOT_ENDPOINTS", False
         ):
             raise ObjectNotFoundError("Dashboard screenshot", pk)
-        dashboard = await dao.find_by_id(pk)
+        # Access-scoped lookup (1:1 upstream ``datamodel.get(pk, base_filters)``
+        # → 404) — without it any holder of the coarse perm could serve/trigger
+        # a screenshot or thumbnail of a dashboard they cannot access.
+        from superset.db.filters import dashboard_access_filters
+
+        _dash_filters = await dashboard_access_filters(security_manager, current_user)
+        dashboard = await dao.get_full_by_id_or_slug(
+            str(pk), extra_filters=_dash_filters
+        )
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", pk)
 
@@ -1344,6 +1353,8 @@ class DashboardController(Controller):
         digest: str,
         dao: DashboardDAOProtocol,
         state: State,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
         request: Request,  # type: ignore[type-arg]
     ) -> Response[bytes]:
         """Get a computed dashboard screenshot from cache.
@@ -1372,7 +1383,15 @@ class DashboardController(Controller):
             ScreenshotImageNotAvailableException,
         )
 
-        dashboard = await dao.find_by_id(pk)
+        # Access-scoped lookup (1:1 upstream ``datamodel.get(pk, base_filters)``
+        # → 404) — without it any holder of the coarse perm could serve/trigger
+        # a screenshot or thumbnail of a dashboard they cannot access.
+        from superset.db.filters import dashboard_access_filters
+
+        _dash_filters = await dashboard_access_filters(security_manager, current_user)
+        dashboard = await dao.get_full_by_id_or_slug(
+            str(pk), extra_filters=_dash_filters
+        )
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", pk)
 
@@ -1433,6 +1452,7 @@ class DashboardController(Controller):
         dao: DashboardDAOProtocol,
         state: State,
         current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> Response[bytes]:
         """Compute or get already computed dashboard thumbnail from cache.
 
@@ -1459,7 +1479,15 @@ class DashboardController(Controller):
             ScreenshotImageNotAvailableException,
         )
 
-        dashboard = await dao.find_by_id(pk)
+        # Access-scoped lookup (1:1 upstream ``datamodel.get(pk, base_filters)``
+        # → 404) — without it any holder of the coarse perm could serve/trigger
+        # a screenshot or thumbnail of a dashboard they cannot access.
+        from superset.db.filters import dashboard_access_filters
+
+        _dash_filters = await dashboard_access_filters(security_manager, current_user)
+        dashboard = await dao.get_full_by_id_or_slug(
+            str(pk), extra_filters=_dash_filters
+        )
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", pk)
 
