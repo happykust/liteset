@@ -61,7 +61,12 @@ def mock_ds_dao():
 
 @pytest.fixture
 def mock_security_manager():
-    return MagicMock()
+    sm = MagicMock()
+    # The POST /data handler enforces datasource access before result_type
+    # dispatch (await raise_for_access); make it awaitable + permissive so the
+    # happy-path tests reach the command. Denial is covered by the live probe.
+    sm.raise_for_access = AsyncMock()
+    return sm
 
 
 @pytest.fixture
@@ -358,3 +363,45 @@ async def test_data_executes_command(
 
     payload = _msgspec.json.decode(result.content)
     assert payload["result"][0]["data"] == [{"value": 99}]
+
+
+async def test_data_enforces_datasource_access_before_result_type(
+    controller,
+    mock_ds_dao,
+    mock_security_manager,
+    mock_user,
+    mock_state,
+):
+    """Regression: POST /data must enforce datasource access BEFORE the
+    result_type dispatch, so the ``result_type=query`` SQL-preview branch
+    (which returns before ChartDataCommand.execute) cannot leak generated SQL
+    to a user with no datasource access."""
+    from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+    from superset.exceptions import SupersetSecurityException
+
+    mock_ds_dao.get_datasource = AsyncMock(return_value=MagicMock())
+    mock_security_manager.raise_for_access = AsyncMock(
+        side_effect=SupersetSecurityException(
+            SupersetError(
+                error_type=SupersetErrorType.DATASOURCE_SECURITY_ACCESS_ERROR,
+                message="denied",
+                level=ErrorLevel.ERROR,
+            )
+        )
+    )
+    body = json.dumps(
+        {
+            "datasource": {"id": 1, "type": "table"},
+            "queries": [{"columns": ["col1"]}],
+            "result_type": "query",
+        }
+    ).encode("utf-8")
+    with pytest.raises(SupersetSecurityException):
+        await _data(
+            controller,
+            request=_make_post_request(body),
+            ds_dao=mock_ds_dao,
+            security_manager=mock_security_manager,
+            current_user=mock_user,
+            state=mock_state,
+        )

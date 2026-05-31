@@ -21,11 +21,15 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from litestar import Controller, get
+from litestar import Controller, Response, get
 from litestar.di import Provide
 
 from superset.events import event_logger
-from superset.exceptions import ObjectNotFoundError, SupersetValidationException
+from superset.exceptions import (
+    ObjectNotFoundError,
+    SupersetSecurityException,
+    SupersetValidationException,
+)
 from superset.guards.rbac import require_authenticated_user, require_authentication
 from superset.providers import provide_datasource_dao
 from superset.typing import (
@@ -178,6 +182,22 @@ class DatasourceController(Controller):
 
         if datasource is None:
             raise ObjectNotFoundError("Datasource", datasource_id)
+
+        # Enforce datasource-level access BEFORE reading any values — 1:1 with
+        # upstream ``datasource/api.py::get_column_values`` which calls
+        # ``datasource.raise_for_access()`` first. Without it, any authenticated
+        # user (e.g. Gamma with no datasource access) could read distinct column
+        # values of ANY datasource → data leak.
+        if hasattr(security_manager, "raise_for_access"):
+            try:
+                await security_manager.raise_for_access(
+                    datasource=datasource, user=current_user
+                )
+            except SupersetSecurityException as ex:
+                return Response(
+                    content={"message": getattr(ex, "message", str(ex))},
+                    status_code=403,
+                )
 
         # Expose the current user to the Jinja template processor context
         # var so macros like ``{{ current_username() }}`` — commonly used

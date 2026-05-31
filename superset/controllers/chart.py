@@ -1952,6 +1952,18 @@ class ChartController(Controller):
         if not datasource:
             raise ObjectNotFoundError("Datasource", data.datasource.id)
 
+        # Enforce datasource access BEFORE dispatching on result_type — 1:1 with
+        # upstream ``charts/data/api.py`` where ``command.validate()``
+        # (``raise_for_access``) runs unconditionally before any result_type
+        # branch. The ``result_type=query`` SQL-preview path returns early
+        # (below) WITHOUT reaching ``ChartDataCommand.execute()`` (which is where
+        # the full/results path's access check lives), so without this gate a
+        # user with no datasource access could read the generated SQL (incl. the
+        # physical table name) of any datasource.
+        await security_manager.raise_for_access(
+            datasource=datasource, user=current_user
+        )
+
         # --- P1-5: result_type dispatch -------------------------------------------
 
         ds_ref = {"type": data.datasource.type, "id": data.datasource.id}

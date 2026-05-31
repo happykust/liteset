@@ -526,9 +526,22 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        dashboard = await dao.get_by_id_or_slug(id_or_slug)
+        # Access-scope exactly like the full GET (``get_dashboard``): the
+        # ``dashboard_access_filters`` base-filter yields None → 404 for a
+        # dashboard the user can't see, then ``raise_for_access`` is the
+        # secondary 403 gate. The full loader also lets ``raise_for_access``
+        # read owners/roles without a sync lazy-load (MissingGreenlet).
+        # Without this, any user with the coarse ``can_read Dashboard`` perm
+        # could enumerate the datasets of an inaccessible dashboard.
+        from superset.db.filters import dashboard_access_filters
+
+        access_filters = await dashboard_access_filters(security_manager, current_user)
+        dashboard = await dao.get_full_by_id_or_slug(
+            id_or_slug, extra_filters=access_filters
+        )
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
+        await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
         datasets = await dao.get_datasets_for_dashboard(dashboard)
         is_guest = security_manager.is_guest_user(current_user)
 
@@ -725,13 +738,26 @@ class DashboardController(Controller):
         self,
         id_or_slug: str,
         dao: DashboardDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
         import json as _json
         from collections import deque
 
-        dashboard = await dao.get_by_id_or_slug(id_or_slug)
+        # Access-scope like the full GET: ``dashboard_access_filters`` → 404
+        # for an unseeable dashboard, ``raise_for_access`` the 403 gate; full
+        # loader avoids a MissingGreenlet on owners/roles. Guards the tab
+        # structure of an inaccessible dashboard against coarse-``can_read``
+        # enumeration.
+        from superset.db.filters import dashboard_access_filters
+
+        access_filters = await dashboard_access_filters(security_manager, current_user)
+        dashboard = await dao.get_full_by_id_or_slug(
+            id_or_slug, extra_filters=access_filters
+        )
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
+        await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
 
         if not dashboard.position_json:
             return {"all_tabs": {}, "tab_tree": []}
@@ -796,10 +822,24 @@ class DashboardController(Controller):
         self,
         id_or_slug: str,
         dao: DashboardDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
-        dashboard = await dao.get_by_id_or_slug(id_or_slug)
+        # Access-scope like the full GET: ``dashboard_access_filters`` → 404
+        # for an unseeable dashboard, ``raise_for_access`` the 403 gate; full
+        # loader avoids a MissingGreenlet on owners/roles. Without this, any
+        # user with the coarse ``can_read Dashboard`` perm could enumerate the
+        # chart definitions (form_data incl. metrics/SQL) of a dashboard they
+        # cannot access.
+        from superset.db.filters import dashboard_access_filters
+
+        access_filters = await dashboard_access_filters(security_manager, current_user)
+        dashboard = await dao.get_full_by_id_or_slug(
+            id_or_slug, extra_filters=access_filters
+        )
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
+        await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
         charts = await dao.get_charts_for_dashboard(dashboard)
 
         result = []
