@@ -90,14 +90,32 @@ class BulkDeleteSavedQueriesCommand(AsyncBaseCommand[None]):
     async def validate(self) -> None:
         if not self._ids:
             raise CommandInvalidError("No saved query IDs provided")
-        self._queries = await self._dao.find_by_ids(self._ids)
+        from superset.models.sql_lab import SavedQuery
+
+        # Scope to the caller's own saved queries — 1:1 with the FAB base_filter
+        # (``SavedQueryFilter``: ``created_by == g.user``, NO admin bypass),
+        # exactly as the single-DELETE command does. ``SavedQuery`` has no
+        # ``owners`` M2M, so the previous ``raise_for_ownership`` evaluated
+        # ``getattr(resource, "owners", [])`` → ``[]`` → returned False for every
+        # non-admin (including the legitimate creator → 403) while silently
+        # passing admins (delete anyone's) — wrong on both ends. Upstream relies
+        # on ``find_by_ids`` applying the base_filter → 404 for out-of-scope ids.
+        filters: list[Any] = [SavedQuery.id.in_(self._ids)]
+        if self._security_manager is not None and self._user_id is not None:
+            from types import SimpleNamespace
+
+            from superset.db.filters import saved_query_access_filters
+
+            base_filters = await saved_query_access_filters(
+                self._security_manager, SimpleNamespace(id=self._user_id)
+            )
+            filters.extend(base_filters)
+        self._queries = await self._dao.find_all(filters=filters)
         found_ids = {int(q.id) for q in self._queries}
         missing = set(self._ids) - found_ids
         if missing:
+            # ids that don't exist OR fall outside the caller's scope → 404
             raise ObjectNotFoundError("SavedQuery", str(sorted(missing)))
-        if self._security_manager is not None:
-            for query in self._queries:
-                await self._security_manager.raise_for_ownership(query, self._user_id)
 
     async def run(self) -> None:
         for q in self._queries:

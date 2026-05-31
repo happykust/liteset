@@ -65,38 +65,56 @@ async def chart_access_filters(
 ) -> list[Any]:
     """Return SQLAlchemy filters restricting charts to those the user can access.
 
-    Mirrors Superset's ChartFilter: admins see all, others see only charts
-    whose datasources they have permission to access.
+    1:1 with ``superset_old/charts/filters.py::ChartFilter.apply`` +
+    ``get_dataset_access_filters(Slice)``: admins / ``can_access_all_datasources``
+    see all; everyone else sees charts whose datasource lives in an accessible
+    database OR whose denormalized ``perm``/``catalog_perm``/``schema_perm``
+    matches a held grant.
+
+    The previous port filtered ONLY on ``Slice.datasource_id.in_(
+    get_accessible_datasource_ids(...))`` — i.e. per-dataset ``datasource_access``
+    perms — dropping the ``database_access``/``schema_access``/``catalog_access``
+    branches. A non-admin whose chart access derives from a per-DB / schema /
+    catalog grant (but no per-dataset perm) got an EMPTY id list → charts
+    vanished from lists AND returned a spurious 404 on ``GET /chart/{id}`` and
+    ``/chart/{id}/data/`` (these use this filter as the lookup gate). The sibling
+    ``dataset_access_filters`` / ``dashboard_access_filters`` already carry the
+    full OR; this helper was missed in the same RBAC churn.
     """
     if security_manager.is_admin(user):
         return []
+    if await security_manager.can_access_all_datasources(user=user):
+        return []
 
-    # If the user has the global ``all_datasource_access`` permission, no
-    # restriction (1:1 with ``ChartFilter`` which short-circuits in the
-    # same case).
-    can_access_all = False
-    can_access_all_method = getattr(
-        security_manager, "can_access_all_datasources", None
+    from sqlalchemy import or_, select
+
+    from superset.models.connectors import SqlaTable
+    from superset.models.slice import Slice
+
+    accessible_db_ids = await security_manager.get_accessible_database_ids(user) or []
+    datasource_perms = await security_manager.user_view_menu_names(
+        "datasource_access", user=user
     )
-    if can_access_all_method is not None:
-        can_access_all = await can_access_all_method(user=user)
-    if can_access_all:
-        return []
-
-    # Get datasource IDs user can access
-    accessible_datasource_ids = await security_manager.get_accessible_datasource_ids(
-        user
+    schema_perms = await security_manager.user_view_menu_names(
+        "schema_access", user=user
     )
-    if accessible_datasource_ids is None:
-        # Method not implemented yet -- fall back to no filtering (permissive)
-        return []
+    catalog_perms = await security_manager.user_view_menu_names(
+        "catalog_access", user=user
+    )
 
-    try:
-        from superset.models.slice import Slice
-
-        return [Slice.datasource_id.in_(accessible_datasource_ids)]
-    except (ImportError, ModuleNotFoundError):
-        return []
+    # Subquery stands in for upstream's Slice→SqlaTable→Database join: charts
+    # whose datasource lives in an accessible database.
+    db_table_ids = select(SqlaTable.id).where(
+        SqlaTable.database_id.in_(accessible_db_ids)
+    )
+    return [
+        or_(
+            Slice.datasource_id.in_(db_table_ids),
+            Slice.perm.in_(datasource_perms),
+            Slice.catalog_perm.in_(catalog_perms),
+            Slice.schema_perm.in_(schema_perms),
+        )
+    ]
 
 
 def _databases_from_view_menus(view_menu_names: set[str]) -> set[str]:

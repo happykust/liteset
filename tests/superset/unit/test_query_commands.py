@@ -104,11 +104,11 @@ async def test_bulk_delete_saved_queries_empty(mock_query_dao):
 
 
 async def test_bulk_delete_saved_queries_success(mock_query_dao):
+    # In-scope query: ``find_all`` (scoped by saved_query_access_filters) returns it.
     mock_q = MagicMock()
     mock_q.id = 1
-    mock_query_dao.find_by_ids = AsyncMock(return_value=[mock_q])
+    mock_query_dao.find_all = AsyncMock(return_value=[mock_q])
     security_manager = AsyncMock()
-    security_manager.raise_for_ownership = AsyncMock(return_value=None)
     cmd = BulkDeleteSavedQueriesCommand(
         dao=mock_query_dao, ids=[1], security_manager=security_manager, user_id=1
     )
@@ -117,17 +117,16 @@ async def test_bulk_delete_saved_queries_success(mock_query_dao):
 
 
 async def test_bulk_delete_saved_queries_not_owner(mock_query_dao):
-    mock_q = MagicMock()
-    mock_q.id = 1
-    mock_query_dao.find_by_ids = AsyncMock(return_value=[mock_q])
+    # Out-of-scope ids are filtered out by ``saved_query_access_filters`` (the
+    # FAB base_filter, created_by-scoped, NO admin bypass) → ``find_all``
+    # returns empty → ObjectNotFoundError (404), NOT a 403. SavedQuery has no
+    # ``owners`` M2M, so the old ``raise_for_ownership`` path was wrong.
+    mock_query_dao.find_all = AsyncMock(return_value=[])
     security_manager = AsyncMock()
-    security_manager.raise_for_ownership = AsyncMock(
-        side_effect=_security_exception("You don't have permission")
-    )
     cmd = BulkDeleteSavedQueriesCommand(
         dao=mock_query_dao, ids=[1], security_manager=security_manager, user_id=99
     )
-    with pytest.raises(SupersetSecurityException):
+    with pytest.raises(ObjectNotFoundError):
         await cmd.execute()
 
 

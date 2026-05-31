@@ -182,6 +182,10 @@ class CacheController(Controller):
         # -- 4. Delete CacheKey rows from DB ---------------------------
         try:
             deleted = await dao.delete_by_cache_keys(cache_keys)
+            # 1:1 with upstream: emit the invalidation gauge on success.
+            from superset.extensions import stats_logger_manager
+
+            stats_logger_manager.instance.gauge("invalidated_cache", len(cache_keys))
             logger.info(
                 "Invalidated %d cache records for %d datasources",
                 deleted,
@@ -189,6 +193,12 @@ class CacheController(Controller):
             )
         except SQLAlchemyError:
             logger.exception("Failed to delete cache key records")
+            # Roll back the poisoned/aborted transaction before returning — the
+            # request wrapper COMMITS a returned Response, so without this the
+            # commit hits an aborted asyncpg txn and raises at commit-time,
+            # turning a clean 500 into an unhandled error. 1:1 with upstream's
+            # ``db.session.rollback()`` in this branch (same class as 93fcc89e3e).
+            await dao.session.rollback()
             return Response(
                 content={"message": "Failed to delete cache key records"},
                 status_code=500,
