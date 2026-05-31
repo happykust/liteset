@@ -1714,10 +1714,21 @@ class DashboardController(Controller):
         id_or_slug: str,
         dao: DashboardDAOProtocol,
         embedded_dao: EmbeddedDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
-        dashboard = await dao.get_by_id_or_slug(id_or_slug)
+        # Access gate — 1:1 with upstream ``@with_dashboard`` (403/404). Without
+        # it any ``can_read Dashboard`` user could read the embedded config
+        # (uuid + allowed_domains) of a dashboard they cannot access.
+        from superset.db.filters import dashboard_access_filters
+
+        access_filters = await dashboard_access_filters(security_manager, current_user)
+        dashboard = await dao.get_full_by_id_or_slug(
+            id_or_slug, extra_filters=access_filters
+        )
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
+        await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
         embedded = await embedded_dao.find_by_dashboard_id(dashboard.id)
         if not embedded:
             return {"result": None}
@@ -1860,9 +1871,20 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        dashboard = await dao.get_by_id_or_slug(id_or_slug)
+        # Source-dashboard access gate — 1:1 with upstream ``copy_dash``
+        # (``@with_dashboard`` → ``DashboardDAO.get_by_id_or_slug`` raises
+        # 403/404). The port's plain ``get_by_id_or_slug`` skips it, so without
+        # this any ``can_write Dashboard`` user (e.g. Gamma) could COPY — i.e.
+        # exfiltrate the full definition of — a dashboard they cannot access.
+        from superset.db.filters import dashboard_access_filters
+
+        access_filters = await dashboard_access_filters(security_manager, current_user)
+        dashboard = await dao.get_full_by_id_or_slug(
+            id_or_slug, extra_filters=access_filters
+        )
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
+        await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
         cmd = CopyDashboardCommand(
             dao=cast("AsyncDashboardDAO", dao),
             dashboard_id=dashboard.id,

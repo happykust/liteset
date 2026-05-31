@@ -190,3 +190,82 @@ async def test_chart_data_get_access_filtered_404():
             )
     # The lookup must be the access-scoped find_all, not an unfiltered find_by_id.
     dao.find_all.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# dashboard copy + get_embedded — must access-filter (→404) like the full GET
+# (upstream wraps both in @with_dashboard → DashboardDAO.get_by_id_or_slug 403/404)
+# ---------------------------------------------------------------------------
+
+
+async def test_dashboard_copy_access_filtered_404():
+    """Gamma must NOT be able to copy (exfiltrate) a dashboard it can't access."""
+    from superset.schemas.dashboard import DashboardCopySchema
+
+    controller = DashboardController(owner=MagicMock())
+    dao = MagicMock()
+    dao.get_full_by_id_or_slug = AsyncMock(return_value=None)  # filtered out
+    sm = MagicMock()
+    sm.raise_for_access = AsyncMock()
+    with patch(
+        "superset.db.filters.dashboard_access_filters",
+        new=AsyncMock(return_value=[MagicMock()]),
+    ):
+        with pytest.raises(ObjectNotFoundError):
+            await _fn(DashboardController, "copy_dashboard")(
+                controller,
+                id_or_slug="1",
+                data=DashboardCopySchema(
+                    dashboard_title="x", json_metadata="{}", duplicate_slices=False
+                ),
+                dao=dao,
+                security_manager=sm,
+                current_user=MagicMock(),
+            )
+
+
+async def test_dashboard_get_embedded_access_filtered_404():
+    """Gamma must NOT read the embedded config of an inaccessible dashboard."""
+    controller = DashboardController(owner=MagicMock())
+    dao = MagicMock()
+    dao.get_full_by_id_or_slug = AsyncMock(return_value=None)  # filtered out
+    sm = MagicMock()
+    sm.raise_for_access = AsyncMock()
+    with patch(
+        "superset.db.filters.dashboard_access_filters",
+        new=AsyncMock(return_value=[MagicMock()]),
+    ):
+        with pytest.raises(ObjectNotFoundError):
+            await _fn(DashboardController, "get_embedded")(
+                controller,
+                id_or_slug="1",
+                dao=dao,
+                embedded_dao=MagicMock(),
+                security_manager=sm,
+                current_user=MagicMock(),
+            )
+
+
+# ---------------------------------------------------------------------------
+# datasource detail GET — exposes schema/columns/SQL; must raise_for_access → 403
+# ---------------------------------------------------------------------------
+
+_get_datasource = _fn(DatasourceController, "get_datasource")
+
+
+async def test_get_datasource_denied_returns_403():
+    controller = DatasourceController(owner=MagicMock())
+    ds_dao = MagicMock()
+    ds_dao.get_datasource = AsyncMock(return_value=MagicMock())
+    sm = MagicMock()
+    sm.raise_for_access = AsyncMock(side_effect=_denied())
+    result = await _get_datasource(
+        controller,
+        datasource_type="table",
+        datasource_id=1,
+        ds_dao=ds_dao,
+        security_manager=sm,
+        current_user=MagicMock(),
+    )
+    assert result.status_code == 403
+    sm.raise_for_access.assert_awaited_once()

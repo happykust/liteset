@@ -63,6 +63,8 @@ class DatasourceController(Controller):
         datasource_type: str,
         datasource_id: int,
         ds_dao: DatasourceDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
         """GET /api/v1/datasource/{datasource_type}/{datasource_id} — get a datasource.
 
@@ -86,6 +88,22 @@ class DatasourceController(Controller):
 
         if datasource is None:
             raise ObjectNotFoundError("Datasource", datasource_id)
+
+        # Enforce datasource access — this endpoint exposes schema, columns and
+        # (for virtual datasets) the SQL; without the check any authenticated
+        # user (e.g. Gamma) could read it, bypassing the dataset access control
+        # (``GET /dataset/{id}`` correctly 404s). Mirrors ``get_column_values``
+        # / upstream ``datasource.raise_for_access()``.
+        if hasattr(security_manager, "raise_for_access"):
+            try:
+                await security_manager.raise_for_access(
+                    datasource=datasource, user=current_user
+                )
+            except SupersetSecurityException as ex:
+                return Response(
+                    content={"message": getattr(ex, "message", str(ex))},
+                    status_code=403,
+                )
 
         # Build response from datasource attributes
         result: dict[str, Any] = {
