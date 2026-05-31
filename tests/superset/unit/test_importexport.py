@@ -71,8 +71,10 @@ async def test_import_reads_zip() -> None:
     buf.seek(0)
     cmd = SampleImportCommand(contents=buf)
     configs = cmd._parse_zip()
-    assert "charts/test.yaml" in configs
-    assert configs["charts/test.yaml"]["slice_name"] == "Test"
+    # ``remove_root`` strips the first path segment (1:1 upstream):
+    # ``charts/test.yaml`` -> ``test.yaml``.
+    assert "test.yaml" in configs
+    assert configs["test.yaml"]["slice_name"] == "Test"
 
 
 async def test_export_multiple_models() -> None:
@@ -203,7 +205,9 @@ async def test_manager_register_and_dispatch_import() -> None:
     buf.seek(0)
 
     await TestManager2.import_models("fake", contents=buf)
-    assert "items/item.yaml" in imported
+    # ``remove_root`` strips the first path segment: ``items/item.yaml``
+    # -> ``item.yaml`` (1:1 upstream).
+    assert "item.yaml" in imported
     assert "metadata.yaml" not in imported
 
 
@@ -223,12 +227,17 @@ async def test_import_sanitizes_path_traversal() -> None:
     assert "../../etc/passwd" not in configs
     assert "charts/../../../tmp/hack.yaml" not in configs
     assert "/etc/absolute.yaml" not in configs
-    # Sanitized names should be present
-    assert "etc/passwd" in configs
-    assert "charts/tmp/hack.yaml" in configs
-    assert "charts/legit.yaml" in configs
-    # Absolute path sanitized to relative
-    assert "etc/absolute.yaml" in configs
+    # ``remove_root`` strips ``..``/``/`` segments first, then drops the
+    # first remaining path segment of every entry (1:1 upstream
+    # ``remove_root``):
+    #   ``../../etc/passwd`` -> ``passwd`` but is non-YAML -> skipped
+    #   ``charts/../../../tmp/hack.yaml`` -> ``tmp/hack.yaml``
+    #   ``charts/legit.yaml`` -> ``legit.yaml``
+    #   ``/etc/absolute.yaml`` -> ``absolute.yaml``
+    assert "passwd" not in configs  # non-YAML leaf is skipped
+    assert "tmp/hack.yaml" in configs
+    assert "legit.yaml" in configs
+    assert "absolute.yaml" in configs
 
 
 async def test_import_rejects_too_many_entries() -> None:
@@ -321,7 +330,7 @@ async def test_import_saved_queries_validate_is_noop() -> None:
     """
     from unittest.mock import AsyncMock
 
-    from superset.commands.query import ImportSavedQueriesCommand
+    from superset.commands.query.importers.v1 import ImportSavedQueriesCommand
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:

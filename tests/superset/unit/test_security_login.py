@@ -79,6 +79,11 @@ def _make_settings(**overrides: Any) -> MagicMock:
         "api_login_allow_multiple_providers": False,
         "jwt_access_token_expires": 900,
         "jwt_refresh_token_expires": 86400 * 30,
+        # Real types required by the guest-token branch in
+        # SupersetAuthMiddleware (a bare MagicMock would make
+        # feature_flags.get() truthy and header_name.lower() fail).
+        "feature_flags": {},
+        "guest_token_header_name": "X-GuestToken",
     }
     defaults.update(overrides)
     return MagicMock(**defaults)
@@ -363,22 +368,33 @@ class TestLoginEndpoint:
             )
             assert resp.status_code == 400
 
-    async def test_login_ldap_provider_not_implemented(self):
-        """LDAP provider returns 400 (not yet implemented)."""
-        app = _create_test_app(
-            auth_type=2,  # LDAP
-            api_login_allow_multiple_providers=True,
-        )
-        async with AsyncTestClient(app=app) as client:
-            resp = await client.post(
-                "/api/v1/security/login",
-                json={
-                    "username": "admin",
-                    "password": "password",
-                    "provider": "ldap",
-                },
+    async def test_login_ldap_provider_implemented(self):
+        """LDAP provider is fully implemented (1:1 FAB port of auth_user_ldap).
+
+        The provider passes validation (NOT a 400 "not implemented") and is
+        routed to ``AsyncSecurityManager.auth_user_ldap``. With no reachable
+        LDAP server the bind fails and the user is denied with 401 — not a
+        "not implemented" 400.
+        """
+        with patch(
+            "superset.security.manager.AsyncSecurityManager.auth_user_ldap",
+            new=AsyncMock(return_value=None),
+        ):
+            app = _create_test_app(
+                auth_type=2,  # LDAP
+                api_login_allow_multiple_providers=True,
             )
-            assert resp.status_code == 400
+            async with AsyncTestClient(app=app) as client:
+                resp = await client.post(
+                    "/api/v1/security/login",
+                    json={
+                        "username": "admin",
+                        "password": "password",
+                        "provider": "ldap",
+                    },
+                )
+                # Implemented path: auth failure → 401 (not a 400 "not implemented").
+                assert resp.status_code == 401
 
     async def test_login_empty_username(self):
         """Empty username returns 400."""
@@ -502,9 +518,15 @@ class TestRefreshEndpoint:
 @get("/api-protected")
 async def api_protected_route(request: Request) -> dict:
     user = request.user
+    # The anonymous user (UnauthenticatedUser) has ``username == ""`` and
+    # ``is_authenticated == False``; report it as "anon" for the assertions.
+    if not getattr(user, "is_authenticated", False):
+        username = "anon"
+    else:
+        username = getattr(user, "username", "anon")
     return {
         "user_id": getattr(user, "id", None),
-        "username": getattr(user, "username", "anon"),
+        "username": username,
         "auth": request.auth,
     }
 
@@ -601,14 +623,19 @@ class TestAccessTokenMiddleware:
 
         app = _create_middleware_test_app(embedded_superset=True)
         async with AsyncTestClient(app=app) as client:
+            # Guest tokens are read from the dedicated X-GuestToken header
+            # (1:1 with upstream get_guest_user_from_request), NOT the
+            # Authorization: Bearer header (which carries API access tokens).
             resp = await client.get(
                 "/api-protected",
-                headers={"Authorization": f"Bearer {guest_token}"},
+                headers={"X-GuestToken": guest_token},
             )
             assert resp.status_code == 200
             data = resp.json()
             assert data["username"] == "embed-user"
-            assert data["auth"] == "jwt"
+            # Guest-token auth sets the auth scope to "guest_token"
+            # (API access tokens use "jwt").
+            assert data["auth"] == "guest_token"
 
     async def test_access_token_uses_redis_cache(self):
         """Access token auth uses Redis cache when available."""

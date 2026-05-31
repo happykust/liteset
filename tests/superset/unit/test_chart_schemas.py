@@ -91,7 +91,7 @@ def test_chart_data_query_context():
 def test_chart_data_query_object_defaults():
     qo = ChartDataQueryObject()
     assert qo.columns == []
-    assert qo.metrics == []
+    assert qo.metrics is None
     assert qo.row_limit is None
     assert qo.order_desc is True
 
@@ -132,7 +132,7 @@ def test_annotation_layer_formula_value():
         type=AnnotationLayer,
     )
     assert layer.value == "sin(x)"
-    assert layer.showLabel is True
+    assert layer.show_label is True
 
 
 def test_chart_data_filter_adhoc_col():

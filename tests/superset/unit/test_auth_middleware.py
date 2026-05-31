@@ -46,6 +46,10 @@ def _make_session_cookie(user_id: int) -> str:
 @get("/protected")
 async def protected_route(request: Request) -> dict:
     user = request.user
+    # The anonymous user (UnauthenticatedUser) has ``username == ""`` and
+    # ``is_authenticated == False``; report it as "anon" for the assertions.
+    if not getattr(user, "is_authenticated", False):
+        return {"username": "anon"}
     return {"username": getattr(user, "username", "anon")}
 
 
@@ -62,6 +66,11 @@ def _make_settings(**overrides):
         "embedded_superset": False,
         "guest_token_jwt_secret": "",
         "guest_token_jwt_algo": "HS256",
+        # Real types required by the guest-token branch in
+        # SupersetAuthMiddleware (a bare MagicMock would make
+        # feature_flags.get() truthy and header_name.lower() fail).
+        "feature_flags": {},
+        "guest_token_header_name": "X-GuestToken",
     }
     defaults.update(overrides)
     return MagicMock(**defaults)

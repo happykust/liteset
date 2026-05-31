@@ -40,7 +40,17 @@ def test_catalog_access_constant():
 
 def test_admin_only_permissions_is_frozenset():
     assert isinstance(ADMIN_ONLY_PERMISSIONS, frozenset)
-    assert "can_grant_access" in ADMIN_ONLY_PERMISSIONS
+    assert ADMIN_ONLY_PERMISSIONS == frozenset(
+        {
+            "update_roles_users",
+            "list_roles",
+            "can_update_role",
+            "all_query_access",
+            "can_grant_guest_token",
+            "can_set_embedded",
+            "can_warm_up_cache",
+        }
+    )
 
 
 def test_read_only_permissions_is_frozenset():

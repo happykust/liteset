@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from litestar import Litestar
+from litestar.datastructures import State
 
 # ---------------------------------------------------------------------------
 # Workaround: tell Litestar to skip msgspec validation for DI parameters.
@@ -76,6 +77,9 @@ _DI_PARAM_NAMES: frozenset[str] = frozenset(
     {
         "dao",
         "ds_dao",
+        "database_dao",
+        "dashboard_dao",
+        "tab_state_dao",
         "embedded_dao",
         "kv_dao",
         "column_dao",
@@ -137,6 +141,8 @@ class MockUser:
             ("can_write", "SavedQuery"),
             ("can_read", "SQLLab"),
             ("can_write", "SQLLab"),
+            ("can_get_results", "SQLLab"),
+            ("can_execute_sql_query", "SQLLab"),
             ("can_sqllab", "Superset"),
             ("can_read", "DashboardFilterStateRestApi"),
             ("can_write", "DashboardFilterStateRestApi"),
@@ -192,13 +198,29 @@ class MockDAO:
         self._session.flush = AsyncMock()
         self._session.delete = AsyncMock()
         self._session.scalar = AsyncMock(return_value=0)
-        self._session.execute = AsyncMock()
+        # ``session.execute`` returns an awaited result whose ``.scalars()``
+        # chain is SYNC. A bare AsyncMock makes ``.scalars()`` a coroutine and
+        # breaks ``result.scalars().unique().one_or_none()`` / ``.all()`` etc.
+        # Configure a concrete result with plain-MagicMock chains (None / []).
+        _res = MagicMock()
+        _res.scalars.return_value.unique.return_value.one_or_none.return_value = None
+        _res.scalars.return_value.unique.return_value.all.return_value = []
+        _res.scalars.return_value.one_or_none.return_value = None
+        _res.scalars.return_value.all.return_value = []
+        _res.fetchall.return_value = []
+        self._session.execute = AsyncMock(return_value=_res)
+        self._session.begin_nested = MagicMock(return_value=AsyncMock())
         # CRUD methods
         self.find_all = AsyncMock(return_value=[])
         self.find_by_id = AsyncMock(return_value=None)
         self.find_by_ids = AsyncMock(return_value=[])
         self.count = AsyncMock(return_value=0)
         self.find_one_or_none = AsyncMock(return_value=None)
+        # Slug / options lookups used by dashboard + chart controllers.
+        # Default to not-found (None) — matches the GET-by-slug 404 contract;
+        # tests that need a found dashboard configure these explicitly.
+        self.get_full_by_id_or_slug = AsyncMock(return_value=None)
+        self.find_by_id_with_options = AsyncMock(return_value=None)
         self.update = AsyncMock(return_value=MagicMock())
         self.delete = AsyncMock()
         self.bulk_delete = AsyncMock(return_value=0)
@@ -276,10 +298,26 @@ def make_mock_dao() -> MockDAO:
     return MockDAO()
 
 
+def _make_mock_state() -> State:
+    """App-level ``State`` mirroring production ``State({"settings": ...})``.
+
+    Handlers read deployment config off ``state.settings`` (e.g. the SQL Lab
+    ``execute`` handler reads ``settings.sql_max_row``). Provide a MagicMock
+    settings object so those reads resolve instead of raising AttributeError.
+    """
+    settings = MagicMock()
+    settings.sql_max_row = 100000
+    settings.feature_flags = {}
+    return State({"settings": settings})
+
+
 # All known dependency names used across controllers
 _MOCK_DEP_NAMES = [
     "dao",
     "ds_dao",
+    "database_dao",
+    "dashboard_dao",
+    "tab_state_dao",
     "embedded_dao",
     "kv_dao",
     "column_dao",
@@ -301,10 +339,15 @@ def _make_mock_deps(mock_dao: MockDAO) -> dict[str, Provide]:
     mock_security_manager.get_accessible_database_ids = AsyncMock(return_value=None)
     mock_security_manager.can_access = AsyncMock(return_value=True)
     mock_security_manager.can_access_all_queries = AsyncMock(return_value=True)
+    mock_security_manager.can_access_all_databases = AsyncMock(return_value=True)
+    mock_security_manager.user_view_menu_names = AsyncMock(return_value=[])
 
     return {
         "dao": Provide(lambda: mock_dao, sync_to_thread=False),
         "ds_dao": Provide(lambda: make_mock_dao(), sync_to_thread=False),
+        "database_dao": Provide(lambda: make_mock_dao(), sync_to_thread=False),
+        "dashboard_dao": Provide(lambda: make_mock_dao(), sync_to_thread=False),
+        "tab_state_dao": Provide(lambda: make_mock_dao(), sync_to_thread=False),
         "embedded_dao": Provide(lambda: make_mock_dao(), sync_to_thread=False),
         "kv_dao": Provide(lambda: make_mock_dao(), sync_to_thread=False),
         "column_dao": Provide(lambda: make_mock_dao(), sync_to_thread=False),
@@ -316,13 +359,19 @@ def _make_mock_deps(mock_dao: MockDAO) -> dict[str, Provide]:
     }
 
 
-def create_test_app(*controllers: Any) -> Litestar:
+def create_test_app(
+    *controllers: Any, dependency_overrides: dict[str, Provide] | None = None
+) -> Litestar:
     """Create a minimal Litestar app with mocked dependencies for testing.
 
     Temporarily replaces controller-level ``dependencies`` with mock
     providers, then builds the Litestar app. The controller class
     ``dependencies`` are restored after the app is created (Litestar
     snapshots them during ``__init__``).
+
+    ``dependency_overrides`` lets a test swap a specific provider (e.g. a
+    ``dashboard_dao`` configured to return a found dashboard) without
+    touching the shared mock recipe.
 
     WARNING: This function temporarily mutates class-level ``dependencies``
     dicts on the controller classes.  It is NOT thread-safe and is
@@ -333,6 +382,8 @@ def create_test_app(*controllers: Any) -> Litestar:
     mock_user = MockUser()
     mock_dao = make_mock_dao()
     mock_deps = _make_mock_deps(mock_dao)
+    if dependency_overrides:
+        mock_deps = {**mock_deps, **dependency_overrides}
 
     # Save and replace controller dependencies
     originals: list[tuple[type, dict[str, Any]]] = []
@@ -368,21 +419,31 @@ def create_test_app(*controllers: Any) -> Litestar:
     mock_security_manager.can_access = AsyncMock(return_value=True)
     mock_security_manager.get_accessible_datasource_ids = AsyncMock(return_value=None)
     mock_security_manager.get_accessible_database_ids = AsyncMock(return_value=None)
+    mock_security_manager.can_access_all_databases = AsyncMock(return_value=True)
+    mock_security_manager.user_view_menu_names = AsyncMock(return_value=[])
 
     try:
+        app_deps = {
+            "session": Provide(lambda: MagicMock(), sync_to_thread=False),
+            "current_user": Provide(lambda: mock_user, sync_to_thread=False),
+            "request_cache": Provide(lambda: {}, sync_to_thread=False),
+            "rison_params": Provide(lambda: None, sync_to_thread=False),
+            "security_manager": Provide(
+                lambda: mock_security_manager, sync_to_thread=False
+            ),
+        }
+        if dependency_overrides:
+            # Allow tests to override app-level providers (e.g. ``session``)
+            # in addition to controller-level DAOs.
+            app_deps.update(
+                {k: v for k, v in dependency_overrides.items() if k in app_deps}
+            )
         with _skip_di_validation():
             app = Litestar(
                 route_handlers=list(controllers),
-                dependencies={
-                    "session": Provide(lambda: MagicMock(), sync_to_thread=False),
-                    "current_user": Provide(lambda: mock_user, sync_to_thread=False),
-                    "request_cache": Provide(lambda: {}, sync_to_thread=False),
-                    "rison_params": Provide(lambda: None, sync_to_thread=False),
-                    "security_manager": Provide(
-                        lambda: mock_security_manager, sync_to_thread=False
-                    ),
-                },
+                dependencies=app_deps,
                 middleware=[InjectMockUserMiddleware()],
+                state=_make_mock_state(),
                 exception_handlers={
                     SupersetException: superset_exception_handler,
                     Exception: generic_exception_handler,
@@ -443,6 +504,7 @@ def create_test_app_limited(*controllers: Any) -> Litestar:
                     "security_manager": Provide(lambda: mock_sm, sync_to_thread=False),
                 },
                 middleware=[InjectLimitedUserMiddleware()],
+                state=_make_mock_state(),
                 exception_handlers={
                     SupersetException: superset_exception_handler,
                     Exception: generic_exception_handler,
@@ -532,6 +594,7 @@ def create_test_app_no_auth(*controllers: Any) -> Litestar:
                     "rison_params": Provide(lambda: None, sync_to_thread=False),
                 },
                 middleware=[InjectUnauthenticatedUserMiddleware()],
+                state=_make_mock_state(),
                 exception_handlers={
                     SupersetException: superset_exception_handler,
                     Exception: generic_exception_handler,

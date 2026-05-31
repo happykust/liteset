@@ -56,10 +56,11 @@ async def test_get_chart_data_not_found(app):
 
 
 async def test_get_cached_chart_data_miss(app):
-    """GET /api/v1/chart/data/nonexistent returns cache miss."""
+    """GET /api/v1/chart/data/<cache_key> returns 404 on cache miss.
+
+    Matches upstream 1:1: ``data_from_cache`` responds 404 when the cache
+    key resolves to nothing (``if not cached_data: return response_404()``).
+    """
     async with AsyncTestClient(app=app) as client:
         resp = await client.get("/api/v1/chart/data/nonexistent")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["result"] == []
-        assert data["message"] == "Cache miss"
+        assert resp.status_code == 404

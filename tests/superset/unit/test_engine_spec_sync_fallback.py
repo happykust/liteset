@@ -281,13 +281,20 @@ async def test_get_table_names_delegates() -> None:
 
 async def test_get_table_names_fallback() -> None:
     spec = make_async_spec(SyncSpecWithoutOverrides)
-    mock_result = MagicMock()
-    mock_result.fetchall.return_value = [("users",)]
+
+    # Base async get_table_names now uses a SQLAlchemy Inspector via
+    # ``conn.run_sync`` (same as upstream), not a raw ``conn.execute(text(...))``.
+    mock_inspector = MagicMock()
+    mock_inspector.get_table_names.return_value = ["users"]
+
+    async def fake_run_sync(fn):
+        return fn(MagicMock())
 
     mock_conn = AsyncMock()
-    mock_conn.execute.return_value = mock_result
+    mock_conn.run_sync = fake_run_sync
 
-    result = await spec.get_table_names(mock_conn)
+    with patch("sqlalchemy.inspect", return_value=mock_inspector):
+        result = await spec.get_table_names(mock_conn)
     assert "users" in result
 
 
@@ -383,26 +390,31 @@ def test_registry_raises_for_unknown_engine() -> None:
 def test_registry_creates_fallback_for_sync_spec() -> None:
     import superset.db.engine_specs as registry_mod
 
+    # NOTE: "mssql" now has a native async spec (AsyncMSSQLEngineSpec) in
+    # _NATIVE_SPECS, so it is no longer synthesized as a SyncFallback. Use a
+    # truly spec-less engine name to exercise the dynamic fallback path.
+    engine = "madeup_sync_db"
+
     class MockSyncSpec:
-        engine = "mssql"
-        engine_name = "Microsoft SQL Server"
-        default_driver = "pymssql"
+        engine = "madeup_sync_db"
+        engine_name = "Made Up Sync DB"
+        default_driver = "madeupdriver"
         _time_grain_expressions = {}
 
     from superset.db.engine_specs import _fallback_cache
 
-    _fallback_cache.pop("mssql", None)
+    _fallback_cache.pop(engine, None)
     # Directly inject the mock sync spec into the cached map
     # (bypassing import machinery which doesn't work with patch.dict
     # for subpackage imports)
-    registry_mod._sync_spec_map = {"mssql": MockSyncSpec}
+    registry_mod._sync_spec_map = {engine: MockSyncSpec}
 
-    spec = get_async_engine_spec("mssql")
-    assert spec.engine == "mssql"
+    spec = get_async_engine_spec(engine)
+    assert spec.engine == engine
     assert issubclass(spec, SyncFallbackEngineSpec)
     # Second call should hit cache
-    spec2 = get_async_engine_spec("mssql")
+    spec2 = get_async_engine_spec(engine)
     assert spec2 is spec
 
-    _fallback_cache.pop("mssql", None)
+    _fallback_cache.pop(engine, None)
     registry_mod._sync_spec_map = None

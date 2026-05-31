@@ -403,19 +403,43 @@ async def test_viz_annotation_recursion_depth(mock_settings, mock_security_manag
 
 
 async def test_ensure_totals_injects_contribution_totals(processor):
-    """_ensure_totals_available injects totals=True into contribution
-    post-processing.
+    """_ensure_totals_available injects the computed totals DICT into
+    contribution post-processing.
+
+    1:1 port of upstream ``ensure_totals_available``: it locates a *separate*
+    totals query (no columns, has metrics, no post-processing), executes it,
+    and injects the column-sum dict (never ``True``) into each contribution
+    op's options. A query that itself carries post-processing can never be the
+    totals query, so a dedicated totals query object is required.
     """
     qo = AsyncQueryObject(
         datasource={"type": "table", "id": 1},
+        columns=["col1"],
+        metrics=["m"],
         post_processing=[
             {"operation": "contribution", "options": {}},
             {"operation": "pivot"},
         ],
     )
-    await processor._ensure_totals_available([qo])
-    # The contribution operation should have contribution_totals injected
-    assert qo.post_processing[0]["options"]["contribution_totals"] is True
+    # Separate totals query: no columns, has metrics, no post-processing.
+    totals_qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        metrics=["m"],
+    )
+    totals_result = {
+        "df": pd.DataFrame({"m": [3, 7]}),
+        "status": "success",
+    }
+    with patch.object(
+        processor,
+        "_get_query_result",
+        new_callable=AsyncMock,
+        return_value=totals_result,
+    ):
+        await processor._ensure_totals_available([qo, totals_qo])
+    # The contribution operation should have the totals DICT injected
+    # (sum of the totals column: 3 + 7 == 10).
+    assert qo.post_processing[0]["options"]["contribution_totals"] == {"m": 10}
     # The pivot operation should be untouched
     assert "options" not in qo.post_processing[
         1

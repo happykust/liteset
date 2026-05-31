@@ -159,22 +159,35 @@ def test_extract_pagination_custom():
 # ---------------------------------------------------------------------------
 
 
-async def test_get_info_payload_no_model():
-    """get_info_payload with dao lacking model_cls returns empty columns."""
-    dao = MagicMock(spec=[])  # no model_cls attribute
+async def test_get_info_payload_registered_spec():
+    """get_info_payload serves the registered info_builder spec first.
+
+    "Chart" has a descriptor in ``superset.info_builder.specs.RESOURCE_SPECS``,
+    so the payload is assembled from the spec (populated add/edit columns)
+    regardless of the dao — the SA-introspection fallback is NOT reached.
+    """
+    dao = MagicMock(spec=[])  # no model_cls — irrelevant for a registered spec
     result = await get_info_payload(dao, "Chart", ["can_read", "can_write"])
     assert result["permissions"] == ["can_read", "can_write"]
-    assert result["add_columns"] == []
-    assert result["edit_columns"] == []
+    # Populated from the registered Chart spec (not the empty SA fallback)
+    assert len(result["add_columns"]) >= 1
+    names = [c["name"] for c in result["add_columns"]]
+    assert "slice_name" in names
+    assert result["add_title"] == "Add Slice"
 
 
-async def test_get_info_payload_with_model():
-    """get_info_payload introspects SQLAlchemy model columns."""
+async def test_get_info_payload_sa_fallback():
+    """get_info_payload falls back to SA introspection for unregistered models.
+
+    "Database" has no info_builder descriptor, so ``build_info_payload``
+    returns ``None`` and the function introspects the dao's ``model_cls``
+    via ``sqlalchemy.inspect``.
+    """
     from unittest.mock import patch
 
     # Mock a simple mapper with one column
     mock_col = MagicMock()
-    mock_col.key = "slice_name"
+    mock_col.key = "database_name"
     mock_col.type = MagicMock(__str__=lambda self: "VARCHAR(250)")
     mock_col.nullable = False
     mock_col.unique = False
@@ -186,14 +199,12 @@ async def test_get_info_payload_with_model():
     dao = MagicMock()
     dao.model_cls = model_cls
 
-    with patch(
-        "superset.controllers.base.sa_inspect", return_value=mock_mapper, create=True
-    ):
-        # We need to mock the import inside the function
-        with patch("sqlalchemy.inspect", return_value=mock_mapper):
-            result = await get_info_payload(dao, "Chart", ["can_read"])
+    # Production imports ``from sqlalchemy import inspect as sa_inspect``
+    # inside the function, so patching ``sqlalchemy.inspect`` intercepts it.
+    with patch("sqlalchemy.inspect", return_value=mock_mapper):
+        result = await get_info_payload(dao, "Database", ["can_read"])
 
     assert result["permissions"] == ["can_read"]
     assert len(result["add_columns"]) == 1
-    assert result["add_columns"][0]["name"] == "slice_name"
+    assert result["add_columns"][0]["name"] == "database_name"
     assert result["add_columns"][0]["required"] is True

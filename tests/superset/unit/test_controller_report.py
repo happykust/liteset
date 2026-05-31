@@ -119,6 +119,10 @@ async def test_create_report_success(mock_dao, mock_report):
             "name": "Test Report",
             "type": "Report",
             "crontab": "0 * * * *",
+            # A report must reference either a chart or a dashboard, else
+            # validate() raises ReportScheduleEitherChartOrDashboardError
+            # (1:1 with upstream).
+            "chart": 1,
         },
         user_id=1,
     )

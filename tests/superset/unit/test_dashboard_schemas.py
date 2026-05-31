@@ -135,7 +135,7 @@ def test_screenshot_body_url_params_tuple_format():
         b'{"urlParams": [["key1", "val1"], ["key2", "val2"]]}',
         type=DashboardScreenshotSchema,
     )
-    assert body.urlParams == [["key1", "val1"], ["key2", "val2"]]
+    assert body.url_params == [["key1", "val1"], ["key2", "val2"]]
 
 
 def test_dashboard_json_metadata_stagger():

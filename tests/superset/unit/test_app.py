@@ -53,10 +53,15 @@ async def test_app_has_auth_middleware(app):
 
 
 async def test_app_has_security_controller(app):
-    """App should have SecurityController registered."""
+    """App should have SecurityController registered.
+
+    ``/csrf_token/`` is guarded by ``require_authentication`` (1:1 upstream
+    ``@protect()``), so an unauthenticated request returns 401 — proving the
+    controller IS registered (a 404 would indicate a missing controller).
+    """
     async with AsyncTestClient(app=app) as client:
         resp = await client.get("/api/v1/security/csrf_token/")
-        assert resp.status_code == 200
+        assert resp.status_code == 401
 
 
 async def test_app_has_current_user_dependency(app):

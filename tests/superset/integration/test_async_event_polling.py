@@ -22,8 +22,10 @@ import json
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock
 
+import jwt as pyjwt
 import pytest
 from litestar import Litestar
+from litestar.datastructures import State
 
 # Skip msgspec validation for DI-injected mock params
 from litestar._signature.model import (
@@ -42,6 +44,21 @@ from superset.controllers.async_event import AsyncEventController
 
 _SKIP_VALIDATION_NAMES: set[str] = _norm_fn.__globals__["SKIP_VALIDATION_NAMES"]
 _DI_PARAMS = frozenset({"event_manager", "current_user"})
+
+# Shared signing key + channel used to mint a valid ``async-token`` cookie so
+# the polling endpoint resolves a channel id and returns 200 (instead of the
+# 401 it raises 1:1-with-upstream when the cookie is missing/invalid).
+_JWT_SECRET = "test-secret-key-at-least-32-bytes-long-for-gaq"
+_CHANNEL_ID = "test-channel-1"
+
+
+def _mint_async_token() -> str:
+    """Encode an ``async-token`` JWT the same way ``AsyncTokenMiddleware`` does."""
+    return pyjwt.encode(
+        {"channel": _CHANNEL_ID, "sub": "42"},
+        _JWT_SECRET,
+        algorithm="HS256",
+    )
 
 
 class _MockAuthMiddleware(AbstractAuthenticationMiddleware):
@@ -105,6 +122,13 @@ async def client(event_manager: AsyncEventManager):
         user.id = 42
         return user
 
+    # The polling endpoint reads the JWT signing key off ``app.state.settings``;
+    # provide one matching the cookie we mint below.
+    settings = MagicMock()
+    settings.secret_key = _JWT_SECRET
+    settings.global_async_queries_jwt_secret = None
+    settings.global_async_queries_jwt_cookie_name = "async-token"
+
     with _skip_di_validation():
         app = Litestar(
             route_handlers=[AsyncEventController],
@@ -113,8 +137,11 @@ async def client(event_manager: AsyncEventManager):
                 "current_user": Provide(provide_current_user),
             },
             middleware=[_MockAuthMiddleware],
+            state=State({"settings": settings}),
         )
     async with AsyncTestClient(app) as tc:
+        # Present a valid async-token cookie so channel resolution succeeds.
+        tc.cookies.set("async-token", _mint_async_token())
         yield tc
 
 

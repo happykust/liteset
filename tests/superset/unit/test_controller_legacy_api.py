@@ -14,52 +14,62 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Tests for LegacyApiController."""
+"""Tests for LegacyApiController.
+
+``/api/v1/query`` and ``/api/v1/explore/form_data`` are NOT deprecated stubs —
+they are real, functional endpoints served by ``QueryController`` and
+``ExploreFormDataController`` respectively. ``LegacyApiController`` only hosts
+the still-active ``/api/v1/time_range/`` endpoint (ported 1:1 from the original
+``superset/views/api.py``).
+"""
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
+import prison
 import pytest
-from litestar import Litestar
-from litestar.testing import AsyncTestClient
 
+from superset.controllers.explore_form_data import ExploreFormDataController
 from superset.controllers.legacy_api import LegacyApiController
+from superset.controllers.query import QueryController
+from superset.exceptions import SupersetValidationException
+
+_time_range = LegacyApiController.time_range.fn
 
 
-@pytest.fixture
-def app() -> Litestar:
-    return Litestar(route_handlers=[LegacyApiController])
+async def test_time_range_with_valid_q() -> None:
+    """GET /api/v1/time_range/?q=<rison> resolves a human-readable range."""
+    request = MagicMock()
+    request.query_params = {"q": prison.dumps("Last week")}
+
+    response = await _time_range(None, request=request, current_user=MagicMock())
+    assert response.status_code == 200
+    result = response.content["result"]
+    assert len(result) == 1
+    assert result[0]["timeRange"] == "Last week"
+    assert "since" in result[0]
+    assert "until" in result[0]
 
 
-async def test_deprecated_query(app: Litestar) -> None:
-    """GET /api/v1/query/ returns deprecation warning."""
-    async with AsyncTestClient(app=app) as client:
-        response = await client.get("/api/v1/query/")
-        assert response.status_code == 410
-        data = response.json()
-        assert "Deprecated" in data["message"]
-        assert "sqllab" in data["message"]
-        assert response.headers.get("Deprecation") == "true"
-        assert response.headers.get("X-Deprecated-Endpoint") == "/api/v1/query/"
+async def test_time_range_missing_q() -> None:
+    """Missing ``q`` raises a validation error (1:1 with the original view)."""
+    request = MagicMock()
+    request.query_params = {}
+
+    with pytest.raises(SupersetValidationException):
+        await _time_range(None, request=request, current_user=MagicMock())
 
 
-async def test_deprecated_form_data(app: Litestar) -> None:
-    """GET /api/v1/form_data/ returns deprecation warning."""
-    async with AsyncTestClient(app=app) as client:
-        response = await client.get("/api/v1/form_data/")
-        assert response.status_code == 410
-        data = response.json()
-        assert "Deprecated" in data["message"]
-        assert "form_data" in data["message"]
-        assert response.headers.get("Deprecation") == "true"
-        assert response.headers.get("X-Deprecated-Endpoint") == "/api/v1/form_data/"
+def test_query_is_a_real_endpoint() -> None:
+    """``/api/v1/query`` is a functional REST resource, not a deprecated stub."""
+    assert QueryController.path == "/api/v1/query"
 
 
-async def test_deprecated_time_range(app: Litestar) -> None:
-    """GET /api/v1/time_range/ returns deprecation warning."""
-    async with AsyncTestClient(app=app) as client:
-        response = await client.get("/api/v1/time_range/")
-        assert response.status_code == 410
-        data = response.json()
-        assert "Deprecated" in data["message"]
-        assert response.headers.get("Deprecation") == "true"
-        assert response.headers.get("X-Deprecated-Endpoint") == "/api/v1/time_range/"
+def test_form_data_is_a_real_endpoint() -> None:
+    """``/api/v1/explore/form_data`` is a functional resource, not a stub."""
+    assert ExploreFormDataController.path == "/api/v1/explore/form_data"
+
+
+def test_legacy_controller_path() -> None:
+    assert LegacyApiController.path == "/api/v1"

@@ -72,7 +72,7 @@ async def test_get_list(
 ) -> None:
     mock_dao.find_all.return_value = [MagicMock(), MagicMock()]
     mock_dao.count.return_value = 2
-    result = await _get_list(controller, report_pk=1, dao=mock_dao, rison_params=None)
+    result = await _get_list(controller, pk=1, dao=mock_dao, rison_params=None)
     assert result["count"] == 2
     assert len(result["result"]) == 2
     mock_dao.find_all.assert_awaited_once()
@@ -86,7 +86,7 @@ async def test_get_list_with_pagination(
     mock_dao.count.return_value = 50
     result = await _get_list(
         controller,
-        report_pk=1,
+        pk=1,
         dao=mock_dao,
         rison_params={"page": 2, "page_size": 10},
     )
@@ -101,7 +101,7 @@ async def test_get_list_empty(
 ) -> None:
     mock_dao.find_all.return_value = []
     mock_dao.count.return_value = 0
-    result = await _get_list(controller, report_pk=99, dao=mock_dao, rison_params=None)
+    result = await _get_list(controller, pk=99, dao=mock_dao, rison_params=None)
     assert result["count"] == 0
     assert result["result"] == []
 
@@ -118,7 +118,7 @@ async def test_get_single(
     item.id = 5
     item.report_schedule_id = 1
     mock_dao.find_by_id.return_value = item
-    result = await _get_single(controller, report_pk=1, pk=5, dao=mock_dao)
+    result = await _get_single(controller, pk=1, log_id=5, dao=mock_dao)
     assert result["result"] == item
     mock_dao.find_by_id.assert_awaited_once_with(5)
 
@@ -128,7 +128,7 @@ async def test_get_single_not_found(
 ) -> None:
     mock_dao.find_by_id.return_value = None
     with pytest.raises(ObjectNotFoundError):
-        await _get_single(controller, report_pk=1, pk=999, dao=mock_dao)
+        await _get_single(controller, pk=1, log_id=999, dao=mock_dao)
 
 
 async def test_get_single_wrong_report(
@@ -138,7 +138,7 @@ async def test_get_single_wrong_report(
     item.report_schedule_id = 2  # Different from report_pk=1
     mock_dao.find_by_id.return_value = item
     with pytest.raises(ObjectNotFoundError):
-        await _get_single(controller, report_pk=1, pk=5, dao=mock_dao)
+        await _get_single(controller, pk=1, log_id=5, dao=mock_dao)
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +147,7 @@ async def test_get_single_wrong_report(
 
 
 def test_controller_path() -> None:
-    assert ReportExecutionLogController.path == "/api/v1/report/{report_pk:int}/log"
+    assert ReportExecutionLogController.path == "/api/v1/report/{pk:int}/log"
 
 
 def test_controller_tags() -> None:

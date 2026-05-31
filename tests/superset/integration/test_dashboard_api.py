@@ -21,12 +21,19 @@ Tests the full HTTP pipeline with mocked DAO dependencies.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
+from litestar.di import Provide
 from litestar.testing import AsyncTestClient
 
 from superset.controllers.dashboard import DashboardController
 from superset.controllers.dashboard_filter_state import DashboardFilterStateController
-from tests.superset.integration.conftest import create_test_app, create_test_app_no_auth
+from tests.superset.integration.conftest import (
+    create_test_app,
+    create_test_app_no_auth,
+    make_mock_dao,
+)
 
 
 @pytest.fixture
@@ -96,7 +103,19 @@ async def test_create_permalink(app):
 
 async def test_create_filter_state():
     """POST /api/v1/dashboard/1/filter_state/ returns 201 with key."""
-    filter_app = create_test_app(DashboardFilterStateController)
+    # The create command runs ``check_access`` which loads the dashboard via
+    # ``dashboard_dao.get_full_by_id_or_slug``; supply a dao that finds one so
+    # the access gate passes and the create reaches the 201 path.
+    found_dashboard_dao = make_mock_dao()
+    found_dashboard_dao.get_full_by_id_or_slug = AsyncMock(return_value=MagicMock())
+    filter_app = create_test_app(
+        DashboardFilterStateController,
+        dependency_overrides={
+            "dashboard_dao": Provide(
+                lambda: found_dashboard_dao, sync_to_thread=False
+            ),
+        },
+    )
     async with AsyncTestClient(app=filter_app) as client:
         payload = {"value": '{"test": true}'}
         resp = await client.post("/api/v1/dashboard/1/filter_state/", json=payload)

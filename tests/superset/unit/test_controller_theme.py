@@ -83,7 +83,9 @@ async def test_create_validates_whitespace_name(mock_dao):
 
 async def test_create_success(mock_dao, mock_theme):
     mock_dao.create.return_value = mock_theme
-    data = {"theme_name": "Dark Theme", "css": "body {}"}
+    # ThemeBaseSchema requires json_data (a parseable JSON string); there is no
+    # ``css`` field — 1:1 with upstream themes/schemas.py.
+    data = {"theme_name": "Dark Theme", "json_data": "{}"}
     cmd = CreateThemeCommand(dao=mock_dao, data=data)
     result = await cmd.execute()
     assert result.id == 1

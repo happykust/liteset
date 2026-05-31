@@ -8,10 +8,20 @@ import pytest
 from superset.config import _superset_config_cache, SupersetSettings
 
 
-def test_default_settings() -> None:
-    settings = SupersetSettings(secret_key="test-key-long-enough")
+def test_default_settings(monkeypatch) -> None:
+    # Neutralise any ambient LITESET_* env so the true defaults are asserted
+    # (env has higher precedence than the field defaults).
+    monkeypatch.delenv("LITESET_SECRET_KEY", raising=False)
+    monkeypatch.delenv("LITESET_SQLALCHEMY_DATABASE_URI", raising=False)
+    # ``sqlalchemy_database_uri`` is a required field (no field default in
+    # production), so supply the upstream-style sync sqlite URI and assert the
+    # async-driver conversion. The remaining fields exercise the true defaults.
+    settings = SupersetSettings(
+        secret_key="test-key-long-enough",
+        sqlalchemy_database_uri="sqlite:///superset.db",
+    )
     assert settings.secret_key.get_secret_value() == "test-key-long-enough"
-    # Default URI should be async sqlite
+    # Sync sqlite URI is converted to async sqlite
     assert settings.sqlalchemy_database_uri == "sqlite+aiosqlite:///superset.db"
     assert settings.host == "0.0.0.0"  # noqa: S104  # asserts default host value
     assert settings.port == 8088
@@ -136,6 +146,10 @@ def test_superset_config_source_auto_loads(monkeypatch, tmp_path):
         'SQLALCHEMY_DATABASE_URI = "postgresql://u:p@host/db"\n'
     )
     monkeypatch.setenv("SUPERSET_CONFIG_PATH", str(config_file))
+    # Neutralise ambient LITESET_* env so the config-file values win
+    # (env has higher precedence than superset_config.py).
+    monkeypatch.delenv("LITESET_SECRET_KEY", raising=False)
+    monkeypatch.delenv("LITESET_SQLALCHEMY_DATABASE_URI", raising=False)
     settings = SupersetSettings()
     assert settings.secret_key.get_secret_value() == "auto-loaded-secret-key"
     assert "asyncpg" in settings.sqlalchemy_database_uri

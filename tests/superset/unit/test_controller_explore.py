@@ -56,10 +56,16 @@ async def test_get_explore_empty():
         dataset_dao=dataset_dao,
         kv_dao=kv_dao,
     )
-    assert result["result"]["form_data"] == {}
+    # On the empty-state path the handler fills form_data with explore
+    # defaults (datasource/adhoc_filters/applied_time_extras/url_params) and
+    # returns a "[Missing Dataset]" placeholder, matching original
+    # GetExploreCommand.
+    form_data = result["result"]["form_data"]
+    assert form_data["adhoc_filters"] == []
+    assert form_data["url_params"] == {}
     assert result["result"]["slice"] is None
-    assert result["result"]["dataset"] is None
-    assert result["result"]["message"] == ""
+    assert result["result"]["dataset"]["name"] == "[Missing Dataset]"
+    assert result["result"]["message"] is None
 
 
 async def test_get_explore_with_form_data_key():
@@ -78,7 +84,10 @@ async def test_get_explore_with_form_data_key():
         dataset_dao=dataset_dao,
         kv_dao=kv_dao,
     )
-    assert result["result"]["form_data"] == {"viz_type": "bar"}
+    # The handler applies upstream transforms (convert_legacy_filters_into_adhoc
+    # / merge_extra_filters / merge_request_params) on top of the loaded
+    # form_data, so assert the relevant value rather than an exact dict.
+    assert result["result"]["form_data"]["viz_type"] == "bar"
 
 
 async def test_get_explore_with_slice_id():
@@ -89,9 +98,22 @@ async def test_get_explore_with_slice_id():
     chart.slice_name = "My Chart"
     chart.viz_type = "table"
     chart.params = json.dumps({"granularity": "day"})
+    # ``Slice.form_data`` is a real property on the model; with a MagicMock we
+    # supply the migrated form_data dict the handler merges into the response.
+    chart.form_data = {"granularity": "day"}
+    # Iterable relationships eagerly read by the handler.
+    chart.owners = []
+    chart.dashboards = []
+    chart.created_by = None
+    chart.changed_by = None
+    chart.changed_on = None
+    chart.created_on = None
+    chart.datasource_id = None
 
     chart_dao = AsyncMock()
-    chart_dao.find_by_id.return_value = chart
+    # The controller resolves the slice via find_by_id_with_options (eager-load),
+    # not find_by_id.
+    chart_dao.find_by_id_with_options.return_value = chart
     dataset_dao = AsyncMock()
     kv_dao = AsyncMock()
 
@@ -111,6 +133,8 @@ async def test_get_explore_chart_not_found():
     request = MagicMock()
     request.query_params = {"slice_id": "999"}
     chart_dao = AsyncMock()
+    # The controller resolves the slice via find_by_id_with_options.
+    chart_dao.find_by_id_with_options.return_value = None
     chart_dao.find_by_id.return_value = None
     dataset_dao = AsyncMock()
     kv_dao = AsyncMock()

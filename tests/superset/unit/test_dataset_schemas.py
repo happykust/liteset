@@ -40,7 +40,7 @@ def test_dataset_post_body():
     )
     assert body.table_name == "my_table"
     assert body.database == 1
-    assert body.schema_name is None
+    assert body.schema is None
     assert body.sql is None
     assert body.is_managed_externally is False
     assert body.normalize_columns is False
@@ -101,22 +101,22 @@ def test_dataset_duplicate_body():
 
 
 def test_get_or_create_body():
-    body = GetOrCreateDatasetSchema(table_name="events", database=3)
+    body = GetOrCreateDatasetSchema(table_name="events", database_id=3)
     assert body.table_name == "events"
-    assert body.database == 3
-    assert body.schema_name is None
+    assert body.database_id == 3
+    assert body.schema is None
     assert body.normalize_columns is False
     assert body.always_filter_main_dttm is False
 
     body_full = GetOrCreateDatasetSchema(
         table_name="events",
-        database=3,
-        schema_name="public",
+        database_id=3,
+        schema="public",
         template_params='{"x": 1}',
         normalize_columns=True,
         always_filter_main_dttm=True,
     )
-    assert body_full.schema_name == "public"
+    assert body_full.schema == "public"
     assert body_full.normalize_columns is True
 
 

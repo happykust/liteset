@@ -122,7 +122,12 @@ async def test_get_list(controller, mock_dao):
     assert result["result"][1]["user"] is None
     assert result["result"][1]["duration_ms"] is None
 
-    mock_dao.find_all.assert_awaited_once_with(page=0, page_size=25)
+    # The controller also passes filters/order_by/options; check the relevant
+    # pagination kwargs rather than an exact-call match.
+    mock_dao.find_all.assert_awaited_once()
+    call_kwargs = mock_dao.find_all.call_args.kwargs
+    assert call_kwargs["page"] == 0
+    assert call_kwargs["page_size"] == 25
     mock_dao.count.assert_awaited_once()
 
 
@@ -135,17 +140,25 @@ async def test_get_list_with_pagination(controller, mock_dao):
     )
 
     assert result["count"] == 50
-    mock_dao.find_all.assert_awaited_once_with(page=2, page_size=10)
+    mock_dao.find_all.assert_awaited_once()
+    call_kwargs = mock_dao.find_all.call_args.kwargs
+    assert call_kwargs["page"] == 2
+    assert call_kwargs["page_size"] == 10
 
 
 async def test_get_single(controller, mock_dao):
     item = MagicMock()
     item.id = 1
+    item.action = "explore"
     mock_dao.find_by_id.return_value = item
 
     result = await _get_single(controller, pk=1, dao=mock_dao)
 
-    assert result["result"] == item
+    # The handler serializes the ORM instance to a dict (msgspec can't dump
+    # the SA model directly), matching the original LogModelView dump shape.
+    assert result["id"] == 1
+    assert result["result"]["id"] == 1
+    assert result["result"]["action"] == "explore"
     mock_dao.find_by_id.assert_awaited_once_with(1)
 
 
@@ -157,13 +170,15 @@ async def test_get_single_not_found(controller, mock_dao):
 
 
 async def test_recent_activity(controller, mock_dao, mock_user):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     log_item = MagicMock()
     log_item.action = "mount_explorer"
     log_item.slice_id = 5
     log_item.dashboard_id = None
-    log_item.dttm = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    # Log.dttm is a naive DateTime column; the handler does naive ``now`` minus
+    # ``dttm``, so a tz-aware value (which the model never produces) would raise.
+    log_item.dttm = datetime(2026, 1, 1)
 
     mock_dao.get_recent_activity.return_value = [log_item]
 

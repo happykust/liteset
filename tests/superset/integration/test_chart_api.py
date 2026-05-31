@@ -64,12 +64,14 @@ async def test_get_chart_by_id_not_found(app):
 
 
 async def test_get_chart_favorite_status_empty(app):
-    """GET /api/v1/chart/favorite_status/ returns empty result without ids."""
+    """GET /api/v1/chart/favorite_status/ returns 404 without ids.
+
+    Matches upstream 1:1: ``favorite_status`` does ``if not charts:
+    return self.response_404()`` when no chart ids resolve.
+    """
     async with AsyncTestClient(app=app) as client:
         resp = await client.get("/api/v1/chart/favorite_status/")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["result"] == []
+        assert resp.status_code == 404
 
 
 async def test_get_chart_export_no_ids(app):

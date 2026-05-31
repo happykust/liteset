@@ -108,7 +108,7 @@ def test_table_metadata_response():
         name="my_table",
         columns=[col],
         indexes=[idx],
-        primaryKey={"constrained_columns": ["id"]},
+        primary_key={"constrained_columns": ["id"]},
     )
     assert resp.name == "my_table"
     assert len(resp.columns) == 1
@@ -116,8 +116,8 @@ def test_table_metadata_response():
     assert resp.columns[0].type == "INTEGER"
     assert len(resp.indexes) == 1
     assert resp.indexes[0].name == "pk_id"
-    assert resp.foreignKeys == []
-    assert resp.selectStar is None
+    assert resp.foreign_keys == []
+    assert resp.select_star is None
 
 
 def test_schemas_response():

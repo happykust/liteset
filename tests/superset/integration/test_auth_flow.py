@@ -258,6 +258,8 @@ async def test_cookie_auth_full_flow(db_engine):
                         session_cookie_name="session",
                         session_max_age=86400,
                         embedded_superset=False,
+                        feature_flags={},
+                        guest_token_header_name="X-GuestToken",
                     ),
                     "session_factory": session_factory,
                     "redis": None,
@@ -308,6 +310,8 @@ async def test_inactive_user_rejected(db_engine):
                         session_cookie_name="session",
                         session_max_age=86400,
                         embedded_superset=False,
+                        feature_flags={},
+                        guest_token_header_name="X-GuestToken",
                     ),
                     "session_factory": session_factory,
                     "redis": None,
@@ -324,27 +328,80 @@ async def test_inactive_user_rejected(db_engine):
             # Inactive user → _resolve_user_from_db returns None → middleware
             # falls through to UnauthenticatedUser (anonymous). The whoami
             # endpoint has no RBAC guard so it still returns 200, but the
-            # resolved user must be anonymous: no username and not authenticated.
+            # resolved user must be anonymous: the anonymous user serializes
+            # with an empty username (id=0), NOT the inactive user's name.
             assert resp.status_code == 200
             data = resp.json()
-            assert data.get("username") is None, (
+            assert not data.get("username"), (
                 "Inactive user must not be resolved; expected anonymous user "
                 f"but got username={data.get('username')!r}"
             )
+            assert data.get("username") != "inactive"
 
 
 async def test_csrf_token_endpoint():
-    """CSRF token endpoint should work without auth."""
+    """CSRF token endpoint requires auth (1:1 upstream ``@protect()``).
+
+    The handler is guarded by ``require_authentication``; supply an
+    authenticated user via middleware so the request reaches the handler and
+    returns a token.
+    """
+    from litestar.middleware import ASGIMiddleware
+
+    class _InjectAuthedUser(ASGIMiddleware):
+        async def handle(self, scope, receive, send, next_app):
+            if scope["type"] in ("http", "websocket"):
+                user = MagicMock()
+                user.is_authenticated = True
+                user.id = 1
+                user.permissions = set()
+                scope["user"] = user
+                scope["auth"] = "mock"
+            await next_app(scope, receive, send)
+
     app = Litestar(
         route_handlers=[SecurityController],
+        middleware=[_InjectAuthedUser()],
+        state=State(
+            {
+                "settings": MagicMock(
+                    secret_key=MagicMock(
+                        get_secret_value=MagicMock(return_value=SECRET_KEY)
+                    ),
+                    session_cookie_name="session",
+                ),
+            }
+        ),
     )
     async with AsyncTestClient(app=app) as client:
         resp = await client.get("/api/v1/security/csrf_token/")
         assert resp.status_code == 200
         data = resp.json()
         assert "result" in data
-        # First call returns empty — no cookie yet; Litestar sets it in response
         assert isinstance(data["result"], str)
+
+
+async def test_csrf_token_endpoint_requires_auth():
+    """Unauthenticated callers get 401 from the csrf endpoint guard."""
+    from litestar.middleware import ASGIMiddleware
+
+    class _InjectAnonUser(ASGIMiddleware):
+        async def handle(self, scope, receive, send, next_app):
+            if scope["type"] in ("http", "websocket"):
+                user = MagicMock()
+                user.is_authenticated = False
+                user.permissions = set()
+                scope["user"] = user
+                scope["auth"] = None
+            await next_app(scope, receive, send)
+
+    app = Litestar(
+        route_handlers=[SecurityController],
+        middleware=[_InjectAnonUser()],
+    )
+    async with AsyncTestClient(app=app) as client:
+        resp = await client.get("/api/v1/security/csrf_token/")
+        assert resp.status_code == 401
 
 
 async def test_guest_token_flow():
@@ -399,6 +456,8 @@ async def test_redis_cache_hit():
                     session_cookie_name="session",
                     session_max_age=86400,
                     embedded_superset=False,
+                    feature_flags={},
+                    guest_token_header_name="X-GuestToken",
                 ),
                 "session_factory": MagicMock(),
                 "redis": mock_redis,
@@ -444,6 +503,8 @@ async def test_redis_cache_rejects_inactive():
                     session_cookie_name="session",
                     session_max_age=86400,
                     embedded_superset=False,
+                    feature_flags={},
+                    guest_token_header_name="X-GuestToken",
                 ),
                 "session_factory": MagicMock(),
                 "redis": mock_redis,

@@ -135,12 +135,26 @@ async def test_raise_for_access_denied(manager, mock_dao):
 
     gamma_user = MockUser(roles=[MockGammaRole()])
     mock_dao.has_permission_view.return_value = False
+    mock_dao.get_all_permissions_for_user_with_groups.return_value = set()
+    # Table datasource lookup finds no matching SqlaTable -> no access.
+    table_result = MagicMock()
+    table_result.scalars.return_value.all.return_value = []
+    mock_dao.session.execute = AsyncMock(return_value=table_result)
 
     database = MagicMock()
     database.perm = "[db].(id:1)"
+    # Upstream Path-1 guard requires ``(database and table) or query`` — a
+    # bare ``database=`` is a no-op. Provide a table to exercise the real
+    # table-access denial path.
+    table = MagicMock()
+    table.catalog = None
+    table.schema = None
+    table.qualify.return_value = table
 
     with pytest.raises(SupersetSecurityException):
-        await manager.raise_for_access(user=gamma_user, database=database)
+        await manager.raise_for_access(
+            user=gamma_user, database=database, table=table
+        )
 
 
 async def test_can_access_database(manager, mock_dao):
@@ -261,31 +275,64 @@ class MockGuestUser:
     resources: list = field(default_factory=list)
 
 
-async def test_raise_for_access_guest_database_denied(manager, mock_dao):
-    """Guest user accessing database should be denied."""
+@pytest.fixture
+def embedded_manager(mock_dao):
+    """Security manager with EMBEDDED_SUPERSET enabled so is_guest_user works."""
+    return AsyncSecurityManager(
+        dao=mock_dao,
+        admin_role_name="Admin",
+        embedded_superset_enabled=True,
+    )
+
+
+async def test_raise_for_access_guest_datasource_denied(embedded_manager, mock_dao):
+    """Guest user without datasource access is denied via the datasource path.
+
+    Upstream ``raise_for_access`` has no guest-specific database/query denial;
+    guests are simply non-admin users whose datasource access is checked
+    normally (Path-3). With no granted permissions, access is denied.
+    """
     from superset.exceptions import SupersetSecurityException
 
     guest = MockGuestUser()
-    with pytest.raises(SupersetSecurityException, match="Guest users"):
-        await manager.raise_for_access(user=guest, database=MagicMock())
+    mock_dao.has_permission_view.return_value = False
+    mock_dao.get_all_permissions_for_user_with_groups.return_value = set()
+
+    datasource = MagicMock()
+    datasource.perm = "[db].[t](id:1)"
+    datasource.database = None
+    datasource.catalog = None
+    datasource.schema = None
+    datasource.owners = []
+    # No form_data / dashboardId -> no dashboard RBAC fallback.
+
+    with pytest.raises(SupersetSecurityException):
+        await embedded_manager.raise_for_access(user=guest, datasource=datasource)
 
 
-async def test_raise_for_access_guest_datasource_denied(manager, mock_dao):
-    """Guest user accessing datasource should be denied."""
+async def test_raise_for_access_guest_query_context_modified_denied(
+    embedded_manager, mock_dao
+):
+    """Guest user modifying a chart payload is denied (Path-2).
+
+    This is the only guest-specific denial in upstream ``raise_for_access``.
+    """
+    from unittest.mock import patch
+
     from superset.exceptions import SupersetSecurityException
 
     guest = MockGuestUser()
-    with pytest.raises(SupersetSecurityException, match="Guest users"):
-        await manager.raise_for_access(user=guest, datasource=MagicMock())
+    query_context = MagicMock()
 
-
-async def test_raise_for_access_guest_query_denied(manager, mock_dao):
-    """Guest user accessing query should be denied."""
-    from superset.exceptions import SupersetSecurityException
-
-    guest = MockGuestUser()
-    with pytest.raises(SupersetSecurityException, match="Guest users"):
-        await manager.raise_for_access(user=guest, query=MagicMock())
+    with patch(
+        "superset.security.manager.query_context_modified", return_value=True
+    ):
+        with pytest.raises(
+            SupersetSecurityException, match="Guest user cannot modify chart payload"
+        ):
+            await embedded_manager.raise_for_access(
+                user=guest, query_context=query_context
+            )
 
 
 # --- Guest token manager methods ---
@@ -315,10 +362,11 @@ def test_parse_jwt_guest_token_via_manager():
     assert payload["user"]["username"] == "embed"
 
 
-def test_get_guest_user_from_request(manager):
+def test_get_guest_user_from_request(embedded_manager):
+    # is_guest_user only returns True when EMBEDDED_SUPERSET is enabled.
     request = MagicMock()
     request.user = MockGuestUser()
-    result = manager.get_guest_user_from_request(request)
+    result = embedded_manager.get_guest_user_from_request(request)
     assert result is not None
     assert result.is_guest is True
 
@@ -333,45 +381,37 @@ def test_get_guest_user_from_request_not_guest(manager):
 # --- Guest chart access tests (C1 fix) ---
 
 
-async def test_guest_denied_chart_without_dashboard(manager, mock_dao):
-    """Guest user accessing a chart not associated with any dashboard should be
-    denied.
+async def test_guest_denied_chart_without_datasource_access(
+    embedded_manager, mock_dao
+):
+    """Guest (non-admin, non-owner) without datasource access is denied a chart.
+
+    Upstream chart path (Path-5) has no guest-specific dashboard-association
+    logic — guests are checked via owner/datasource access like any non-admin.
     """
     from superset.exceptions import SupersetSecurityException
 
     guest = MockGuestUser(resources=[{"type": "dashboard", "id": "abc-123"}])
+    mock_dao.has_permission_view.return_value = False
+    mock_dao.get_all_permissions_for_user_with_groups.return_value = set()
+
     chart = MagicMock()
-    chart.dashboards = []
+    chart.owners = []
+    chart.datasource = None  # no datasource -> cannot grant datasource access
+
     with pytest.raises(
-        SupersetSecurityException, match="not associated with any dashboard"
+        SupersetSecurityException, match="don't have access to this chart"
     ):
-        await manager.raise_for_access(user=guest, chart=chart)
+        await embedded_manager.raise_for_access(user=guest, chart=chart)
 
 
-async def test_guest_denied_chart_wrong_dashboard(manager, mock_dao):
-    """Guest user accessing a chart whose dashboard is not in their resources."""
-    from superset.exceptions import SupersetSecurityException
-
-    guest = MockGuestUser(resources=[{"type": "dashboard", "id": "abc-123"}])
-    dashboard = MagicMock()
-    dashboard.uuid = "different-uuid"
-    dashboard.id = 999
+async def test_guest_allowed_chart_when_owner(embedded_manager, mock_dao):
+    """Guest user listed as a chart owner can access it (Path-5 owner check)."""
+    guest = MockGuestUser(id=5, resources=[{"type": "dashboard", "id": "42"}])
     chart = MagicMock()
-    chart.dashboards = [dashboard]
-    with pytest.raises(SupersetSecurityException, match="Guest access denied to chart"):
-        await manager.raise_for_access(user=guest, chart=chart)
-
-
-async def test_guest_allowed_chart_with_dashboard(manager, mock_dao):
-    """Guest user can access a chart whose dashboard is in their resources."""
-    guest = MockGuestUser(resources=[{"type": "dashboard", "id": "42"}])
-    dashboard = MagicMock()
-    dashboard.id = 42
-    dashboard.embedded = None
-    chart = MagicMock()
-    chart.dashboards = [dashboard]
-    # Should not raise
-    await manager.raise_for_access(user=guest, chart=chart)
+    chart.owners = [MagicMock(id=5)]
+    # Should not raise (owner bypass)
+    await embedded_manager.raise_for_access(user=guest, chart=chart)
 
 
 # ---------------------------------------------------------------------------

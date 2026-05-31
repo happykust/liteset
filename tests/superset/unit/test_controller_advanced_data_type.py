@@ -45,7 +45,9 @@ def _make_state_with_registry() -> MagicMock:
 async def test_get_types() -> None:
     state = _make_state_with_registry()
     result = await _get_types(self=None, state=state)  # type: ignore[arg-type]
-    assert result == {"result": ["internet_address"]}
+    # The registry always seeds the built-in defaults (internet_address + port,
+    # 1:1 with upstream ADVANCED_DATA_TYPES) merged with the user registry.
+    assert result == {"result": ["internet_address", "port"]}
 
 
 @pytest.mark.asyncio
@@ -53,7 +55,8 @@ async def test_get_types_empty() -> None:
     state = MagicMock()
     state.settings = MagicMock(spec=[])
     result = await _get_types(self=None, state=state)  # type: ignore[arg-type]
-    assert result == {"result": []}
+    # Even with no user registry, the built-in defaults are always present.
+    assert result == {"result": ["internet_address", "port"]}
 
 
 @pytest.mark.asyncio

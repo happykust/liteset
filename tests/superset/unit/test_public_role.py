@@ -73,6 +73,11 @@ def _make_settings(**overrides: object) -> MagicMock:
         "guest_token_jwt_secret": "",
         "guest_token_jwt_algo": "HS256",
         "auth_role_public": "Public",
+        # Real types required by the guest-token branch in
+        # SupersetAuthMiddleware (a bare MagicMock would make
+        # feature_flags.get() truthy and header_name.lower() fail).
+        "feature_flags": {},
+        "guest_token_header_name": "X-GuestToken",
     }
     defaults.update(overrides)
     return MagicMock(**defaults)

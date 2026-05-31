@@ -17,6 +17,7 @@
 from litestar import get, Litestar
 from litestar.testing import AsyncTestClient
 
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import (
     CommandException,
     CommandInvalidError,
@@ -52,7 +53,13 @@ def test_superset_exception_custom_message():
 
 
 def test_security_exception():
-    exc = SupersetSecurityException("nope")
+    exc = SupersetSecurityException(
+        SupersetError(
+            message="nope",
+            error_type=SupersetErrorType.GENERIC_BACKEND_ERROR,
+            level=ErrorLevel.ERROR,
+        )
+    )
     assert exc.status_code == 403
 
 
@@ -69,8 +76,11 @@ def test_not_found():
 
 
 def test_timeout():
-    exc = SupersetTimeoutException()
-    assert exc.status_code == 504
+    exc = SupersetTimeoutException(
+        error_type=SupersetErrorType.BACKEND_TIMEOUT_ERROR,
+        message="timed out",
+    )
+    assert exc.status_code == 408
 
 
 def test_object_not_found_message():
@@ -109,7 +119,13 @@ def test_forbidden():
 async def test_handler_returns_sip40_json():
     @get("/fail")
     async def fail_route() -> None:
-        raise SupersetSecurityException("access denied")
+        raise SupersetSecurityException(
+            SupersetError(
+                message="access denied",
+                error_type=SupersetErrorType.GENERIC_BACKEND_ERROR,
+                level=ErrorLevel.ERROR,
+            )
+        )
 
     app = Litestar(
         route_handlers=[fail_route],

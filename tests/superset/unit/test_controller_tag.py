@@ -176,18 +176,19 @@ async def test_delete_tag_success(mock_dao: AsyncMock) -> None:
 
 
 async def test_bulk_delete_empty(mock_dao: AsyncMock) -> None:
-    cmd = BulkDeleteTagCommand(dao=mock_dao, ids=[])
-    with pytest.raises(CommandInvalidError, match="No IDs"):
+    # 1:1 with original DeleteTagsCommand: deletes by tag *name*.
+    cmd = BulkDeleteTagCommand(dao=mock_dao, tag_names=[])
+    with pytest.raises(CommandInvalidError, match="No tag names"):
         await cmd.validate()
 
 
 async def test_bulk_delete_success(mock_dao: AsyncMock) -> None:
-    mock_dao.bulk_delete.return_value = 3
-    cmd = BulkDeleteTagCommand(dao=mock_dao, ids=[1, 2, 3])
+    mock_dao.find_by_name.return_value = MagicMock()
+    cmd = BulkDeleteTagCommand(dao=mock_dao, tag_names=["a", "b", "c"])
     await cmd.validate()
     result = await cmd.run()
     assert result == 3
-    mock_dao.bulk_delete.assert_awaited_once_with([1, 2, 3])
+    mock_dao.delete_tags.assert_awaited_once_with(["a", "b", "c"])
 
 
 async def test_bulk_create_validates_names(mock_dao: AsyncMock) -> None:

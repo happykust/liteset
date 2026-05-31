@@ -21,11 +21,18 @@ Tests the full HTTP pipeline with mocked DAO dependencies.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
+from litestar.di import Provide
 from litestar.testing import AsyncTestClient
 
 from superset.controllers.sqllab import SqlLabController
-from tests.superset.integration.conftest import create_test_app, create_test_app_no_auth
+from tests.superset.integration.conftest import (
+    create_test_app,
+    create_test_app_no_auth,
+    make_mock_dao,
+)
 
 
 @pytest.fixture
@@ -34,13 +41,20 @@ def app():
 
 
 async def test_get_sqllab_bootstrap(app):
-    """GET /api/v1/sqllab/ returns bootstrap data with user info."""
+    """GET /api/v1/sqllab/ returns bootstrap data.
+
+    Mirrors upstream ``bootstrap_sqllab_data``: the payload is wrapped in a
+    ``result`` envelope carrying ``tab_state_ids``, ``databases`` and
+    ``active_tab`` (no top-level ``user`` key).
+    """
     async with AsyncTestClient(app=app) as client:
         resp = await client.get("/api/v1/sqllab/")
         assert resp.status_code == 200
         data = resp.json()
-        assert "user" in data
-        assert data["user"]["id"] == 1
+        assert "result" in data
+        assert "tab_state_ids" in data["result"]
+        assert "databases" in data["result"]
+        assert "active_tab" in data["result"]
 
 
 async def test_post_format_sql(app):
@@ -50,8 +64,8 @@ async def test_post_format_sql(app):
             "/api/v1/sqllab/format_sql/",
             json={"sql": "SELECT * FROM t"},
         )
-        # Litestar returns 201 for POST by default
-        assert resp.status_code == 201
+        # Handler pins status_code=200 (1:1 upstream format_sql response).
+        assert resp.status_code == 200
         data = resp.json()
         assert "result" in data
 
@@ -64,13 +78,25 @@ async def test_get_sqllab_results_no_key(app):
         assert resp.status_code == 422
 
 
-async def test_execute_sql_returns_result(app):
-    """POST /api/v1/sqllab/execute/ returns query result dict.
+async def test_execute_sql_route_wired():
+    """POST /api/v1/sqllab/execute/ reaches ExecuteSQLCommand.
 
-    ExecuteSQLCommand.run() returns a stub dict with ``status``, ``data``,
-    and ``columns`` keys — verifying the route is wired and the command
-    response passes through the controller unchanged.
+    Without a provisioned database the command's ``session.get(Database, ...)``
+    yields no row and it raises ``ObjectNotFoundError`` -> 404. This verifies
+    the route + command are wired end-to-end and that the not-found contract
+    surfaces correctly. (Driving the full execute path to a 200 result would
+    require a real DB row + engine spec, which the mock app cannot provide.)
     """
+    # The command loads the Database via ``self._dao.session.get(Database, id)``;
+    # make that resolve to None so it raises ObjectNotFoundError -> 404.
+    query_dao = make_mock_dao()
+    query_dao._session.get = AsyncMock(return_value=None)
+    app = create_test_app(
+        SqlLabController,
+        dependency_overrides={
+            "dao": Provide(lambda: query_dao, sync_to_thread=False),
+        },
+    )
     async with AsyncTestClient(app=app) as client:
         resp = await client.post(
             "/api/v1/sqllab/execute/",
@@ -81,10 +107,7 @@ async def test_execute_sql_returns_result(app):
                 "runAsync": False,
             },
         )
-        # POST returns 201 by default in Litestar
-        assert resp.status_code == 201
-        data = resp.json()
-        assert "status" in data
+        assert resp.status_code == 404
 
 
 async def test_get_sqllab_results_route_exists(app):
