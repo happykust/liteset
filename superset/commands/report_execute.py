@@ -1034,8 +1034,17 @@ class ReportNotTriggeredErrorState(BaseReportState):
             self.update_report_schedule_and_log(ReportState.SUCCESS)
         except (SupersetErrorsException, Exception) as first_ex:
             error_message = str(first_ex)
-            if isinstance(first_ex, SupersetErrorsException):
-                error_message = ";".join([str(error) for error in first_ex.errors])
+            # Join the structured per-error messages when present; the
+            # ``errors`` payload may be ``SupersetError`` objects OR dicts.
+            # Fall back to ``str(first_ex)`` when the list is empty so the
+            # ERROR log row never gets a BLANK error_message (the message
+            # string carries the joined reasons even when ``errors`` is unset).
+            if isinstance(first_ex, SupersetErrorsException) and first_ex.errors:
+                error_message = ";".join(
+                    e.get("message", str(e)) if isinstance(e, dict)
+                    else str(getattr(e, "message", e))
+                    for e in first_ex.errors
+                )
 
             try:
                 self.update_report_schedule_and_log(

@@ -44,6 +44,7 @@ from superset.reports.notifications.base import (
 )
 from superset.reports.notifications.exceptions import NotificationError
 from superset.utils import json
+from superset.utils.decorators import statsd_gauge
 from superset.utils.feature_flags import feature_flag_manager
 
 logger = logging.getLogger(__name__)
@@ -399,6 +400,7 @@ class EmailNotification(BaseNotification):
         # To accommodate backward compatibility
         return json.loads(self._recipient.recipient_config_json).get("bccTarget", "")
 
+    @statsd_gauge("reports.email.send")
     def send(self) -> None:
         subject = self._get_subject()
         content = self._get_content()

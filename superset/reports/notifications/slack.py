@@ -51,6 +51,7 @@ from superset.reports.notifications.exceptions import (
 )
 from superset.reports.notifications.slack_mixin import SlackMixin
 from superset.utils import json
+from superset.utils.decorators import statsd_gauge
 from superset.utils.feature_flags import feature_flag_manager
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,7 @@ class SlackNotification(SlackMixin, BaseNotification):
             return ("pdf", [self._content.pdf])
         return (None, [])
 
+    @statsd_gauge("reports.slack.send")
     @backoff.on_exception(backoff.expo, SlackApiError, factor=10, base=2, max_tries=5)
     def send(self) -> None:
         file_type, files = self._get_inline_files()
@@ -252,6 +254,7 @@ class SlackV2Notification(SlackMixin, BaseNotification):
             return ("pdf", [self._content.pdf])
         return (None, [])
 
+    @statsd_gauge("reports.slack.send")
     @backoff.on_exception(backoff.expo, SlackApiError, factor=10, base=2, max_tries=5)
     def send(self) -> None:
         try:
