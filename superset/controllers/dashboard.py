@@ -1676,6 +1676,8 @@ class DashboardController(Controller):
         self,
         request: Request,  # type: ignore[type-arg]
         dao: DashboardDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, str]:
         # Read the multipart body manually (see parse_import_request): the
         # ``data: UploadFile = Body(MULTI_PART)`` injection 500'd when no file
@@ -1707,6 +1709,14 @@ class DashboardController(Controller):
                 ssh_tunnel_passwords=ssh_dict,
                 ssh_tunnel_private_keys=ssh_private_keys_dict,
                 ssh_tunnel_private_key_passwords=ssh_private_key_passwords_dict,
+                # Thread the importing user into the v1 command so imported
+                # dashboards get an owner (``get_user()`` upstream) and the
+                # overwrite-access check runs — 1:1 with upstream's
+                # ``v1/utils.py`` which resolves ``user`` internally. Without
+                # this, imports were ownerless and overwrite bypassed access.
+                # (v0 ignores extra kwargs.)
+                security_manager=security_manager,
+                current_user=current_user,
             )
             await dispatcher.run_async(dao=cast("AsyncDashboardDAO", dao))
         else:

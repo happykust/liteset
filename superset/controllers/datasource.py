@@ -239,10 +239,25 @@ class DatasourceController(Controller):
         # provide ``SqlaTable.async_values_for_column`` which runs
         # against the existing asyncpg connection pool.
         if hasattr(datasource, "async_values_for_column"):
+            # Row limit = ``apply_max_row_limit(FILTER_SELECT_ROW_LIMIT)`` 1:1
+            # with upstream (``min(SQL_MAX_ROW, FILTER_SELECT_ROW_LIMIT)``); the
+            # port previously hardcoded 1000, under-fetching distinct values for
+            # filter dropdowns. (NB ``denormalize_column`` for normalized-column
+            # datasets is still a gap — the async model method lacks the param.)
+            _row_limit = 10000
+            try:
+                from superset import config as _config
+
+                _settings = _config.SupersetSettings()
+                _fsrl = int(getattr(_settings, "filter_select_row_limit", 10000))
+                _smr = int(getattr(_settings, "sql_max_row", 100000))
+                _row_limit = min(_smr, _fsrl) if _fsrl else _smr
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 payload = await datasource.async_values_for_column(
                     column_name=column_name,
-                    limit=1000,
+                    limit=_row_limit,
                     rls_filters=rls_clauses or None,
                 )
                 await event_logger.alog_with_context(
