@@ -169,28 +169,59 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         self,
         objects_to_tag: list[tuple[str, int]],
         tag: Tag,
+        bulk_create: bool = False,
     ) -> None:
-        """Create TaggedObject entries linking objects to a tag.
+        """Reconcile TaggedObject entries linking objects to a tag.
 
-        ``obj_type`` may arrive as either an :class:`ObjectType` enum or
-        an already-stringified name; coerce to string here so we never
-        pass an enum instance to asyncpg (which would raise DataError).
+        1:1 with ``superset_old/daos/tag.py::create_tag_relationship``: adds
+        rows for objects not yet tagged and — unless ``bulk_create`` — DELETES
+        rows for objects no longer in ``objects_to_tag`` (the diff against the
+        current set). This is what makes tag EDIT (PUT) actually reconcile the
+        tagged-object set instead of being a no-op.
+
+        ``obj_type`` may arrive as either an :class:`ObjectType` enum or an
+        already-stringified name; coerce to string so we never pass an enum to
+        asyncpg (which would raise DataError).
         """
+        from sqlalchemy import delete as _sa_delete, select as _sa_select
+
         from superset.models.tags import ObjectType
 
         tag_id: int = tag.id  # type: ignore[assignment]
-        for obj_type, obj_id in objects_to_tag:
-            obj_type_str = (
-                obj_type.name if isinstance(obj_type, ObjectType) else obj_type
+
+        def _norm(t: Any) -> str:
+            return t.name if isinstance(t, ObjectType) else str(t)
+
+        # Current (type, id) pairs already tagged.
+        rows = await self.session.execute(
+            _sa_select(TaggedObject.object_type, TaggedObject.object_id).where(
+                TaggedObject.tag_id == tag_id
             )
-            existing = await self._find_tagged_object(obj_type_str, obj_id, tag_id)
-            if not existing:
-                tagged = TaggedObject(
-                    tag_id=tag_id,
-                    object_id=obj_id,
-                    object_type=obj_type_str,
+        )
+        current: set[tuple[str, int]] = {(r[0], r[1]) for r in rows}
+        updated: set[tuple[str, int]] = {
+            (_norm(t), int(i)) for t, i in objects_to_tag
+        }
+
+        # Add new associations.
+        for obj_type, obj_id in updated - current:
+            self.session.add(
+                TaggedObject(tag_id=tag_id, object_id=obj_id, object_type=obj_type)
+            )
+
+        # Delete removed associations (single create/update path only) — when
+        # ``objects_to_tag`` is empty this removes ALL current ones, matching
+        # upstream's ``current if not objects_to_tag else current - updated``.
+        if not bulk_create:
+            to_delete = current if not objects_to_tag else current - updated
+            for obj_type, obj_id in to_delete:
+                await self.session.execute(
+                    _sa_delete(TaggedObject).where(
+                        TaggedObject.tag_id == tag_id,
+                        TaggedObject.object_type == obj_type,
+                        TaggedObject.object_id == obj_id,
+                    )
                 )
-                self.session.add(tagged)
 
     async def get_tagged_objects_by_tag_ids(  # noqa: C901
         self,

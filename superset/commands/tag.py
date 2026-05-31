@@ -149,7 +149,23 @@ class UpdateTagCommand(AsyncBaseCommand[Any]):
             raise ObjectNotFoundError("Tag", self._pk)
 
     async def run(self) -> Any:
-        return await self._dao.update(self._item, self._data)
+        # ``objects_to_tag`` is NOT a column/relationship on ``Tag`` — passing
+        # it to ``dao.update`` set a bogus Python attr (silent no-op), so tag
+        # EDITs never reconciled their tagged objects. Strip it and reconcile
+        # via ``create_tag_relationship`` (add new + delete removed), 1:1 with
+        # upstream ``UpdateTagCommand.run``.
+        objects_to_tag = self._data.get("objects_to_tag")
+        scalar_data = {k: v for k, v in self._data.items() if k != "objects_to_tag"}
+        item = await self._dao.update(self._item, scalar_data)
+        if objects_to_tag is not None:
+            pairs = [
+                (str(o[0]), int(o[1]))
+                for o in objects_to_tag
+                if isinstance(o, (list, tuple)) and len(o) == 2
+            ]
+            await self._dao.create_tag_relationship(pairs, item, bulk_create=False)
+            await self._dao.session.flush()
+        return item
 
 
 class DeleteTagCommand(AsyncBaseCommand[None]):
