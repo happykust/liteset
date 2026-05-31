@@ -25,7 +25,7 @@ from litestar import Controller, Response, get
 from litestar.connection import Request
 from litestar.di import Provide
 
-from superset.exceptions import SupersetSecurityException
+from superset.exceptions import ObjectNotFoundError, SupersetSecurityException
 from superset.guards.rbac import require_permission
 from superset.providers import provide_chart_dao, provide_dataset_dao, provide_kv_dao
 from superset.typing import (
@@ -173,6 +173,12 @@ class ExploreController(Controller):
                         form_data = json.loads(fd) if isinstance(fd, str) else fd
                 except (json.JSONDecodeError, TypeError):
                     pass
+            else:
+                # Permalink key not found / expired → 404, 1:1 with upstream
+                # ``GetExploreCommand`` raising ``ExplorePermalinkGetFailedError``
+                # (status 404) when the permalink resolves to nothing. The port
+                # previously fell through to a 200 "[Missing Dataset]" state.
+                raise ObjectNotFoundError("ExplorePermalink", permalink_key)
 
         # 1b. Load form_data from temporary cache key (overrides permalink)
         if form_data_key:
