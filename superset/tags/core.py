@@ -293,13 +293,24 @@ async def add_favorited_by_tag(
     :param user_id: The user who favorited the object.
     """
     tag = await get_tag(f"favorited_by:{user_id}", session, TagType.favorited_by)
-    tagged_object = TaggedObject(
-        tag_id=tag.id,
-        object_id=object_id,
-        object_type=object_type,
-    )
-    session.add(tagged_object)
-    await session.flush()
+    # Upstream's FavStarUpdater.after_insert runs on an isolated
+    # ``Session(bind=connection)`` + immediate commit, so a UNIQUE
+    # violation never reaches the request session. This port shares the
+    # request session, so wrap the INSERT in a SAVEPOINT (same reason as
+    # ``_add_tag_object_if_not_tagged``) to keep a concurrent-favorite
+    # IntegrityError from poisoning the outer transaction.
+    try:
+        async with session.begin_nested():
+            tagged_object = TaggedObject(
+                tag_id=tag.id,
+                object_id=object_id,
+                object_type=object_type,
+            )
+            session.add(tagged_object)
+            await session.flush()
+    except IntegrityError:
+        # Concurrent worker already wrote the same favorited_by tag link.
+        pass
 
 
 async def remove_favorited_by_tag(

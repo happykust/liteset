@@ -703,6 +703,13 @@ class LegacyDatasourceController(Controller):
                         orm_datasource, current_user.id
                     )
                 except SupersetSecurityException:
+                    # ``orm_datasource.database_id`` was already reassigned
+                    # above; roll it back so the denied save persists nothing.
+                    # Upstream only ``db.session.commit()``s on the success
+                    # path — early error returns discard the dirty change at
+                    # Flask teardown. The liteset request wrapper instead
+                    # COMMITS a returned Response, so we must roll back here.
+                    await ds_dao.session.rollback()  # type: ignore[attr-defined]
                     return Response(
                         content={"message": "Datasource access is restricted."},
                         status_code=403,
@@ -729,6 +736,8 @@ class LegacyDatasourceController(Controller):
             if count > 1
         ]
         if duplicates:
+            # Discard the early ``database_id`` reassignment (see 403 note).
+            await ds_dao.session.rollback()  # type: ignore[attr-defined]
             return Response(
                 content={
                     "message": f"Duplicate column name(s): {','.join(duplicates)}"
@@ -743,6 +752,9 @@ class LegacyDatasourceController(Controller):
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to update datasource from object")
+            # ``_update_from_object`` may have partially mutated the ORM
+            # instance before raising; discard it (see 403 note).
+            await ds_dao.session.rollback()  # type: ignore[attr-defined]
             return Response(
                 content={"message": f"Update failed: {exc}"},
                 status_code=500,

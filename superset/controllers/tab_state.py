@@ -107,6 +107,13 @@ class TabStateController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
+            # Roll back the partial mutation before returning. The request
+            # wrapper COMMITS on a returned Response, so without this a
+            # multi-step handler (e.g. delete tab-state then table-schemas,
+            # or delete-matching then create-schema) would persist its first
+            # step when the second fails. 1:1 with upstream's
+            # ``db.session.rollback()`` in every ``except``.
+            await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -145,6 +152,13 @@ class TabStateController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
+            # Roll back the partial mutation before returning. The request
+            # wrapper COMMITS on a returned Response, so without this a
+            # multi-step handler (e.g. delete tab-state then table-schemas,
+            # or delete-matching then create-schema) would persist its first
+            # step when the second fails. 1:1 with upstream's
+            # ``db.session.rollback()`` in every ``except``.
+            await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -217,6 +231,13 @@ class TabStateController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
+            # Roll back the partial mutation before returning. The request
+            # wrapper COMMITS on a returned Response, so without this a
+            # multi-step handler (e.g. delete tab-state then table-schemas,
+            # or delete-matching then create-schema) would persist its first
+            # step when the second fails. 1:1 with upstream's
+            # ``db.session.rollback()`` in every ``except``.
+            await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -256,6 +277,13 @@ class TabStateController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
+            # Roll back the partial mutation before returning. The request
+            # wrapper COMMITS on a returned Response, so without this a
+            # multi-step handler (e.g. delete tab-state then table-schemas,
+            # or delete-matching then create-schema) would persist its first
+            # step when the second fails. 1:1 with upstream's
+            # ``db.session.rollback()`` in every ``except``.
+            await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -295,6 +323,13 @@ class TabStateController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
+            # Roll back the partial mutation before returning. The request
+            # wrapper COMMITS on a returned Response, so without this a
+            # multi-step handler (e.g. delete tab-state then table-schemas,
+            # or delete-matching then create-schema) would persist its first
+            # step when the second fails. 1:1 with upstream's
+            # ``db.session.rollback()`` in every ``except``.
+            await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -347,6 +382,13 @@ class TabStateController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
+            # Roll back the partial mutation before returning. The request
+            # wrapper COMMITS on a returned Response, so without this a
+            # multi-step handler (e.g. delete tab-state then table-schemas,
+            # or delete-matching then create-schema) would persist its first
+            # step when the second fails. 1:1 with upstream's
+            # ``db.session.rollback()`` in every ``except``.
+            await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -424,6 +466,13 @@ class TableSchemaController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
+            # Roll back the partial mutation before returning. The request
+            # wrapper COMMITS on a returned Response, so without this a
+            # multi-step handler (e.g. delete tab-state then table-schemas,
+            # or delete-matching then create-schema) would persist its first
+            # step when the second fails. 1:1 with upstream's
+            # ``db.session.rollback()`` in every ``except``.
+            await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -444,6 +493,13 @@ class TableSchemaController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
+            # Roll back the partial mutation before returning. The request
+            # wrapper COMMITS on a returned Response, so without this a
+            # multi-step handler (e.g. delete tab-state then table-schemas,
+            # or delete-matching then create-schema) would persist its first
+            # step when the second fails. 1:1 with upstream's
+            # ``db.session.rollback()`` in every ``except``.
+            await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,
@@ -468,6 +524,13 @@ class TableSchemaController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
+            # Roll back the partial mutation before returning. The request
+            # wrapper COMMITS on a returned Response, so without this a
+            # multi-step handler (e.g. delete tab-state then table-schemas,
+            # or delete-matching then create-schema) would persist its first
+            # step when the second fails. 1:1 with upstream's
+            # ``db.session.rollback()`` in every ``except``.
+            await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": str(ex)}),
                 status_code=400,

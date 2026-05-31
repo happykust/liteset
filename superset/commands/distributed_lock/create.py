@@ -40,6 +40,15 @@ class CreateDistributedLock(BaseDistributedLockCommand):
     ``@transaction(on_error=...reraise=...)`` decorator on the original.
     Transaction commit is handled by ``provide_async_session`` at the
     request boundary; this method only flushes.
+
+    The INSERT is wrapped in a SAVEPOINT (``begin_nested``): when two
+    workers race for the same lock the loser hits a UNIQUE
+    ``IntegrityError``.  Without the savepoint that failed INSERT poisons
+    the shared request session (every later statement fails), which is
+    exactly the path the OAuth2 ``@backoff`` retry walks into.  Rolling
+    back only the savepoint keeps the outer request transaction intact —
+    the same pattern as ``tags/core.py::get_tag``.  This stands in for the
+    original's ``@transaction`` rollback.
     """
 
     lock_expiration = timedelta(seconds=30)
@@ -54,13 +63,14 @@ class CreateDistributedLock(BaseDistributedLockCommand):
                 raise CreateKeyValueDistributedLockFailedException(
                     "Lock encoding failed"
                 ) from ex
-            await dao.create_entry(
-                resource=KeyValueResource.LOCK,
-                value=value_bytes,
-                key=self.key,
-                expires_on=datetime.now() + self.lock_expiration,
-            )
-            await self.session.flush()
+            async with self.session.begin_nested():
+                await dao.create_entry(
+                    resource=KeyValueResource.LOCK,
+                    value=value_bytes,
+                    key=self.key,
+                    expires_on=datetime.now() + self.lock_expiration,
+                )
+                await self.session.flush()
         except CreateKeyValueDistributedLockFailedException:
             raise
         except SQLAlchemyError as ex:
