@@ -559,6 +559,7 @@ class DatasetController(Controller):
             data=update_data,
             user_id=current_user.id,
             security_manager=security_manager,
+            override_columns=override_columns,
         )
         dataset = await cmd.execute()
         if override_columns:

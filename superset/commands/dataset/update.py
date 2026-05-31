@@ -42,12 +42,14 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         data: dict[str, Any],
         user_id: int | None = None,
         security_manager: Any | None = None,
+        override_columns: bool = False,
     ) -> None:
         self._dao = dao
         self._dataset_id = dataset_id
         self._data = data
         self._user_id = user_id
         self._security_manager = security_manager
+        self._override_columns = override_columns
         self._dataset: Any | None = None
 
     async def validate(self) -> None:  # noqa: C901
@@ -58,7 +60,10 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             await self._security_manager.raise_for_ownership(
                 self._dataset, self._user_id
             )
-        # Validate duplicate column names
+        # Column semantics — 1:1 with upstream ``_validate_columns``: reject
+        # duplicate names, then verify submitted ``id``s belong to THIS dataset
+        # (no cross-dataset column-id injection) and — unless ``override_columns``
+        # — that new (id-less) column names don't collide with existing ones.
         columns = self._data.get("columns")
         if columns:
             col_names = [
@@ -71,8 +76,30 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 if name in seen:
                     raise CommandInvalidError(f"Duplicate column name: '{name}'")
                 seen.add(name)
+            column_ids = [
+                c["id"] for c in columns if isinstance(c, dict) and "id" in c
+            ]
+            if not await self._dao.validate_columns_exist(
+                self._dataset_id, column_ids
+            ):
+                raise CommandInvalidError(
+                    "One or more columns do not exist on this dataset"
+                )
+            if not self._override_columns:
+                new_col_names = [
+                    c["column_name"]
+                    for c in columns
+                    if isinstance(c, dict) and "id" not in c and c.get("column_name")
+                ]
+                if not await self._dao.validate_columns_uniqueness(
+                    self._dataset_id, new_col_names
+                ):
+                    raise CommandInvalidError(
+                        "One or more column names already exist on this dataset"
+                    )
 
-        # Validate duplicate metric names
+        # Metric semantics — 1:1 with upstream ``_validate_metrics`` (no
+        # ``override`` flag for metrics).
         metrics = self._data.get("metrics")
         if metrics:
             metric_names = [
@@ -85,6 +112,26 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 if name in seen_metrics:
                     raise CommandInvalidError(f"Duplicate metric name: '{name}'")
                 seen_metrics.add(name)
+            metric_ids = [
+                m["id"] for m in metrics if isinstance(m, dict) and "id" in m
+            ]
+            if not await self._dao.validate_metrics_exist(
+                self._dataset_id, metric_ids
+            ):
+                raise CommandInvalidError(
+                    "One or more metrics do not exist on this dataset"
+                )
+            new_metric_names = [
+                m["metric_name"]
+                for m in metrics
+                if isinstance(m, dict) and "id" not in m and m.get("metric_name")
+            ]
+            if not await self._dao.validate_metrics_uniqueness(
+                self._dataset_id, new_metric_names
+            ):
+                raise CommandInvalidError(
+                    "One or more metric names already exist on this dataset"
+                )
 
         table_name = self._data.get("table_name")
         if table_name:
