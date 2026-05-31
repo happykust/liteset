@@ -1517,7 +1517,7 @@ class AsyncQueryContextProcessor:
         outer_to_dttm = query_object.to_dttm
 
         if not outer_from_dttm or not outer_to_dttm:
-            from superset.utils.date import get_since_until
+            from superset.utils.date import get_since_until_from_time_range
 
             resolved_time_range: str | None = query_object.time_range
             if not resolved_time_range:
@@ -1530,9 +1530,14 @@ class AsyncQueryContextProcessor:
                         resolved_time_range = flt["val"]
                         break
 
-            since, until = get_since_until(
-                time_range=resolved_time_range,
-                time_shift=query_object.time_shift,
+            # 1:1 with upstream ``get_since_until_from_query_object`` — pass
+            # ``extras`` so config relative-time anchors + per-request overrides
+            # are honored when resolving the offset outer bounds (bare
+            # ``get_since_until`` hardcoded ``today`` → wrong shifted window).
+            since, until = get_since_until_from_time_range(
+                resolved_time_range,
+                query_object.time_shift,
+                query_object.extras,
             )
             outer_from_dttm = outer_from_dttm or since
             outer_to_dttm = outer_to_dttm or until
