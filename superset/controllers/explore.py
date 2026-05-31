@@ -390,6 +390,27 @@ class ExploreController(Controller):
                                 content={"message": getattr(ex, "message", str(ex))},
                                 status_code=403,
                             )
+                    # WrongEndpointError 302 — 1:1 with upstream
+                    # ``commands/explore/get.py``: when there is no ``viz_type``
+                    # and the datasource defines a ``default_endpoint``, return a
+                    # 302 ``{"redirect": ...}`` (the frontend follows it) instead
+                    # of rendering an explore state. ``return`` (not raise) —
+                    # inside the broad ``except``. NB upstream's merged form_data
+                    # always carries a slice's viz_type, so this only fires for a
+                    # datasource-only explore (no ``slice_id``) — guard on it
+                    # since the port doesn't merge the slice's viz_type into the
+                    # local ``form_data`` dict.
+                    _viz_type = (
+                        form_data.get("viz_type")
+                        if isinstance(form_data, dict)
+                        else None
+                    )
+                    _default_endpoint = getattr(dataset, "default_endpoint", None)
+                    if not _viz_type and not slice_id_raw and _default_endpoint:
+                        return Response(
+                            content={"redirect": _default_endpoint},
+                            status_code=302,
+                        )
                     # Build dataset_data matching original datasource.data structure
                     db_obj = getattr(dataset, "database", None)
                     dataset_data = {
