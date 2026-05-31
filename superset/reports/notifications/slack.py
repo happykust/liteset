@@ -159,8 +159,8 @@ class SlackNotification(SlackMixin, BaseNotification):
             return ("pdf", [self._content.pdf])
         return (None, [])
 
-    @statsd_gauge("reports.slack.send")
     @backoff.on_exception(backoff.expo, SlackApiError, factor=10, base=2, max_tries=5)
+    @statsd_gauge("reports.slack.send")
     def send(self) -> None:
         file_type, files = self._get_inline_files()
         title = self._content.name
@@ -254,8 +254,8 @@ class SlackV2Notification(SlackMixin, BaseNotification):
             return ("pdf", [self._content.pdf])
         return (None, [])
 
-    @statsd_gauge("reports.slack.send")
     @backoff.on_exception(backoff.expo, SlackApiError, factor=10, base=2, max_tries=5)
+    @statsd_gauge("reports.slack.send")
     def send(self) -> None:
         try:
             client = _get_slack_client(self._config)

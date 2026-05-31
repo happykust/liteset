@@ -173,7 +173,11 @@ class ExplorePermalinkController(Controller):
         await event_logger.alog_with_context(
             "explore_permalink.create", user_id=current_user.id
         )
-        return {"key": key, "url": f"/explore/p/{key}/"}
+        # 1:1 with upstream ``url_for("ExplorePermalinkView.permalink", ...)``
+        # whose ``route_base="/superset"`` yields ``/superset/explore/p/<key>/``
+        # (matches the frontend SPA route). The port previously dropped the
+        # ``/superset`` prefix → "Copy permalink" produced a non-routing URL.
+        return {"key": key, "url": f"/superset/explore/p/{key}/"}
 
     @get(
         "/{key:str}",

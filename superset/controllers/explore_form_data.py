@@ -387,4 +387,5 @@ class ExploreFormDataController(Controller):
             "explore_form_data.delete",
             user_id=current_user.id,
         )
-        return {"message": "OK"}
+        # 1:1 with upstream ``response(200, message="Deleted successfully")``.
+        return {"message": "Deleted successfully"}

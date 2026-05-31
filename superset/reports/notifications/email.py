@@ -366,11 +366,11 @@ class EmailNotification(BaseNotification):
         )
         csv_data = None
         if self._content.csv:
-            csv_data = {f"{self._name}.csv": self._content.csv}
+            csv_data = {__("%(name)s.csv", name=self._name): self._content.csv}
 
         pdf_data = None
         if self._content.pdf:
-            pdf_data = {f"{self._name}.pdf": self._content.pdf}
+            pdf_data = {__("%(name)s.pdf", name=self._name): self._content.pdf}
 
         return EmailContent(
             body=body,

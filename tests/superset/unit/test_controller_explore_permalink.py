@@ -132,7 +132,7 @@ async def test_create_permalink(mock_kv_dao, mock_user):
             session=session,
         )
     assert result["key"] == "abc123"
-    assert result["url"].startswith("/explore/p/")
+    assert result["url"].startswith("/superset/explore/p/")
     fake_dao.create_entry.assert_awaited_once()
 
 
