@@ -235,7 +235,10 @@ class TagController(Controller):
         return {"message": f"Deleted {count} tags"}
 
     @post(
-        "/bulk_create/",
+        # No trailing slash — 1:1 with upstream ``@expose("/bulk_create")``
+        # and the frontend POST to ``/api/v1/tag/bulk_create``; a trailing
+        # slash here would force a 307 redirect round-trip.
+        "/bulk_create",
         guards=[require_permission("can_write", "Tag")],
         status_code=201,
     )

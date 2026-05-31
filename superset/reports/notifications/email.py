@@ -36,6 +36,7 @@ import nh3
 from pytz import timezone
 
 from superset.exceptions import SupersetErrorsException
+from superset.i18n import gettext as __
 from superset.models.reports import ReportRecipientType
 from superset.reports.notifications.base import (
     BaseNotification,
@@ -280,11 +281,15 @@ class EmailNotification(BaseNotification):
 
     def _error_template(self, text: str) -> str:
         call_to_action = self._get_call_to_action()
-        return (
-            f"<p>Your report/alert was unable to be generated because of the "
-            f"following error: {text}</p>"
-            f"<p>Please check your dashboard/chart for errors.</p>"
-            f'<p><b><a href="{self._content.url}">{call_to_action}</a></b></p>'
+        return __(
+            """
+            <p>Your report/alert was unable to be generated because of the following error: %(text)s</p>
+            <p>Please check your dashboard/chart for errors.</p>
+            <p><b><a href="%(url)s">%(call_to_action)s</a></b></p>
+            """,  # noqa: E501
+            text=text,
+            url=self._content.url,
+            call_to_action=call_to_action,
         )
 
     def _get_content(self) -> EmailContent:
@@ -376,8 +381,11 @@ class EmailNotification(BaseNotification):
         )
 
     def _get_subject(self) -> str:
-        prefix = self._config.get("EMAIL_REPORTS_SUBJECT_PREFIX", "[Report] ")
-        return f"{prefix}{self._name}"
+        return __(
+            "%(prefix)s %(title)s",
+            prefix=self._config.get("EMAIL_REPORTS_SUBJECT_PREFIX", "[Report] "),
+            title=self._name,
+        )
 
     def _parse_name(self, name: str) -> str:
         """If user add a date format to the subject, parse it to the real date
@@ -387,7 +395,7 @@ class EmailNotification(BaseNotification):
         return self.now.strftime(name)
 
     def _get_call_to_action(self) -> str:
-        return self._config.get("EMAIL_REPORTS_CTA", "Explore in Superset")
+        return __(self._config.get("EMAIL_REPORTS_CTA", "Explore in Superset"))
 
     def _get_to(self) -> str:
         return json.loads(self._recipient.recipient_config_json)["target"]

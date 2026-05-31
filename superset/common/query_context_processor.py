@@ -1108,12 +1108,34 @@ class AsyncQueryContextProcessor:
             base_labels.append(query_object.granularity)
         for label in base_labels:
             if label in df.columns and label not in seen_labels:
+                col_obj = (
+                    self._datasource.get_column(label)
+                    if hasattr(self._datasource, "get_column")
+                    else None
+                )
+                # 1:1 with upstream ``normalize_df`` (329-341): only normalize a
+                # base-axis label when its datasource column is temporal
+                # (``is_dttm``). Without this guard a categorical/numeric x-axis
+                # that happens to be in ``df.columns`` is fed to
+                # ``pd.to_datetime(errors="coerce")`` and corrupted to NaT.
+                if not col_obj:
+                    continue
+                is_dttm = (
+                    col_obj.get("is_dttm")
+                    if isinstance(col_obj, dict)
+                    else getattr(col_obj, "is_dttm", False)
+                )
+                if not is_dttm:
+                    continue
                 seen_labels.add(label)
-                timestamp_format: str | None = None
-                if hasattr(self._datasource, "get_column"):
-                    col_obj = self._datasource.get_column(label)
-                    if col_obj:
-                        timestamp_format = getattr(col_obj, "python_date_format", None)
+                # Upstream's ``_get_timestamp_format`` only reads
+                # ``python_date_format`` off a sqla column object (dict specs
+                # have no such attribute → None).
+                timestamp_format: str | None = (
+                    None
+                    if isinstance(col_obj, dict)
+                    else getattr(col_obj, "python_date_format", None)
+                )
                 date_columns.append(
                     DateColumn(
                         col_label=label,

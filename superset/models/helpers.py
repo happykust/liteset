@@ -98,6 +98,26 @@ def LongText() -> sa_types.Text:  # noqa: N802
     return Text().with_variant(LONGTEXT(), "mysql")
 
 
+def convert_uuids(obj: Any) -> Any:
+    """
+    Convert UUID objects to str so we can use yaml.safe_dump
+
+    1:1 with ``superset_old/models/helpers.py::convert_uuids`` — recurses into
+    lists and dicts so a UUID nested inside a JSON-typed column value (e.g.
+    ``params``) is also stringified, not just top-level UUID columns.
+    """
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+
+    if isinstance(obj, list):
+        return [convert_uuids(el) for el in obj]
+
+    if isinstance(obj, dict):
+        return {k: convert_uuids(v) for k, v in obj.items()}
+
+    return obj
+
+
 class BinaryUUID(sa_types.TypeDecorator[uuid.UUID]):
     """UUID stored as 16 bytes (bytea on PostgreSQL, BINARY(16) on MySQL).
 
@@ -381,11 +401,10 @@ class ImportExportMixin(UUIDMixin):
                     key=lambda k: sorted(str(k.items())),
                 )
 
-        # Convert UUID columns to plain strings so yaml/json serialise cleanly.
-        for k, v in list(dict_rep.items()):
-            if isinstance(v, uuid.UUID):
-                dict_rep[k] = str(v)
-        return dict_rep
+        # Convert UUID values (incl. those nested in JSON-typed columns) to
+        # plain strings so yaml/json serialise cleanly — 1:1 with upstream's
+        # ``return convert_uuids(dict_rep)``.
+        return convert_uuids(dict_rep)
 
 
 class ExtraJSONMixin:

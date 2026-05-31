@@ -125,7 +125,11 @@ class TaggedObject(Base, AuditMixinNullable):
     object_id = Column(Integer)
     # See note on ``Tag.type`` above — ``native_enum=False`` keeps the column
     # VARCHAR in the database (Apache Superset 6.0 post-``07f9a902af1b``).
-    object_type = Column(Enum(ObjectType, native_enum=False), nullable=False)
+    # nullable (default) — matches both the init migration
+    # (``object_type String(20) nullable=True``) and upstream
+    # ``Column(Enum(ObjectType))``; the port model previously over-declared
+    # ``nullable=False``, diverging from the actual DB.
+    object_type = Column(Enum(ObjectType, native_enum=False))
 
     # -- relationships --------------------------------------------------------
 

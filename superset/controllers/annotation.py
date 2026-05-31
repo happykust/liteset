@@ -47,6 +47,48 @@ from superset.schemas.annotation import AnnotationPostSchema, AnnotationPutSchem
 from superset.utils import filter_unset
 
 
+def _serialize_annotation_list_item(item: Any) -> dict[str, Any]:
+    """Serialize an annotation for the list endpoint.
+
+    Mirrors the FAB payload built from
+    ``superset_old/annotation_layers/annotations/api.py::list_columns``:
+    id, changed_by.{first_name,id}, changed_on_delta_humanized,
+    created_by.{first_name,id}, end_dttm, long_descr, short_descr, start_dttm.
+    """
+    changed_by = getattr(item, "changed_by", None)
+    created_by = getattr(item, "created_by", None)
+    return {
+        "id": item.id,
+        "changed_by": (
+            {
+                "first_name": getattr(changed_by, "first_name", ""),
+                "id": changed_by.id,
+            }
+            if changed_by is not None
+            else None
+        ),
+        "changed_on_delta_humanized": (
+            getattr(item, "changed_on_delta_humanized", None) or ""
+        ),
+        "created_by": (
+            {
+                "first_name": getattr(created_by, "first_name", ""),
+                "id": created_by.id,
+            }
+            if created_by is not None
+            else None
+        ),
+        "end_dttm": (
+            item.end_dttm.isoformat() if getattr(item, "end_dttm", None) else None
+        ),
+        "long_descr": getattr(item, "long_descr", "") or "",
+        "short_descr": getattr(item, "short_descr", ""),
+        "start_dttm": (
+            item.start_dttm.isoformat() if getattr(item, "start_dttm", None) else None
+        ),
+    }
+
+
 class AnnotationController(Controller):
     path = "/api/v1/annotation_layer/{pk:int}/annotation"
     tags = ["Annotations"]
@@ -76,34 +118,33 @@ class AnnotationController(Controller):
         if not layer:
             raise ObjectNotFoundError("AnnotationLayer", pk)
 
+        from sqlalchemy.orm import selectinload
+
         from superset.models.annotations import Annotation
 
         page, page_size = extract_pagination(rison_params)
         layer_filter = [Annotation.layer_id == pk]
+        # Eager-load the audit-user relationships so the async serializer can
+        # read changed_by/created_by without a lazy-load MissingGreenlet.
         items = await ann_dao.find_all(
-            filters=layer_filter, page=page, page_size=page_size
+            filters=layer_filter,
+            page=page,
+            page_size=page_size,
+            options=[
+                selectinload(Annotation.changed_by),
+                selectinload(Annotation.created_by),
+            ],
         )
         total = await ann_dao.count(filters=layer_filter)
         await event_logger.alog_with_context("annotation.list", extra={"layer_id": pk})
         return {
+            # Mirror upstream ``AnnotationRestApi.list_columns``
+            # (superset_old/annotation_layers/annotations/api.py:78-89):
+            # id, changed_by.{first_name,id}, changed_on_delta_humanized,
+            # created_by.{first_name,id}, end_dttm, long_descr, short_descr,
+            # start_dttm.
             "result": [
-                {
-                    "id": item.id,
-                    "short_descr": getattr(item, "short_descr", ""),
-                    "long_descr": getattr(item, "long_descr", "") or "",
-                    "start_dttm": (
-                        item.start_dttm.isoformat()
-                        if getattr(item, "start_dttm", None)
-                        else None
-                    ),
-                    "end_dttm": (
-                        item.end_dttm.isoformat()
-                        if getattr(item, "end_dttm", None)
-                        else None
-                    ),
-                    "layer_id": getattr(item, "layer_id", None),
-                }
-                for item in (items or [])
+                _serialize_annotation_list_item(item) for item in (items or [])
             ],
             "count": total,
         }

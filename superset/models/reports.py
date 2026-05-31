@@ -31,6 +31,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Table,
@@ -121,12 +122,15 @@ report_schedule_user = Table(
         "user_id",
         Integer,
         ForeignKey("ab_user.id", ondelete="CASCADE"),
+        nullable=False,
     ),
     Column(
         "report_schedule_id",
         Integer,
         ForeignKey("report_schedule.id", ondelete="CASCADE"),
+        nullable=False,
     ),
+    UniqueConstraint("user_id", "report_schedule_id"),
 )
 
 
@@ -216,10 +220,13 @@ class ReportRecipients(Base, AuditMixinNullable):
     """A recipient of a report schedule."""
 
     __tablename__ = "report_recipient"
+    __table_args__ = (
+        Index("ix_report_recipient_report_schedule_id", "report_schedule_id"),
+    )
 
     id = Column(Integer, primary_key=True)
-    type = Column(String(50))
-    recipient_config_json = Column(MediumText())
+    type = Column(String(50), nullable=False)
+    recipient_config_json = Column(MediumText(), default="{}")
     report_schedule_id = Column(
         Integer,
         ForeignKey("report_schedule.id"),
@@ -231,15 +238,19 @@ class ReportExecutionLog(Base):
     """Execution log entry for a report schedule."""
 
     __tablename__ = "report_execution_log"
+    __table_args__ = (
+        Index("ix_report_execution_log_report_schedule_id", "report_schedule_id"),
+        Index("ix_report_execution_log_start_dttm", "start_dttm"),
+    )
 
     id = Column(Integer, primary_key=True)
     uuid: Any = Column(BinaryUUID(), default=uuid_mod.uuid4)
-    scheduled_dttm = Column(DateTime)
+    scheduled_dttm = Column(DateTime, nullable=False)
     start_dttm = Column(DateTime)
     end_dttm = Column(DateTime)
     value = Column(Float)
     value_row_json = Column(MediumText())
-    state = Column(String(50))
+    state = Column(String(50), nullable=False)
     error_message = Column(Text)
     report_schedule_id = Column(
         Integer,

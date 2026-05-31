@@ -349,7 +349,7 @@ class TableSchema(AuditMixinNullable, ExtraJSONMixin, Base):
     database_id = Column(
         Integer,
         ForeignKey("dbs.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
     )
     schema = Column(String(256))
     catalog = Column(String(256), nullable=True, default=None)
