@@ -269,6 +269,9 @@ class ColumnRef(ModelStruct):
     extra: str | None = None
     changed_on: str | None = None
     created_on: str | None = None
+    # Populated only on GET with ?include_rendered_sql=true (Jinja-rendered
+    # ``expression``) — 1:1 with upstream ``render_dataset_fields``.
+    rendered_expression: str | None = None
 
 
 class MetricRef(ModelStruct):
@@ -287,6 +290,9 @@ class MetricRef(ModelStruct):
     uuid: str | None = None
     changed_on: str | None = None
     created_on: str | None = None
+    # Populated only on GET with ?include_rendered_sql=true (Jinja-rendered
+    # ``expression``) — 1:1 with upstream ``render_dataset_fields``.
+    rendered_expression: str | None = None
 
 
 class DatabaseRef(ModelStruct):

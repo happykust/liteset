@@ -386,24 +386,42 @@ class DatasetController(Controller):
             raise ObjectNotFoundError("Dataset", id_or_uuid)
         dataset = results[0]
 
-        raw_sql = getattr(dataset, "sql", None)
-        rendered_sql: str | None = None
-        if include_rendered_sql and raw_sql:
-            # Attempt Jinja rendering of the SQL template.  Falls back
-            # to the raw SQL string when the template engine is not
-            # available or rendering fails.
+        detail = DatasetDetailResult.from_model(dataset)
+        if include_rendered_sql:
+            # Render Jinja in ``sql`` AND each metric/column ``expression`` →
+            # ``rendered_sql``/``rendered_expression`` — 1:1 with upstream
+            # ``render_dataset_fields``. A template error must PROPAGATE as a
+            # 422 ``SupersetTemplateException`` (the port previously rendered
+            # only the top-level sql and silently swallowed errors → returned
+            # raw SQL, masking broken templates and never rendering metric/
+            # column expressions).
+            from jinja2 import TemplateError
+
+            from superset.exceptions import (
+                SupersetTemplateException,
+                SupersetTemplateParamsErrorException,
+            )
+            from superset.jinja_context import get_template_processor
+
+            tp = get_template_processor(database=dataset.database, table=dataset)
             try:
-                from superset.jinja_context import get_template_processor
-
-                tp = get_template_processor(database=dataset.database, table=dataset)
-                rendered_sql = tp.process_template(raw_sql)
-            except Exception:  # noqa: BLE001
-                rendered_sql = raw_sql
-
-        detail = DatasetDetailResult.from_model(
-            dataset,
-            rendered_sql=rendered_sql if include_rendered_sql else None,
-        )
+                raw_sql = getattr(dataset, "sql", None)
+                if raw_sql:
+                    detail.rendered_sql = tp.process_template(raw_sql)
+                for m in detail.metrics:
+                    if m.expression:
+                        m.rendered_expression = tp.process_template(m.expression)
+                for c in detail.columns:
+                    if c.expression:
+                        c.rendered_expression = tp.process_template(c.expression)
+            except (
+                TemplateError,
+                SupersetTemplateException,
+                SupersetTemplateParamsErrorException,
+            ) as ex:
+                raise SupersetTemplateException(
+                    "Unable to render expression from dataset."
+                ) from ex
         return DatasetGetResponse(
             id=dataset.id,
             result=detail,
