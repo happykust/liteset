@@ -27,6 +27,67 @@ if TYPE_CHECKING:
     from superset.db.daos.tag import AsyncTagDAO
 
 
+async def _resolve_tagged_object(session: Any, object_type: str, object_id: int) -> Any:
+    """Async port of ``commands/tag/utils.py::to_object_model`` — resolve a
+    chart/dashboard/query by id (owners eager-loaded for the ownership check).
+    Returns ``None`` for types without an ownership model (e.g. dataset).
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    if object_type == "dashboard":
+        from superset.models.dashboard import Dashboard as _M
+    elif object_type == "chart":
+        from superset.models.slice import Slice as _M
+    elif object_type == "query":
+        from superset.models.sql_lab import SavedQuery as _M
+    else:
+        return None
+    stmt = select(_M).where(_M.id == object_id)
+    if hasattr(_M, "owners"):
+        stmt = stmt.options(selectinload(_M.owners))
+    result = await session.execute(stmt)
+    return result.scalars().one_or_none()
+
+
+async def _skip_unowned_objects(
+    session: Any,
+    security_manager: Any,
+    current_user: Any,
+    objects_to_tag: list[Any],
+) -> set[tuple[str, int]]:
+    """Return the ``(object_type, object_id)`` pairs the user may NOT tag.
+
+    1:1 with ``CreateCustomTagWithRelationshipsCommand.validate`` — skip an
+    object when ``raise_for_ownership`` denies AND the user isn't its
+    ``created_by``. Admins own everything → nothing skipped. No security
+    manager (e.g. internal callers) → skip nothing.
+    """
+    skipped: set[tuple[str, int]] = set()
+    if security_manager is None:
+        return skipped
+    from superset.exceptions import SupersetSecurityException
+
+    user_id = getattr(current_user, "id", None)
+    for obj in objects_to_tag:
+        if not isinstance(obj, (list, tuple)) or len(obj) != 2:
+            continue
+        obj_type, obj_id = str(obj[0]), int(obj[1])
+        try:
+            model = await _resolve_tagged_object(session, obj_type, obj_id)
+            if model is None:
+                continue
+            try:
+                await security_manager.raise_for_ownership(model, user_id)
+            except SupersetSecurityException:
+                created_by_fk = getattr(model, "created_by_fk", None)
+                if not created_by_fk or created_by_fk != user_id:
+                    skipped.add((obj_type, obj_id))
+        except Exception:  # noqa: BLE001 — a resolution error must not 500 the bulk op
+            continue
+    return skipped
+
+
 class CreateTagCommand(AsyncBaseCommand[Any]):
     def __init__(self, dao: AsyncTagDAO, data: dict[str, Any]) -> None:
         self._dao = dao
@@ -139,20 +200,57 @@ class BulkDeleteTagCommand(AsyncBaseCommand[int]):
         return len(self._tag_names)
 
 
-class BulkCreateTagCommand(AsyncBaseCommand[list[Any]]):
-    def __init__(self, dao: AsyncTagDAO, tags_data: list[dict[str, Any]]) -> None:
+class BulkCreateTagCommand(AsyncBaseCommand[dict[str, list[Any]]]):
+    def __init__(
+        self,
+        dao: AsyncTagDAO,
+        tags_data: list[dict[str, Any]],
+        security_manager: Any | None = None,
+        current_user: Any | None = None,
+    ) -> None:
         self._dao = dao
         self._tags_data = tags_data
+        self._security_manager = security_manager
+        self._current_user = current_user
 
     async def validate(self) -> None:
         for tag_data in self._tags_data:
             if not tag_data.get("name", "").strip():
                 raise CommandInvalidError("All tags must have a name")
 
-    async def run(self) -> list[Any]:
-        results = []
+    async def run(self) -> dict[str, list[Any]]:
+        """Create each custom tag + its relationships, returning the upstream
+        ``{objects_tagged, objects_skipped}`` payload.
+
+        Mirrors ``tags/api.py::bulk_create`` which accumulates the tagged and
+        ownership-skipped ``(type, id)`` pairs across all tags. The port
+        previously returned a bare ``[{id, name}]`` list → the frontend
+        ``BulkTagModal`` (reads ``result.objects_tagged``/``objects_skipped``)
+        threw on every success.
+        """
+        all_tagged: set[tuple[str, int]] = set()
+        all_skipped: set[tuple[str, int]] = set()
         for tag_data in self._tags_data:
-            cmd = CreateTagCommand(dao=self._dao, data=tag_data)
-            result = await cmd.execute()
-            results.append(result)
-        return results
+            objects_to_tag = [
+                (str(o[0]), int(o[1]))
+                for o in (tag_data.get("objects_to_tag") or [])
+                if isinstance(o, (list, tuple)) and len(o) == 2
+            ]
+            skipped = await _skip_unowned_objects(
+                self._dao.session,
+                self._security_manager,
+                self._current_user,
+                objects_to_tag,
+            )
+            all_skipped |= skipped
+            all_tagged |= set(objects_to_tag)
+            # Only tag the objects the user is allowed to.
+            tag_data = {
+                **tag_data,
+                "objects_to_tag": [list(p) for p in objects_to_tag if p not in skipped],
+            }
+            await CreateTagCommand(dao=self._dao, data=tag_data).execute()
+        return {
+            "objects_tagged": [list(p) for p in (all_tagged - all_skipped)],
+            "objects_skipped": [list(p) for p in all_skipped],
+        }

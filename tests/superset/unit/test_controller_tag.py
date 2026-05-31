@@ -219,7 +219,9 @@ async def test_bulk_create_success(mock_dao: AsyncMock) -> None:
         tags_data=[{"name": "Tag1"}, {"name": "Tag2"}],
     )
     await cmd.validate()
-    results = await cmd.run()
-    assert len(results) == 2
-    assert results[0].name == "Tag1"
-    assert results[1].name == "Tag2"
+    # Returns the upstream ``{objects_tagged, objects_skipped}`` payload (the
+    # shape BulkTagModal consumes), NOT a list of tag objects. With no
+    # ``objects_to_tag`` both lists are empty; the tags are still created.
+    result = await cmd.run()
+    assert result == {"objects_tagged": [], "objects_skipped": []}
+    assert mock_dao.get_by_name.call_count == 2

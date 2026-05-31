@@ -51,7 +51,7 @@ from superset.schemas.tag import (
     TagPostSchema,
     TagPutSchema,
 )
-from superset.typing import UserProtocol
+from superset.typing import SecurityManagerProtocol, UserProtocol
 from superset.utils import filter_unset
 
 
@@ -240,24 +240,28 @@ class TagController(Controller):
         # slash here would force a 307 redirect round-trip.
         "/bulk_create",
         guards=[require_permission("can_write", "Tag")],
-        status_code=201,
+        # 1:1 with upstream ``response(200, result=...)`` — not 201.
+        status_code=200,
     )
     async def bulk_create(
         self,
         data: BulkTagCreateSchema,
         dao: Any,
+        security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
         tags_raw = [msgspec.structs.asdict(t) for t in data.tags]
-        cmd = BulkCreateTagCommand(dao=dao, tags_data=tags_raw)
-        results = await cmd.execute()
+        cmd = BulkCreateTagCommand(
+            dao=dao,
+            tags_data=tags_raw,
+            security_manager=security_manager,
+            current_user=current_user,
+        )
+        # ``{objects_tagged, objects_skipped}`` — the shape ``BulkTagModal``
+        # consumes (it reads ``result.objects_tagged``/``objects_skipped``).
+        result = await cmd.execute()
         await event_logger.alog_with_context("tag.bulk_create", user_id=current_user.id)
-        return {
-            "result": [
-                {"id": getattr(t, "id", None), "name": getattr(t, "name", "")}
-                for t in results
-            ]
-        }
+        return {"result": result}
 
     @get("/get_objects/", guards=[require_permission("can_read", "Tag")])
     async def get_objects(
