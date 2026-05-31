@@ -125,6 +125,41 @@ def _effective_result_types(result: dict[str, Any], n: int) -> list[str]:
     ]
 
 
+def _normalize_post_processed_value(val: Any, epoch_date: Any) -> Any:
+    """JSON-safe scalar for post-processed (pivot/table) dict-of-dicts values.
+
+    Mirrors the in-place normalization applied to list-of-records ``data`` rows
+    (NaN/Inf→None, Decimal→int/float, numpy scalars, Timestamp/datetime/date→
+    epoch ms) so the msgspec encoder — which rejects NaN — doesn't 500 on the
+    ``{col: {idx: val}}`` output of ``apply_client_processing``.
+    """
+    from datetime import date as _date_t, datetime as _datetime_t
+    from decimal import Decimal
+
+    import numpy as np
+    import pandas as pd
+
+    from superset.utils.json import datetime_to_epoch
+
+    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+        return None
+    if isinstance(val, Decimal):
+        return int(val) if val == val.to_integral_value() else float(val)
+    if isinstance(val, np.integer):
+        return int(val)
+    if isinstance(val, np.floating):
+        return float(val) if not np.isnan(val) else None
+    if isinstance(val, np.bool_):
+        return bool(val)
+    if isinstance(val, pd.Timestamp):
+        return None if pd.isna(val) else datetime_to_epoch(val.to_pydatetime())
+    if isinstance(val, _datetime_t):
+        return datetime_to_epoch(val)
+    if isinstance(val, _date_t):
+        return (val - epoch_date).total_seconds() * 1000
+    return val
+
+
 def _render_chart_data_payload(  # noqa: C901
     result: dict[str, Any],
     *,
@@ -2182,8 +2217,6 @@ class ChartController(Controller):
         # then apply pivot/table client-side transforms BEFORE the NaN/Decimal
         # cleanup pass.  Used by Pivot Table v2 and Table chart email reports.
         if result_type == "post_processed":
-            from superset.charts.post_processing import apply_client_processing
-
             _pp_qobjs = [AsyncQueryObject.from_request(q, ds_ref) for q in data.queries]
             _pp_qctx = AsyncQueryContext(
                 datasource=datasource,
@@ -2201,22 +2234,10 @@ class ChartController(Controller):
             result = await ChartDataCommand(
                 query_context=_pp_qctx, processor=_pp_proc
             ).execute()
-
-            # Build form_data dict (needed by apply_client_processing for
-            # viz_type and column config lookups).
-            _form_data: dict[str, Any] = {}
-            try:
-                import msgspec as _msgspec_inner
-
-                _form_data = _msgspec_inner.to_builtins(data)
-            except Exception:  # noqa: BLE001, S110 — best-effort form_data
-                pass
-            for _q in result.get("queries", []):
-                if isinstance(_q, dict):
-                    apply_client_processing(
-                        _q, form_data=_form_data, datasource=datasource
-                    )
-            # Fall through to shared NaN/Decimal cleanup and response below.
+            # NB: post-processing (apply_client_processing) runs AFTER the
+            # shared df→data materialization + NaN cleanup below — it needs
+            # ``query["data"]`` populated and reads ``viz_type`` from the
+            # request's nested ``form_data`` (NOT the whole query-context).
 
         # --- Default JSON path (result_type: full / results / columns / etc.) ----
         else:
@@ -2356,6 +2377,35 @@ class ChartController(Controller):
         for q in result.get("queries", []):
             if isinstance(q, dict):
                 q["indexnames"] = list(range(len(q.get("data", []))))
+
+        # Client-side post-processing (pivot_table_v2 / table) — 1:1 with
+        # upstream ``_send_chart_response``: when ``result_type=post_processed``
+        # the materialized ``query["data"]`` (now a JSON-safe list of records)
+        # is pivoted/reshaped via ``apply_client_processing(result, form_data,
+        # datasource)``. ``viz_type`` lives in the request's NESTED ``form_data``
+        # sub-field — passing the whole query-context (the prior bug) left
+        # ``viz_type`` unset → the processor short-circuited → pivot/table email
+        # reports silently received RAW unpivoted rows. It must run AFTER the
+        # df→data + NaN cleanup (it reads ``query["data"]``), then its
+        # dict-of-dicts output is re-normalized for msgspec (which rejects NaN).
+        if result_type == "post_processed":
+            from superset.charts.post_processing import apply_client_processing
+
+            _pp_form_data = data.form_data or {}
+            apply_client_processing(
+                result, form_data=_pp_form_data, datasource=datasource
+            )
+            # ``processed_df.to_dict()`` yields ``{col: {idx: val}}``; clean
+            # NaN/Inf/numpy/Decimal/datetime in those nested values so the
+            # msgspec encoder (which can't serialize NaN) doesn't 500.
+            for q in result.get("queries", []):
+                if isinstance(q, dict) and isinstance(q.get("data"), dict):
+                    for _col, _col_map in q["data"].items():
+                        if isinstance(_col_map, dict):
+                            for _k, _val in list(_col_map.items()):
+                                _col_map[_k] = _normalize_post_processed_value(
+                                    _val, epoch_date
+                                )
 
         # result_type=results truncation — 1:1 with the original ``_get_full``
         # RESULTS branch (5 keys only, for non-failed queries).
