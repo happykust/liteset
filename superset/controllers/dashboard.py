@@ -1785,10 +1785,23 @@ class DashboardController(Controller):
         data: EmbeddedDashboardConfig,
         dao: DashboardDAOProtocol,
         embedded_dao: EmbeddedDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
-        dashboard = await dao.get_by_id_or_slug(id_or_slug)
+        # Per-object access check — 1:1 with upstream ``@with_dashboard``
+        # (set_embedded → get_by_id_or_slug → access filter + raise_for_access).
+        # ``can_set_embedded`` alone gates the route, but the dashboard itself
+        # must still be accessible (defense-in-depth if the perm is ever granted
+        # to a non-admin role).
+        from superset.db.filters import dashboard_access_filters
+
+        access_filters = await dashboard_access_filters(security_manager, current_user)
+        dashboard = await dao.get_full_by_id_or_slug(
+            id_or_slug, extra_filters=access_filters
+        )
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
+        await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
         cmd = UpsertEmbeddedDashboardCommand(
             dao=cast("AsyncDashboardDAO", dao),
             embedded_dao=cast("AsyncEmbeddedDashboardDAO", embedded_dao),
@@ -1826,10 +1839,19 @@ class DashboardController(Controller):
         data: EmbeddedDashboardConfig,
         dao: DashboardDAOProtocol,
         embedded_dao: EmbeddedDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
-        dashboard = await dao.get_by_id_or_slug(id_or_slug)
+        # Per-object access check — see create_embedded note (1:1 @with_dashboard).
+        from superset.db.filters import dashboard_access_filters
+
+        access_filters = await dashboard_access_filters(security_manager, current_user)
+        dashboard = await dao.get_full_by_id_or_slug(
+            id_or_slug, extra_filters=access_filters
+        )
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
+        await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
         cmd = UpsertEmbeddedDashboardCommand(
             dao=cast("AsyncDashboardDAO", dao),
             embedded_dao=cast("AsyncEmbeddedDashboardDAO", embedded_dao),
@@ -1867,10 +1889,19 @@ class DashboardController(Controller):
         id_or_slug: str,
         dao: DashboardDAOProtocol,
         embedded_dao: EmbeddedDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, str]:
-        dashboard = await dao.get_by_id_or_slug(id_or_slug)
+        # Per-object access check — see create_embedded note (1:1 @with_dashboard).
+        from superset.db.filters import dashboard_access_filters
+
+        access_filters = await dashboard_access_filters(security_manager, current_user)
+        dashboard = await dao.get_full_by_id_or_slug(
+            id_or_slug, extra_filters=access_filters
+        )
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
+        await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
         cmd = DeleteEmbeddedDashboardCommand(
             dao=cast("AsyncDashboardDAO", dao),
             embedded_dao=cast("AsyncEmbeddedDashboardDAO", embedded_dao),

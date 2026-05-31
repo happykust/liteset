@@ -847,6 +847,90 @@ def _sync_find_dataset(dataset_id: int) -> Any:
         )
 
 
+_DATABASE_PERM_RE = re.compile(r"^\[.+\]\.\(id:(?P<id>\d+)\)$")
+
+
+def _sync_user_can_access_dataset(dataset: Any, user: Any) -> bool:
+    """Sync replica of ``DatasourceFilter`` access, for ``metric_macro``.
+
+    1:1 with upstream
+    ``DatasetDAO.find_by_id(dataset_id, skip_base_filter=is_guest)`` →
+    ``get_dataset_access_filters(SqlaTable)``: guests skip the base filter;
+    admins and holders of ``all_database_access``/``all_datasource_access``
+    see all; everyone else needs the dataset's database OR its
+    ``perm``/``catalog_perm``/``schema_perm`` to be granted. Role-only, matching
+    the precedent in ``_sync_get_rls_rules`` (group roles omitted in sync).
+
+    Without this gate ``{{ metric('m', <id>) }}`` (template processing) would
+    leak metric expressions from datasets the user cannot access.
+    """
+    if user is None:
+        return False
+    # Guest → skip base filter (1:1 ``skip_base_filter=is_guest``).
+    try:
+        from superset.security.manager import AsyncSecurityManager
+
+        if AsyncSecurityManager.is_guest_user(None, user):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+
+    roles = getattr(user, "roles", []) or []
+    if any(getattr(r, "name", None) == "Admin" for r in roles):
+        return True
+    role_ids = [r.id for r in roles if getattr(r, "id", None) is not None]
+    if not role_ids:
+        return False
+
+    from sqlalchemy.orm import Session
+
+    from superset.models.security import (
+        Permission,
+        PermissionView,
+        ViewMenu,
+        ab_permission_view_role,
+    )
+
+    engine = _get_sync_engine()
+    with Session(engine) as session:
+        rows = session.execute(
+            select(Permission.name, ViewMenu.name)
+            .select_from(ab_permission_view_role)
+            .join(
+                PermissionView,
+                PermissionView.id == ab_permission_view_role.c.permission_view_id,
+            )
+            .join(Permission, Permission.id == PermissionView.permission_id)
+            .join(ViewMenu, ViewMenu.id == PermissionView.view_menu_id)
+            .where(ab_permission_view_role.c.role_id.in_(role_ids))
+        ).all()
+
+    db_ids: set[int] = set()
+    datasource_perms: set[str] = set()
+    schema_perms: set[str] = set()
+    catalog_perms: set[str] = set()
+    for perm_name, vm_name in rows:
+        if perm_name in ("all_database_access", "all_datasource_access"):
+            return True
+        if perm_name == "database_access":
+            m = _DATABASE_PERM_RE.match(vm_name or "")
+            if m:
+                db_ids.add(int(m.group("id")))
+        elif perm_name == "datasource_access":
+            datasource_perms.add(vm_name)
+        elif perm_name == "schema_access":
+            schema_perms.add(vm_name)
+        elif perm_name == "catalog_access":
+            catalog_perms.add(vm_name)
+
+    return (
+        dataset.database_id in db_ids
+        or bool(dataset.perm and dataset.perm in datasource_perms)
+        or bool(dataset.catalog_perm and dataset.catalog_perm in catalog_perms)
+        or bool(dataset.schema_perm and dataset.schema_perm in schema_perms)
+    )
+
+
 def _sync_get_rls_rules(table: Any, user: Any) -> list[str]:
     """Synchronously retrieve RLS filter clauses for ``user`` on ``table``.
 
@@ -1057,11 +1141,15 @@ def metric_macro(
     if not dataset_id:
         dataset_id = get_dataset_id_from_context(metric_key)
 
-    # Original: DatasetDAO.find_by_id(dataset_id, skip_base_filter=is_guest)
-    # In Liteset guest user handling is done at the controller/guard layer,
-    # so we do an unfiltered lookup here.
+    # 1:1 with upstream
+    # ``DatasetDAO.find_by_id(dataset_id, skip_base_filter=is_guest)``: load
+    # the dataset, then enforce the ``DatasourceFilter`` RBAC for non-guest
+    # users. A denial manifests as ``DatasetNotFoundError`` exactly like the
+    # original's filtered lookup returning ``None`` — without it,
+    # ``{{ metric('m', <id>) }}`` would leak metric expressions from datasets
+    # the caller cannot access.
     dataset = _sync_find_dataset(dataset_id)
-    if not dataset:
+    if not dataset or not _sync_user_can_access_dataset(dataset, get_current_user()):
         raise DatasetNotFoundError(f"Dataset ID {dataset_id} not found.")
 
     metrics: dict[str, str] = {

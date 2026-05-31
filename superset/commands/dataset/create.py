@@ -139,6 +139,24 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         if self._user_id is not None:
             dataset.created_by_fk = self._user_id
             dataset.changed_by_fk = self._user_id
+
+        # Resolve owners — defaults to the current user when none provided,
+        # 1:1 with upstream ``populate_owners(owner_ids)``. The port previously
+        # never assigned owners (only ``refresh(["owners"])`` → always empty),
+        # so a created dataset had NO owner → its creator couldn't edit/delete
+        # it (ownership checks failed) and no ``owner:`` implicit tag was made.
+        # Assign the full list (not append) before flush to avoid a sync
+        # lazy-load on a transient instance.
+        dataset.owners = []
+        if self._security_manager is not None:
+            from superset.commands.utils import populate_owner_list
+
+            dataset.owners = await populate_owner_list(
+                self._security_manager,
+                self._user_id,
+                self._data.get("owners"),
+                default_to_user=True,
+            )
         # Persist + introspect (fetch_metadata) + tag, wrapping the whole body
         # so any ``SQLAlchemyError`` maps to ``DatasetCreateFailedError`` → 422.
         # 1:1 with the original ``@transaction(on_error=reraise=

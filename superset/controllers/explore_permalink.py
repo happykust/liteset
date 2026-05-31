@@ -35,10 +35,7 @@ from superset.commands.explore_permalink.utils import check_access as check_char
 from superset.db.daos.key_value import AsyncKeyValueDAO
 from superset.events import event_logger
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
-from superset.guards.rbac import (
-    deny_anon_with_403,
-    require_authentication,
-)
+from superset.guards.rbac import require_permission
 from superset.key_value.shared_entries import get_permalink_salt
 from superset.key_value.types import KeyValueResource, SharedKey
 from superset.key_value.utils import decode_permalink_id, encode_permalink_key
@@ -81,7 +78,11 @@ class ExplorePermalinkController(Controller):
         "query_dao": Provide(provide_query_dao, sync_to_thread=False),
     }
 
-    @post("/", status_code=201, guards=[deny_anon_with_403])
+    @post(
+        "/",
+        status_code=201,
+        guards=[require_permission("can_write", "ExplorePermalinkRestApi")],
+    )
     async def create_permalink(
         self,
         data: ExplorePermalinkCreateSchema,
@@ -174,7 +175,10 @@ class ExplorePermalinkController(Controller):
         )
         return {"key": key, "url": f"/explore/p/{key}/"}
 
-    @get("/{key:str}", guards=[require_authentication])
+    @get(
+        "/{key:str}",
+        guards=[require_permission("can_read", "ExplorePermalinkRestApi")],
+    )
     async def get_permalink(
         self,
         key: str,

@@ -35,10 +35,7 @@ from litestar.params import Parameter
 from superset.commands.explore_form_data.utils import check_access
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError
-from superset.guards.rbac import (
-    require_authentication,
-    require_permission,
-)
+from superset.guards.rbac import require_permission
 from superset.providers import (
     provide_chart_dao,
     provide_dataset_dao,
@@ -109,7 +106,10 @@ class ExploreFormDataController(Controller):
         "query_dao": Provide(provide_query_dao, sync_to_thread=False),
     }
 
-    @get("/{key:str}", guards=[require_authentication])
+    @get(
+        "/{key:str}",
+        guards=[require_permission("can_read", "ExploreFormDataRestApi")],
+    )
     async def get_value(
         self,
         key: str,
@@ -231,7 +231,10 @@ class ExploreFormDataController(Controller):
         )
         return {"key": key}
 
-    @put("/{key:str}", guards=[require_authentication])
+    @put(
+        "/{key:str}",
+        guards=[require_permission("can_write", "ExploreFormDataRestApi")],
+    )
     async def update_value(
         self,
         key: str,
@@ -312,7 +315,11 @@ class ExploreFormDataController(Controller):
         )
         return {"key": key}
 
-    @delete("/{key:str}", status_code=200, guards=[require_authentication])
+    @delete(
+        "/{key:str}",
+        status_code=200,
+        guards=[require_permission("can_write", "ExploreFormDataRestApi")],
+    )
     async def delete_value(
         self,
         key: str,
