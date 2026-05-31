@@ -170,4 +170,97 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
                 message=errors[0].get("message", "Validation error"),
             )
 
+        # Connection ping — 1:1 with upstream
+        # ``ValidateDatabaseParametersCommand.run``: the engine-spec checks
+        # above only verify hostname/port reachability, so build an ephemeral
+        # DB from the parameters and actually connect (``do_ping``). This
+        # catches a reachable host with WRONG credentials / a non-DB service
+        # (the port previously returned OK → user got a false "valid").
+        import json as _json
+
+        from superset.commands.database.test_connection import _ping
+        from superset.databases.utils import make_url_safe
+        from superset.exceptions import SupersetErrorsException
+
+        serialized_encrypted_extra = self._data.get("masked_encrypted_extra", "{}")
+        if self._model is not None:
+            serialized_encrypted_extra = spec_class.unmask_encrypted_extra(
+                self._model.encrypted_extra, serialized_encrypted_extra
+            )
+        try:
+            encrypted_extra = _json.loads(serialized_encrypted_extra or "{}")
+        except (ValueError, TypeError):
+            encrypted_extra = {}
+
+        sqlalchemy_uri = spec_class.build_sqlalchemy_uri(parameters, encrypted_extra)
+        if (
+            self._model is not None
+            and sqlalchemy_uri == self._model.safe_sqlalchemy_uri()
+        ):
+            sqlalchemy_uri = self._model.sqlalchemy_uri_decrypted
+
+        database = self._dao.build_db_for_connection_test(
+            server_cert=self._data.get("server_cert", "") or "",
+            extra=self._data.get("extra", "{}") or "{}",
+            impersonate_user=self._data.get("impersonate_user", False),
+            encrypted_extra=_json.dumps(encrypted_extra),
+        )
+        # If the URI still carries the password MASK (an existing-DB validation
+        # where the real password wasn't unmasked — e.g. only non-credential
+        # params were echoed back), pinging would always auth-fail. Skip the
+        # ping in that case so editing an existing DB doesn't false-fail; the
+        # engine-spec param validation above already ran.
+        from superset.constants import PASSWORD_MASK
+
+        if PASSWORD_MASK in (sqlalchemy_uri or ""):
+            return {"message": "OK"}
+
+        database.set_sqlalchemy_uri(sqlalchemy_uri)
+        database.db_engine_spec.mutate_db_for_connection_test(database)
+
+        def _do_ping() -> tuple[bool, Exception | None]:
+            try:
+                with database.get_sqla_engine() as engine:
+                    return bool(_ping(engine)), None
+            except Exception as ex:  # noqa: BLE001
+                return False, ex
+
+        alive, ping_error = await asyncio.to_thread(_do_ping)
+        if not alive:
+            # OAuth2-needed → accept (flow triggers on first query); 1:1 upstream.
+            if (
+                ping_error is not None
+                and database.is_oauth2_enabled()
+                and database.db_engine_spec.needs_oauth2(ping_error)
+            ):
+                return {"message": "OK"}
+            if ping_error is not None:
+                url = make_url_safe(sqlalchemy_uri)
+                context = {
+                    "hostname": url.host,
+                    "password": url.password,
+                    "port": url.port,
+                    "username": url.username,
+                    "database": url.database,
+                }
+                conn_errors = database.db_engine_spec.extract_errors(
+                    ping_error, context
+                )
+                raise SupersetErrorsException(
+                    conn_errors, status=400
+                ) from ping_error
+            # Reachable + connected but ping returned False → offline (422).
+            raise SupersetErrorsException(
+                errors=[
+                    {
+                        "message": "Database is offline.",
+                        "error_type": "GENERIC_DB_ENGINE_ERROR",
+                        "level": "error",
+                        "extra": {},
+                    }
+                ],
+                status_code=422,
+                message="Database is offline.",
+            )
+
         return {"message": "OK"}
