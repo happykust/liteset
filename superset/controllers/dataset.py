@@ -530,6 +530,7 @@ class DatasetController(Controller):
                 "fetch_values_predicate": data.fetch_values_predicate,
                 "catalog": data.catalog,
                 "uuid": data.uuid,
+                "folders": data.folders,
             }
         )
         if data.columns is not msgspec.UNSET and data.columns is not None:

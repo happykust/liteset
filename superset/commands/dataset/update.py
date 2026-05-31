@@ -27,6 +27,59 @@ from superset.commands.utils import compute_owner_list
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.tags.core import sync_owner_tags_after_update
 
+def validate_folders(
+    folders: list[dict[str, Any]],
+    metrics: list[Any],
+    columns: list[Any],
+) -> None:
+    """Additional folder-structure validation — 1:1 port of
+    ``superset_old/commands/dataset/update.py::validate_folders``.
+
+    Gated on ``DATASET_FOLDERS``; checks valid leaf UUIDs (metric/column),
+    sibling-unique + non-reserved names, and absence of cycles.
+    """
+    from superset.utils.feature_flags import feature_flag_manager
+
+    if not feature_flag_manager.is_feature_enabled("DATASET_FOLDERS"):
+        raise CommandInvalidError("Dataset folders are not enabled")
+
+    existing = {
+        *[str(getattr(m, "uuid", "")) for m in metrics],
+        *[str(getattr(c, "uuid", "")) for c in columns],
+    }
+
+    queue: list[tuple[dict[str, Any], list[str]]] = [(f, []) for f in folders]
+    seen_uuids: set[str] = set()
+    seen_fqns: set[tuple[str, ...]] = set()
+    while queue:
+        obj, path = queue.pop(0)
+        uuid, name = str(obj.get("uuid", "")), obj.get("name")
+
+        if uuid in path:
+            raise CommandInvalidError(
+                f"Cycle detected: {uuid} appears in its ancestry"
+            )
+        if uuid in seen_uuids:
+            raise CommandInvalidError(f"Duplicate UUID in folder structure: {uuid}")
+        seen_uuids.add(uuid)
+
+        # folders can share a name as long as they're not siblings
+        if name:
+            fqn = tuple([*path, name])
+            if fqn in seen_fqns:
+                raise CommandInvalidError(f"Duplicate folder name: {name}")
+            seen_fqns.add(fqn)
+            if name.lower() in {"metrics", "columns"}:
+                raise CommandInvalidError(f"Folder cannot have name '{name}'")
+        # a leaf (no name) must reference an existing metric/column UUID
+        elif uuid not in existing:
+            raise CommandInvalidError(f"Invalid UUID: {uuid}")
+
+        if children := obj.get("children"):
+            child_path = [*path, uuid]
+            queue.extend((f, child_path) for f in children)
+
+
 if TYPE_CHECKING:
     from superset.db.daos.dataset import AsyncDatasetDAO
     from superset.models.connectors import SqlaTable
@@ -132,6 +185,18 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 raise CommandInvalidError(
                     "One or more metric names already exist on this dataset"
                 )
+
+        # Folder-structure validation — 1:1 with upstream ``_validate_semantics``:
+        # only when ``folders`` is provided. Rejects with 422 when DATASET_FOLDERS
+        # is disabled (the default), else validates UUIDs/names/cycles.
+        folders = self._data.get("folders")
+        if folders:
+            await self._dao.session.refresh(self._dataset, ["metrics", "columns"])
+            validate_folders(
+                folders,
+                list(getattr(self._dataset, "metrics", []) or []),
+                list(getattr(self._dataset, "columns", []) or []),
+            )
 
         table_name = self._data.get("table_name")
         if table_name:
