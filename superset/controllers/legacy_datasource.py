@@ -672,6 +672,36 @@ class LegacyDatasourceController(Controller):
                 status_code=404,
             )
 
+        # Datasource-access gate on this WRITE endpoint. Upstream guards the
+        # legacy ``Datasource.save`` view with ``@has_access_api`` (the ``can_save
+        # Datasource`` write perm, which gamma lacks — ``Datasource`` is a
+        # READ-ONLY model view for gamma). The port's route is only
+        # ``require_authentication``, and the conditional ``raise_for_ownership``
+        # below fires ONLY when the payload carries ``owners`` — so a user with no
+        # datasource access (e.g. gamma) could otherwise POST here and rewrite a
+        # datasource's metrics/columns. Gate on datasource access (admin /
+        # all_datasource_access pass, gamma → 403) before any mutation. We can't
+        # use the upstream ``can_save Datasource`` perm directly because the port
+        # doesn't seed it (a broader role-tuple sweep); ``raise_for_access`` is
+        # the equivalent data-access gate already used on the v1 datasource GET.
+        from superset.dependencies import provide_security_manager
+        from superset.exceptions import SupersetSecurityException
+
+        _sec_mgr = await provide_security_manager(
+            ds_dao.session,  # type: ignore[attr-defined]
+            request.app.state,
+        )
+        if hasattr(_sec_mgr, "raise_for_access"):
+            try:
+                await _sec_mgr.raise_for_access(
+                    datasource=orm_datasource, user=current_user
+                )
+            except SupersetSecurityException as exc:
+                return Response(
+                    content={"message": getattr(exc, "message", str(exc))},
+                    status_code=403,
+                )
+
         if database_id is not None:
             orm_datasource.database_id = database_id
 
