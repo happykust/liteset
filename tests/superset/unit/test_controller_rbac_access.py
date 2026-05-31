@@ -269,3 +269,31 @@ async def test_get_datasource_denied_returns_403():
     )
     assert result.status_code == 403
     sm.raise_for_access.assert_awaited_once()
+
+
+async def test_dashboard_create_permalink_access_filtered_404():
+    """Gamma must NOT create a permalink for a dashboard it can't access
+    (upstream CreateDashboardPermalinkCommand gates via get_by_id_or_slug)."""
+    from superset.schemas.dashboard import DashboardPermalinkSchema
+
+    controller = DashboardController(owner=MagicMock())
+    dao = MagicMock()
+    dao.get_full_by_id_or_slug = AsyncMock(return_value=None)  # filtered out
+    sm = MagicMock()
+    sm.raise_for_access = AsyncMock()
+    user = MagicMock()
+    user.id = 3
+    with patch(
+        "superset.db.filters.dashboard_access_filters",
+        new=AsyncMock(return_value=[MagicMock()]),
+    ):
+        with pytest.raises(ObjectNotFoundError):
+            await _fn(DashboardController, "create_permalink")(
+                controller,
+                pk=1,
+                data=DashboardPermalinkSchema(),
+                dao=dao,
+                kv_dao=MagicMock(),
+                security_manager=sm,
+                current_user=user,
+            )

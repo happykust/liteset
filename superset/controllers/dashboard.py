@@ -1933,11 +1933,22 @@ class DashboardController(Controller):
         data: DashboardPermalinkSchema,
         dao: DashboardDAOProtocol,
         kv_dao: KeyValueDAOProtocol,
+        security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, str]:
-        dashboard = await dao.find_by_id(pk)
+        # Access gate — 1:1 with upstream ``CreateDashboardPermalinkCommand``
+        # which resolves the dashboard via ``get_by_id_or_slug`` (403/404). The
+        # port's plain ``find_by_id`` skips it, letting a user create a permalink
+        # for a dashboard they cannot access.
+        from superset.db.filters import dashboard_access_filters
+
+        access_filters = await dashboard_access_filters(security_manager, current_user)
+        dashboard = await dao.get_full_by_id_or_slug(
+            str(pk), extra_filters=access_filters
+        )
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", pk)
+        await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
         dashboard_uuid = str(getattr(dashboard, "uuid", "")) or None
         state: dict[str, Any] = {
             "dataMask": data.data_mask,
