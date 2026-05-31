@@ -2330,6 +2330,8 @@ class DatabaseController(Controller):
         self,
         pk: int,
         dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
         data: dict[str, Any] = Body(media_type=RequestEncodingType.MULTI_PART),  # noqa: B008
     ) -> dict[str, Any]:
         """Upload a CSV / Excel / Columnar file to a database table.
@@ -2384,6 +2386,9 @@ class DatabaseController(Controller):
             database_id=pk,
             data=parsed,
             file_contents=file_contents,
+            filename=filename,
+            security_manager=security_manager,
+            current_user=current_user,
         )
         result = await cmd.execute()
         await event_logger.alog_with_context(

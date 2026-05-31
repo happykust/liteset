@@ -38,7 +38,11 @@ from typing import Any, Optional, TYPE_CHECKING, TypedDict
 import pandas as pd
 
 from superset.commands.base import AsyncBaseCommand
-from superset.commands.database.exceptions import DatabaseUploadFailed
+from superset.commands.database.exceptions import (
+    DatabaseSchemaUploadNotAllowed,
+    DatabaseUploadFailed,
+    DatabaseUploadNotSupported,
+)
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.i18n import gettext as _
 from superset.utils.backports import StrEnum
@@ -164,11 +168,17 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
         database_id: int,
         data: dict[str, Any],
         file_contents: bytes,
+        filename: str = "",
+        security_manager: Any | None = None,
+        current_user: Any | None = None,
     ) -> None:
         self._dao = dao
         self._database_id = database_id
         self._data = data
         self._file_contents = file_contents
+        self._filename = filename
+        self._security_manager = security_manager
+        self._current_user = current_user
         self._database: Any | None = None
 
     async def validate(self) -> None:
@@ -178,87 +188,67 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
         if not self._database:
             raise ObjectNotFoundError("Database", self._database_id)
 
-        # Check if file upload is allowed for this database/schema
-        if not getattr(self._database, "allow_file_upload", False):
-            raise CommandInvalidError("File upload is not enabled for this database")
+        # schema_allows_file_upload — 1:1 with
+        # ``superset_old/views/database/validators.py``: require
+        # ``allow_file_upload``; if the DB restricts uploads to specific schemas
+        # (``extra.schemas_allowed_for_file_upload``) the target schema must be
+        # in that list; otherwise the user must have database access. The port
+        # previously only checked the ``allow_file_upload`` bool (no
+        # schema-allowlist, no access check).
+        schema = self._data.get("schema")
+        allowed = bool(getattr(self._database, "allow_file_upload", False))
+        if allowed:
+            try:
+                schemas_allowed = (
+                    self._database.get_extra().get("schemas_allowed_for_file_upload")
+                    or []
+                )
+            except Exception:  # noqa: BLE001
+                schemas_allowed = []
+            if schemas_allowed:
+                allowed = schema in schemas_allowed
+            elif self._security_manager is not None:
+                allowed = await self._security_manager.can_access_database(
+                    self._database, user=self._current_user
+                )
+        if not allowed:
+            raise DatabaseSchemaUploadNotAllowed()
+
+        # The engine must support file upload (1:1 supports_file_upload check).
+        if not getattr(
+            self._database.db_engine_spec, "supports_file_upload", True
+        ):
+            raise DatabaseUploadNotSupported()
 
     async def run(self) -> dict[str, Any]:
-        from superset.sql.parse import Table
+        import asyncio
 
         table_name = self._data["table_name"]
         schema_name = self._data.get("schema")
-        # The upload form sends ``type`` (csv/excel/columnar) — the schema
-        # field name — NOT ``file_type``. The previous code read
-        # ``file_type`` which is never populated by ``parse_upload_form``,
-        # so excel/columnar uploads silently fell back to the CSV reader and
-        # blew up with UnicodeDecodeError on the binary xlsx. Accept both
-        # keys; map ``type`` → reader.
-        file_type = self._data.get("file_type") or self._data.get("type") or "csv"
 
-        # Read file into DataFrame
-        df = self._read_file(file_type)
+        # Build the per-format reader and let IT parse + load — 1:1 with
+        # upstream ``UploadCommand.run`` calling ``reader.read(...)``. The reader
+        # honors ALL ``UploadPostSchema`` options (delimiter, header_row,
+        # skip_rows, null_values, column_data_types, columns_read, day_first,
+        # decimal_character, dataframe_index, already_exists, …) which the
+        # previous bare ``pd.read_csv/read_excel/read_parquet`` silently dropped.
+        reader = self._build_reader()
+        bio = io.BytesIO(self._file_contents)
+        # The columnar reader sniffs ``filename`` for zip/extension detection.
+        bio.name = self._filename or table_name  # type: ignore[attr-defined]
+        # ``reader.read`` opens the SYNC engine + pandas to_sql (blocking IO) and
+        # wraps errors as ``DatabaseUploadFailed`` (422); run it off-loop.
+        await asyncio.to_thread(
+            reader.read, bio, self._database, table_name, schema_name
+        )
 
-        # Upload DataFrame to database. ``already_exists`` (fail/replace/
-        # append) is the UploadPostSchema field name; the pandas kwarg is
-        # ``if_exists`` (superset_old/commands/database/uploaders/base.py:114).
-        # Accept both so a "replace" request isn't silently downgraded to
-        # the "fail" default.
-        data_table = Table(table=table_name, schema=schema_name)
-        to_sql_kwargs = {
-            "chunksize": 1000,
-            "if_exists": (
-                self._data.get("if_exists")
-                or self._data.get("already_exists")
-                or "fail"
-            ),
-            "index": self._data.get("dataframe_index", False),
-        }
-        if self._data.get("index_label") and self._data.get("dataframe_index"):
-            to_sql_kwargs["index_label"] = self._data["index_label"]
-
-        # ``df_to_sql`` opens the SYNC engine + pandas ``to_sql`` (blocking IO);
-        # run it off the event loop. ``functools.partial`` because
-        # ``to_thread`` forwards positional args but ``df_to_sql`` takes a
-        # keyword ``to_sql_kwargs``.
-        #
-        # Error wrapping is 1:1 with
-        # ``superset_old/commands/database/uploaders/base.py::_dataframe_to_database``:
-        # a pandas ``ValueError`` (the common "Table already exists" with
-        # ``if_exists='fail'``) → ``DatabaseUploadFailed`` (422) with the
-        # actionable strategy message; any other error → 422 with its message.
-        # Without this the bare pandas ValueError surfaced as a 500.
-        import asyncio
-        import functools
-
-        try:
-            await asyncio.to_thread(
-                functools.partial(
-                    self._database.db_engine_spec.df_to_sql,
-                    self._database,
-                    data_table,
-                    df,
-                    to_sql_kwargs=to_sql_kwargs,
-                )
-            )
-        except ValueError as ex:
-            raise DatabaseUploadFailed(
-                _(
-                    "Table already exists. You can change your "
-                    "'if table already exists' strategy to append or "
-                    "replace or provide a different Table Name to use."
-                )
-            ) from ex
-        except Exception as ex:
-            message = (
-                ex.message  # type: ignore[attr-defined]
-                if hasattr(ex, "message") and ex.message
-                else str(ex)
-            )
-            raise DatabaseUploadFailed(message) from ex
-
-        # Create or update SqlaTable entry
+        # Create or update the SqlaTable entry, assigning the uploading user as
+        # owner and introspecting columns/metrics — 1:1 with upstream
+        # (``owners=[get_user()]`` + ``sqla_table.fetch_metadata()``). The port
+        # previously created an OWNERLESS, column-less table.
         from sqlalchemy import select
 
+        from superset.db.daos.dataset import AsyncDatasetDAO
         from superset.models.connectors import SqlaTable
 
         stmt = select(SqlaTable).where(
@@ -275,23 +265,34 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
                 database_id=self._database_id,
                 schema=schema_name,
             )
+            # Pre-init owners to avoid a sync lazy-load on the transient object.
+            sqla_table.owners = [self._current_user] if self._current_user else []
             self._dao.session.add(sqla_table)
 
         await self._dao.session.flush()
 
-        # Mirror the original API contract — ``self.response(201, message="OK")``
-        # (superset_old/databases/api.py:1787). The original endpoint returns
-        # only ``{"message": "OK"}``; ``table_id`` is not part of the response.
+        # Introspect physical columns/metrics (1:1 ``fetch_metadata()``).
+        try:
+            await AsyncDatasetDAO(self._dao.session).fetch_metadata(sqla_table)
+        except Exception:  # noqa: BLE001 — metadata introspection is best-effort
+            logger.warning("fetch_metadata failed for uploaded table", exc_info=True)
+
+        # 1:1 with the original API contract — ``self.response(201,
+        # message="OK")`` (the endpoint returns only ``{"message": "OK"}``).
         return {"message": "OK"}
 
-    def _read_file(self, file_type: str) -> pd.DataFrame:
-        """Read file contents into a pandas DataFrame."""
-        file_obj = io.BytesIO(self._file_contents)
+    def _build_reader(self) -> "BaseDataReader":
+        """Select the per-format reader, forwarding the full parsed options."""
+        from superset.commands.database.uploaders.columnar_reader import ColumnarReader
+        from superset.commands.database.uploaders.csv_reader import CSVReader
+        from superset.commands.database.uploaders.excel_reader import ExcelReader
 
+        file_type = self._data.get("file_type") or self._data.get("type") or "csv"
+        options = dict(self._data)
         if file_type == "csv":
-            return pd.read_csv(file_obj)
+            return CSVReader(options)  # type: ignore[arg-type]
         if file_type == "excel":
-            return pd.read_excel(file_obj)
+            return ExcelReader(options)  # type: ignore[arg-type]
         if file_type == "columnar":
-            return pd.read_parquet(file_obj)
+            return ColumnarReader(options)  # type: ignore[arg-type]
         raise CommandInvalidError(f"Unsupported file type: {file_type}")
