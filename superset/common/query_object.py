@@ -32,6 +32,28 @@ from superset.utils.sql import sanitize_clause
 logger = logging.getLogger(__name__)
 
 
+def _capped_row_limit(row_limit: int | None, result_type: str | None) -> int:
+    """Apply the configured row-limit cap to a request-supplied limit — 1:1
+    with upstream ``QueryObjectFactory._process_row_limit``: an absent/zero
+    limit falls back to ``SAMPLES_ROW_LIMIT`` (samples) or ``ROW_LIMIT``, and the
+    result is capped at ``SQL_MAX_ROW``. Without this, ``row_limit=0``/unset
+    emitted an UNBOUNDED query and an oversized limit ran uncapped.
+    """
+    from superset import config as _config
+    from superset.utils.core import apply_max_row_limit
+
+    try:
+        settings = _config.SupersetSettings()
+        default = (
+            int(getattr(settings, "samples_row_limit", 1000))
+            if result_type == "samples"
+            else int(getattr(settings, "row_limit", 50000))
+        )
+    except Exception:  # noqa: BLE001
+        default = 1000 if result_type == "samples" else 50000
+    return apply_max_row_limit(row_limit or default)
+
+
 @dataclass
 class AsyncQueryObject:
     """Describes a single query to execute against a datasource.
@@ -356,7 +378,9 @@ class AsyncQueryObject:
                 filters=q.get("filters") or q.get("filter", []),
                 extras=q.get("extras", {}),
                 orderby=q.get("orderby", []),
-                row_limit=q.get("row_limit"),
+                row_limit=_capped_row_limit(
+                    q.get("row_limit"), q.get("result_type")
+                ),
                 row_offset=q.get("row_offset", 0),
                 time_range=q.get("time_range"),
                 time_shift=q.get("time_shift"),
@@ -421,7 +445,9 @@ class AsyncQueryObject:
                 else getattr(q, "extras", {}) or {}
             ),
             orderby=list(getattr(q, "orderby", [])),
-            row_limit=q.row_limit,
+            row_limit=_capped_row_limit(
+                q.row_limit, getattr(q, "result_type", None)
+            ),
             row_offset=getattr(q, "row_offset", 0),
             time_range=q.time_range,
             time_shift=getattr(q, "time_shift", None),

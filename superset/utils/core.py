@@ -101,6 +101,31 @@ class QueryObjectFilterClause(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 # generic_find_constraint_name  (uses Flask-SQLAlchemy db object)
 # ---------------------------------------------------------------------------
+def apply_max_row_limit(limit: int, server_pagination: bool | None = None) -> int:
+    """Cap a requested row limit at the configured maximum — 1:1 port of
+    ``superset_old/utils/core.py::apply_max_row_limit``.
+
+    ``server_pagination`` selects ``TABLE_VIZ_MAX_ROW_SERVER`` vs ``SQL_MAX_ROW``
+    as the ceiling; ``limit == 0`` means "no explicit limit" → use the max. The
+    config is read from ``SupersetSettings`` (the Flask-free port equivalent of
+    ``app.config[...]``).
+    """
+    from superset import config as _config
+
+    try:
+        settings = _config.SupersetSettings()
+        sql_max_row = int(getattr(settings, "sql_max_row", 100000))
+        table_viz_max = int(
+            getattr(settings, "table_viz_max_row_server", sql_max_row)
+        )
+    except Exception:  # noqa: BLE001 — never break query building on config errors
+        sql_max_row, table_viz_max = 100000, 100000
+    max_limit = table_viz_max if server_pagination else sql_max_row
+    if limit != 0:
+        return min(max_limit, limit)
+    return max_limit
+
+
 def generic_find_constraint_name(
     table: str, columns: set[str], referenced: str, database: Any
 ) -> str | None:
