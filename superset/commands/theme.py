@@ -32,6 +32,61 @@ from superset.exceptions import (
 logger = logging.getLogger(__name__)
 
 
+_THEME_MODES = {"default", "dark", "system"}
+
+
+def _is_valid_theme(theme: Any) -> bool:
+    """Validate a parsed theme ``json_data`` dict — 1:1 with
+    ``superset_old/themes/utils.py::is_valid_theme``. An empty dict is valid;
+    otherwise token/components must be dicts, hashed/inherit bools, and
+    ``algorithm`` a ThemeMode str or list of ThemeMode strs."""
+    try:
+        if not isinstance(theme, dict):
+            return False
+        if not theme:
+            return True
+        for field, expected_type in (
+            ("token", dict),
+            ("components", dict),
+            ("hashed", bool),
+            ("inherit", bool),
+        ):
+            if field in theme and not isinstance(theme[field], expected_type):
+                return False
+        if "algorithm" in theme:
+            alg = theme["algorithm"]
+            if isinstance(alg, str):
+                if alg not in _THEME_MODES:
+                    return False
+            elif isinstance(alg, list):
+                if not all(
+                    isinstance(a, str) and a in _THEME_MODES for a in alg
+                ):
+                    return False
+            else:
+                return False
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _validate_theme_json_data(json_data: Any) -> None:
+    """Parse + structurally validate ``json_data`` — 1:1 with upstream
+    ``ThemeBaseSchema.validate_json_data``: invalid JSON → "Invalid JSON
+    configuration"; bad structure → "Invalid theme configuration structure"."""
+    import json as _json
+
+    if isinstance(json_data, str):
+        try:
+            parsed = _json.loads(json_data)
+        except (TypeError, ValueError) as ex:
+            raise CommandInvalidError("Invalid JSON configuration") from ex
+    else:
+        parsed = json_data
+    if not _is_valid_theme(parsed):
+        raise CommandInvalidError("Invalid theme configuration structure")
+
+
 async def _validate_theme_deletable(theme: Any) -> None:
     """Block deletion of protected system themes — 1:1 with upstream
     ``DeleteThemeCommand.validate``: ``is_system`` → 403
@@ -88,13 +143,10 @@ class CreateThemeCommand(AsyncBaseCommand[Any]):
         json_data = self._data.get("json_data")
         if json_data in (None, ""):
             raise CommandInvalidError("json_data is required")
-        if isinstance(json_data, str):
-            import json as _json
-
-            try:
-                _json.loads(json_data)
-            except (TypeError, ValueError) as ex:
-                raise CommandInvalidError("Invalid JSON configuration") from ex
+        # Structural validation (token/components/hashed/inherit/algorithm types)
+        # — 1:1 with upstream ``validate_json_data``. The port previously only
+        # checked JSON-parseability, accepting structurally-invalid themes.
+        _validate_theme_json_data(json_data)
 
     async def run(self) -> Any:
         item = await self._dao.create(self._data)
@@ -118,6 +170,10 @@ class UpdateThemeCommand(AsyncBaseCommand[Any]):
         self._model = await self._dao.find_by_id(self._pk)
         if not self._model:
             raise ObjectNotFoundError("Theme", self._pk)
+        # Validate json_data structure when provided (1:1 upstream PUT path).
+        json_data = self._data.get("json_data")
+        if json_data not in (None, ""):
+            _validate_theme_json_data(json_data)
 
     async def run(self) -> Any:
         item = await self._dao.update(self._model, self._data)
