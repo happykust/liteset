@@ -433,6 +433,133 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
         return None
 
     @classmethod
+    def handle_cursor(cls, cursor: Cursor, query: Query) -> None:
+        """Handle a trino client cursor.
+
+        WARNING: if you execute a query, it will block until complete and you
+        will not be able to handle the cursor until complete. Use
+        ``execute_with_cursor`` instead, to handle this asynchronously.
+
+        1:1 with ``superset_old/db_engine_specs/trino.py`` adapted to the
+        port's session model: upstream commits the Flask-global ``db.session``;
+        here the ``query`` ORM object carries its own (sync) session, resolved
+        via ``object_session``.  ``tracking_url`` is a read-only property in the
+        port (the column is ``tracking_url_raw``), so write the raw column.
+        """
+        from sqlalchemy.orm import object_session
+
+        from superset.constants import QUERY_CANCEL_KEY, QUERY_EARLY_CANCEL_KEY
+
+        # Adds the executed query id to the extra payload so the query can be
+        # cancelled by a concurrent stop request.
+        cancel_query_id = cursor.query_id
+        logger.debug(
+            "Query %s: queryId %s found in cursor", query.id, cancel_query_id
+        )
+        query.set_extra_json_key(key=QUERY_CANCEL_KEY, value=cancel_query_id)
+
+        if tracking_url := cls.get_tracking_url(cursor):
+            query.tracking_url_raw = tracking_url
+
+        session = object_session(query)
+        if session is not None:
+            session.commit()
+
+        # If query cancellation was requested prior to the handle_cursor call but
+        # the query was still executed, trigger the actual cancellation now.
+        if query.extra.get(QUERY_EARLY_CANCEL_KEY):
+            cls.cancel_query(
+                cursor=cursor,
+                query=query,
+                cancel_query_id=cancel_query_id,
+            )
+
+        super().handle_cursor(cursor=cursor, query=query)
+
+    @classmethod
+    def execute_with_cursor(
+        cls,
+        cursor: Cursor,
+        sql: str,
+        query: Query,
+    ) -> None:
+        """Trigger execution of a query and handle the resulting cursor.
+
+        Trino's client blocks until the query is complete, so we run it in
+        another thread and poll ``handle_cursor`` for the query ID to appear on
+        the cursor in parallel — that ID is what lets a concurrent stop request
+        cancel the running query.
+
+        1:1 with ``superset_old/db_engine_specs/trino.py`` minus the Flask
+        ``@copy_current_request_context`` wrapper: the port's Celery worker
+        runs tasks without a Flask request/``g`` context (no ``ContextTask``),
+        and the sync engine spec's ``execute`` needs none, so a plain thread
+        suffices.
+        """
+        import threading
+        import time
+
+        query_id = query.id
+        query_database = query.database
+
+        execute_result: dict[str, Any] = {}
+        execute_event = threading.Event()
+
+        def _execute(
+            results: dict[str, Any],
+            event: threading.Event,
+        ) -> None:
+            logger.debug("Query %s: Running query: %s", query_id, sql)
+            try:
+                cls.execute(cursor, sql, query_database)
+            except Exception as ex:  # noqa: BLE001  # pylint: disable=broad-except
+                results["error"] = ex
+            finally:
+                event.set()
+
+        execute_thread = threading.Thread(
+            target=_execute,
+            args=(execute_result, execute_event),
+        )
+        execute_thread.start()
+
+        # Wait for the thread to start before continuing.
+        time.sleep(0.1)
+        # Wait for a query ID to be available before handling the cursor, as
+        # it's required by that method; it may never become available on error.
+        while not cursor.query_id and not execute_event.is_set():
+            time.sleep(0.1)
+
+        logger.debug("Query %s: Handling cursor", query_id)
+        cls.handle_cursor(cursor, query)
+
+        # Block until the query completes; same behaviour as the client itself.
+        logger.debug("Query %s: Waiting for query to complete", query_id)
+        execute_event.wait()
+
+        # Re-raise the original execution error (thread mangles the traceback,
+        # but throwing the original allows normal DB-error mapping downstream).
+        if err := execute_result.get("error"):
+            raise err
+
+    @classmethod
+    def prepare_cancel_query(cls, query: Query) -> None:
+        """Flag an early cancellation when no query ID has been captured yet.
+
+        1:1 with upstream, committing via the query's own (sync) session
+        instead of the Flask-global ``db.session``.
+        """
+        from sqlalchemy.orm import object_session
+
+        from superset.constants import QUERY_CANCEL_KEY, QUERY_EARLY_CANCEL_KEY
+
+        if QUERY_CANCEL_KEY not in query.extra:
+            query.set_extra_json_key(QUERY_EARLY_CANCEL_KEY, True)
+            session = object_session(query)
+            if session is not None:
+                session.commit()
+
+    @classmethod
     def cancel_query(cls, cursor: Cursor, query: Query, cancel_query_id: str) -> bool:
         """Cancel query in the underlying database.
 
