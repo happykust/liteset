@@ -25,7 +25,8 @@ from litestar import Controller, delete, get, post, put
 from litestar.datastructures import State, UploadFile
 from litestar.di import Provide
 from litestar.enums import RequestEncodingType
-from litestar.params import Body
+from litestar.params import Body, Parameter
+from litestar.response import Stream
 
 from superset.commands.theme import (
     BulkDeleteThemeCommand,
@@ -40,11 +41,13 @@ from superset.commands.theme import (
     UpdateThemeCommand,
 )
 from superset.controllers.base import (
+    build_export_headers,
     extract_ids_required,
     extract_pagination,
     get_info_payload,
     get_related_payload,
     serialize_list_response,
+    stream_zip,
 )
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError
@@ -438,40 +441,47 @@ class ThemeController(Controller):
     async def export_themes(
         self,
         dao: Any,
+        rison_params: list[int] | dict[str, Any] | None,
         current_user: UserProtocol,
-    ) -> dict[str, Any]:
-        """GET /api/v1/theme/export/ -- export themes as YAML in a ZIP bundle.
-
-        Ported from superset_old/themes/api.py ``ThemeRestApi.export``.
-        Queries all themes, serializes each to YAML, packages them into
-        a ZIP archive, and returns the file list as a dict.  The original
-        returns a binary ZIP via ``send_file``; here we return the dict
-        of filename -> YAML content for JSON transport.  Callers that
-        need a real ZIP download can wrap this response.
+        token: str | None = Parameter(query="token", default=None),
+    ) -> Stream:
+        """GET /api/v1/theme/export/?q=!(id1,id2) — download the requested
+        themes as a binary ZIP (1:1 upstream). The port previously dumped ALL
+        themes (ignoring the ``q`` ids) and returned a JSON dict instead of a
+        ZIP — the frontend "Export" download got an unusable response.
         """
         from datetime import datetime
         from io import BytesIO
         from zipfile import ZipFile
 
-        cmd = ExportThemesCommand(dao=dao)
+        ids = extract_ids_required(rison_params)
+        cmd = ExportThemesCommand(dao=dao, model_ids=ids)
         files = await cmd.execute()
-        await event_logger.alog_with_context("theme.export", user_id=current_user.id)
+        await event_logger.alog_with_context(
+            "theme.export", extra={"count": len(ids)}
+        )
 
         timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         root = f"theme_export_{timestamp}"
 
-        # Build ZIP in-memory (matching original format)
+        metadata = (
+            "version: 1.0.0\n"
+            "type: Theme\n"
+            f"timestamp: '{datetime.now().isoformat()}'\n"
+        )
         buf = BytesIO()
         with ZipFile(buf, "w") as bundle:
+            with bundle.open(f"{root}/metadata.yaml", "w") as fp:
+                fp.write(metadata.encode())
             for file_name, file_content in files:
                 with bundle.open(f"{root}/{file_name}", "w") as fp:
                     fp.write(file_content.encode())
-        buf.seek(0)
-
-        # Return as dict for JSON response; binary ZIP download would
-        # be handled by a dedicated streaming endpoint if needed.
-        result = dict(files)
-        return {"result": result}
+        return Stream(
+            stream_zip(buf),
+            status_code=200,
+            media_type="application/zip",
+            headers=build_export_headers(f"{root}.zip", token=token),
+        )
 
     @post(
         "/import/",

@@ -282,8 +282,11 @@ class ExportThemesCommand(AsyncBaseCommand[list[tuple[str, str]]]):
     Ported from superset_old/commands/theme/export.py.
     """
 
-    def __init__(self, dao: AsyncThemeDAO) -> None:
+    def __init__(
+        self, dao: AsyncThemeDAO, model_ids: list[int] | None = None
+    ) -> None:
         self._dao = dao
+        self._model_ids = model_ids
 
     async def validate(self) -> None:
         pass
@@ -293,7 +296,13 @@ class ExportThemesCommand(AsyncBaseCommand[list[tuple[str, str]]]):
 
         from superset.utils.file import get_filename
 
-        themes = await self._dao.find_all()
+        # Export only the requested ids (1:1 upstream) — the port previously
+        # dumped ALL themes regardless of the ``q`` ids.
+        themes = (
+            await self._dao.find_by_ids(self._model_ids)
+            if self._model_ids
+            else await self._dao.find_all()
+        )
         result: list[tuple[str, str]] = []
         for theme in themes:
             file_name = get_filename(theme.theme_name, theme.id, skip_id=True)
