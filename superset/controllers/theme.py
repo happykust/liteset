@@ -103,20 +103,45 @@ class ThemeController(Controller):
         current_user: UserProtocol,
     ) -> dict[str, Any]:
         """GET /api/v1/theme/ — list themes with optional pagination."""
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.core import Theme
+
         page, page_size = extract_pagination(rison_params)
-        themes = await dao.find_all(page=page, page_size=page_size)
+        # Eager-load the audit-user relationships so the dotted ``changed_by.*``
+        # / ``created_by.*`` columns serialize without a lazy-load MissingGreenlet.
+        themes = await dao.find_all(
+            page=page,
+            page_size=page_size,
+            options=[
+                selectinload(Theme.changed_by),
+                selectinload(Theme.created_by),
+            ],
+        )
         total = await dao.count()
         await event_logger.alog_with_context("theme.list", user_id=current_user.id)
+        # 1:1 with upstream ``ThemeRestApi.list_columns`` — the Theme model has
+        # NO css/json_metadata/description columns (those were phantom and
+        # returned empty); expose the real fields (json_data/uuid/is_system*)
+        # the theme editor + export need.
         return serialize_list_response(
             themes,
             total,
             [
                 "id",
                 "theme_name",
-                "css",
-                "json_metadata",
-                "description",
+                "json_data",
+                "uuid",
+                "is_system",
                 "is_system_default",
+                "is_system_dark",
+                "changed_on_delta_humanized",
+                "changed_by.first_name",
+                "changed_by.id",
+                "changed_by.last_name",
+                "created_by.first_name",
+                "created_by.id",
+                "created_by.last_name",
             ],
             list_title="List Theme",
         )
@@ -136,29 +161,56 @@ class ThemeController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/theme/{pk} — get a single theme.
 
-        Returns the actual ``Theme`` columns (``theme_name`` +
-        ``json_data`` + the system flags). The legacy ``css`` /
-        ``json_metadata`` / ``description`` keys are kept for frontend
-        backwards-compat but read empty.
+        Returns the real ``Theme`` columns 1:1 with upstream
+        ``ThemeRestApi.show_columns`` (id, theme_name, json_data, uuid,
+        is_system*, audit). There is NO css/json_metadata/description on the
+        model — those phantom keys are dropped.
         """
-        theme = await dao.find_by_id(pk)
-        if not theme:
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.core import Theme
+
+        themes = await dao.find_all(
+            filters=[Theme.id == pk],
+            page_size=1,
+            options=[
+                selectinload(Theme.changed_by),
+                selectinload(Theme.created_by),
+            ],
+        )
+        if not themes:
             raise ObjectNotFoundError("Theme", pk)
+        theme = themes[0]
         await event_logger.alog_with_context(
             "theme.get", object_ref=str(pk), user_id=current_user.id
         )
+        changed_by = getattr(theme, "changed_by", None)
+        created_by = getattr(theme, "created_by", None)
+
+        def _user_ref(u: Any) -> dict[str, Any] | None:
+            if u is None:
+                return None
+            return {
+                "first_name": getattr(u, "first_name", ""),
+                "id": u.id,
+                "last_name": getattr(u, "last_name", ""),
+            }
+
         return {
             "id": theme.id,
             "result": {
                 "id": theme.id,
                 "theme_name": theme.theme_name,
                 "json_data": getattr(theme, "json_data", "") or "",
-                "css": getattr(theme, "css", ""),
-                "json_metadata": getattr(theme, "json_metadata", ""),
-                "description": getattr(theme, "description", ""),
+                "uuid": str(theme.uuid) if getattr(theme, "uuid", None) else None,
                 "is_system": getattr(theme, "is_system", False),
                 "is_system_default": getattr(theme, "is_system_default", False),
                 "is_system_dark": getattr(theme, "is_system_dark", False),
+                "changed_on_delta_humanized": getattr(
+                    theme, "changed_on_delta_humanized", None
+                ),
+                "changed_by": _user_ref(changed_by),
+                "created_by": _user_ref(created_by),
             },
         }
 
