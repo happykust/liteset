@@ -42,8 +42,8 @@ from superset.commands.theme import (
 )
 from superset.controllers.base import (
     build_export_headers,
+    build_rison_query_params,
     extract_ids_required,
-    extract_pagination,
     get_info_payload,
     get_related_payload,
     serialize_list_response,
@@ -105,23 +105,42 @@ class ThemeController(Controller):
         rison_params: dict[str, Any] | None,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        """GET /api/v1/theme/ — list themes with optional pagination."""
+        """GET /api/v1/theme/ — list themes with rison filters + pagination."""
+        from sqlalchemy import or_
         from sqlalchemy.orm import selectinload
 
         from superset.models.core import Theme
 
-        page, page_size = extract_pagination(rison_params)
+        def _theme_all_text(model: Any, value: Any) -> Any:
+            """``ThemeAllTextFilter`` — free-text search over theme_name +
+            json_data (1:1 upstream)."""
+            if not value:
+                return None
+            ilike = f"%{value}%"
+            return or_(model.theme_name.ilike(ilike), model.json_data.ilike(ilike))
+
+        # Apply the request's rison filters/ordering — the theme list previously
+        # IGNORED them (only paginated), so ``?q=(filters:...)`` was a silent
+        # no-op (it always returned every theme). Now supports the standard
+        # operators + the ``theme_all_text`` custom filter.
+        rison_filters, order_by, page, page_size = build_rison_query_params(
+            Theme,
+            rison_params,
+            custom_filters={"theme_all_text": _theme_all_text},
+        )
         # Eager-load the audit-user relationships so the dotted ``changed_by.*``
         # / ``created_by.*`` columns serialize without a lazy-load MissingGreenlet.
         themes = await dao.find_all(
+            filters=rison_filters or None,
             page=page,
             page_size=page_size,
+            order_by=order_by,
             options=[
                 selectinload(Theme.changed_by),
                 selectinload(Theme.created_by),
             ],
         )
-        total = await dao.count()
+        total = await dao.count(filters=rison_filters or None)
         await event_logger.alog_with_context("theme.list", user_id=current_user.id)
         # 1:1 with upstream ``ThemeRestApi.list_columns`` — the Theme model has
         # NO css/json_metadata/description columns (those were phantom and
