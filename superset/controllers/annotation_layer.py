@@ -74,9 +74,20 @@ class AnnotationLayerController(Controller):
 
         from superset.models.annotations import AnnotationLayer
 
+        from sqlalchemy import or_
+
+        def _annotation_layer_all_text(model: Any, value: Any) -> Any:
+            """``AnnotationLayerAllTextFilter`` — free-text over name + descr
+            (1:1 upstream)."""
+            if not value:
+                return None
+            ilike = f"%{value}%"
+            return or_(model.name.ilike(ilike), model.descr.ilike(ilike))
+
         rison_filters, order_by, page, page_size = build_rison_query_params(
             AnnotationLayer,
             rison_params,
+            custom_filters={"annotation_layer_all_text": _annotation_layer_all_text},
         )
         items = await dao.find_all(
             filters=rison_filters or None,

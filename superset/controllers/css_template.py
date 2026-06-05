@@ -72,9 +72,20 @@ class CssTemplateController(Controller):
 
         from superset.models.core import CssTemplate
 
+        from sqlalchemy import or_
+
+        def _css_template_all_text(model: Any, value: Any) -> Any:
+            """``CssTemplateAllTextFilter`` — free-text over template_name + css
+            (1:1 upstream)."""
+            if not value:
+                return None
+            ilike = f"%{value}%"
+            return or_(model.template_name.ilike(ilike), model.css.ilike(ilike))
+
         rison_filters, order_by, page, page_size = build_rison_query_params(
             CssTemplate,
             rison_params,
+            custom_filters={"css_template_all_text": _css_template_all_text},
         )
         templates = await dao.find_all(
             filters=rison_filters or None,
