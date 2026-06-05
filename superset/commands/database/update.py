@@ -103,6 +103,15 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
         # Capture the original name before the setattr loop overwrites it, so a
         # rename can be propagated to the (name-based) FAB permissions below.
         original_database_name = self._database.database_name
+        # Capture the original default catalog + multi-catalog flag BEFORE the
+        # setattr loop mutates the model — used to propagate a default-catalog
+        # change to dependent assets after the update (1:1 with upstream
+        # ``UpdateDatabaseCommand._update_catalog_attribute``). For catalog-less
+        # engines (e.g. postgres) ``get_default_catalog`` is ``None`` → no-op.
+        original_catalog = self._database.get_default_catalog()
+        original_allow_multi_catalog = bool(
+            getattr(self._database, "allow_multi_catalog", False)
+        )
 
         # --- build_sqlalchemy_uri --------------------------------------------
         # Mirrors the ``@pre_load`` hook on
@@ -197,6 +206,22 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
             self._database.changed_by_fk = self._user_id
         await self._dao.session.flush()
 
+        # Propagate a default-catalog change to dependent assets (SqlaTable /
+        # Query / SavedQuery / TabState / TableSchema) — 1:1 with upstream:
+        # only when the default catalog actually changed AND multi-catalog was
+        # NOT enabled on either the old or new config (with multi-catalog the
+        # per-asset catalog is meaningful and must be preserved).
+        new_catalog = self._database.get_default_catalog()
+        new_allow_multi_catalog = bool(
+            getattr(self._database, "allow_multi_catalog", False)
+        )
+        if (
+            new_catalog != original_catalog
+            and not original_allow_multi_catalog
+            and not new_allow_multi_catalog
+        ):
+            await self._update_catalog_attribute(self._database.id, new_catalog)
+
         # If the database name changed, existing permissions are name-based and
         # must be updated.  Mirrors superset_old UpdateDatabaseCommand which
         # always invokes SyncPermissionsCommand after an update (it internally
@@ -204,6 +229,24 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
         await self._sync_permissions(original_database_name)
 
         return self._database
+
+    async def _update_catalog_attribute(
+        self, database_id: int, new_catalog: str | None
+    ) -> None:
+        """Set ``catalog`` on all assets tied to this database — 1:1 with
+        ``superset_old/commands/database/update.py::_update_catalog_attribute``.
+        ``SavedQuery`` keys the database on ``db_id``; the others on
+        ``database_id``."""
+        from sqlalchemy import update as _sa_update
+
+        from superset.models.connectors import SqlaTable
+        from superset.models.sql_lab import Query, SavedQuery, TableSchema, TabState
+
+        for model in (SqlaTable, Query, SavedQuery, TabState, TableSchema):
+            fk = SavedQuery.db_id if model is SavedQuery else model.database_id
+            await self._dao.session.execute(
+                _sa_update(model).where(fk == database_id).values(catalog=new_catalog)
+            )
 
     async def _sync_permissions(self, original_database_name: str) -> None:
         """Resync name-based catalog/schema permissions after an update.
