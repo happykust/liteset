@@ -492,6 +492,7 @@ class ThemeController(Controller):
         dao: Any,
         current_user: UserProtocol,
         data: UploadFile = Body(media_type=RequestEncodingType.MULTI_PART),  # noqa: B008
+        overwrite: bool = False,
     ) -> dict[str, Any]:
         """POST /api/v1/theme/import/ -- import themes from a ZIP file.
 
@@ -547,7 +548,20 @@ class ThemeController(Controller):
                 "errors": ["No YAML files under themes/ in the uploaded ZIP"],
             }
 
-        cmd = ImportThemesCommand(dao=dao, contents=contents, overwrite=True)
+        # Expose the current user so any audit-stamp path resolves the
+        # importing user (mirrors the database-upload controller).
+        from superset.utils.core import set_current_user
+
+        set_current_user(current_user)
+        # ``overwrite`` is read from the multipart form (was hardcoded True →
+        # an import silently clobbered an existing same-uuid theme); imported
+        # themes get the current user as owner.
+        cmd = ImportThemesCommand(
+            dao=dao,
+            contents=contents,
+            overwrite=overwrite,
+            current_user=current_user,
+        )
         count = await cmd.execute()
         await event_logger.alog_with_context("theme.import", user_id=current_user.id)
         return {"message": f"Imported {count} themes"}

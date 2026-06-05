@@ -394,16 +394,20 @@ class ImportThemesCommand(AsyncBaseCommand[int]):
         dao: AsyncThemeDAO,
         contents: dict[str, Any],
         overwrite: bool = False,
+        current_user: Any | None = None,
     ) -> None:
         self._dao = dao
         self._contents = contents
         self._overwrite = overwrite
+        self._current_user = current_user
 
     async def validate(self) -> None:
         if not self._contents:
             raise CommandInvalidError("No theme contents provided")
 
     async def run(self) -> int:
+        import json as _json
+
         count = 0
         for file_name, config in self._contents.items():
             if not file_name.startswith("themes/"):
@@ -413,9 +417,14 @@ class ImportThemesCommand(AsyncBaseCommand[int]):
 
             # Convert json_data from dict to string if needed
             if isinstance(config.get("json_data"), dict):
-                import json as _json
-
                 config["json_data"] = _json.dumps(config["json_data"])
+
+            # Structurally validate the imported theme — 1:1 with upstream's
+            # ImportV1ThemeSchema (which runs is_valid_theme). The port
+            # previously imported any YAML without validating the structure.
+            raw_json = config.get("json_data")
+            if raw_json not in (None, ""):
+                _validate_theme_json_data(raw_json)
 
             uuid_val = config.get("uuid")
             existing = None
@@ -427,6 +436,14 @@ class ImportThemesCommand(AsyncBaseCommand[int]):
                     await self._dao.update(existing, config)
                 # else skip
             else:
+                # Assign the importing user as owner (created_by) — 1:1 with
+                # upstream's ``get_user()`` ownership on import.
+                if self._current_user is not None:
+                    config = {
+                        **config,
+                        "created_by_fk": self._current_user.id,
+                        "changed_by_fk": self._current_user.id,
+                    }
                 await self._dao.create(config)
             count += 1
 
