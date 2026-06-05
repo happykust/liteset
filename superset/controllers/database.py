@@ -94,7 +94,11 @@ from superset.schemas.database import (
 from superset.sql.parse import Table
 from superset.typing import DatabaseDAOProtocol, SecurityManagerProtocol, UserProtocol
 from superset.utils import filter_none, filter_unset, mask_uri_password
-from superset.utils.database import get_async_connection
+from superset.utils.database import (
+    database_has_async_driver,
+    get_async_connection,
+    get_sync_engine,
+)
 
 if TYPE_CHECKING:
     from superset.db.daos.database import AsyncDatabaseDAO
@@ -244,6 +248,54 @@ def _inspect_table_metadata(  # noqa: C901
     # the original Superset implementation.  The base engine spec returns
     # ``{}`` and engine-specific overrides (e.g. BigQuery) provide
     # partition/clustering info.
+
+
+# ----------------------------------------------------------------------------
+# Synchronous-driver introspection fallback
+# ----------------------------------------------------------------------------
+# Engines without an async SQLAlchemy driver (Trino, ClickHouse, …) cannot go
+# through ``get_async_connection`` — ``create_async_engine`` on a sync-only URI
+# raises "the asyncio extension requires an async driver".  For those engines we
+# reproduce upstream Superset's *synchronous* introspection: a plain SQLAlchemy
+# inspector plus the engine spec's sync ``get_{catalog,schema,table,view}_names``
+# classmethods.  Callers offload these to a thread (``asyncio.to_thread``).
+def _sync_catalog_names(database: Any) -> set[str]:
+    """Synchronous catalog enumeration (1:1 upstream ``get_catalog_names``)."""
+    spec = database.db_engine_spec
+    with database.get_inspector() as inspector:
+        return spec.get_catalog_names(database, inspector)
+
+
+def _sync_schema_names(database: Any, catalog: str | None) -> set[str]:
+    """Synchronous schema enumeration (1:1 upstream ``get_schema_names``)."""
+    spec = database.db_engine_spec
+    with database.get_inspector(catalog=catalog) as inspector:
+        return spec.get_schema_names(inspector)
+
+
+def _sync_table_and_view_names(
+    database: Any, catalog: str | None, schema: str | None
+) -> tuple[set[str], set[str]]:
+    """Synchronous table + view enumeration (1:1 upstream)."""
+    spec = database.db_engine_spec
+    with database.get_inspector(catalog=catalog, schema=schema) as inspector:
+        tables = spec.get_table_names(database, inspector, schema)
+        views = spec.get_view_names(database, inspector, schema)
+    return tables, views
+
+
+def _sync_table_metadata(
+    database: Any, catalog: str | None, name: str, schema: str | None
+) -> dict[str, Any]:
+    """Synchronous table-metadata reflection for sync-only engines.
+
+    ``_inspect_table_metadata`` already takes a *sync* ``Connection`` (it was
+    written to be driven via ``async_conn.run_sync``); here we hand it one
+    directly from the sync engine.
+    """
+    with get_sync_engine(database, catalog=catalog, schema=schema) as engine:
+        with engine.connect() as conn:
+            return _inspect_table_metadata(conn, name, schema)
 
 
 def _build_database_result(db: Any) -> DatabaseDetailResult:
@@ -1204,8 +1256,15 @@ class DatabaseController(Controller):
         if not database:
             raise ObjectNotFoundError("Database", pk)
         try:
-            async with get_async_connection(database) as (conn, engine_spec):
-                catalog_names = await engine_spec.get_catalog_names(conn)
+            if database_has_async_driver(database):
+                async with get_async_connection(database) as (conn, engine_spec):
+                    catalog_names = await engine_spec.get_catalog_names(conn)
+            else:
+                # Sync-only engine (Trino, ClickHouse, …) — reflect via a
+                # thread-offloaded synchronous inspector.
+                catalog_names = await asyncio.to_thread(
+                    _sync_catalog_names, database
+                )
             catalogs_list = await security_manager.get_catalogs_accessible_by_user(
                 database,
                 sorted(catalog_names),
@@ -1249,8 +1308,15 @@ class DatabaseController(Controller):
         # always fetches live metadata so it is a no-op here.
         _ = force
         try:
-            async with get_async_connection(database) as (conn, engine_spec):
-                schema_names = await engine_spec.get_schema_names(conn, catalog=catalog)
+            if database_has_async_driver(database):
+                async with get_async_connection(database) as (conn, engine_spec):
+                    schema_names = await engine_spec.get_schema_names(
+                        conn, catalog=catalog
+                    )
+            else:
+                schema_names = await asyncio.to_thread(
+                    _sync_schema_names, database, catalog
+                )
             schemas_list = await security_manager.get_schemas_accessible_by_user(
                 database,
                 sorted(schema_names),
@@ -1316,9 +1382,14 @@ class DatabaseController(Controller):
             raise ObjectNotFoundError("Database", pk)
         schema = effective_schema
         try:
-            async with get_async_connection(database) as (conn, engine_spec):
-                table_names = await engine_spec.get_table_names(conn, schema=schema)
-                view_names = await engine_spec.get_view_names(conn, schema=schema)
+            if database_has_async_driver(database):
+                async with get_async_connection(database) as (conn, engine_spec):
+                    table_names = await engine_spec.get_table_names(conn, schema=schema)
+                    view_names = await engine_spec.get_view_names(conn, schema=schema)
+            else:
+                table_names, view_names = await asyncio.to_thread(
+                    _sync_table_and_view_names, database, _effective_catalog, schema
+                )
 
             # Per-table access filtering — 1:1 with upstream
             # ``TablesDatabaseCommand`` (``get_datasources_accessible_by_user``).
@@ -1430,9 +1501,18 @@ class DatabaseController(Controller):
             raise ObjectNotFoundError("Table", name) from exc
 
         try:
-            async with get_async_connection(database) as (conn, _engine_spec):
-                raw = await conn.run_sync(
-                    _inspect_table_metadata,
+            if database_has_async_driver(database):
+                async with get_async_connection(database) as (conn, _engine_spec):
+                    raw = await conn.run_sync(
+                        _inspect_table_metadata,
+                        name,
+                        effective_schema,
+                    )
+            else:
+                raw = await asyncio.to_thread(
+                    _sync_table_metadata,
+                    database,
+                    catalog,
                     name,
                     effective_schema,
                 )
@@ -1637,9 +1717,18 @@ class DatabaseController(Controller):
             raise ObjectNotFoundError("Table", parsed_table) from exc
 
         try:
-            async with get_async_connection(database) as (conn, _engine_spec):
-                raw = await conn.run_sync(
-                    _inspect_table_metadata,
+            if database_has_async_driver(database):
+                async with get_async_connection(database) as (conn, _engine_spec):
+                    raw = await conn.run_sync(
+                        _inspect_table_metadata,
+                        parsed_table,
+                        parsed_schema,
+                    )
+            else:
+                raw = await asyncio.to_thread(
+                    _sync_table_metadata,
+                    database,
+                    None,
                     parsed_table,
                     parsed_schema,
                 )

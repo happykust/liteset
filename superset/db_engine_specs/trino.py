@@ -37,6 +37,7 @@ from typing import Any, TYPE_CHECKING
 from urllib import parse
 
 from sqlalchemy import types
+from sqlalchemy.engine import Engine
 from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.engine.url import URL
 from sqlalchemy.exc import NoSuchTableError
@@ -341,8 +342,21 @@ class PrestoBaseEngineSpec(BaseEngineSpec, metaclass=ABCMeta):
         database: Database,
         inspector: Inspector,
     ) -> set[str]:
-        """Get all catalogs."""
-        return {catalog for (catalog,) in inspector.bind.execute("SHOW CATALOGS")}
+        """Get all catalogs.
+
+        1:1 with upstream ``PrestoBaseEngineSpec.get_catalog_names``
+        (``SHOW CATALOGS``), adapted for SQLAlchemy 2.0 — upstream's
+        ``inspector.bind.execute("SHOW CATALOGS")`` relied on the removed
+        SA 1.x ``Engine.execute(str)`` shim, so open a real connection and
+        wrap the raw SQL in ``text()``.
+        """
+        from sqlalchemy import text
+
+        bind = inspector.bind
+        if isinstance(bind, Engine):
+            with bind.connect() as conn:
+                return {catalog for (catalog,) in conn.execute(text("SHOW CATALOGS"))}
+        return {catalog for (catalog,) in bind.execute(text("SHOW CATALOGS"))}
 
     @classmethod
     def adjust_engine_params(

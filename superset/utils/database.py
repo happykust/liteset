@@ -55,6 +55,23 @@ def _to_async_uri(uri: str) -> str:
     return uri
 
 
+def database_has_async_driver(database: Any) -> bool:
+    """Return ``True`` if the database can be reached over an async driver.
+
+    Only the backends in :data:`_SYNC_TO_ASYNC_DRIVERS` (postgres / mysql /
+    sqlite) have async SQLAlchemy drivers; engines like Trino or ClickHouse
+    are sync-only (their DBAPI has no asyncio support).  Callers that need a
+    connection for metadata introspection use this to decide between the
+    async path (:func:`get_async_connection` + ``conn.run_sync``) and a
+    thread-offloaded sync path (:func:`get_sync_connection`).
+    """
+    uri = getattr(database, "sqlalchemy_uri", "") or ""
+    # Already an async prefix, or convertible to one → async-capable.
+    if any(uri.startswith(prefix) for prefix in _SYNC_TO_ASYNC_DRIVERS.values()):
+        return True
+    return _to_async_uri(uri) != uri
+
+
 def get_engine_spec_for_database(database: Any) -> type[BaseAsyncEngineSpec]:
     """Resolve the async engine spec for a Database model object."""
     backend = getattr(database, "backend", "")
