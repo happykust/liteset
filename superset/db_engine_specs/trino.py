@@ -512,6 +512,187 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
             raise
 
     @classmethod
+    def get_extra_table_metadata(
+        cls,
+        database: Database,
+        table: Table,
+    ) -> dict[str, Any]:
+        """Return partition + view metadata for a Trino table.
+
+        1:1 with ``superset_old/db_engine_specs/trino.py`` adapted to the
+        port's sync helpers: ``Database.get_indexes`` / ``Database.has_view``
+        aren't ported on the async Database model, so the partition indexes
+        and the view check are resolved inline through a single synchronous
+        inspector instead.
+        """
+        metadata: dict[str, Any] = {}
+
+        with database.get_inspector(
+            catalog=table.catalog,
+            schema=table.schema,
+        ) as inspector:
+            try:
+                indexes = cls.get_indexes(database, inspector, table)
+            except Exception:  # noqa: BLE001
+                indexes = []
+
+            if indexes:
+                col_names, latest_parts = cls.latest_partition(
+                    database,
+                    table,
+                    show_first=True,
+                    indexes=indexes,
+                )
+                if not latest_parts:
+                    latest_parts = tuple([None] * len(col_names))
+                metadata["partitions"] = {
+                    "cols": sorted(
+                        {
+                            column_name
+                            for index in indexes
+                            if index.get("name") == "partition"
+                            for column_name in index.get("column_names", [])
+                        }
+                    ),
+                    "latest": dict(zip(col_names, latest_parts, strict=False)),
+                    "partitionQuery": cls._partition_query(
+                        table=table,
+                        indexes=indexes,
+                        database=database,
+                    ),
+                }
+
+            # ``database.has_view`` isn't ported — detect via the inspector.
+            if table.table in set(inspector.get_view_names(schema=table.schema)):
+                metadata["view"] = inspector.get_view_definition(
+                    table.table,
+                    table.schema,
+                )
+
+        return metadata
+
+    @classmethod
+    def _partition_query(
+        cls,
+        table: Table,
+        indexes: list[dict[str, Any]],
+        database: Database,
+        limit: int = 0,
+        order_by: list[tuple[str, bool]] | None = None,
+        filters: dict[Any, Any] | None = None,
+    ) -> str:
+        """Return a partition query (1:1 upstream ``PrestoBaseEngineSpec``)."""
+        from textwrap import dedent
+
+        from packaging.version import Version
+
+        limit_clause = f"LIMIT {limit}" if limit else ""
+        order_by_clause = ""
+        if order_by:
+            l = []  # noqa: E741
+            for field, desc in order_by:
+                l.append(field + " DESC" if desc else "")
+            order_by_clause = "ORDER BY " + ", ".join(l)
+
+        where_clause = ""
+        if filters:
+            l = []  # noqa: E741
+            for field, value in filters.items():
+                l.append(f"{field} = '{value}'")
+            where_clause = "WHERE " + " AND ".join(l)
+
+        # Partition select syntax changed in v0.199, so check here.
+        presto_version = database.get_extra().get("version")
+        if presto_version and Version(presto_version) < Version("0.199"):
+            full_table_name = (
+                f"{table.schema}.{table.table}" if table.schema else table.table
+            )
+            partition_select_clause = f"SHOW PARTITIONS FROM {full_table_name}"
+        else:
+            system_table_name = f'"{table.table}$partitions"'
+            full_table_name = (
+                f"{table.schema}.{system_table_name}"
+                if table.schema
+                else system_table_name
+            )
+            partition_select_clause = f"SELECT * FROM {full_table_name}"  # noqa: S608
+
+        sql = dedent(
+            f"""\
+            {partition_select_clause}
+            {where_clause}
+            {order_by_clause}
+            {limit_clause}
+        """
+        )
+        return sql
+
+    @classmethod
+    def _latest_partition_from_df(cls, df: Any) -> list[str] | None:
+        if not df.empty:
+            return df.to_records(index=False)[0].item()
+        return None
+
+    @classmethod
+    def latest_partition(
+        cls,
+        database: Database,
+        table: Table,
+        show_first: bool = False,
+        indexes: list[dict[str, Any]] | None = None,
+    ) -> tuple[list[str], list[str] | None]:
+        """Return col names + the latest (max) partition value for a table.
+
+        1:1 with upstream ``PrestoBaseEngineSpec.latest_partition``.  The
+        upstream ``@cache_manager.data_cache.memoize(timeout=60)`` decorator
+        is intentionally dropped (perf-only; the port wires no engine-spec
+        data-cache memoization — same call as the ClickHouse ``get_function_names``
+        decorator).
+        """
+        from superset.exceptions import SupersetTemplateException
+
+        if indexes is None:
+            with database.get_inspector(
+                catalog=table.catalog,
+                schema=table.schema,
+            ) as inspector:
+                indexes = cls.get_indexes(database, inspector, table)
+
+        if not indexes:
+            raise SupersetTemplateException(
+                f"Error getting partition for {table}. "
+                "Verify that this table has a partition."
+            )
+
+        if len(indexes[0]["column_names"]) < 1:
+            raise SupersetTemplateException(
+                "The table should have one partitioned field"
+            )
+
+        if not show_first and len(indexes[0]["column_names"]) > 1:
+            raise SupersetTemplateException(
+                "The table should have a single partitioned field "
+                "to use this function. You may want to use "
+                "`presto.latest_sub_partition`"
+            )
+
+        column_names = indexes[0]["column_names"]
+
+        return column_names, cls._latest_partition_from_df(
+            df=database.get_df(
+                sql=cls._partition_query(
+                    table,
+                    indexes,
+                    database,
+                    limit=1,
+                    order_by=[(column_name, True) for column_name in column_names],
+                ),
+                catalog=table.catalog,
+                schema=table.schema,
+            )
+        )
+
+    @classmethod
     def get_dbapi_exception_mapping(cls) -> dict[type[Exception], type[Exception]]:
         # pylint: disable=import-outside-toplevel
         from requests import exceptions as requests_exceptions

@@ -259,6 +259,26 @@ def _inspect_table_metadata(  # noqa: C901
 # reproduce upstream Superset's *synchronous* introspection: a plain SQLAlchemy
 # inspector plus the engine spec's sync ``get_{catalog,schema,table,view}_names``
 # classmethods.  Callers offload these to a thread (``asyncio.to_thread``).
+def _parse_rison_or_json(q: str) -> Any:
+    """Parse a ``q`` query argument as RISON, falling back to JSON.
+
+    The frontend sends ``q`` as RISON (e.g. ``(catalog:memory,force:!t)``) —
+    upstream Superset decodes it with ``prison``.  A bare ``json.loads`` (the
+    previous implementation) raised on every RISON payload, silently dropping
+    the ``catalog`` filter — harmless for single-catalog engines but it made
+    multi-catalog browsing (Trino, …) impossible.
+    """
+    try:
+        import prison
+
+        return prison.loads(q)
+    except Exception:  # noqa: BLE001
+        try:
+            return json.loads(q)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+
+
 def _sync_catalog_names(database: Any) -> set[str]:
     """Synchronous catalog enumeration (1:1 upstream ``get_catalog_names``)."""
     spec = database.db_engine_spec
@@ -1247,11 +1267,9 @@ class DatabaseController(Controller):
         # Parse ``force`` from RISON query param ``q`` for API parity.
         # Async path always fetches live metadata, so ``force`` is a no-op.
         if q:
-            try:
-                _parsed = json.loads(q)
+            _parsed = _parse_rison_or_json(q)
+            if isinstance(_parsed, dict):
                 _ = bool(_parsed.get("force", False))
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
@@ -1297,13 +1315,11 @@ class DatabaseController(Controller):
         force: bool = False
         upload_allowed: bool = False
         if q:
-            try:
-                rison_parsed = json.loads(q)
+            rison_parsed = _parse_rison_or_json(q)
+            if isinstance(rison_parsed, dict):
                 catalog = rison_parsed.get("catalog")
                 force = bool(rison_parsed.get("force", False))
                 upload_allowed = bool(rison_parsed.get("upload_allowed", False))
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
         # ``force`` is accepted for API parity (cache bypass); async path
         # always fetches live metadata so it is a no-op here.
         _ = force

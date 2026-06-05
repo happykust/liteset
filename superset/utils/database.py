@@ -165,6 +165,38 @@ def get_sync_engine(
         except Exception:  # noqa: BLE001
             connect_args = {}
 
+        # Catalog/schema scoping: engines that carry the catalog (and schema) in
+        # the URL — Trino: ``trino://host/<catalog>/<schema>`` — need the
+        # requested namespace merged into the URI, otherwise the inspector binds
+        # to the URI's *default* catalog and a non-default catalog/schema browses
+        # the wrong namespace.  Apply the engine spec's (pure-URI) adjust hook
+        # only when a catalog/schema override is supplied; defensively fall back
+        # to the raw URI if the spec needs unavailable context.
+        if (catalog or schema) and not database_has_async_driver(database):
+            try:
+                from sqlalchemy.engine import make_url
+
+                from superset.db_engine_specs import get_engine_spec
+
+                # The *sync* engine spec carries the catalog/schema-aware
+                # ``adjust_engine_params(uri, connect_args, catalog, schema)``
+                # (the async spec's hook has a different, catalog-less
+                # signature), so resolve it directly rather than via
+                # ``get_engine_spec_for_database`` (which returns the async one).
+                sync_spec = getattr(database, "db_engine_spec", None)
+                if sync_spec is None:
+                    backend = (sync_uri.split("://", 1)[0] or "").split("+")[0]
+                    sync_spec = get_engine_spec(backend, "")
+                adjusted_url, connect_args = sync_spec.adjust_engine_params(
+                    make_url(sync_uri),
+                    connect_args,
+                    catalog=catalog,
+                    schema=schema,
+                )
+                sync_uri = str(adjusted_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("adjust_engine_params skipped for sync engine: %s", exc)
+
         engine_kwargs: dict[str, Any] = {"connect_args": connect_args}
         if nullpool:
             from sqlalchemy.pool import NullPool
