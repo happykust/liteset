@@ -48,16 +48,84 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
         self._ignore_permissions = ignore_permissions
 
     async def _validate(self, configs: dict[str, dict[str, Any]]) -> None:
+        from uuid import UUID as _UUID
+
+        from superset.commands.database.ssh_tunnel.exceptions import (
+            SSHTunnelingNotEnabledError,
+            SSHTunnelInvalidCredentials,
+            SSHTunnelMissingCredentials,
+        )
+        from superset.databases.utils import make_url_safe
+        from superset.utils.feature_flags import feature_flag_manager
+
         for name, config in configs.items():
             # A bundled YAML file may parse to a non-dict (list/scalar); guard
             # before ``.get`` so a malformed file is skipped (matching ``run()``'s
             # ``isinstance`` checks) rather than raising AttributeError → HTTP 500.
-            if (
-                name.startswith("databases/")
-                and isinstance(config, dict)
-                and not config.get("database_name")
-            ):
+            if not (name.startswith("databases/") and isinstance(config, dict)):
+                continue
+            if not config.get("database_name"):
                 raise CommandInvalidError(f"Missing database_name in {name}")
+
+            # Credential validation — 1:1 with upstream
+            # ``ImportV1DatabaseSchema.validate_password`` /
+            # ``validate_ssh_tunnel_credentials``: only for NEW databases (an
+            # existing one by uuid keeps its stored secrets), require a real
+            # password when the URI carries the mask, and enforce the SSH-tunnel
+            # feature flag + login-method mutual-exclusion + masked-credential
+            # checks. The port previously validated only ``database_name``.
+            uuid_str = config.get("uuid")
+            existing = None
+            if uuid_str:
+                try:
+                    existing = await self._dao.find_one_or_none(
+                        uuid=_UUID(str(uuid_str))
+                    )
+                except (ValueError, TypeError):
+                    existing = None
+            if existing:
+                continue
+
+            try:
+                uri_password = make_url_safe(config.get("sqlalchemy_uri", "")).password
+            except Exception:  # noqa: BLE001
+                uri_password = None
+            if uri_password == PASSWORD_MASK and config.get("password") is None:
+                raise CommandInvalidError(
+                    "Must provide a password for the database"
+                )
+
+            ssh_tunnel = config.get("ssh_tunnel")
+            if ssh_tunnel:
+                if not feature_flag_manager.is_feature_enabled("SSH_TUNNELING"):
+                    raise SSHTunnelingNotEnabledError()
+                ssh_password = ssh_tunnel.get("password")
+                private_key = ssh_tunnel.get("private_key")
+                private_key_password = ssh_tunnel.get("private_key_password")
+                if ssh_password is not None:
+                    # Login method #1 (password) — must not mix with key method.
+                    if private_key is not None or private_key_password is not None:
+                        raise SSHTunnelInvalidCredentials()
+                    if ssh_password == PASSWORD_MASK:
+                        raise CommandInvalidError(
+                            "Must provide a password for the ssh tunnel"
+                        )
+                else:
+                    # Login method #2 (private key + key password).
+                    if private_key is None and private_key_password is None:
+                        raise SSHTunnelMissingCredentials()
+                    msgs: list[str] = []
+                    if private_key is None or private_key == PASSWORD_MASK:
+                        msgs.append("Must provide a private key for the ssh tunnel")
+                    if (
+                        private_key_password is None
+                        or private_key_password == PASSWORD_MASK
+                    ):
+                        msgs.append(
+                            "Must provide a private key password for the ssh tunnel"
+                        )
+                    if msgs:
+                        raise CommandInvalidError("; ".join(msgs))
 
     async def run(self) -> None:
         """Run the import in dependency order: databases first, then related datasets.
