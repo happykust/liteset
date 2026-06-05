@@ -1709,9 +1709,16 @@ class AsyncQueryContextProcessor:
                 )
             ]
 
-            # Drop row_limit/offset so the join isn't skewed by missing rows.
-            query_object_clone.row_limit = None
-            query_object_clone.row_offset = 0
+            # When the original query has a limit/offset, cap the offset
+            # subquery at ROW_LIMIT (NOT unbounded) and drop the offset — 1:1
+            # with upstream — so the join isn't skewed by missing records, while
+            # still bounding the subquery. The port previously forced
+            # ``row_limit = None`` → an UNBOUNDED offset subquery.
+            if query_object.row_limit or query_object.row_offset:
+                query_object_clone.row_limit = int(
+                    getattr(self._settings, "row_limit", 50000)
+                )
+                query_object_clone.row_offset = 0
 
             # Execute the shifted query. A failed offset query propagates (1:1
             # with the original, where ``datasource.query`` raises a build error
