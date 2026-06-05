@@ -498,6 +498,39 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
             raise
 
     @classmethod
+    def get_dbapi_exception_mapping(cls) -> dict[type[Exception], type[Exception]]:
+        # pylint: disable=import-outside-toplevel
+        from requests import exceptions as requests_exceptions
+        from trino import exceptions as trino_exceptions
+
+        from superset.db_engine_specs.exceptions import (
+            SupersetDBAPIConnectionError,
+            SupersetDBAPIDatabaseError,
+            SupersetDBAPIOperationalError,
+            SupersetDBAPIProgrammingError,
+        )
+
+        static_mapping: dict[type[Exception], type[Exception]] = {
+            requests_exceptions.ConnectionError: SupersetDBAPIConnectionError,
+        }
+
+        class _CustomMapping(dict[type[Exception], type[Exception]]):
+            def get(  # type: ignore[override]
+                self, item: type[Exception], default: type[Exception] | None = None
+            ) -> type[Exception] | None:
+                if static := static_mapping.get(item):
+                    return static
+                if issubclass(item, trino_exceptions.InternalError):
+                    return SupersetDBAPIDatabaseError
+                if issubclass(item, trino_exceptions.OperationalError):
+                    return SupersetDBAPIOperationalError
+                if issubclass(item, trino_exceptions.ProgrammingError):
+                    return SupersetDBAPIProgrammingError
+                return default
+
+        return _CustomMapping()
+
+    @classmethod
     def _expand_columns(cls, col: ResultSetColumnType) -> list[ResultSetColumnType]:
         """Expand the given column out to one or more columns by analysing their
         types, descending into ROWs and expanding out their inner fields
