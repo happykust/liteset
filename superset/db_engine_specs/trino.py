@@ -852,6 +852,69 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
         )
 
     @classmethod
+    def latest_sub_partition(
+        cls,
+        database: Database,
+        table: Table,
+        **kwargs: Any,
+    ) -> Any:
+        """Return the latest (max) partition value for a table.
+
+        A filtering criteria should be passed for all fields that are
+        partitioned except for the field to be returned.  For example,
+        if a table is partitioned by (``ds``, ``event_type`` and
+        ``event_category``) and you want the latest ``ds``, you'll want
+        to provide a filter as keyword arguments for both
+        ``event_type`` and ``event_category`` as in
+        ``latest_sub_partition('my_table',
+            event_category='page', event_type='click')``
+
+        :param database: database query will be run against
+        :param table: the table instance
+        :param kwargs: keyword arguments define the filtering criteria
+            on the partition list. There can be many of these.
+
+        1:1 with upstream ``PrestoBaseEngineSpec.latest_sub_partition``
+        (``superset_old/db_engine_specs/presto.py``), adapted to the
+        port's inspector model (no ``database.get_indexes`` shortcut).
+        """
+        from superset.exceptions import SupersetTemplateException
+
+        with database.get_inspector(
+            catalog=table.catalog,
+            schema=table.schema,
+        ) as inspector:
+            indexes = cls.get_indexes(database, inspector, table)
+
+        part_fields = indexes[0]["column_names"]
+        for k in kwargs.keys():  # pylint: disable=consider-iterating-dictionary
+            if k not in k in part_fields:  # pylint: disable=comparison-with-itself
+                msg = f"Field [{k}] is not part of the portioning key"
+                raise SupersetTemplateException(msg)
+        if len(kwargs.keys()) != len(part_fields) - 1:
+            msg = (
+                "A filter needs to be specified for {} out of the {} fields."
+            ).format(len(part_fields) - 1, len(part_fields))
+            raise SupersetTemplateException(msg)
+
+        for field in part_fields:
+            if field not in kwargs:
+                field_to_return = field
+
+        sql = cls._partition_query(
+            table,
+            indexes,
+            database,
+            limit=1,
+            order_by=[(field_to_return, True)],
+            filters=kwargs,
+        )
+        df = database.get_df(sql, table.catalog, table.schema)
+        if df.empty:
+            return ""
+        return df.to_dict()[field_to_return][0]
+
+    @classmethod
     def get_dbapi_exception_mapping(cls) -> dict[type[Exception], type[Exception]]:
         # pylint: disable=import-outside-toplevel
         from requests import exceptions as requests_exceptions

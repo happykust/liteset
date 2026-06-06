@@ -216,6 +216,27 @@ class AsyncPostgresEngineSpec(BaseAsyncEngineSpec):
     # ------------------------------------------------------------------
 
     @classmethod
+    async def get_catalog_names(
+        cls,
+        conn: AsyncConnection,
+    ) -> set[str]:
+        """Return all catalogs (databases) the user can connect to.
+
+        1:1 with upstream ``PostgresEngineSpec.get_catalog_names``
+        (``superset_old/db_engine_specs/postgres.py``): queries
+        ``pg_database WHERE datistemplate = false`` rather than the base
+        class's ``information_schema.schemata`` query, which only returns
+        schemas in the *current* database and therefore yields wrong / empty
+        results for postgres-wire engines (Postgres, Redshift, StarRocks-over-pg).
+        """
+        result = await conn.execute(
+            text(
+                "SELECT datname FROM pg_database WHERE datistemplate = false"
+            )
+        )
+        return {row[0] for row in result.fetchall()}
+
+    @classmethod
     async def get_table_names(
         cls,
         conn: AsyncConnection,
