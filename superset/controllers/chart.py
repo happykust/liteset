@@ -2547,7 +2547,12 @@ class ChartController(Controller):
         )
         command = ChartDataCommand(query_context=query_context, processor=processor)
         await command.validate()
-        result = await command.run()
+        # 1:1 with the original ``_get_data_response(command, True)`` which
+        # passes ``force_cached=True`` to ``command.run(force_cached=force_cached)``.
+        # Without this flag the processor would re-execute the query against the
+        # warehouse instead of reading the cached result that the worker already
+        # stored; a cache miss returns a failed-dict (not a cache-load error).
+        result = await command.run(force_cached=True)
 
         await event_logger.alog_with_context(
             "chart.data_from_cache", object_ref=f"cache:{cache_key}"

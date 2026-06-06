@@ -288,9 +288,13 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
         stored query_context's per-query dicts don't include it (it lives at
         the top level), so construct via ``from_request`` with the chart's
         datasource — this matches how the chart-data controller builds queries.
-        """
-        import json as _stdlib_json
 
+        Dashboard filters are NOT applied here — apply them in the caller
+        (``_warm_up_non_legacy_cache``) via ``_get_dashboard_filters`` so that
+        both the ``_extra_filters`` path *and* the dashboard-metadata path are
+        used, exactly as the original does via
+        ``_get_dashboard_filters(chart.id)`` inside ``_warm_up_non_legacy_cache``.
+        """
         from superset.common.query_object import AsyncQueryObject
 
         ds_dict = {
@@ -304,13 +308,6 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
 
         if not queries:
             raise CommandInvalidError("Chart query_context has no queries")
-
-        # Apply dashboard extra filters if provided
-        if self._extra_filters:
-            extra = _stdlib_json.loads(self._extra_filters)
-            for qo in queries:
-                if hasattr(qo, "filters") and isinstance(qo.filters, list):
-                    qo.filters.extend(extra)
 
         return queries
 
@@ -336,6 +333,19 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
             raise CommandInvalidError("Chart's datasource does not exist")
 
         queries = self._build_queries(qc_dict, datasource)
+
+        # 1:1 with the original ``_warm_up_non_legacy_cache`` which calls
+        # ``self._get_dashboard_filters(chart.id)`` and then extends each
+        # query's ``filter`` list.  The original uses ``_get_dashboard_filters``
+        # (not ``_extra_filters`` directly) so that dashboard-metadata-based
+        # default filters are applied when ``_extra_filters`` is empty but
+        # ``_dashboard_id`` is set.
+        if dashboard_filters := await self._get_dashboard_filters(chart.id):
+            for qo in queries:
+                if hasattr(qo, "filters") and isinstance(qo.filters, list):
+                    qo.filters.extend(dashboard_filters)
+                elif hasattr(qo, "filter") and isinstance(qo.filter, list):
+                    qo.filter.extend(dashboard_filters)
 
         query_context = AsyncQueryContext(
             datasource=datasource,

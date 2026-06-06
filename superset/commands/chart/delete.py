@@ -117,5 +117,16 @@ class BulkDeleteChartsCommand(AsyncBaseCommand[None]):
                 await self._security_manager.raise_for_ownership(chart, self._user_id)
 
     async def run(self) -> None:
+        # Mirror ``DeleteChartCommand.run()`` which calls ``delete_tagged_objects``
+        # for every chart before deleting it.  The original relied on the ORM
+        # ``after_delete`` event (``ChartUpdater.after_delete`` registered via
+        # ``sqla.event.listen(Slice, "after_delete", …)`` in
+        # ``superset_old/tags/core.py:42``) which fires per-item because
+        # ``BaseDAO.delete`` iterates and calls ``db.session.delete(item)``.
+        # The async session may not have the same sync event listeners, so both
+        # single-delete and bulk-delete must call ``delete_tagged_objects``
+        # explicitly — 1:1 parity with the single-delete path above.
+        for chart in self._charts:
+            await delete_tagged_objects(self._dao.session, "chart", chart.id)
         await self._dao.delete(self._charts)
         await self._dao.session.flush()
