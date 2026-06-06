@@ -135,9 +135,15 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             for col in self._source.columns:
                 new_col = TableColumn(
                     column_name=col.column_name,
+                    # 1:1 with upstream duplicate.py:80 — carry the source
+                    # column's verbose_name onto the copy (was dropped).
+                    verbose_name=getattr(col, "verbose_name", None),
                     type=getattr(col, "type", None),
-                    groupby=getattr(col, "groupby", True),
-                    filterable=getattr(col, "filterable", True),
+                    # Upstream hardcodes ``filterable=True, groupby=True`` for
+                    # every duplicated column (duplicate.py:81-82); it does NOT
+                    # copy the source flags.
+                    groupby=True,
+                    filterable=True,
                     description=getattr(col, "description", None),
                     is_dttm=getattr(col, "is_dttm", False),
                     expression=getattr(col, "expression", None),

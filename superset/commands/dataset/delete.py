@@ -93,5 +93,11 @@ class BulkDeleteDatasetsCommand(AsyncBaseCommand[None]):
 
     async def run(self) -> None:
         for dataset in self._datasets:
+            # Remove implicit tags before deleting each dataset — 1:1 with
+            # upstream ``DatasetDAO.delete(models)`` which fires the per-model
+            # ``DatasetUpdater.after_delete`` SQLAlchemy event
+            # (``delete_tagged_objects``). The single-delete command already
+            # does this; the bulk path was dropping the cleanup.
+            await delete_tagged_objects(self._dao.session, "dataset", dataset.id)
             await self._dao.session.delete(dataset)
         await self._dao.session.flush()

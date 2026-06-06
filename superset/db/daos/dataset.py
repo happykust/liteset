@@ -90,15 +90,23 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         catalog: str | None = None,
         dataset_id: int | None = None,
     ) -> bool:
-        """Check that no dataset exists with the given name/schema/database combo."""
+        """Check that no dataset exists with the given name/schema/database combo.
+
+        1:1 with ``superset_old/daos/dataset.py::validate_uniqueness`` /
+        ``validate_update_uniqueness``: ``schema`` and ``catalog`` are filtered
+        UNCONDITIONALLY (``== None`` → ``IS NULL``) so two datasets sharing a
+        name in *different* catalogs/schemas do not collide. The caller is
+        responsible for coalescing ``catalog`` to the database default (the
+        original does so inside this method via ``table.catalog or
+        database.get_default_catalog()``; the async commands resolve it from the
+        Database object before calling, since the DAO only has ``database_id``).
+        """
         stmt = select(SqlaTable).where(
             SqlaTable.table_name == table_name,
             SqlaTable.database_id == database_id,
+            SqlaTable.schema == schema,
+            SqlaTable.catalog == catalog,
         )
-        if schema is not None:
-            stmt = stmt.where(SqlaTable.schema == schema)
-        if catalog is not None:
-            stmt = stmt.where(SqlaTable.catalog == catalog)
         if dataset_id is not None:
             stmt = stmt.where(SqlaTable.id != dataset_id)
         result = await self.session.execute(stmt)

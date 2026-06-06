@@ -271,10 +271,16 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 if db is not None and getattr(db, "id", None) is not None
                 else int(self._dataset.database_id)
             )
+            # Coalesce catalog to the db default — 1:1 with upstream
+            # ``validate_update_uniqueness`` which computes
+            # ``table.catalog or database.get_default_catalog()`` before
+            # filtering ``SqlaTable.catalog == catalog``.
+            uniq_catalog = catalog if catalog is not None else default_catalog
             is_unique = await self._dao.validate_uniqueness(
                 database_id=uniq_db_id,
                 table_name=table_name,
                 schema=schema,
+                catalog=uniq_catalog,
                 dataset_id=self._dataset_id,
             )
             if not is_unique:

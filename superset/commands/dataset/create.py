@@ -102,6 +102,7 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 database_id=database_id,
                 table_name=table_name,
                 schema=schema,
+                catalog=catalog,
             )
             if not is_unique:
                 exceptions.append(DatasetExistsValidationError(table))
