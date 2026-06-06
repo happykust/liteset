@@ -1005,20 +1005,17 @@ class AsyncQueryContextProcessor:
             else:
                 result = await asyncio.to_thread(datasource.query, query_dict)
         else:
-            # A ``Query`` (SQL Lab result) datasource reaches here: the port
-            # does NOT give ``Query`` the ``ExploreMixin``/``SqlTablesMixin``
-            # query interface (``async_query``/``query``/``get_sqla_query`` +
-            # ~30 datasource properties) that upstream's
-            # ``Query(SqlTablesMixin, ExtraJSONMixin, ExploreMixin, Model)``
-            # has — that's a large async subsystem port, deliberately deferred.
-            # Surface a clean 4xx instead of letting the bare ``ValueError``
-            # become an opaque 500 (UNKNOWN_ERROR).
+            # Defensive catch-all for any datasource that exposes neither
+            # ``async_query`` nor ``query``. SqlaTable and (since
+            # ``datasource_type="query"`` was wired) ``Query`` both implement
+            # ``async_query``, so this is unreachable for them — it remains a
+            # clean 4xx for any future interface-less datasource instead of an
+            # opaque 500 (UNKNOWN_ERROR).
             from superset.exceptions import QueryObjectValidationError
 
             raise QueryObjectValidationError(
-                "Exploring SQL Lab query results as a datasource is not "
-                "supported in this deployment. Save the query as a dataset "
-                "(virtual dataset) to chart it."
+                "This datasource does not support charting. Save the data as a "
+                "dataset (virtual dataset) to chart it."
             )
 
         # Normalize result to dict.  Surface the SQL-build metadata
