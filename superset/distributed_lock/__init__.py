@@ -31,10 +31,12 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from datetime import timedelta
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime, timedelta
 from typing import Any, TYPE_CHECKING
+
+from sqlalchemy import delete, or_, select
 
 from superset.distributed_lock.utils import get_key
 from superset.exceptions import CreateKeyValueDistributedLockFailedException
@@ -100,3 +102,97 @@ async def KeyValueDistributedLock(  # pylint: disable=invalid-name  # noqa: N802
             session=session, namespace=namespace, params=kwargs
         ).run()
         logger.debug("Removed lock on namespace %s for key %s", namespace, key)
+
+
+@contextmanager
+def sync_key_value_distributed_lock(  # noqa: N802
+    namespace: str,
+    **kwargs: Any,
+) -> Iterator[uuid.UUID]:
+    """Synchronous KV-backed distributed lock (sibling of :func:`KeyValueDistributedLock`).
+
+    1:1 with the (originally synchronous) upstream
+    ``superset_old/distributed_lock/__init__.py:KeyValueDistributedLock`` and
+    its three ``CreateDistributedLock`` / ``GetDistributedLock`` /
+    ``DeleteDistributedLock`` commands, but driven from the sync metadata
+    session (``get_sync_session`` / psycopg2) rather than Flask's
+    ``db.session``. The KV operations are inlined against
+    :class:`~superset.models.key_value.KeyValueEntry`, mirroring
+    :class:`~superset.db.daos.key_value.AsyncKeyValueDAO`
+    (``delete_expired_entries`` -> ``get_entry_by_key`` -> ``create_entry``
+    on acquire; ``get_entry_by_key`` -> delete on release). Reuses the same
+    :func:`get_key` UUID5 derivation, :class:`JsonCodec`,
+    ``KeyValueResource.LOCK`` resource, and ``LOCK_EXPIRATION`` as the async
+    path.
+
+    Used by :func:`superset.utils.oauth2.sync_refresh_oauth2_token` so
+    concurrent sync refreshes for the same ``(user_id, database_id)`` pair
+    serialise on the IDP exchange.
+
+    :param namespace: Namespace for the lock (e.g. ``"refresh_oauth2_token"``).
+    :param kwargs: Parameters contributing to the deterministic lock key.
+    :yields: The UUID key of the acquired lock.
+    :raises CreateKeyValueDistributedLockFailedException: If the lock is taken.
+    """
+    # pylint: disable=import-outside-toplevel
+    from superset.db.session import get_sync_session
+    from superset.models.key_value import KeyValueEntry
+
+    key = get_key(namespace, **kwargs)
+    resource = RESOURCE.value
+
+    with get_sync_session() as session:
+        # --- acquire (GetDistributedLock + CreateDistributedLock) ---
+        existing = (
+            session.query(KeyValueEntry)
+            .filter(
+                KeyValueEntry.resource == resource,
+                KeyValueEntry.uuid == key,
+                or_(
+                    KeyValueEntry.expires_on.is_(None),
+                    KeyValueEntry.expires_on > datetime.now(),
+                ),
+            )
+            .one_or_none()
+        )
+        if existing is not None:
+            logger.debug(
+                "Lock on namespace %s for key %s already taken", namespace, key
+            )
+            raise CreateKeyValueDistributedLockFailedException("Lock already taken")
+
+        logger.debug("Acquiring lock on namespace %s for key %s", namespace, key)
+        # delete_expired_entries(resource)
+        session.execute(
+            delete(KeyValueEntry).where(
+                KeyValueEntry.resource == resource,
+                KeyValueEntry.expires_on <= datetime.now(),
+            )
+        )
+        entry = KeyValueEntry(
+            resource=resource,
+            value=CODEC.encode({"value": True}),
+            created_on=datetime.now(),
+            expires_on=datetime.now() + LOCK_EXPIRATION,
+        )
+        entry.uuid = key
+        session.add(entry)
+        session.flush()
+        session.commit()
+
+        try:
+            yield key
+        finally:
+            # --- release (DeleteDistributedLock) ---
+            row = (
+                session.query(KeyValueEntry)
+                .filter(
+                    KeyValueEntry.resource == resource,
+                    KeyValueEntry.uuid == key,
+                )
+                .one_or_none()
+            )
+            if row is not None:
+                session.delete(row)
+                session.commit()
+            logger.debug("Removed lock on namespace %s for key %s", namespace, key)

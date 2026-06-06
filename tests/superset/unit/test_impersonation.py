@@ -26,6 +26,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from sqlalchemy.engine import make_url
 
 from superset.db_engine_specs import get_engine_spec
@@ -353,3 +354,211 @@ def test_sync_oauth2_resolver_gating() -> None:
 
     # OAuth2 config but no bound user → None.
     assert ud._sync_oauth2_access_token(_OAuthDB(), spec) is None
+
+
+# --- Sync OAuth2 token refresh (the new sync path) -----------------------------
+
+
+def test_get_oauth2_fresh_token_sync_posts_and_returns_body(monkeypatch: Any) -> None:
+    """``get_oauth2_fresh_token_sync`` POSTs the refresh body + returns the JSON."""
+    captured: dict[str, Any] = {}
+
+    class _Resp:
+        def json(self) -> dict[str, Any]:
+            return {"access_token": "NEW", "expires_in": 3600}
+
+    class _Client:
+        def __init__(self, timeout: Any = None) -> None:
+            captured["timeout"] = timeout
+
+        def __enter__(self) -> "_Client":
+            return self
+
+        def __exit__(self, *a: Any) -> bool:
+            return False
+
+        def post(self, uri: str, **kw: Any) -> _Resp:
+            captured["uri"] = uri
+            captured["kw"] = kw
+            return _Resp()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+
+    spec = _spec("trino")
+    config = {
+        "id": "client-id",
+        "secret": "client-secret",
+        "token_request_uri": "https://idp/token",
+        "request_content_type": "json",
+    }
+    out = spec.get_oauth2_fresh_token_sync(config, "REFRESH123")
+
+    assert out == {"access_token": "NEW", "expires_in": 3600}
+    assert captured["uri"] == "https://idp/token"
+    # json body (request_content_type defaults to json, not data)
+    assert captured["kw"]["json"] == {
+        "client_id": "client-id",
+        "client_secret": "client-secret",
+        "refresh_token": "REFRESH123",
+        "grant_type": "refresh_token",
+    }
+    assert "data" not in captured["kw"]
+
+
+def test_get_oauth2_fresh_token_sync_data_content_type(monkeypatch: Any) -> None:
+    """``request_content_type == "data"`` sends a form body, not JSON."""
+    captured: dict[str, Any] = {}
+
+    class _Resp:
+        def json(self) -> dict[str, Any]:
+            return {"access_token": "NEW"}
+
+    class _Client:
+        def __init__(self, timeout: Any = None) -> None:
+            pass
+
+        def __enter__(self) -> "_Client":
+            return self
+
+        def __exit__(self, *a: Any) -> bool:
+            return False
+
+        def post(self, uri: str, **kw: Any) -> _Resp:
+            captured["kw"] = kw
+            return _Resp()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+
+    spec = _spec("trino")
+    config = {
+        "id": "i",
+        "secret": "s",
+        "token_request_uri": "https://idp/token",
+        "request_content_type": "data",
+    }
+    spec.get_oauth2_fresh_token_sync(config, "R")
+    assert "data" in captured["kw"]
+    assert "json" not in captured["kw"]
+
+
+def test_sync_oauth2_token_expired_refresh_returns_new_and_persists() -> None:
+    """Expired token + refresh_token → refresh → new token, row updated."""
+    import uuid
+    from contextlib import contextmanager
+    from unittest.mock import patch
+
+    from superset.utils.oauth2 import sync_get_oauth2_access_token
+
+    token = _token("OLD", -1, "REFRESH123")
+    cm, sess = _sync_session_cm(token)
+
+    uuid_stub = uuid.uuid4()
+
+    # The sync lock would otherwise open a second get_sync_session; stub it.
+    @contextmanager
+    def _noop_lock(namespace: str, **kwargs: Any):
+        yield uuid_stub
+
+    spec = MagicMock()
+    spec.get_oauth2_fresh_token_sync.return_value = {
+        "access_token": "NEW",
+        "expires_in": 3600,
+    }
+
+    with (
+        patch("superset.db.session.get_sync_session", return_value=cm),
+        patch(
+            "superset.distributed_lock.sync_key_value_distributed_lock",
+            _noop_lock,
+        ),
+    ):
+        result = sync_get_oauth2_access_token({"id": "x"}, 5, 1, spec)
+
+    assert result == "NEW"
+    # The stored token row was mutated + committed in the same session.
+    assert token.access_token == "NEW"
+    spec.get_oauth2_fresh_token_sync.assert_called_once()
+    assert sess.add.called
+    assert sess.commit.called
+
+
+def test_sync_oauth2_token_refresh_revoked_returns_none() -> None:
+    """Refresh response without ``access_token`` (revoked) → None."""
+    from contextlib import contextmanager
+    from unittest.mock import patch
+
+    from superset.utils.oauth2 import sync_get_oauth2_access_token
+
+    token = _token("OLD", -1, "REFRESH123")
+    cm, _ = _sync_session_cm(token)
+
+    @contextmanager
+    def _noop_lock(namespace: str, **kwargs: Any):
+        yield None
+
+    spec = MagicMock()
+    spec.get_oauth2_fresh_token_sync.return_value = {"error": "invalid_grant"}
+
+    with (
+        patch("superset.db.session.get_sync_session", return_value=cm),
+        patch(
+            "superset.distributed_lock.sync_key_value_distributed_lock",
+            _noop_lock,
+        ),
+    ):
+        assert sync_get_oauth2_access_token({"id": "x"}, 5, 1, spec) is None
+
+
+# --- Sync distributed lock -----------------------------------------------------
+
+
+def _lock_session_cm(existing_on_acquire, existing_on_release=MagicMock()):
+    """Build a sync-session context manager for the lock.
+
+    ``session.query(...).filter(...).one_or_none()`` is called twice: once on
+    acquire (contention check) and once on release (fetch-to-delete). Return
+    the two values in sequence.
+    """
+    sess = MagicMock()
+    one_or_none = sess.query.return_value.filter.return_value.one_or_none
+    one_or_none.side_effect = [existing_on_acquire, existing_on_release]
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=sess)
+    cm.__exit__ = MagicMock(return_value=False)
+    return cm, sess
+
+
+def test_sync_lock_acquires_and_releases() -> None:
+    from unittest.mock import patch
+
+    from superset.distributed_lock import sync_key_value_distributed_lock
+    from superset.distributed_lock.utils import get_key
+
+    release_row = MagicMock()
+    cm, sess = _lock_session_cm(None, release_row)
+    with patch("superset.db.session.get_sync_session", return_value=cm):
+        with sync_key_value_distributed_lock("refresh_oauth2_token", user_id=1) as key:
+            assert key == get_key("refresh_oauth2_token", user_id=1)
+            # acquired: a row was added + committed
+            assert sess.add.called
+    # released: the row was deleted on exit
+    sess.delete.assert_called_once_with(release_row)
+
+
+def test_sync_lock_already_taken_raises() -> None:
+    from unittest.mock import patch
+
+    from superset.distributed_lock import sync_key_value_distributed_lock
+    from superset.exceptions import CreateKeyValueDistributedLockFailedException
+
+    cm, sess = _lock_session_cm(MagicMock())  # contended on acquire
+    with patch("superset.db.session.get_sync_session", return_value=cm):
+        with pytest.raises(CreateKeyValueDistributedLockFailedException):
+            with sync_key_value_distributed_lock("refresh_oauth2_token", user_id=1):
+                pass
+    # never acquired → never added
+    assert not sess.add.called

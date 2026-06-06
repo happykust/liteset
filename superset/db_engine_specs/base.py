@@ -599,6 +599,40 @@ class BaseEngineSpec:  # noqa: PLR0904
         return response.json()
 
     @classmethod
+    def get_oauth2_fresh_token_sync(
+        cls,
+        config: dict[str, Any],
+        refresh_token: str,
+    ) -> dict[str, Any]:
+        """Refresh an expired access token (synchronous).
+
+        Sync sibling of :meth:`get_oauth2_fresh_token` — 1:1 with upstream
+        ``superset_old/db_engine_specs/base.py:get_oauth2_fresh_token`` (which
+        is originally synchronous and uses ``requests``). Used by the sync
+        OAuth2 refresh path (:func:`superset.utils.oauth2.sync_refresh_oauth2_token`)
+        that runs from the (psycopg2) impersonation connection flow. Uses
+        :class:`httpx.Client` rather than ``requests`` (not installed); mirrors
+        the async one's body otherwise.
+        """
+        import httpx
+
+        from superset.utils.oauth2 import get_oauth2_timeout
+
+        timeout = get_oauth2_timeout().total_seconds()
+        body = {
+            "client_id": config["id"],
+            "client_secret": config["secret"],
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        }
+        with httpx.Client(timeout=timeout) as client:
+            if config["request_content_type"] == "data":
+                response = client.post(config["token_request_uri"], data=body)
+            else:
+                response = client.post(config["token_request_uri"], json=body)
+        return response.json()
+
+    @classmethod
     def needs_oauth2(cls, ex: Exception) -> bool:
         """Return True if *ex* indicates OAuth2 authorization is required.
 

@@ -421,30 +421,84 @@ async def refresh_oauth2_token(
         return token.access_token
 
 
-def sync_get_oauth2_access_token(
-    config: "OAuth2ClientConfig",  # noqa: ARG001
+def sync_refresh_oauth2_token(
+    config: "OAuth2ClientConfig",
     database_id: int,
     user_id: int,
-    db_engine_spec: type["BaseEngineSpec"],  # noqa: ARG001
+    db_engine_spec: type["BaseEngineSpec"],
+    token: Any,  # DatabaseUserOAuth2Tokens — Any to avoid a cyclical import
+    session: Any,  # sqlalchemy.orm.Session (the same session that loaded *token*)
+) -> str | None:
+    """Use the refresh token to get a new access token and persist it (sync).
+
+    1:1 with upstream ``superset_old/utils/oauth2.py:refresh_oauth2_token``
+    (originally synchronous): the IDP exchange + DB write run under a
+    KV-backed distributed lock so concurrent sync refreshes for the same
+    ``(user_id, database_id)`` pair don't all hit the IDP and risk losing a
+    rotated refresh token.
+
+    ``token`` must be attached to ``session`` — the caller
+    (:func:`sync_get_oauth2_access_token`) loads it in the same session it
+    passes here, so the ``add`` + ``commit`` below persist without a
+    detached-instance error. Uses the sync IDP fetch
+    (:meth:`BaseEngineSpec.get_oauth2_fresh_token_sync`) and the sync lock
+    (:func:`superset.distributed_lock.sync_key_value_distributed_lock`).
+    """
+    # pylint: disable=import-outside-toplevel
+    from superset.distributed_lock import sync_key_value_distributed_lock
+
+    with sync_key_value_distributed_lock(
+        namespace="refresh_oauth2_token",
+        user_id=user_id,
+        database_id=database_id,
+    ):
+        token_response = db_engine_spec.get_oauth2_fresh_token_sync(
+            dict(config),
+            token.refresh_token,
+        )
+
+        # The refresh token may have been revoked — let the caller restart
+        # the dance.
+        if "access_token" not in token_response:
+            logger.warning(
+                "OAuth2 refresh failed for database_id=%s user_id=%s",
+                database_id,
+                user_id,
+            )
+            return None
+
+        token.access_token = token_response["access_token"]
+        token.access_token_expiration = datetime.now() + timedelta(
+            seconds=int(token_response.get("expires_in", 0))
+        )
+        session.add(token)
+        session.commit()
+        return token.access_token
+
+
+def sync_get_oauth2_access_token(
+    config: "OAuth2ClientConfig",
+    database_id: int,
+    user_id: int,
+    db_engine_spec: type["BaseEngineSpec"],
 ) -> str | None:
     """Synchronous OAuth2 access-token lookup for the connection path.
 
-    Mirrors the valid-token + stale-delete branches of upstream's (originally
-    synchronous) ``get_oauth2_access_token``, reading
-    ``database_user_oauth2_tokens`` via the sync metadata session
-    (``get_sync_session`` / psycopg2). Used by :func:`get_sync_engine` to
-    thread a per-user OAuth2 Bearer into impersonation — the OAuth2 engines
-    (Trino / BigQuery / Snowflake / Databricks / GSheets) are sync-only, so
-    this is the connection path that matters.
+    1:1 with upstream's (originally synchronous)
+    ``get_oauth2_access_token``, reading ``database_user_oauth2_tokens`` via
+    the sync metadata session (``get_sync_session`` / psycopg2). Used by
+    :func:`get_sync_engine` to thread a per-user OAuth2 Bearer into
+    impersonation — the OAuth2 engines (Trino / BigQuery / Snowflake /
+    Databricks / GSheets) are sync-only, so this is the connection path that
+    matters.
 
-    Deferred (1 sub-piece): silent refresh of an expired-but-refreshable token.
-    Upstream refreshes it inline; in the port that path is async-only
-    (``BaseEngineSpec.get_oauth2_fresh_token`` + the async
-    ``KeyValueDistributedLock``) and can't be driven safely from this sync
-    context. An expired token therefore returns ``None`` → re-triggering the
-    OAuth2 dance, the same fallback upstream takes when no refresh token
-    exists. ``config``/``db_engine_spec`` are accepted for signature parity
-    with the async resolver (and for a future sync refresh).
+    * Returns the cached ``access_token`` when still valid.
+    * If expired but a ``refresh_token`` is present, refreshes it inline via
+      :func:`sync_refresh_oauth2_token` (under the sync distributed lock) and
+      returns the new token — within the *same* session that loaded the row,
+      so the persist in ``sync_refresh_oauth2_token`` is not detached.
+    * Otherwise deletes the stale (non-refreshable) row and returns ``None``
+      so the OAuth2 dance re-triggers.
     """
     # pylint: disable=import-outside-toplevel
     from superset.db.session import get_sync_session
@@ -465,11 +519,20 @@ def sync_get_oauth2_access_token(
                 and datetime.now() < token.access_token_expiration
             ):
                 return token.access_token
-            # Expired and no sync refresh available: drop a non-refreshable
-            # row (1:1 upstream) so the OAuth2 dance re-triggers.
-            if not token.refresh_token:
-                session.delete(token)
-                session.commit()
+            # Expired but refreshable: refresh inline (1:1 upstream).
+            if token.refresh_token:
+                return sync_refresh_oauth2_token(
+                    config,
+                    database_id,
+                    user_id,
+                    db_engine_spec,
+                    token,
+                    session,
+                )
+            # Expired and no refresh token: drop the row (1:1 upstream) so the
+            # OAuth2 dance re-triggers.
+            session.delete(token)
+            session.commit()
             return None
     except Exception:  # noqa: BLE001
         logger.debug("sync OAuth2 access-token lookup failed", exc_info=True)
