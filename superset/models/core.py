@@ -60,6 +60,7 @@ from superset.models.helpers import (
     MediumText,
     UUIDMixin,
 )
+from superset.utils.core import QuerySource
 
 logger = logging.getLogger(__name__)
 
@@ -884,16 +885,8 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     # Extra / encrypted_extra helpers
     # ------------------------------------------------------------------
 
-    def get_extra(self) -> dict[str, Any]:
-        """Parse the JSON ``extra`` column into a dict."""
-        extra: dict[str, Any] = {}
-        if self.extra:
-            try:
-                extra = json.loads(self.extra)
-            except json.JSONDecodeError as ex:
-                logger.error(ex, exc_info=True)
-                raise
-        return extra
+    def get_extra(self, source: QuerySource | None = None) -> dict[str, Any]:
+        return self.db_engine_spec.get_extra_params(self, source)
 
     def get_encrypted_extra(self) -> dict[str, Any]:
         encrypted_extra: dict[str, Any] = {}
