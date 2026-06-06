@@ -172,9 +172,39 @@ class ClickHouseEngineSpec(ClickHouseBaseEngineSpec):
     def get_function_names(cls, database: Database) -> list[str]:
         """Get a list of function names from system.functions.
 
+        Results are cached per-database for SQL Lab autocomplete — the business
+        equivalent of upstream's ``@cache_manager.cache.memoize()``. The port's
+        cache layer exposes no flask-caching ``memoize``, so this uses the
+        sync cache slot (``cache_manager.sync_cache``) directly with a manual
+        get/set. When no cache backend is configured the slot is a no-op
+        (``NullSyncCacheManager``) and every call recomputes — exactly like
+        upstream's ``NullCache`` fallback. Like ``memoize``, the returned value
+        (including an empty list on error) is what gets cached.
+
         :param database: The database to get functions for
         :return: A list of function names usable in the database
         """
+        from superset.extensions import cache_manager
+
+        cache_key = f"db:{getattr(database, 'id', None)}:function_names"
+        try:
+            cached = cache_manager.sync_cache.get(cache_key)
+            if cached is not None:
+                return cached
+        except Exception:  # noqa: BLE001
+            logger.debug("function-name cache read failed", exc_info=True)
+
+        names = cls._fetch_function_names(database)
+
+        try:
+            cache_manager.sync_cache.set(cache_key, names)
+        except Exception:  # noqa: BLE001
+            logger.debug("function-name cache write failed", exc_info=True)
+        return names
+
+    @classmethod
+    def _fetch_function_names(cls, database: Database) -> list[str]:
+        """Query ``system.functions`` (uncached); see :meth:`get_function_names`."""
         system_functions_sql = "SELECT name FROM system.functions"
         try:
             df = database.get_df(system_functions_sql)

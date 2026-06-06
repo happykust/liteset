@@ -116,3 +116,80 @@ def test_adjust_engine_params_preserves_existing() -> None:
     )
     assert args["connect_timeout"] == 30
     assert args["send_receive_timeout"] == 300
+
+
+# --- sync ClickHouseEngineSpec.get_function_names caching (business analog of
+# upstream @cache_manager.cache.memoize) ---------------------------------------
+
+
+class _FakeSyncCache:
+    def __init__(self) -> None:
+        self.store: dict[str, object] = {}
+
+    def get(self, key: str) -> object:
+        return self.store.get(key)
+
+    def set(self, key: str, value: object, ttl: int | None = None) -> None:
+        self.store[key] = value
+
+    def delete(self, key: str) -> None:
+        self.store.pop(key, None)
+
+    def has(self, key: str) -> bool:
+        return key in self.store
+
+
+def test_clickhouse_get_function_names_caches(monkeypatch: object) -> None:
+    """Second call returns cached names without re-querying (memoize analog)."""
+    import pandas as pd
+
+    from superset.db_engine_specs.clickhouse import ClickHouseEngineSpec
+    from superset.extensions import cache_manager
+
+    fake = _FakeSyncCache()
+    monkeypatch.setattr(cache_manager, "_sync_cache", fake)  # type: ignore[arg-type]
+
+    calls = {"n": 0}
+
+    class _DB:
+        id = 7
+
+        def get_df(self, sql: str) -> "pd.DataFrame":
+            calls["n"] += 1
+            return pd.DataFrame({"name": ["now", "toDate", "sum"]})
+
+    db = _DB()
+    assert ClickHouseEngineSpec.get_function_names(db) == ["now", "toDate", "sum"]
+    assert calls["n"] == 1
+    # Cache hit: same result, no second query.
+    assert ClickHouseEngineSpec.get_function_names(db) == ["now", "toDate", "sum"]
+    assert calls["n"] == 1
+    assert "db:7:function_names" in fake.store
+
+
+def test_clickhouse_get_function_names_nullcache_recomputes(
+    monkeypatch: object,
+) -> None:
+    """With a no-op cache (no backend) every call recomputes — upstream NullCache
+    behaviour."""
+    import pandas as pd
+
+    from superset.cache.manager import NullSyncCacheManager
+    from superset.db_engine_specs.clickhouse import ClickHouseEngineSpec
+    from superset.extensions import cache_manager
+
+    monkeypatch.setattr(cache_manager, "_sync_cache", NullSyncCacheManager())
+
+    calls = {"n": 0}
+
+    class _DB:
+        id = 9
+
+        def get_df(self, sql: str) -> "pd.DataFrame":
+            calls["n"] += 1
+            return pd.DataFrame({"name": ["now"]})
+
+    db = _DB()
+    ClickHouseEngineSpec.get_function_names(db)
+    ClickHouseEngineSpec.get_function_names(db)
+    assert calls["n"] == 2
