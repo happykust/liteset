@@ -1345,7 +1345,7 @@ class BaseEngineSpec:  # noqa: PLR0904
     @classmethod
     def extract_errors(
         cls, ex: Exception, context: dict[str, Any] | None = None
-    ) -> list[dict[str, Any]]:
+    ) -> list[SupersetError]:
         raw_message = cls._extract_error_message(ex)
 
         context = context or {}
@@ -1354,21 +1354,21 @@ class BaseEngineSpec:  # noqa: PLR0904
                 params = {**context, **match.groupdict()}
                 extra["engine_name"] = cls.engine_name
                 return [
-                    {
-                        "error_type": error_type,
-                        "message": message % params,
-                        "level": "ERROR",
-                        "extra": extra,
-                    }
+                    SupersetError(
+                        error_type=error_type,
+                        message=message % params,
+                        level=ErrorLevel.ERROR,
+                        extra=extra,
+                    )
                 ]
 
         return [
-            {
-                "error_type": "GENERIC_DB_ENGINE_ERROR",
-                "message": cls._extract_error_message(ex),
-                "level": "ERROR",
-                "extra": {"engine_name": cls.engine_name},
-            }
+            SupersetError(
+                error_type=SupersetErrorType.GENERIC_DB_ENGINE_ERROR,
+                message=cls._extract_error_message(ex),
+                level=ErrorLevel.ERROR,
+                extra={"engine_name": cls.engine_name},
+            )
         ]
 
     # ------------------------------------------------------------------
