@@ -750,6 +750,7 @@ class DatasetController(Controller):
         data: GetOrCreateDatasetSchema,
         dao: DatasetDAOProtocol,
         current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> DatasetGetResponse:
         cmd = GetOrCreateDatasetCommand(
             dao=cast("AsyncDatasetDAO", dao),
@@ -763,6 +764,7 @@ class DatasetController(Controller):
                 "always_filter_main_dttm": data.always_filter_main_dttm,
             },
             user_id=current_user.id,
+            security_manager=security_manager,
         )
         dataset = await cmd.execute()
         await event_logger.alog_with_context(

@@ -271,10 +271,12 @@ class GetOrCreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         dao: AsyncDatasetDAO,
         data: dict[str, Any],
         user_id: int | None = None,
+        security_manager: Any | None = None,
     ) -> None:
         self._dao = dao
         self._data = data
         self._user_id = user_id
+        self._security_manager = security_manager
 
     async def validate(self) -> None:
         # ACCUMULATE per-field errors → single ``DatasetInvalidError`` so the
@@ -302,25 +304,38 @@ class GetOrCreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             raise DatasetInvalidError(exceptions=exceptions)
 
     async def run(self) -> "SqlaTable":
-        from superset.models.connectors import SqlaTable
-
         existing = await self._dao.find_one_or_none(
             table_name=self._data["table_name"],
             database_id=self._data["database_id"],
         )
         if existing:
             return existing
-        dataset = SqlaTable(
-            table_name=self._data["table_name"],
-            database_id=self._data["database_id"],
-            schema=self._data.get("schema"),
-            template_params=self._data.get("template_params"),
-            normalize_columns=self._data.get("normalize_columns", False),
-            always_filter_main_dttm=self._data.get("always_filter_main_dttm", False),
+
+        # Route creation through the full ``CreateDatasetCommand`` — 1:1 with
+        # upstream ``get_or_create`` (``datasets/api.py``), which builds the
+        # body with ``database`` = ``database_id`` and calls
+        # ``CreateDatasetCommand(body).run()``.  This gives the new dataset the
+        # SAME side effects the bare path was missing: ``fetch_metadata()``
+        # (column/metric introspection), owner default-to-current-user, and the
+        # implicit owner:/type: tags (``after_insert`` hook).
+        create_data = {
+            "table_name": self._data["table_name"],
+            "database": self._data["database_id"],
+            "schema": self._data.get("schema"),
+            "catalog": self._data.get("catalog"),
+            "template_params": self._data.get("template_params"),
+            "normalize_columns": self._data.get("normalize_columns", False),
+            "always_filter_main_dttm": self._data.get(
+                "always_filter_main_dttm", False
+            ),
+        }
+        create_cmd = CreateDatasetCommand(
+            dao=self._dao,
+            data=create_data,
+            user_id=self._user_id,
+            security_manager=self._security_manager,
         )
-        if self._user_id is not None:
-            dataset.created_by_fk = self._user_id
-            dataset.changed_by_fk = self._user_id
-        self._dao.session.add(dataset)
-        await self._dao.session.flush()
-        return dataset
+        # ``execute()`` runs validate() then run() — matching the upstream
+        # ``CreateDatasetCommand(body).run()`` whose ``run()`` calls
+        # ``self.validate()`` first.
+        return await create_cmd.execute()

@@ -111,10 +111,16 @@ def mock_dataset():
     ds.description = "A test dataset"
     ds.cache_timeout = None
     ds.uuid = None
+    ds.catalog = None
     ds.database = MagicMock()
     ds.database.uuid = None
     ds.database.database_name = "test_db"
     ds.database.sqlalchemy_uri = "sqlite:///test.db"
+    # Real bool / catalog so the dataset-source validation in
+    # ``UpdateDatasetCommand.validate`` (catalog coercion + ``Table.__str__``)
+    # never operates on a bare MagicMock.
+    ds.database.allow_multi_catalog = False
+    ds.database.get_default_catalog.return_value = None
     return ds
 
 
@@ -271,6 +277,95 @@ async def test_update_dataset_validates_owners(mock_dao, mock_dataset):
     assert exc_info.value.normalized_messages()["owners"] == ["Owners are invalid"]
 
 
+async def test_update_dataset_changed_database_not_found(mock_dao, mock_dataset):
+    """A changed ``database_id`` that does not resolve is reported per-field
+    under ``database`` (1:1 upstream ``_validate_dataset_source``)."""
+    mock_dao.find_by_id = AsyncMock(return_value=mock_dataset)
+    mock_dao.get_database_by_id = AsyncMock(return_value=None)
+    mock_dao.validate_uniqueness = AsyncMock(return_value=True)
+    cmd = UpdateDatasetCommand(
+        dao=mock_dao,
+        dataset_id=1,
+        # database_id differs from mock_dataset.database_id (10).
+        data={"table_name": "t", "database_id": 999},
+    )
+    with pytest.raises(DatasetInvalidError) as exc_info:
+        await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert messages["database"] == ["Database does not exist"]
+
+
+async def test_update_dataset_sql_access_denied(mock_dao, mock_dataset):
+    """SQL-access denial surfaces as a per-field ``sql`` 422 from validate()
+    (not a flat error in run()) — 1:1 upstream ``_validate_sql_access``."""
+    mock_dataset.sql = "SELECT 1"
+    mock_dao.find_by_id = AsyncMock(return_value=mock_dataset)
+    mock_dao.validate_uniqueness = AsyncMock(return_value=True)
+    sm = MagicMock()
+    sm.raise_for_ownership = AsyncMock(return_value=None)
+    sm.find_user_by_id = AsyncMock(return_value=None)
+    sm.raise_for_access = AsyncMock(side_effect=_security_exception("no sql access"))
+    cmd = UpdateDatasetCommand(
+        dao=mock_dao,
+        dataset_id=1,
+        # changed sql triggers the access check
+        data={"sql": "SELECT 2"},
+        security_manager=sm,
+    )
+    with pytest.raises(DatasetInvalidError) as exc_info:
+        await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert messages["sql"] == ["no sql access"]
+
+
+async def test_update_dataset_invalid_sql_parse_error(mock_dao, mock_dataset):
+    """A ``SupersetParseError`` during SQL-access validation is reported as an
+    ``Invalid SQL: ...`` per-field ``sql`` 422 — 1:1 upstream."""
+    from superset.exceptions import SupersetParseError
+
+    mock_dataset.sql = "SELECT 1"
+    mock_dao.find_by_id = AsyncMock(return_value=mock_dataset)
+    mock_dao.validate_uniqueness = AsyncMock(return_value=True)
+    parse_err = SupersetParseError(
+        sql="SELECT 2", engine="postgresql", message="bad syntax"
+    )
+    sm = MagicMock()
+    sm.raise_for_ownership = AsyncMock(return_value=None)
+    sm.find_user_by_id = AsyncMock(return_value=None)
+    sm.raise_for_access = AsyncMock(side_effect=parse_err)
+    cmd = UpdateDatasetCommand(
+        dao=mock_dao,
+        dataset_id=1,
+        data={"sql": "SELECT 2"},
+        security_manager=sm,
+    )
+    with pytest.raises(DatasetInvalidError) as exc_info:
+        await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert messages["sql"] == ["Invalid SQL: bad syntax"]
+
+
+async def test_update_dataset_multi_catalog_disabled(mock_dao, mock_dataset):
+    """A non-default catalog while the connection disallows multi-catalog is
+    reported per-field under ``catalog`` — 1:1 upstream
+    ``_validate_dataset_source`` (MultiCatalogDisabledValidationError)."""
+    mock_dataset.database.allow_multi_catalog = False
+    mock_dataset.database.get_default_catalog.return_value = "default_cat"
+    mock_dao.find_by_id = AsyncMock(return_value=mock_dataset)
+    mock_dao.validate_uniqueness = AsyncMock(return_value=True)
+    cmd = UpdateDatasetCommand(
+        dao=mock_dao,
+        dataset_id=1,
+        data={"catalog": "other_cat"},
+    )
+    with pytest.raises(DatasetInvalidError) as exc_info:
+        await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert messages["catalog"] == [
+        "Only the default catalog is supported for this connection"
+    ]
+
+
 # ---- DeleteDatasetCommand ----
 
 
@@ -392,19 +487,39 @@ async def test_get_or_create_returns_existing(mock_dao, mock_dataset):
 
 
 async def test_get_or_create_creates_new(mock_dao):
+    """Creation routes through ``CreateDatasetCommand`` (1:1 upstream
+    ``get_or_create`` → ``CreateDatasetCommand(body).run()``) so the new dataset
+    gets ``fetch_metadata()`` (column/metric introspection) and owners — not the
+    old bare ``SqlaTable`` + add/flush."""
     mock_dao.find_one_or_none = AsyncMock(return_value=None)
+    mock_dao.get_database_by_id = AsyncMock(return_value=_physical_database())
+    mock_dao.validate_uniqueness = AsyncMock(return_value=True)
+    mock_dao.fetch_metadata = AsyncMock(return_value=None)
+    sm = MagicMock()
+    # ``populate_owner_list`` defaults to the current user; return a non-empty
+    # owners list to assert the default-to-user side effect.
+    owner = MagicMock()
+    owner.id = 1
     cmd = GetOrCreateDatasetCommand(
         dao=mock_dao,
         data={"table_name": "new_table", "database_id": 10},
         user_id=1,
+        security_manager=sm,
     )
     await cmd.validate()
-    # run() imports SqlaTable from superset.models.connectors.
-    mock_module = MagicMock()
-    with patch.dict(sys.modules, {"superset.models.connectors": mock_module}):
-        await cmd.run()
-    mock_dao.session.add.assert_called_once()
-    mock_dao.session.flush.assert_awaited_once()
+    with patch(
+        "superset.commands.utils.populate_owner_list",
+        AsyncMock(return_value=[owner]),
+    ):
+        dataset = await cmd.run()
+    # add() is called for the dataset (and again for implicit tags) — at least
+    # the dataset itself is persisted.
+    mock_dao.session.add.assert_called()
+    mock_dao.session.flush.assert_awaited()
+    # fetch_metadata is invoked by the delegated CreateDatasetCommand.run().
+    mock_dao.fetch_metadata.assert_awaited_once()
+    # Owners default to the current user (non-empty list assigned).
+    assert dataset.owners == [owner]
 
 
 # ---- ExportDatasetsCommand ----

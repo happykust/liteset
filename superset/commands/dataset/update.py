@@ -111,15 +111,18 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         # Error``). Every *field* validation below ACCUMULATES into a single
         # ``DatasetInvalidError`` so the controller emits a per-field 422 body.
         from superset.commands.dataset.exceptions import (
+            DatabaseNotFoundValidationError,
             DatasetColumnNotFoundValidationError,
             DatasetColumnsDuplicateValidationError,
             DatasetColumnsExistsValidationError,
+            DatasetDataAccessIsNotAllowed,
             DatasetExistsValidationError,
             DatasetInvalidError,
             DatasetMetricsDuplicateValidationError,
             DatasetMetricsExistsValidationError,
             DatasetMetricsNotFoundValidationError,
             DatasetValidationError,
+            MultiCatalogDisabledValidationError,
         )
         from superset.sql.parse import Table
 
@@ -213,19 +216,113 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             except CommandInvalidError as ex:
                 exceptions.append(DatasetValidationError(str(ex)))
 
+        # --- Dataset source: db-change resolution, catalog coercion,
+        # uniqueness + SQL-access — 1:1 with upstream ``_validate_dataset_source``
+        # / ``_validate_sql_access`` (both run in validate()).  Resolve the
+        # target Database explicitly via the DAO/refresh (NOT a sync lazy-load on
+        # ``self._dataset.database``) to avoid MissingGreenlet under asyncpg.
+        new_db: Any | None = None
+        database_id = self._data.get("database_id")
+        if database_id and database_id != self._dataset.database_id:
+            new_db = await self._dao.get_database_by_id(int(database_id))
+            if new_db is None:
+                exceptions.append(DatabaseNotFoundValidationError())
+
+        # ``db`` is the connection the dataset will end up on: the resolved new
+        # one, else the dataset's current database.
+        if new_db is not None:
+            db = new_db
+        else:
+            await self._dao.session.refresh(self._dataset, ["database"])
+            db = getattr(self._dataset, "database", None)
+
+        # Catalog validation / coercion — 1:1 with upstream
+        # ``_validate_dataset_source`` (MultiCatalogDisabled + default coercion).
+        catalog = self._data.get("catalog")
+        default_catalog = (
+            db.get_default_catalog()
+            if db is not None and hasattr(db, "get_default_catalog")
+            else None
+        )
+        allow_multi_catalog = bool(getattr(db, "allow_multi_catalog", False))
+        if (
+            "catalog" in self._data
+            and catalog != default_catalog
+            and not allow_multi_catalog
+        ):
+            exceptions.append(MultiCatalogDisabledValidationError())
+        elif db is not None and not allow_multi_catalog:
+            catalog = self._data["catalog"] = default_catalog
+        elif "catalog" not in self._data:
+            catalog = getattr(self._dataset, "catalog", None)
+
+        schema = (
+            self._data["schema"]
+            if "schema" in self._data
+            else getattr(self._dataset, "schema", None)
+        )
+
         table_name = self._data.get("table_name")
         if table_name:
-            database_id = self._data.get("database_id") or self._dataset.database_id
-            schema = self._data.get("schema")
+            # Use the resolved target db for the uniqueness check (1:1 upstream
+            # ``validate_update_uniqueness(db, table, ...)``).
+            uniq_db_id = (
+                int(getattr(db, "id", 0))
+                if db is not None and getattr(db, "id", None) is not None
+                else int(self._dataset.database_id)
+            )
             is_unique = await self._dao.validate_uniqueness(
-                database_id=int(database_id),
+                database_id=uniq_db_id,
                 table_name=table_name,
                 schema=schema,
                 dataset_id=self._dataset_id,
             )
             if not is_unique:
                 exceptions.append(
-                    DatasetExistsValidationError(Table(table_name, schema))
+                    DatasetExistsValidationError(Table(table_name, schema, catalog))
+                )
+
+        # SQL-access validation — 1:1 with upstream ``_validate_sql_access``:
+        # only when ``sql`` is provided AND differs from the current value.
+        # Accumulates two per-field ``sql`` errors (DatasetDataAccessIsNotAllowed
+        # on SupersetSecurityException, ``Invalid SQL: ...`` on SupersetParseError).
+        sql = self._data.get("sql")
+        if (
+            sql
+            and sql != self._dataset.sql
+            and self._security_manager is not None
+            and db is not None
+        ):
+            from superset.exceptions import (
+                SupersetParseError,
+                SupersetSecurityException,
+            )
+
+            # ``raise_for_access`` reads roles/perms off a User OBJECT — resolve
+            # it like ``CreateDatasetCommand`` (passing the bare id silently
+            # denies for everyone).
+            user = (
+                await self._security_manager.find_user_by_id(self._user_id)
+                if self._user_id is not None
+                else None
+            )
+            try:
+                await self._security_manager.raise_for_access(
+                    database=db,
+                    sql=sql,
+                    catalog=catalog,
+                    schema=schema,
+                    user=user,
+                )
+            except SupersetSecurityException as ex:
+                message = ex.error.message if getattr(ex, "error", None) else str(ex)
+                exceptions.append(DatasetDataAccessIsNotAllowed(message))
+            except SupersetParseError as ex:
+                message = ex.error.message if getattr(ex, "error", None) else str(ex)
+                exceptions.append(
+                    DatasetValidationError(
+                        f"Invalid SQL: {message}", field_name="sql"
+                    )
                 )
 
         # Validate/resolve owners here (not run()) so a bad owner id surfaces as
@@ -257,47 +354,14 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
     async def run(self) -> "SqlaTable":
         assert self._dataset is not None
 
-        # Mirrors UpdateDatasetCommand._validate_sql_access in the
-        # original Flask Superset: ``if sql and sql != self._model.sql``.
-        # Skip when sql is empty (physical table) or unchanged — the
-        # dataset edit modal sends sql="" for every save, so checking
-        # only ``is not None`` would re-validate access on every PUT
-        # and pull in a sync lazy-load of self._dataset.database that
-        # crashes with MissingGreenlet under asyncpg.
-        sql = self._data.get("sql")
-        if sql and sql != self._dataset.sql and self._security_manager is not None:
-            from superset.exceptions import SupersetSecurityException
+        # SQL-access validation moved to validate() (1:1 with upstream
+        # ``_validate_sql_access``), accumulating per-field ``sql`` 422 errors.
 
-            await self._dao.session.refresh(self._dataset, ["database"])
-            database = getattr(self._dataset, "database", None)
-            if database:
-                # ``raise_for_access`` takes a User OBJECT (``is_admin`` /
-                # ``can_access`` read its roles + perms). Passing the bare
-                # ``user_id`` int — as before — made every check fall through to
-                # "no roles/perms" and silently denied the SQL update for
-                # everyone, owner and admin included. Resolve the user like
-                # ``CreateDatasetCommand`` does.
-                user = (
-                    await self._security_manager.find_user_by_id(self._user_id)
-                    if self._user_id is not None
-                    else None
-                )
-                schema = self._data.get("schema") or getattr(
-                    self._dataset, "schema", None
-                )
-                try:
-                    await self._security_manager.raise_for_access(
-                        database=database,
-                        schema=schema,
-                        sql=sql,
-                        user=user,
-                    )
-                except SupersetSecurityException as exc:
-                    raise CommandInvalidError(
-                        "Access denied: insufficient SQL access"
-                    ) from exc
-
-        # Columns/metrics are handled by DAO.update() special logic
+        # Columns/metrics are handled by DAO.update() special logic. The
+        # ``database_id`` → ``database`` resolution is applied by setattr below
+        # (the resolved Database is used in validate()); here we map the id key
+        # onto the model attribute. ``catalog`` may have been coerced in
+        # validate() and is carried in ``self._data``.
         data = dict(self._data)
         columns = data.pop("columns", None)
         metrics = data.pop("metrics", None)
