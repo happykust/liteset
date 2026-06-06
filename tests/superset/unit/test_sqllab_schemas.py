@@ -62,7 +62,9 @@ def test_execute_payload_body_defaults():
     assert body.select_as_cta is False
     assert body.ctas_method == "TABLE"
     assert body.runAsync is False
-    assert body.expand_data is True
+    # Effective gate is PRESTO_EXPAND_DATA AND expand_data; the original
+    # Marshmallow schema defaulted this falsy.
+    assert body.expand_data is False
     assert body.queryLimit is None
     assert body.client_id is None
 

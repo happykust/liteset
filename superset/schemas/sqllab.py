@@ -61,7 +61,10 @@ class ExecutePayloadSchema(msgspec.Struct):
     queryLimit: int | None = None  # noqa: N815
     # camelCase — frontend sends "runAsync", not "run_async"
     runAsync: bool = False  # noqa: N815
-    expand_data: bool = True
+    # Effective gate is ``PRESTO_EXPAND_DATA AND expand_data`` (applied in the
+    # execute command); the original Marshmallow schema defaulted this to
+    # falsy, so mirror that here.
+    expand_data: bool = False
     client_id: str | None = None
     sql_editor_id: str | None = None
     # frontend sends "json": true — ignored but accepted

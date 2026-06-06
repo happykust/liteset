@@ -33,7 +33,7 @@ import logging
 import sys
 import time
 import uuid
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime
 from typing import Any, cast, Optional
 
@@ -303,8 +303,26 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
             catalog=query.catalog,
             schema=query.schema,
             source=QuerySource.SQL_LAB,
-        ) as engine:
+        ) as engine, _check_for_oauth2(database):
             with closing(engine.raw_connection()) as conn:
+                # Pre-session queries select the catalog/schema (e.g. Postgres
+                # ``SET search_path``). 1:1 with ``Database.get_raw_connection``
+                # in the original, which the port's connection path had dropped.
+                try:
+                    prequeries_fn = getattr(db_engine_spec, "get_prequeries", None)
+                    if callable(prequeries_fn):
+                        for prequery in prequeries_fn(
+                            database=database,
+                            catalog=query.catalog,
+                            schema=query.schema,
+                        ):
+                            prequery_cursor = conn.cursor()
+                            prequery_cursor.execute(prequery)
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "Could not run pre-session catalog/schema queries",
+                        exc_info=True,
+                    )
                 cursor = conn.cursor()
                 try:
                     cancel_query_id = _get_cancel_query_id(db_engine_spec, cursor, query)
@@ -342,7 +360,7 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
 
                     try:
                         result_set = _execute_query(
-                            session, query, cursor, db_engine_spec
+                            session, query, cursor, db_engine_spec, log_params
                         )
                     except SqlLabQueryStoppedException:
                         payload.update({"status": QueryStatus.STOPPED})
@@ -596,6 +614,16 @@ def _resolve_results_backend() -> tuple[Any | None, bool]:
         return None, True
 
 
+def _resolve_query_logger() -> Any | None:
+    """Return the configured ``QUERY_LOGGER`` callable (or ``None``)."""
+    try:
+        from superset.config import SupersetSettings
+
+        return getattr(SupersetSettings(), "query_logger", None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _resolve_disallowed_functions(engine_name: str) -> set[str]:
     try:
         from superset.config import SupersetSettings
@@ -727,8 +755,47 @@ def _get_cancel_query_id(db_engine_spec: Any, cursor: Any, query: Any) -> str | 
         return None
 
 
+@contextmanager
+def _check_for_oauth2(database: Any) -> Any:
+    """Sync 1:1 of ``superset_old/utils/oauth2.py::check_for_oauth2``.
+
+    Runs the wrapped block and, if it raises an error indicating the engine
+    needs OAuth2 authorization, triggers the OAuth2 dance before re-raising.
+
+    Limitation: the port's :meth:`BaseAsyncEngineSpec.start_oauth2_dance` is
+    declared ``async`` (it performs no ``await`` — it only builds the
+    authorization URL and raises :class:`OAuth2RedirectError`).  The Celery
+    worker is synchronous, so we drive the coroutine to its first (and only)
+    step here.  Any future async I/O added to ``start_oauth2_dance`` would
+    need a real event loop on this path.
+    """
+    try:
+        yield
+    except Exception as ex:  # noqa: BLE001
+        try:
+            spec = database.db_engine_spec
+            if database.is_oauth2_enabled() and spec.needs_oauth2(ex):
+                dance = spec.start_oauth2_dance(database)
+                if hasattr(dance, "send"):  # coroutine — drive it synchronously
+                    try:
+                        dance.send(None)
+                    except StopIteration:
+                        pass
+        except Exception:  # noqa: BLE001
+            # OAuth2RedirectError (or OAuth2Error) is raised here to start the
+            # dance; let it propagate. Any other failure during the check is
+            # swallowed so we surface the original query error below.
+            if "OAuth2" in type(sys.exc_info()[1]).__name__:
+                raise
+        raise
+
+
 def _execute_query(
-    session: Any, query: Any, cursor: Any, db_engine_spec: Any
+    session: Any,
+    query: Any,
+    cursor: Any,
+    db_engine_spec: Any,
+    log_params: Optional[dict[str, Any]] = None,
 ) -> Any:
     """Run ``query.executed_sql`` against ``cursor`` and wrap the result.
 
@@ -745,6 +812,25 @@ def _execute_query(
     stats_logger = stats_logger_manager.instance
 
     try:
+        # QUERY_LOGGER audit hook — 1:1 with the original ``execute_query``,
+        # invoked before executing each statement. ``security_manager`` is the
+        # FAB instance in the original; the port's security manager is async &
+        # per-session, so we pass ``None`` here (the configurable hook owns its
+        # use of the arg).
+        log_query = _resolve_query_logger()
+        if log_query:
+            try:
+                log_query(
+                    query.database.sqlalchemy_uri,
+                    query.executed_sql,
+                    query.schema,
+                    __name__,
+                    None,
+                    log_params,
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("QUERY_LOGGER hook failed", exc_info=True)
+
         # Persist ``executed_sql`` (set by the caller) before executing, so it
         # survives a worker crash mid-statement — mirrors the original's
         # ``db.session.commit()`` at the top of ``execute_query``.

@@ -92,57 +92,20 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
         if query.status in terminal_states:
             return query
 
-        # Attempt to cancel the query via the database engine
-        try:
-            db = query.database
-            engine_spec = db.db_engine_spec
-            if (
-                hasattr(engine_spec, "has_implicit_cancel")
-                and engine_spec.has_implicit_cancel()
-            ):
-                pass  # engine handles cancellation implicitly
-            elif hasattr(engine_spec, "cancel_query"):
-                cancel_query_id = query.extra.get("cancel_query")  # type: ignore[attr-defined]
-                if cancel_query_id is not None:
-                    await asyncio.to_thread(
-                        self._cancel_via_engine,
-                        db,
-                        engine_spec,
-                        query,
-                        cancel_query_id,
-                    )
-        except Exception as ex:  # noqa: BLE001
-            if isinstance(ex, (KeyboardInterrupt, SystemExit)):
-                raise
-            import logging
+        # 1:1 with ``superset_old/daos/query.py::stop_query``: attempt to
+        # cancel via the engine and *raise* ``SupersetCancelQueryException`` if
+        # the cancel fails — only set STOPPED on a successful cancel. The sync
+        # ``cancel_query`` (1:1 port in ``tasks/sql_lab.py``) opens a synchronous
+        # analytical connection, so it runs in a worker thread.
+        from superset.exceptions import SupersetCancelQueryException
+        from superset.tasks.sql_lab import cancel_query
 
-            logging.getLogger(__name__).warning(
-                "Failed to cancel query %s: %s",
-                client_id,
-                ex,
-            )
+        if not await asyncio.to_thread(cancel_query, query):
+            raise SupersetCancelQueryException("Could not cancel query")
 
         query.status = QueryStatus.STOPPED  # type: ignore[assignment]
         query.end_time = now_as_float()  # type: ignore[assignment]
         return query
-
-    @staticmethod
-    def _cancel_via_engine(
-        db: Any,
-        engine_spec: Any,
-        query: Query,
-        cancel_query_id: str,
-    ) -> bool:
-        """Cancel a running query via the database engine (runs in thread)."""
-        from contextlib import closing
-
-        with db.get_sqla_engine(
-            catalog=query.catalog,
-            schema=query.schema,
-        ) as engine:
-            with closing(engine.raw_connection()) as conn:
-                with closing(conn.cursor()) as cursor:
-                    return engine_spec.cancel_query(cursor, query, cancel_query_id)
 
 
 class AsyncSavedQueryDAO(BaseAsyncDAO[SavedQuery]):

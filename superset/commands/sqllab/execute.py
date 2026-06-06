@@ -102,7 +102,11 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         self._user_id = user_id
         self._sql_editor_id = sql_editor_id
         self._tab = tab
-        self._expand_data = expand_data
+        # 1:1 with ``SqlJsonExecutionContext`` — effective ``expand_data`` is
+        # gated on the ``PRESTO_EXPAND_DATA`` feature flag AND the request param.
+        self._expand_data = bool(
+            self._is_feature_enabled("PRESTO_EXPAND_DATA") and expand_data
+        )
         self._sql_max_row = sql_max_row
         self._template_params = template_params or {}
         self._security_manager = security_manager
@@ -154,6 +158,14 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         # ------------------------------------------------------------------
         # 4. Create Query record with PENDING status
         # ------------------------------------------------------------------
+        # 1:1 with ``SqlJsonExecutionContext.set_database`` — for CTAS/CVAS,
+        # resolve the target schema (``force_ctas_schema`` else
+        # ``SQLLAB_CTAS_SCHEMA_NAME_FUNC``) and persist it as
+        # ``tmp_schema_name`` so ``apply_ctas`` qualifies the new table.
+        tmp_schema_name: str | None = None
+        if self._select_as_cta:
+            tmp_schema_name = self._get_ctas_target_schema_name(db_row)
+
         start_time = now_as_float()
         query = Query(
             database_id=self._database_id,
@@ -170,6 +182,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
             select_as_cta=self._select_as_cta,
             ctas_method=self._ctas_method,
             tmp_table_name=self._tmp_table_name,
+            tmp_schema_name=tmp_schema_name,
             limit=effective_limit,
             executed_sql=self._sql,
             limiting_factor=LimitingFactor.UNKNOWN,
@@ -368,6 +381,12 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
             await session.rollback()
             refreshed = await session.get(_Query, query_id)
             payload["query"] = refreshed.to_dict() if refreshed is not None else {}
+
+        # 1:1 with ``ExecutionContextConvertor.serialize_payload`` →
+        # ``apply_display_max_row_configuration_if_require``: cap the returned
+        # rows to DISPLAY_MAX_ROW and flag ``displayLimitReached`` when the
+        # query produced more rows than the display configuration allows.
+        self._apply_display_max_row(payload)
         return payload
 
     # ------------------------------------------------------------------
@@ -428,6 +447,58 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
             return int(getattr(settings, "sqllab_timeout", 30))
         except Exception:  # noqa: BLE001
             return 30
+
+    def _apply_display_max_row(self, payload: dict[str, Any]) -> None:
+        """Cap result rows to DISPLAY_MAX_ROW in place.
+
+        1:1 with ``superset.sqllab.utils.
+        apply_display_max_row_configuration_if_require``: only applies when the
+        query SUCCEEDED and produced more rows than the configured limit;
+        truncates ``data`` and sets ``displayLimitReached=True``.
+        """
+        try:
+            from superset.config import SupersetSettings
+
+            max_rows = int(getattr(SupersetSettings(), "display_max_row", 10000))
+        except Exception:  # noqa: BLE001
+            max_rows = 10000
+
+        if payload.get("status") != QueryStatus.SUCCESS:
+            return
+        rows = (payload.get("query") or {}).get("rows")
+        if rows is None or rows <= max_rows:
+            return
+        data = payload.get("data")
+        if isinstance(data, list):
+            payload["data"] = data[:max_rows]
+        payload["displayLimitReached"] = True
+
+    def _get_ctas_target_schema_name(self, database: Any) -> str | None:
+        """Resolve the CTAS/CVAS target schema.
+
+        1:1 with ``SqlJsonExecutionContext._get_ctas_target_schema_name`` /
+        ``views/utils.get_cta_schema_name``: ``force_ctas_schema`` takes
+        precedence, otherwise the configurable
+        ``SQLLAB_CTAS_SCHEMA_NAME_FUNC(database, user, schema, sql)`` hook.
+        """
+        force_ctas_schema = getattr(database, "force_ctas_schema", None)
+        if force_ctas_schema:
+            return force_ctas_schema
+
+        func: Any = None
+        try:
+            from superset.config import SupersetSettings
+
+            func = getattr(SupersetSettings(), "sqllab_ctas_schema_name_func", None)
+        except Exception:  # noqa: BLE001
+            func = None
+        if not func:
+            return None
+        try:
+            return func(database, self._current_user, self._schema, self._sql)
+        except Exception:  # noqa: BLE001
+            logger.warning("SQLLAB_CTAS_SCHEMA_NAME_FUNC failed", exc_info=True)
+            return None
 
     def _is_feature_enabled(self, name: str) -> bool:
         try:
