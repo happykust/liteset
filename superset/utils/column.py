@@ -21,6 +21,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+# Re-export: the single canonical implementation lives in utils/core.py (ported
+# 1:1 from superset_old/utils/core.py:1678-1722).  The broken Druid-only stub
+# that used to be defined here has been removed; importers that pull this symbol
+# from superset.utils.column (e.g. viz.py) now transparently get the correct one.
+from superset.utils.core import get_time_filter_status  # noqa: F401
+
 # Type aliases matching superset's typing
 Column = str | dict[str, Any]
 Metric = str | dict[str, Any]
@@ -239,27 +245,6 @@ def extract_dataframe_dtypes(
         else:
             result.append(GenericDataType.STRING)
     return result
-
-
-def get_time_filter_status(
-    datasource: Any,
-    applied_time_extras: dict[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return (applied_filters, rejected_filters) for time extras.
-
-    :param datasource: datasource with optional main_dttm_col attribute
-    :param applied_time_extras: dict of applied time extras from the query
-    :return: tuple of (applied, rejected) filter dicts
-    """
-    applied: list[dict[str, Any]] = []
-    rejected: list[dict[str, Any]] = []
-    if hasattr(datasource, "main_dttm_col") and datasource.main_dttm_col:
-        col = datasource.main_dttm_col
-        if applied_time_extras.get("__time_range"):
-            applied.append({"column": col})
-        else:
-            rejected.append({"column": col, "reason": "not_druid_datasource"})
-    return applied, rejected
 
 
 # ---------------------------------------------------------------------------
