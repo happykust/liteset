@@ -305,34 +305,22 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
             source=QuerySource.SQL_LAB,
         ) as engine, _check_for_oauth2(database):
             with closing(engine.raw_connection()) as conn:
-                # Pre-session queries select the catalog/schema (e.g. Postgres
-                # ``SET search_path``). 1:1 with ``Database.get_raw_connection``
-                # in the original, which the port's connection path had dropped.
-                try:
-                    prequeries_fn = getattr(db_engine_spec, "get_prequeries", None)
-                    if callable(prequeries_fn):
-                        for prequery in prequeries_fn(
-                            database=database,
-                            catalog=query.catalog,
-                            schema=query.schema,
-                        ):
-                            prequery_cursor = conn.cursor()
-                            prequery_cursor.execute(prequery)
-                except Exception:  # noqa: BLE001
-                    logger.warning(
-                        "Could not run pre-session catalog/schema queries",
-                        exc_info=True,
-                    )
+                # pre-session queries are used to set the selected
+                # catalog/schema — 1:1 with ``Database.get_raw_connection``
+                # (superset_old/models/core.py:572), which runs them UNGUARDED:
+                # a prequery failure must propagate, not be swallowed.
+                for prequery in db_engine_spec.get_prequeries(
+                    database=database,
+                    catalog=query.catalog,
+                    schema=query.schema,
+                ):
+                    prequery_cursor = conn.cursor()
+                    prequery_cursor.execute(prequery)
                 cursor = conn.cursor()
-                try:
-                    cancel_query_id = _get_cancel_query_id(db_engine_spec, cursor, query)
-                    if cancel_query_id is not None:
-                        query.set_extra_json_key(QUERY_CANCEL_KEY, cancel_query_id)
-                        session.commit()
-                except Exception:  # noqa: BLE001
-                    logger.debug(
-                        "Could not extract cancel_query id from cursor", exc_info=True
-                    )
+                cancel_query_id = _get_cancel_query_id(db_engine_spec, cursor, query)
+                if cancel_query_id is not None:
+                    query.set_extra_json_key(QUERY_CANCEL_KEY, cancel_query_id)
+                    session.commit()
 
                 block_count = len(blocks)
                 for i, block in enumerate(blocks):
@@ -819,17 +807,18 @@ def _execute_query(
         # use of the arg).
         log_query = _resolve_query_logger()
         if log_query:
-            try:
-                log_query(
-                    query.database.sqlalchemy_uri,
-                    query.executed_sql,
-                    query.schema,
-                    __name__,
-                    None,
-                    log_params,
-                )
-            except Exception:  # noqa: BLE001
-                logger.warning("QUERY_LOGGER hook failed", exc_info=True)
+            # Called UNGUARDED inside the main execution try — 1:1 with the
+            # original ``execute_query`` (superset_old/sql_lab.py:256-264): a
+            # failing QUERY_LOGGER hook propagates to the query-error handlers
+            # below (the statement is NOT executed), it is not swallowed.
+            log_query(
+                query.database.sqlalchemy_uri,
+                query.executed_sql,
+                query.schema,
+                __name__,
+                None,
+                log_params,
+            )
 
         # Persist ``executed_sql`` (set by the caller) before executing, so it
         # survives a worker crash mid-statement — mirrors the original's
