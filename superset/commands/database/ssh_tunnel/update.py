@@ -95,11 +95,13 @@ class UpdateSSHTunnelCommand(AsyncBaseCommand[Any]):
                 self._properties["private_key"] = None
                 self._properties["private_key_password"] = None
 
-            for key, value in self._properties.items():
-                if hasattr(self._model, key):
-                    setattr(self._model, key, value)
-            await self._dao.session.flush()
-            return self._model
+            # Delegate to the DAO so that ``unmask_password_info`` runs before
+            # the attributes are written — 1:1 with the original which calls
+            # ``SSHTunnelDAO.update`` whose overridden ``update()`` calls
+            # ``unmask_password_info(attributes, item)`` before persisting.
+            # The previous inline ``setattr`` loop bypassed the DAO and therefore
+            # skipped unmasking, letting ``PASSWORD_MASK`` clobber stored secrets.
+            return await self._dao.update(self._model, self._properties)
         except (SSHTunnelDatabasePortError, SSHTunnelInvalidError):
             raise
         except Exception as ex:

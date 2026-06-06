@@ -170,6 +170,13 @@ class UpdateThemeCommand(AsyncBaseCommand[Any]):
         self._model = await self._dao.find_by_id(self._pk)
         if not self._model:
             raise ObjectNotFoundError("Theme", self._pk)
+        # Block modification of system themes — 1:1 with upstream
+        # ``superset_old/commands/theme/update.py::UpdateThemeCommand.validate``
+        # which raises ``SystemThemeProtectedError`` when ``model.is_system`` is
+        # set.  The port uses ``ForbiddenError`` (HTTP 403) consistently for
+        # ``is_system`` guards (see ``_validate_theme_deletable`` above).
+        if getattr(self._model, "is_system", False):
+            raise ForbiddenError("System themes cannot be modified.")
         # Validate json_data structure when provided (1:1 upstream PUT path).
         json_data = self._data.get("json_data")
         if json_data not in (None, ""):

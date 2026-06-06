@@ -31,6 +31,7 @@ from superset.commands.theme import (
 )
 from superset.exceptions import (
     CommandInvalidError,
+    ForbiddenError,
     ObjectNotFoundError,
 )
 
@@ -114,6 +115,21 @@ async def test_update_success(mock_dao, mock_theme):
     result = await cmd.execute()
     assert result.id == 1
     mock_dao.update.assert_awaited_once_with(mock_theme, data)
+
+
+async def test_update_system_theme_blocked(mock_dao, mock_theme):
+    """System themes must not be modifiable — Fix B: 1:1 parity with
+    ``superset_old/commands/theme/update.py::UpdateThemeCommand.validate``
+    which raises ``SystemThemeProtectedError`` when ``is_system`` is set.
+    The port maps this to ``ForbiddenError`` (HTTP 403), consistent with
+    ``_validate_theme_deletable``."""
+    mock_theme.is_system = True
+    mock_dao.find_by_id.return_value = mock_theme
+    cmd = UpdateThemeCommand(dao=mock_dao, pk=1, data={"theme_name": "Hacked"})
+    with pytest.raises(ForbiddenError, match="System themes cannot be modified"):
+        await cmd.execute()
+    # DAO update must NOT have been called when the guard fires.
+    mock_dao.update.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
