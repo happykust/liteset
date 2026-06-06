@@ -89,9 +89,17 @@ async def _skip_unowned_objects(
 
 
 class CreateTagCommand(AsyncBaseCommand[Any]):
-    def __init__(self, dao: AsyncTagDAO, data: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        dao: "AsyncTagDAO",
+        data: dict[str, Any],
+        security_manager: Any | None = None,
+        current_user: Any | None = None,
+    ) -> None:
         self._dao = dao
         self._data = data
+        self._security_manager = security_manager
+        self._current_user = current_user
 
     async def validate(self) -> None:
         name = self._data.get("name", "").strip()
@@ -115,13 +123,33 @@ class CreateTagCommand(AsyncBaseCommand[Any]):
         from superset.models.tags import ObjectType
 
         objects_to_tag = self._data.get("objects_to_tag", []) or []
+
+        # Ownership-skip check — 1:1 with upstream
+        # ``CreateCustomTagWithRelationshipsCommand.validate`` (superset_old/
+        # commands/tag/create.py:88-116): objects the requesting user neither
+        # owns nor created are silently excluded from tagging. The single
+        # ``POST /tag/`` path previously called ``CreateTagCommand`` without
+        # passing security_manager, so the skip was never applied.
+        normalized: list[Any] = []
         for obj in objects_to_tag:
             if not isinstance(obj, (list, tuple)) or len(obj) != 2:
                 raise CommandInvalidError(
                     f"Invalid objects_to_tag entry: {obj!r} "
                     "(expected [object_type, object_id])"
                 )
+            normalized.append(obj)
+        skipped = await _skip_unowned_objects(
+            self._dao.session,
+            self._security_manager,
+            self._current_user,
+            [(str(o[0]), int(o[1])) for o in normalized],
+        )
+
+        for obj in normalized:
             object_type, object_id = obj[0], obj[1]
+            pair = (str(object_type), int(object_id))
+            if pair in skipped:
+                continue
             # Validate the object type up front — ``create_custom_tagged_objects``
             # does ``ObjectType[object_type]`` which would ``KeyError`` → 500 on
             # an unknown type. Mirror upstream's ``invalid object type`` 4xx.

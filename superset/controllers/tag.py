@@ -153,9 +153,18 @@ class TagController(Controller):
         data: TagPostSchema,
         dao: Any,
         current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> dict[str, Any]:
         raw = msgspec.structs.asdict(data)
-        cmd = CreateTagCommand(dao=dao, data=raw)
+        # Pass security_manager + current_user so the ownership-skip check
+        # (1:1 with upstream ``CreateCustomTagWithRelationshipsCommand.validate``)
+        # runs for the single-POST path too — previously skipped.
+        cmd = CreateTagCommand(
+            dao=dao,
+            data=raw,
+            security_manager=security_manager,
+            current_user=current_user,
+        )
         item = await cmd.execute()
         await event_logger.alog_with_context(
             "tag.create", object_ref=str(item.id), user_id=current_user.id

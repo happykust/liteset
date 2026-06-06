@@ -32,7 +32,7 @@ from superset.exceptions import (
 logger = logging.getLogger(__name__)
 
 
-_THEME_MODES = {"default", "dark", "system"}
+_THEME_MODES = {"default", "dark", "system", "compact"}
 
 
 def _is_valid_theme(theme: Any) -> bool:

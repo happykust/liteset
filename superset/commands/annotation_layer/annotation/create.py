@@ -71,6 +71,19 @@ class CreateAnnotationCommand(AsyncBaseCommand["Annotation"]):
                 "end_dttm must be greater or equal to start_dttm"
             )
 
+        # Validate json_metadata is valid JSON — 1:1 with upstream
+        # ``AnnotationPostSchema.json_metadata`` which carries
+        # ``validate=validate_json`` (superset_old/annotation_layers/
+        # annotations/schemas.py:76-80). The port's msgspec struct has no
+        # inline validator, so we check here instead.
+        json_metadata = self._data.get("json_metadata")
+        if json_metadata not in (None, ""):
+            import json as _json
+            try:
+                _json.loads(json_metadata)
+            except (TypeError, ValueError) as ex:
+                raise CommandInvalidError("JSON not valid") from ex
+
     async def run(self) -> "Annotation":
         self._data["layer_id"] = self._layer_pk
         item = await self._dao.create(self._data)

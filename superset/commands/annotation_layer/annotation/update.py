@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
 
+import msgspec
+
 from superset.commands.base import AsyncBaseCommand
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 
@@ -69,6 +71,19 @@ class UpdateAnnotationCommand(AsyncBaseCommand["Annotation"]):
             raise CommandInvalidError(
                 "end_dttm must be greater or equal to start_dttm"
             )
+
+        # Validate json_metadata is valid JSON — 1:1 with upstream
+        # ``AnnotationPutSchema.json_metadata`` which carries
+        # ``validate=validate_json`` (superset_old/annotation_layers/
+        # annotations/schemas.py:98-103). The port's msgspec struct has no
+        # inline validator, so we check here instead.
+        json_metadata = self._data.get("json_metadata")
+        if json_metadata not in (None, "", msgspec.UNSET):
+            import json as _json
+            try:
+                _json.loads(json_metadata)
+            except (TypeError, ValueError) as ex:
+                raise CommandInvalidError("JSON not valid") from ex
 
     async def run(self) -> "Annotation":
         assert self._annotation is not None
