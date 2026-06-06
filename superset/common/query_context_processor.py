@@ -580,19 +580,13 @@ class AsyncQueryContextProcessor:
             QueryObjectValidationError,
         )
 
-        # A ``Query`` (SQL Lab result) datasource lacks the ``ExploreMixin`` /
-        # ``SqlTablesMixin`` interface upstream gives it (``columns``/``data``/
-        # ``query``/``get_sqla_query`` + ~30 datasource properties) — that's a
-        # large async subsystem the port deliberately defers. Detect it up
-        # front (no ``columns`` attribute) and raise a CLEAN 4xx, instead of
-        # letting the many unguarded ``datasource.columns`` accesses below
-        # (e.g. ``get_time_filter_status``) blow up as an opaque 500.
-        if not hasattr(self._datasource, "columns"):
-            raise QueryObjectValidationError(
-                "Exploring SQL Lab query results as a datasource is not "
-                "supported in this deployment. Save the query as a dataset "
-                "(virtual dataset) to chart it."
-            )
+        # A SQL Lab ``Query`` datasource (``datasource_type="query"``) now
+        # implements the full ``ExploreMixin`` / ``AsyncQueryExecutionMixin``
+        # interface (``columns``/``data``/``async_query``/``get_sqla_query`` +
+        # the datasource properties), so it flows through this path like any
+        # other datasource. The defensive raise in :meth:`_get_query_result`
+        # remains as a fallback for any datasource that still lacks the async
+        # query interface.
 
         # Validate query object (sanitize filters, check duplicates, etc.)
         query_object.validate()

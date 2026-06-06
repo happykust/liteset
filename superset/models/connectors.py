@@ -718,12 +718,366 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
 
 
 # ---------------------------------------------------------------------------
+# AsyncQueryExecutionMixin
+# ---------------------------------------------------------------------------
+
+
+class AsyncQueryExecutionMixin:
+    """Datasource-agnostic async SQL build/execution helpers.
+
+    These methods were originally defined directly on :class:`SqlaTable`
+    but only reference the generic datasource surface (``self.database`` /
+    ``self.sql`` / ``self.catalog`` / ``self.schema`` / ``self.db_engine_spec``)
+    plus :meth:`ExploreMixin.get_sqla_query`. Extracting them into a mixin
+    lets a SQL Lab :class:`~superset.models.sql_lab.Query` (which also mixes
+    in :class:`ExploreMixin`) act as a chart datasource — exactly the
+    ``datasource_type="query"`` capability upstream gives ``Query`` via the
+    same ``ExploreMixin`` interface.
+
+    The refactor is behaviour-preserving for ``SqlaTable``: none of these
+    method names are defined on any other base in ``SqlaTable``'s MRO, so
+    resolution is unchanged.
+    """
+
+    def _adapt_query_dict_for_get_sqla_query(
+        self, query_dict: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Map QueryContext-style ``query_dict`` keys → ``get_sqla_query`` kwargs.
+
+        The wire format used by ``QueryContext.to_dict`` (and propagated
+        through the chart-data pipeline) uses snake_case names like
+        ``filter`` (not ``filters``) and lumps temporal extras into
+        ``extras``. The :meth:`helpers.ExploreMixin.get_sqla_query`
+        signature is the original Superset 1:1 contract — see
+        ``superset_old/models/helpers.py:1653`` — so we translate keys
+        here.
+        """
+        # Build the kwargs dict, accepting both ``filter`` and ``filters``
+        # for compatibility with both the wire format and dataclasses
+        # that prefer the plural name.
+        adapted: dict[str, Any] = {
+            "apply_fetch_values_predicate": query_dict.get(
+                "apply_fetch_values_predicate", False
+            ),
+            "columns": query_dict.get("columns") or [],
+            "extras": query_dict.get("extras") or {},
+            "filter": query_dict.get("filter") or query_dict.get("filters") or [],
+            "from_dttm": _parse_dttm(query_dict.get("from_dttm")),
+            "granularity": query_dict.get("granularity"),
+            "groupby": query_dict.get("groupby") or [],
+            "inner_from_dttm": _parse_dttm(query_dict.get("inner_from_dttm")),
+            "inner_to_dttm": _parse_dttm(query_dict.get("inner_to_dttm")),
+            "is_rowcount": query_dict.get("is_rowcount", False),
+            "is_timeseries": query_dict.get("is_timeseries", False),
+            "metrics": query_dict.get("metrics"),
+            "orderby": query_dict.get("orderby") or [],
+            "order_desc": query_dict.get("order_desc", True),
+            "to_dttm": _parse_dttm(query_dict.get("to_dttm")),
+            "series_columns": query_dict.get("series_columns") or [],
+            "series_limit": query_dict.get("series_limit"),
+            "series_limit_metric": query_dict.get("series_limit_metric"),
+            "group_others_when_limit_reached": query_dict.get(
+                "group_others_when_limit_reached", False
+            ),
+            "row_limit": query_dict.get("row_limit"),
+            "row_offset": query_dict.get("row_offset"),
+            "timeseries_limit": query_dict.get("timeseries_limit"),
+            "timeseries_limit_metric": query_dict.get("timeseries_limit_metric"),
+            "time_shift": query_dict.get("time_shift"),
+        }
+        return adapted
+
+    def _get_sqla_query_with_rls(
+        self,
+        query_dict: dict[str, Any],
+        rls_filters: list[Any] | None = None,
+    ) -> Any:
+        """Run :meth:`get_sqla_query` honouring caller-supplied RLS clauses.
+
+        The original chart-data pipeline computes the user's RLS
+        predicates inside :meth:`get_sqla_row_level_filters` (sync)
+        which reads from the active session/user context. The Liteset
+        async pipeline computes RLS up-front via
+        :func:`superset.utils.rls.compose_rls_where_clauses` and pushes
+        it down so we don't have to re-resolve the user inside a sync
+        helper.
+
+        Implementation: we forward ``rls_filters`` as a *kwarg* to
+        :meth:`helpers.ExploreMixin.get_sqla_query`. That method
+        consumes the kwarg and either uses the supplied clauses (push
+        path, used by async controllers) or falls back to the regular
+        :meth:`get_sqla_row_level_filters` pull path. This avoids the
+        monkey-patch race-condition that the previous implementation
+        exhibited — concurrent ``async`` tasks running
+        ``_build_sql`` / ``async_query`` on the same shared
+        ``SqlaTable`` instance now never mutate instance attributes,
+        so each task's RLS clauses stay private to its own call.
+        """
+        adapted = self._adapt_query_dict_for_get_sqla_query(query_dict)
+        if rls_filters is not None:
+            adapted["rls_filters"] = rls_filters
+        return self.get_sqla_query(**adapted)
+
+    def _build_sql(  # noqa: C901
+        self,
+        query_dict: dict[str, Any],
+        rls_filters: list[Any] | None = None,
+    ) -> tuple[str, datetime | None, datetime | None]:
+        """Build a SQL string from query_dict parameters.
+
+        Strategy A — thin wrapper over
+        :meth:`helpers.ExploreMixin.get_sqla_query` which is a 1:1
+        port of the original Apache Superset AST pipeline at
+        ``superset_old/models/helpers.py:1653-2347``. The wrapper:
+
+        1. Adapts the QueryContext wire-format keys to
+           ``get_sqla_query`` kwargs.
+        2. Injects caller-supplied RLS clauses (preferred form
+           ``ClauseElement``, backward-compat ``str``).
+        3. Compiles the AST via :meth:`Database.compile_sqla_query`
+           (handles literal-bind, dialect-specific identifier quoting
+           and the ``%%`` double-percent fixup).
+        4. Hoists any CTE the engine spec required to live above the
+           SELECT (MSSQL / Ocient).
+        5. Applies ``SQL_QUERY_MUTATOR`` via
+           :meth:`Database.mutate_sql_based_on_config`.
+
+        All 19 behavioural deltas (mixed-NULL IN, time filters via
+        ``convert_dttm`` / ``python_date_format``, ``time_grain`` on
+        filters / ORDER BY, ``is_rowcount``,
+        ``group_others_when_limit_reached``, ``apply_fetch_values_predicate``,
+        ``time_shift``, ``always_filter_main_dttm``,
+        ``make_orderby_compatible``, ``allows_alias_in_orderby`` /
+        ``allows_hidden_cc_in_orderby`` / ``allows_hidden_orderby_agg``,
+        ``make_label_compatible``, ``extras.where`` / ``extras.having``
+        Jinja, ``extra_cache_keys``, virtual-dataset RLS injection)
+        are handled inside :meth:`get_sqla_query` itself, mirroring
+        the original.
+
+        Returns ``(sql, from_dttm, to_dttm)``.
+        """
+        sqla_query = self._get_sqla_query_with_rls(query_dict, rls_filters=rls_filters)
+
+        sql = self.database.compile_sqla_query(
+            sqla_query.sqla_query,
+            catalog=self.catalog,
+            schema=self.schema,
+            is_virtual=bool(self.sql),
+        )
+        sql = self._apply_cte(sql, sqla_query.cte)
+        sql = self.database.mutate_sql_based_on_config(sql)
+
+        return (
+            sql,
+            _parse_dttm(query_dict.get("from_dttm")),
+            _parse_dttm(query_dict.get("to_dttm")),
+        )
+
+    def _build_from_ast(self) -> tuple[Any, str | None]:
+        """Return ``(from_clause, cte_sql)`` as a SQLAlchemy AST node.
+
+        Mirrors the original ``ExploreMixin.get_from_clause``
+        (``superset_old/models/helpers.py:1163``) but returns a
+        SQLAlchemy ``FromClause`` rather than a ``str`` so it can be
+        passed directly to ``sa.select(...).select_from(...)``.
+
+        - Physical dataset → ``sa.table(table_name, schema=...)``
+          (catalog is folded into the schema for engines that need it).
+        - Virtual dataset on an engine that supports CTEs in
+          subqueries → ``TextAsFrom(user_sql).alias("virtual_table")``.
+        - Virtual dataset on an engine that does *not* support CTEs in
+          subqueries (e.g. MSSQL/Ocient) → ``sa.table(cte_alias)`` plus
+          a ``cte_sql`` string the caller hoists above the SELECT.
+        """
+        from sqlalchemy.sql.expression import TextAsFrom
+
+        if not self.sql:
+            # Physical dataset — build a real Table-like FROM node.
+            schema_name = self.schema or None
+            if self.catalog:
+                # Some engines pack catalog.schema into the schema; mirror
+                # the string-builder behaviour by joining them so the
+                # dialect emits ``catalog.schema.table``.
+                schema_name = (
+                    f"{self.catalog}.{schema_name}"
+                    if schema_name
+                    else str(self.catalog)
+                )
+            return sa.table(str(self.table_name), schema=schema_name), None
+
+        # Virtual dataset
+        inner = self.sql.strip().rstrip(";")
+        engine_spec = self.database.db_engine_spec
+        cte: str | None = None
+        try:
+            cte = engine_spec.get_cte_query(inner)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to detect CTE in virtual dataset SQL for table %s",
+                getattr(self, "table_name", None),
+                exc_info=True,
+            )
+            cte = None
+
+        if cte:
+            # Engine spec rewrote the user SQL into a top-level CTE; the
+            # FROM references the CTE alias, and the caller prepends
+            # ``cte`` above the rendered SELECT.
+            return sa.table(engine_spec.cte_alias), cte
+
+        # Default virtual handling: wrap user SQL as a derived table
+        # alias, exactly matching original ``get_from_clause``.
+        return TextAsFrom(sa.text(inner), []).alias("virtual_table"), None
+
+    async def _execute_sql(self, sql: str) -> pd.DataFrame:
+        """Execute SQL against the dataset's database and return a DataFrame."""
+        from sqlalchemy.sql import text as sa_text
+
+        from superset.utils.database import get_async_connection
+
+        async with get_async_connection(self.database) as (conn, _spec):
+            result = await conn.execute(sa_text(sql))
+            if result.returns_rows:
+                cols = list(result.keys())
+                rows = result.fetchall()
+                return pd.DataFrame([tuple(row) for row in rows], columns=cols)
+            return pd.DataFrame()
+
+    async def async_query(
+        self,
+        query_dict: dict[str, Any],
+        rls_filters: list[Any] | None = None,
+    ) -> QueryResult:
+        """Execute a query against this dataset and return a QueryResult.
+
+        This is the primary entry point for the async query pipeline used by
+        AsyncQueryContextProcessor._get_query_result().
+
+        Surfaces all metadata produced by
+        :meth:`helpers.ExploreMixin.get_sqla_query` — namely
+        ``applied_filter_columns``, ``rejected_filter_columns``,
+        ``applied_template_filters``, ``labels_expected`` and
+        ``prequeries`` — so the chart-data response payload matches the
+        original Apache Superset shape (delta #19).
+
+        Args:
+            query_dict: The query parameters dict from QueryContext.
+            rls_filters: Optional list of Row-Level Security clauses
+                (``ClauseElement`` preferred — ``TextClause`` /
+                ``BooleanClauseList``; raw ``str`` fragments still
+                accepted for backward compat).  See ``_build_sql`` for
+                the dialect-compile pipeline.  The caller is responsible
+                for obtaining these from the security manager.
+        """
+        try:
+            # SQL building below is sync and CPU/IO heavy:
+            #   * ``_get_sqla_query_with_rls`` runs Jinja templating and
+            #     SQLAlchemy AST construction (and may trigger
+            #     ``_probe_adhoc_column_is_dttm`` which opens a sync
+            #     DB-API connection).
+            #   * ``compile_sqla_query`` enters a sync engine context and
+            #     compiles the AST to a dialect string (and runs the
+            #     SQLGlot OPTIMIZE_SQL pass for virtual datasets).
+            #   * ``mutate_sql_based_on_config`` dispatches the
+            #     user-defined ``SQL_QUERY_MUTATOR`` callable, which is
+            #     also sync.
+            #
+            # Running them directly inside this coroutine would block the
+            # event loop. Hand them off to a worker thread via
+            # :func:`asyncio.to_thread`, which on Python >=3.9 copies the
+            # current :class:`~contextvars.Context` (verified for 3.12 in
+            # CPython's stdlib) so :func:`get_current_user` and friends
+            # still resolve to the same caller-bound user inside the
+            # worker thread.
+            sqla_query = await asyncio.to_thread(
+                self._get_sqla_query_with_rls,
+                query_dict,
+                rls_filters,
+            )
+            sql = await asyncio.to_thread(
+                self.database.compile_sqla_query,
+                sqla_query.sqla_query,
+                self.catalog,
+                self.schema,
+                bool(self.sql),
+            )
+            sql = self._apply_cte(sql, sqla_query.cte)
+            sql = await asyncio.to_thread(self.database.mutate_sql_based_on_config, sql)
+            logger.debug("async_query SQL:\n%s", sql)
+
+            from_dttm = _parse_dttm(query_dict.get("from_dttm"))
+            to_dttm = _parse_dttm(query_dict.get("to_dttm"))
+
+            df = await self._execute_sql(sql)
+
+            # 1:1 with original
+            # ``superset_old/connectors/sqla/models.py:assign_column_label``
+            # (line 1626) — dialects like MSSQL / Snowflake may rename
+            # or change the case of columns. The expected behaviour is:
+            #
+            # 1. If the engine returned *fewer* columns than the
+            #    helpers-mixin counted (``labels_expected``), the
+            #    query is malformed; raise a validation error rather
+            #    than silently truncating user output.
+            # 2. If the engine returned *more* columns (e.g. an
+            #    ORDER BY column not in SELECT was returned anyway),
+            #    keep only the leading ``labels_expected`` columns —
+            #    this matches the ``df.iloc[:, 0:len(labels_expected)]``
+            #    slice in the original.
+            # 3. Reassign ``df.columns`` to the canonical labels so
+            #    downstream viz components find the column names they
+            #    expect.
+            if not df.empty and sqla_query.labels_expected:
+                from superset.exceptions import QueryObjectValidationError
+
+                expected = list(sqla_query.labels_expected)
+                if len(df.columns) < len(expected):
+                    raise QueryObjectValidationError(
+                        "Db engine did not return all queried columns"
+                    )
+                if len(df.columns) > len(expected):
+                    df = df.iloc[:, 0 : len(expected)]
+                df.columns = expected
+
+            return QueryResult(
+                df=df,
+                query=sql,
+                status="success",
+                from_dttm=from_dttm,
+                to_dttm=to_dttm,
+                applied_filter_columns=list(sqla_query.applied_filter_columns),
+                rejected_filter_columns=list(sqla_query.rejected_filter_columns),
+                applied_template_filters=list(sqla_query.applied_template_filters),
+                labels_expected=list(sqla_query.labels_expected),
+                prequeries=list(sqla_query.prequeries),
+            )
+        except Exception as ex:
+            logger.warning(
+                "async_query failed for datasource %s: %s",
+                getattr(self, "table_name", None),
+                ex,
+                exc_info=True,
+            )
+            return QueryResult(
+                df=pd.DataFrame(),
+                query="",
+                status="error",
+                error_message=str(ex),
+            )
+
+
+# ---------------------------------------------------------------------------
 # SqlaTable
 # ---------------------------------------------------------------------------
 
 
 class SqlaTable(
-    Base, AuditMixinNullable, ImportExportMixin, BaseDatasource, ExploreMixin
+    Base,
+    AuditMixinNullable,
+    ImportExportMixin,
+    BaseDatasource,
+    AsyncQueryExecutionMixin,
+    ExploreMixin,
 ):
     """A SQL dataset (table or virtual query)."""
 
@@ -1836,62 +2190,6 @@ class SqlaTable(
         parts.append(self._quote_identifier(str(self.table_name)))
         return ".".join(parts)
 
-    def _build_from_ast(self) -> tuple[Any, str | None]:
-        """Return ``(from_clause, cte_sql)`` as a SQLAlchemy AST node.
-
-        Mirrors the original ``ExploreMixin.get_from_clause``
-        (``superset_old/models/helpers.py:1163``) but returns a
-        SQLAlchemy ``FromClause`` rather than a ``str`` so it can be
-        passed directly to ``sa.select(...).select_from(...)``.
-
-        - Physical dataset → ``sa.table(table_name, schema=...)``
-          (catalog is folded into the schema for engines that need it).
-        - Virtual dataset on an engine that supports CTEs in
-          subqueries → ``TextAsFrom(user_sql).alias("virtual_table")``.
-        - Virtual dataset on an engine that does *not* support CTEs in
-          subqueries (e.g. MSSQL/Ocient) → ``sa.table(cte_alias)`` plus
-          a ``cte_sql`` string the caller hoists above the SELECT.
-        """
-        from sqlalchemy.sql.expression import TextAsFrom
-
-        if not self.sql:
-            # Physical dataset — build a real Table-like FROM node.
-            schema_name = self.schema or None
-            if self.catalog:
-                # Some engines pack catalog.schema into the schema; mirror
-                # the string-builder behaviour by joining them so the
-                # dialect emits ``catalog.schema.table``.
-                schema_name = (
-                    f"{self.catalog}.{schema_name}"
-                    if schema_name
-                    else str(self.catalog)
-                )
-            return sa.table(str(self.table_name), schema=schema_name), None
-
-        # Virtual dataset
-        inner = self.sql.strip().rstrip(";")
-        engine_spec = self.database.db_engine_spec
-        cte: str | None = None
-        try:
-            cte = engine_spec.get_cte_query(inner)
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "Failed to detect CTE in virtual dataset SQL for table %s",
-                self.table_name,
-                exc_info=True,
-            )
-            cte = None
-
-        if cte:
-            # Engine spec rewrote the user SQL into a top-level CTE; the
-            # FROM references the CTE alias, and the caller prepends
-            # ``cte`` above the rendered SELECT.
-            return sa.table(engine_spec.cte_alias), cte
-
-        # Default virtual handling: wrap user SQL as a derived table
-        # alias, exactly matching original ``get_from_clause``.
-        return TextAsFrom(sa.text(inner), []).alias("virtual_table"), None
-
     def _get_virtual_from_clause(self) -> tuple[str, str | None]:
         """Return ``(table_ref, cte_sql)`` for use in a SELECT.
 
@@ -2175,140 +2473,6 @@ class SqlaTable(
     # ``helpers.ExploreMixin.get_sqla_query``
     # ------------------------------------------------------------------
 
-    def _adapt_query_dict_for_get_sqla_query(
-        self, query_dict: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Map QueryContext-style ``query_dict`` keys → ``get_sqla_query`` kwargs.
-
-        The wire format used by ``QueryContext.to_dict`` (and propagated
-        through the chart-data pipeline) uses snake_case names like
-        ``filter`` (not ``filters``) and lumps temporal extras into
-        ``extras``. The :meth:`helpers.ExploreMixin.get_sqla_query`
-        signature is the original Superset 1:1 contract — see
-        ``superset_old/models/helpers.py:1653`` — so we translate keys
-        here.
-        """
-        # Build the kwargs dict, accepting both ``filter`` and ``filters``
-        # for compatibility with both the wire format and dataclasses
-        # that prefer the plural name.
-        adapted: dict[str, Any] = {
-            "apply_fetch_values_predicate": query_dict.get(
-                "apply_fetch_values_predicate", False
-            ),
-            "columns": query_dict.get("columns") or [],
-            "extras": query_dict.get("extras") or {},
-            "filter": query_dict.get("filter") or query_dict.get("filters") or [],
-            "from_dttm": _parse_dttm(query_dict.get("from_dttm")),
-            "granularity": query_dict.get("granularity"),
-            "groupby": query_dict.get("groupby") or [],
-            "inner_from_dttm": _parse_dttm(query_dict.get("inner_from_dttm")),
-            "inner_to_dttm": _parse_dttm(query_dict.get("inner_to_dttm")),
-            "is_rowcount": query_dict.get("is_rowcount", False),
-            "is_timeseries": query_dict.get("is_timeseries", False),
-            "metrics": query_dict.get("metrics"),
-            "orderby": query_dict.get("orderby") or [],
-            "order_desc": query_dict.get("order_desc", True),
-            "to_dttm": _parse_dttm(query_dict.get("to_dttm")),
-            "series_columns": query_dict.get("series_columns") or [],
-            "series_limit": query_dict.get("series_limit"),
-            "series_limit_metric": query_dict.get("series_limit_metric"),
-            "group_others_when_limit_reached": query_dict.get(
-                "group_others_when_limit_reached", False
-            ),
-            "row_limit": query_dict.get("row_limit"),
-            "row_offset": query_dict.get("row_offset"),
-            "timeseries_limit": query_dict.get("timeseries_limit"),
-            "timeseries_limit_metric": query_dict.get("timeseries_limit_metric"),
-            "time_shift": query_dict.get("time_shift"),
-        }
-        return adapted
-
-    def _get_sqla_query_with_rls(
-        self,
-        query_dict: dict[str, Any],
-        rls_filters: list[Any] | None = None,
-    ) -> Any:
-        """Run :meth:`get_sqla_query` honouring caller-supplied RLS clauses.
-
-        The original chart-data pipeline computes the user's RLS
-        predicates inside :meth:`get_sqla_row_level_filters` (sync)
-        which reads from the active session/user context. The Liteset
-        async pipeline computes RLS up-front via
-        :func:`superset.utils.rls.compose_rls_where_clauses` and pushes
-        it down so we don't have to re-resolve the user inside a sync
-        helper.
-
-        Implementation: we forward ``rls_filters`` as a *kwarg* to
-        :meth:`helpers.ExploreMixin.get_sqla_query`. That method
-        consumes the kwarg and either uses the supplied clauses (push
-        path, used by async controllers) or falls back to the regular
-        :meth:`get_sqla_row_level_filters` pull path. This avoids the
-        monkey-patch race-condition that the previous implementation
-        exhibited — concurrent ``async`` tasks running
-        ``_build_sql`` / ``async_query`` on the same shared
-        ``SqlaTable`` instance now never mutate instance attributes,
-        so each task's RLS clauses stay private to its own call.
-        """
-        adapted = self._adapt_query_dict_for_get_sqla_query(query_dict)
-        if rls_filters is not None:
-            adapted["rls_filters"] = rls_filters
-        return self.get_sqla_query(**adapted)
-
-    def _build_sql(  # noqa: C901
-        self,
-        query_dict: dict[str, Any],
-        rls_filters: list[Any] | None = None,
-    ) -> tuple[str, datetime | None, datetime | None]:
-        """Build a SQL string from query_dict parameters.
-
-        Strategy A — thin wrapper over
-        :meth:`helpers.ExploreMixin.get_sqla_query` which is a 1:1
-        port of the original Apache Superset AST pipeline at
-        ``superset_old/models/helpers.py:1653-2347``. The wrapper:
-
-        1. Adapts the QueryContext wire-format keys to
-           ``get_sqla_query`` kwargs.
-        2. Injects caller-supplied RLS clauses (preferred form
-           ``ClauseElement``, backward-compat ``str``).
-        3. Compiles the AST via :meth:`Database.compile_sqla_query`
-           (handles literal-bind, dialect-specific identifier quoting
-           and the ``%%`` double-percent fixup).
-        4. Hoists any CTE the engine spec required to live above the
-           SELECT (MSSQL / Ocient).
-        5. Applies ``SQL_QUERY_MUTATOR`` via
-           :meth:`Database.mutate_sql_based_on_config`.
-
-        All 19 behavioural deltas (mixed-NULL IN, time filters via
-        ``convert_dttm`` / ``python_date_format``, ``time_grain`` on
-        filters / ORDER BY, ``is_rowcount``,
-        ``group_others_when_limit_reached``, ``apply_fetch_values_predicate``,
-        ``time_shift``, ``always_filter_main_dttm``,
-        ``make_orderby_compatible``, ``allows_alias_in_orderby`` /
-        ``allows_hidden_cc_in_orderby`` / ``allows_hidden_orderby_agg``,
-        ``make_label_compatible``, ``extras.where`` / ``extras.having``
-        Jinja, ``extra_cache_keys``, virtual-dataset RLS injection)
-        are handled inside :meth:`get_sqla_query` itself, mirroring
-        the original.
-
-        Returns ``(sql, from_dttm, to_dttm)``.
-        """
-        sqla_query = self._get_sqla_query_with_rls(query_dict, rls_filters=rls_filters)
-
-        sql = self.database.compile_sqla_query(
-            sqla_query.sqla_query,
-            catalog=self.catalog,
-            schema=self.schema,
-            is_virtual=bool(self.sql),
-        )
-        sql = self._apply_cte(sql, sqla_query.cte)
-        sql = self.database.mutate_sql_based_on_config(sql)
-
-        return (
-            sql,
-            _parse_dttm(query_dict.get("from_dttm")),
-            _parse_dttm(query_dict.get("to_dttm")),
-        )
-
     # -- Async query execution ------------------------------------------------
 
     async def async_values_for_column(  # noqa: C901  # complex business logic
@@ -2445,143 +2609,6 @@ class SqlaTable(
             return []
         values = df["column_values"].replace({np.nan: None}).tolist()
         return values
-
-    async def _execute_sql(self, sql: str) -> pd.DataFrame:
-        """Execute SQL against the dataset's database and return a DataFrame."""
-        from sqlalchemy.sql import text as sa_text
-
-        from superset.utils.database import get_async_connection
-
-        async with get_async_connection(self.database) as (conn, _spec):
-            result = await conn.execute(sa_text(sql))
-            if result.returns_rows:
-                cols = list(result.keys())
-                rows = result.fetchall()
-                return pd.DataFrame([tuple(row) for row in rows], columns=cols)
-            return pd.DataFrame()
-
-    async def async_query(
-        self,
-        query_dict: dict[str, Any],
-        rls_filters: list[Any] | None = None,
-    ) -> QueryResult:
-        """Execute a query against this dataset and return a QueryResult.
-
-        This is the primary entry point for the async query pipeline used by
-        AsyncQueryContextProcessor._get_query_result().
-
-        Surfaces all metadata produced by
-        :meth:`helpers.ExploreMixin.get_sqla_query` — namely
-        ``applied_filter_columns``, ``rejected_filter_columns``,
-        ``applied_template_filters``, ``labels_expected`` and
-        ``prequeries`` — so the chart-data response payload matches the
-        original Apache Superset shape (delta #19).
-
-        Args:
-            query_dict: The query parameters dict from QueryContext.
-            rls_filters: Optional list of Row-Level Security clauses
-                (``ClauseElement`` preferred — ``TextClause`` /
-                ``BooleanClauseList``; raw ``str`` fragments still
-                accepted for backward compat).  See ``_build_sql`` for
-                the dialect-compile pipeline.  The caller is responsible
-                for obtaining these from the security manager.
-        """
-        try:
-            # SQL building below is sync and CPU/IO heavy:
-            #   * ``_get_sqla_query_with_rls`` runs Jinja templating and
-            #     SQLAlchemy AST construction (and may trigger
-            #     ``_probe_adhoc_column_is_dttm`` which opens a sync
-            #     DB-API connection).
-            #   * ``compile_sqla_query`` enters a sync engine context and
-            #     compiles the AST to a dialect string (and runs the
-            #     SQLGlot OPTIMIZE_SQL pass for virtual datasets).
-            #   * ``mutate_sql_based_on_config`` dispatches the
-            #     user-defined ``SQL_QUERY_MUTATOR`` callable, which is
-            #     also sync.
-            #
-            # Running them directly inside this coroutine would block the
-            # event loop. Hand them off to a worker thread via
-            # :func:`asyncio.to_thread`, which on Python >=3.9 copies the
-            # current :class:`~contextvars.Context` (verified for 3.12 in
-            # CPython's stdlib) so :func:`get_current_user` and friends
-            # still resolve to the same caller-bound user inside the
-            # worker thread.
-            sqla_query = await asyncio.to_thread(
-                self._get_sqla_query_with_rls,
-                query_dict,
-                rls_filters,
-            )
-            sql = await asyncio.to_thread(
-                self.database.compile_sqla_query,
-                sqla_query.sqla_query,
-                self.catalog,
-                self.schema,
-                bool(self.sql),
-            )
-            sql = self._apply_cte(sql, sqla_query.cte)
-            sql = await asyncio.to_thread(self.database.mutate_sql_based_on_config, sql)
-            logger.debug("SqlaTable.async_query SQL:\n%s", sql)
-
-            from_dttm = _parse_dttm(query_dict.get("from_dttm"))
-            to_dttm = _parse_dttm(query_dict.get("to_dttm"))
-
-            df = await self._execute_sql(sql)
-
-            # 1:1 with original
-            # ``superset_old/connectors/sqla/models.py:assign_column_label``
-            # (line 1626) — dialects like MSSQL / Snowflake may rename
-            # or change the case of columns. The expected behaviour is:
-            #
-            # 1. If the engine returned *fewer* columns than the
-            #    helpers-mixin counted (``labels_expected``), the
-            #    query is malformed; raise a validation error rather
-            #    than silently truncating user output.
-            # 2. If the engine returned *more* columns (e.g. an
-            #    ORDER BY column not in SELECT was returned anyway),
-            #    keep only the leading ``labels_expected`` columns —
-            #    this matches the ``df.iloc[:, 0:len(labels_expected)]``
-            #    slice in the original.
-            # 3. Reassign ``df.columns`` to the canonical labels so
-            #    downstream viz components find the column names they
-            #    expect.
-            if not df.empty and sqla_query.labels_expected:
-                from superset.exceptions import QueryObjectValidationError
-
-                expected = list(sqla_query.labels_expected)
-                if len(df.columns) < len(expected):
-                    raise QueryObjectValidationError(
-                        "Db engine did not return all queried columns"
-                    )
-                if len(df.columns) > len(expected):
-                    df = df.iloc[:, 0 : len(expected)]
-                df.columns = expected
-
-            return QueryResult(
-                df=df,
-                query=sql,
-                status="success",
-                from_dttm=from_dttm,
-                to_dttm=to_dttm,
-                applied_filter_columns=list(sqla_query.applied_filter_columns),
-                rejected_filter_columns=list(sqla_query.rejected_filter_columns),
-                applied_template_filters=list(sqla_query.applied_template_filters),
-                labels_expected=list(sqla_query.labels_expected),
-                prequeries=list(sqla_query.prequeries),
-            )
-        except Exception as ex:
-            logger.warning(
-                "async_query failed for table %s: %s",
-                self.table_name,
-                ex,
-                exc_info=True,
-            )
-            return QueryResult(
-                df=pd.DataFrame(),
-                query="",
-                status="error",
-                error_message=str(ex),
-            )
-
 
 # ---------------------------------------------------------------------------
 # RowLevelSecurityFilter

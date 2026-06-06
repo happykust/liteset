@@ -24,8 +24,9 @@ from __future__ import annotations
 
 import enum
 import json
+from collections.abc import Hashable
 from datetime import datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -41,14 +42,19 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 
+from superset.models.connectors import AsyncQueryExecutionMixin
 from superset.models.helpers import (
     AuditMixinNullable,
     Base,
+    ExploreMixin,
     ExtraJSONMixin,
     ImportExportMixin,
     LongText,
     MediumText,
 )
+
+if TYPE_CHECKING:
+    from superset.models.connectors import TableColumn
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -78,11 +84,26 @@ class CTASMethod(str, enum.Enum):
 # ---------------------------------------------------------------------------
 
 
-class Query(Base, ExtraJSONMixin):
-    """A SQL query executed in SQL Lab."""
+class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
+    """A SQL query executed in SQL Lab.
+
+    In addition to being the persistence model for SQL Lab executions, a
+    ``Query`` can act as a chart datasource (``datasource_type="query"``):
+    it mixes in :class:`ExploreMixin` (the AST query builder) and
+    :class:`AsyncQueryExecutionMixin` (the async build/execute pipeline),
+    exactly as upstream's
+    ``Query(SqlTablesMixin, ExtraJSONMixin, ExploreMixin, Model)`` does in
+    ``superset_old/models/sql_lab.py``. The chart-data ``columns`` are
+    synthesized from ``self.extra["columns"]`` (populated by SQL Lab on
+    execution) rather than from a ``table_columns`` relationship.
+    """
 
     __tablename__ = "query"
     __table_args__ = (Index("ti_user_id_changed_on", "user_id", "changed_on"),)
+
+    # Datasource type identifier used by QueryContext / chart-data.
+    type = "query"
+    query_language = "sql"
 
     id = Column(Integer, primary_key=True)
     client_id = Column(String(11), unique=True, nullable=False)
@@ -225,6 +246,196 @@ class Query(Base, ExtraJSONMixin):
             "trackingUrl": self.tracking_url,
             "extra": self.extra,
         }
+
+    # ------------------------------------------------------------------
+    # Datasource interface (datasource_type="query")
+    #
+    # Ported 1:1 from ``superset_old/models/sql_lab.py::Query`` (lines
+    # 96-386). These shims let a SQL Lab result act as a chart datasource
+    # via the inherited :class:`ExploreMixin` query builder and
+    # :class:`AsyncQueryExecutionMixin` execution pipeline.
+    # ------------------------------------------------------------------
+
+    def get_template_processor(self, **kwargs: Any) -> Any:
+        """Return a Jinja template processor bound to this query.
+
+        1:1 with ``superset_old/models/sql_lab.py::Query.get_template_processor``
+        — passes ``query=self`` (not ``table=self``) so the
+        ``{{ query }}`` Jinja context resolves to this SQL Lab query.
+        """
+        from superset.jinja_context import get_template_processor
+
+        return get_template_processor(query=self, database=self.database, **kwargs)
+
+    @property
+    def columns(self) -> list["TableColumn"]:
+        """Synthesize transient ``TableColumn`` objects from ``extra``.
+
+        1:1 with ``superset_old/models/sql_lab.py::Query.columns``: SQL Lab
+        stores the result-set column metadata in ``extra["columns"]`` on
+        execution, and we materialise one ``TableColumn`` per entry.
+
+        Async-safety / port deltas:
+        - The objects are **transient** — never added to a session, so no
+          flush is ever triggered.
+        - The port's :class:`TableColumn.database` is a *read-only*
+          computed property derived from ``self.table`` (unlike upstream's
+          settable relationship), so ``database`` is NOT passed to the
+          constructor. The inherited :class:`ExploreMixin` resolves the
+          engine spec via ``self`` (the ``Query``) — see
+          ``ExploreMixin.convert_tbl_column_to_sqla_col`` — so the column's
+          own ``database`` is not needed for chart-data SQL building.
+        - For a transient ``TableColumn`` the unset ``table`` relationship
+          returns ``None`` without a lazy SELECT, so ``.database`` /
+          ``.db_engine_spec`` are safe to touch under asyncpg (no
+          MissingGreenlet).
+        - Keys are read defensively (``dict.get``) so a query whose stored
+          ``extra`` predates a column-metadata field does not 500.
+        """
+        from superset.models.connectors import TableColumn
+
+        return [
+            TableColumn(
+                column_name=col.get("column_name"),
+                is_dttm=col.get("is_dttm", False),
+                filterable=True,
+                groupby=True,
+                type=col.get("type"),
+            )
+            for col in self.extra.get("columns", [])
+        ]
+
+    @property
+    def column_names(self) -> list[Any]:
+        return [col.column_name for col in self.columns]
+
+    def get_column(self, column_name: str | None) -> "TableColumn | None":
+        if not column_name:
+            return None
+        for col in self.columns:
+            if col.column_name == column_name:
+                return col
+        return None
+
+    @property
+    def db_extra(self) -> dict[str, Any] | None:
+        return None
+
+    @property
+    def db_engine_spec(self) -> Any:
+        return self.database.db_engine_spec
+
+    @property
+    def data(self) -> dict[str, Any]:
+        from superset.i18n import gettext as __
+
+        order_by_choices = []
+        for col in self.columns:
+            column_name = str(col.column_name or "")
+            order_by_choices.append(
+                (json.dumps([column_name, True]), f"{column_name} " + __("[asc]"))
+            )
+            order_by_choices.append(
+                (json.dumps([column_name, False]), f"{column_name} " + __("[desc]"))
+            )
+
+        return {
+            "time_grain_sqla": [
+                (g.duration, g.name) for g in self.database.grains() or []
+            ],
+            "filter_select": True,
+            "name": self.tab_name,
+            "columns": [o.data for o in self.columns],
+            "metrics": [],
+            "id": self.id,
+            "type": self.type,
+            "sql": self.sql,
+            "owners": self.owners_data,
+            "database": {"id": self.database_id, "backend": self.database.backend},
+            "order_by_choices": order_by_choices,
+            "catalog": self.catalog,
+            "schema": self.schema,
+            "verbose_map": {},
+        }
+
+    @property
+    def owners_data(self) -> list[dict[str, Any]]:
+        return []
+
+    @property
+    def uid(self) -> str:
+        return f"{self.id}__{self.type}"
+
+    @property
+    def is_rls_supported(self) -> bool:
+        return False
+
+    @property
+    def cache_timeout(self) -> int:
+        return 0
+
+    @property
+    def offset(self) -> int:
+        return 0
+
+    @property
+    def main_dttm_col(self) -> str | None:
+        """Return the first datetime column name, or None.
+
+        Port delta: the port's ``columns`` yields ``TableColumn`` objects
+        (attribute access), so this iterates with ``col.is_dttm`` /
+        ``col.column_name`` — consistent with :attr:`dttm_cols` — rather
+        than upstream's ``col.get("is_dttm")`` dict access (which would
+        raise on the object-valued columns produced here).
+        """
+        for col in self.columns:
+            if col.is_dttm:
+                return col.column_name
+        return None
+
+    @property
+    def dttm_cols(self) -> list[Any]:
+        return [col.column_name for col in self.columns if col.is_dttm]
+
+    @property
+    def schema_perm(self) -> str:
+        return f"{self.database.database_name}.{self.schema}"
+
+    @property
+    def perm(self) -> str:
+        return f"[{self.database.database_name}].[{self.tab_name}](id:{self.id})"
+
+    @property
+    def default_endpoint(self) -> str:
+        return ""
+
+    def get_extra_cache_keys(self, query_obj: dict[str, Any]) -> list[Hashable]:
+        return []
+
+    def adhoc_column_to_sqla(
+        self,
+        col: dict[str, Any],
+        force_type_check: bool = False,
+        template_processor: Any | None = None,
+    ) -> Any:
+        """Turn an adhoc column into a SQLAlchemy column.
+
+        1:1 with ``superset_old/models/sql_lab.py::Query.adhoc_column_to_sqla``.
+        """
+        from sqlalchemy.sql.elements import literal_column
+
+        from superset.utils.column import get_column_name
+
+        label = get_column_name(col)
+        expression = self._process_sql_expression(
+            expression=col["sqlExpression"],
+            database_id=self.database_id,
+            engine=self.database.backend,
+            schema=self.schema,
+            template_processor=template_processor,
+        )
+        sqla_column = literal_column(expression)
+        return self.make_sqla_column_compatible(sqla_column, label)
 
 
 # ---------------------------------------------------------------------------
