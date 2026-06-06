@@ -16,14 +16,19 @@
 # under the License.
 """Import / Export CLI commands.
 
-Supports ZIP-based dashboard and datasource import/export, as well as
-directory-based config import.  These commands operate over the database
-via async SQLAlchemy sessions wrapped in ``anyio.run()``.
+Async port of ``superset_old/cli/importexport.py`` (V1 bundle commands) plus
+``superset_old/examples/utils.load_configs_from_directory`` (import-directory).
+
+Supported commands:
+* ``export-dashboards``    — V1 ZIP bundle
+* ``import-dashboards``    — V1 ZIP bundle
+* ``export-datasources``   — V1 ZIP bundle
+* ``import-datasources``   — V1 ZIP bundle
+* ``import-directory``     — walk directory of YAML configs (example loader)
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
 from datetime import datetime
@@ -32,9 +37,18 @@ from typing import Optional
 from zipfile import is_zipfile, ZipFile
 
 import click
-import yaml
 
 logger = logging.getLogger(__name__)
+
+
+def _make_session() -> tuple[object, object]:
+    """Create an async session-factory + engine from current settings."""
+    from superset.config import SupersetSettings
+    from superset.db.engine import create_db_engine, create_session_factory
+
+    settings = SupersetSettings()  # type: ignore[call-arg]
+    engine = create_db_engine(settings.sqlalchemy_database_uri)
+    return create_session_factory(engine), engine
 
 
 # ------------------------------------------------------------------
@@ -43,59 +57,123 @@ logger = logging.getLogger(__name__)
 
 
 @click.command("export-dashboards")
-@click.option("--dashboard-file", "-f", default=None, help="Output ZIP file path")
+@click.option(
+    "--dashboard-file",
+    "-f",
+    default=None,
+    help="Specify the file to export to",
+)
 def export_dashboards(dashboard_file: Optional[str] = None) -> None:
-    """Export dashboards to a ZIP file."""
+    """Export dashboards to ZIP file"""
+    # 1:1 port of superset_old/cli/importexport.py export_dashboards.
+    # The original uses ExportDashboardsCommand(dashboard_ids).run() which
+    # yields (file_name, file_content_callable) pairs; the port's async
+    # ExportDashboardsCommand.execute() returns io.BytesIO directly.
     import anyio
 
     async def _export() -> None:
-        from sqlalchemy import text
+        from sqlalchemy import select
 
-        from superset.config import SupersetSettings
-        from superset.db.engine import create_db_engine, create_session_factory
+        from superset.commands.dashboard.export import ExportDashboardsCommand
+        from superset.db.daos.dashboard import AsyncDashboardDAO
+        from superset.models.dashboard import Dashboard
 
-        settings = SupersetSettings()  # type: ignore[call-arg]
-        engine = create_db_engine(settings.sqlalchemy_database_uri)
-        session_factory = create_session_factory(engine)
+        session_factory, engine = _make_session()
 
         timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         root = f"dashboard_export_{timestamp}"
         output_file = dashboard_file or f"{root}.zip"
 
-        async with session_factory() as session:
-            result = await session.execute(
-                text(
-                    "SELECT id, dashboard_title, slug, json_metadata, position_json, "
-                    "css, description "
-                    "FROM dashboards ORDER BY id"
-                )
+        try:
+            async with session_factory() as session:
+                result = await session.execute(select(Dashboard.id))
+                dashboard_ids = [row[0] for row in result.fetchall()]
+
+                if not dashboard_ids:
+                    click.echo("No dashboards found to export.")
+                    await engine.dispose()
+                    return
+
+                dao = AsyncDashboardDAO(session)
+                cmd = ExportDashboardsCommand(model_ids=dashboard_ids, dao=dao)
+                cmd._root = root  # noqa: SLF001
+                buf = await cmd.execute()
+
+            buf.seek(0)
+            with open(output_file, "wb") as fp:
+                fp.write(buf.read())
+
+            click.secho(f"Dashboards exported to {output_file}", fg="green")
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "There was an error when exporting the dashboards, please check "
+                "the exception traceback in the log"
             )
-            rows = result.fetchall()
-
-        if not rows:
-            click.echo("No dashboards found to export.")
+            sys.exit(1)
+        finally:
             await engine.dispose()
-            return
 
-        with ZipFile(output_file, "w") as bundle:
-            for row in rows:
-                dash_id, title, slug, meta, position, css, desc = row
-                dashboard_data = {
-                    "id": dash_id,
-                    "dashboard_title": title,
-                    "slug": slug,
-                    "json_metadata": meta,
-                    "position_json": position,
-                    "css": css,
-                    "description": desc,
-                }
-                filename = f"{root}/dashboards/{slug or dash_id}.json"
-                with bundle.open(filename, "w") as fp:
-                    fp.write(json.dumps(dashboard_data, indent=2, default=str).encode())
-                click.echo(f"  Exported dashboard: {title} (id={dash_id})")
+    anyio.run(_export)
 
-        click.secho(f"Dashboards exported to {output_file}", fg="green")
-        await engine.dispose()
+
+# ------------------------------------------------------------------
+# export-datasources
+# ------------------------------------------------------------------
+
+
+@click.command("export-datasources")
+@click.option(
+    "--datasource-file",
+    "-f",
+    default=None,
+    help="Specify the file to export to",
+)
+def export_datasources(datasource_file: Optional[str] = None) -> None:
+    """Export datasources to ZIP file"""
+    # 1:1 port of superset_old/cli/importexport.py export_datasources.
+    import anyio
+
+    async def _export() -> None:
+        from sqlalchemy import select
+
+        from superset.commands.dataset.export import ExportDatasetsCommand
+        from superset.db.daos.dataset import AsyncDatasetDAO
+        from superset.models.connectors import SqlaTable
+
+        session_factory, engine = _make_session()
+
+        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        root = f"dataset_export_{timestamp}"
+        output_file = datasource_file or f"{root}.zip"
+
+        try:
+            async with session_factory() as session:
+                result = await session.execute(select(SqlaTable.id))
+                dataset_ids = [row[0] for row in result.fetchall()]
+
+                if not dataset_ids:
+                    click.echo("No datasources found to export.")
+                    await engine.dispose()
+                    return
+
+                dao = AsyncDatasetDAO(session)
+                cmd = ExportDatasetsCommand(model_ids=dataset_ids, dao=dao)
+                cmd._root = root  # noqa: SLF001
+                buf = await cmd.execute()
+
+            buf.seek(0)
+            with open(output_file, "wb") as fp:
+                fp.write(buf.read())
+
+            click.secho(f"Datasources exported to {output_file}", fg="green")
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "There was an error when exporting the datasets, please check "
+                "the exception traceback in the log"
+            )
+            sys.exit(1)
+        finally:
+            await engine.dispose()
 
     anyio.run(_export)
 
@@ -106,162 +184,83 @@ def export_dashboards(dashboard_file: Optional[str] = None) -> None:
 
 
 @click.command("import-dashboards")
-@click.option("--path", "-p", required=True, help="Path to a ZIP file")
+@click.option(
+    "--path",
+    "-p",
+    required=True,
+    help="Path to a single ZIP file",
+)
 @click.option(
     "--username",
     "-u",
-    required=False,
-    default="admin",
-    help="User to assign dashboards to",
+    required=True,
+    help="Specify the user name to assign dashboards to",
 )
 def import_dashboards(path: str, username: Optional[str]) -> None:
-    """Import dashboards from a ZIP file."""
-    if not Path(path).exists():
-        click.secho(f"File not found: {path}", fg="red")
-        sys.exit(1)
-
-    if not is_zipfile(path):
-        click.secho(f"Not a valid ZIP file: {path}", fg="red")
-        sys.exit(1)
-
+    """Import dashboards from ZIP file"""
+    # 1:1 port of superset_old/cli/importexport.py import_dashboards.
+    # Original: get_contents_from_bundle -> ImportDashboardsCommand(contents).run()
+    # Port: read zip as BytesIO -> ImportDashboardsCommand(buf).execute()
     import anyio
 
     async def _import() -> None:
-        from sqlalchemy import text
+        import io as _io
 
-        from superset.config import SupersetSettings
-        from superset.db.engine import create_db_engine, create_session_factory
+        from superset.commands.dashboard.importers.v1 import ImportDashboardsCommand
+        from superset.commands.importers.v1.utils import get_contents_from_bundle
+        from superset.db.daos.dashboard import AsyncDashboardDAO
 
-        settings = SupersetSettings()  # type: ignore[call-arg]
-        engine = create_db_engine(settings.sqlalchemy_database_uri)
-        session_factory = create_session_factory(engine)
+        session_factory, engine = _make_session()
 
-        count = 0
-        with ZipFile(path) as bundle:
-            for name in bundle.namelist():
-                if not name.endswith(".json"):
-                    continue
-                with bundle.open(name) as fp:
-                    data = json.loads(fp.read().decode())
+        try:
+            if username is not None:
+                from sqlalchemy import select
 
-                title = data.get("dashboard_title", name)
+                from superset.models.security import User
+
                 async with session_factory() as session:
-                    # Check if dashboard with slug exists, update or insert
-                    slug = data.get("slug")
-                    if slug:
-                        result = await session.execute(
-                            text("SELECT id FROM dashboards WHERE slug = :s"),
-                            {"s": slug},
+                    stmt = select(User).where(User.username == username)
+                    user = (await session.execute(stmt)).scalars().first()
+                    if user is None:
+                        click.secho(
+                            f"User not found: {username}", fg="red", err=True
                         )
-                        existing = result.first()
-                        if existing:
-                            await session.execute(
-                                text(
-                                    "UPDATE dashboards SET "
-                                    "dashboard_title = :title, "
-                                    "json_metadata = :meta, "
-                                    "position_json = :pos, "
-                                    "css = :css, "
-                                    "description = :desc "
-                                    "WHERE slug = :s"
-                                ),
-                                {
-                                    "title": data.get("dashboard_title"),
-                                    "meta": data.get("json_metadata"),
-                                    "pos": data.get("position_json"),
-                                    "css": data.get("css"),
-                                    "desc": data.get("description"),
-                                    "s": slug,
-                                },
-                            )
-                            click.echo(f"  Updated dashboard: {title}")
-                        else:
-                            await session.execute(
-                                text(
-                                    "INSERT INTO dashboards "
-                                    "(dashboard_title, slug, json_metadata, "
-                                    " position_json, css, description) "
-                                    "VALUES (:title, :slug, :meta, :pos, :css, :desc)"
-                                ),
-                                {
-                                    "title": data.get("dashboard_title"),
-                                    "slug": slug,
-                                    "meta": data.get("json_metadata"),
-                                    "pos": data.get("position_json"),
-                                    "css": data.get("css"),
-                                    "desc": data.get("description"),
-                                },
-                            )
-                            click.echo(f"  Imported dashboard: {title}")
-                    await session.commit()
-                count += 1
+                        await engine.dispose()
+                        sys.exit(1)
+                        return
 
-        click.secho(f"Imported {count} dashboard(s) from {path}", fg="green")
-        await engine.dispose()
+            if is_zipfile(path):
+                with open(path, "rb") as fp:
+                    buf = _io.BytesIO(fp.read())
+            else:
+                with open(path) as file:
+                    contents = {path: file.read()}
+                # Non-ZIP path: pack into a minimal ZIP for the v1 importer
+                buf = _io.BytesIO()
+                with ZipFile(buf, "w") as zf:
+                    for fname, fcontent in contents.items():
+                        zf.writestr(fname, fcontent)
+                buf.seek(0)
+
+            async with session_factory() as session:
+                dao = AsyncDashboardDAO(session)
+                cmd = ImportDashboardsCommand(
+                    buf,
+                    dao=dao,
+                    overwrite=True,
+                )
+                try:
+                    await cmd.execute()
+                except Exception:  # pylint: disable=broad-except
+                    logger.exception(
+                        "There was an error when importing the dashboards(s), "
+                        "please check the exception traceback in the log"
+                    )
+                    sys.exit(1)
+        finally:
+            await engine.dispose()
 
     anyio.run(_import)
-
-
-# ------------------------------------------------------------------
-# export-datasources
-# ------------------------------------------------------------------
-
-
-@click.command("export-datasources")
-@click.option("--datasource-file", "-f", default=None, help="Output ZIP file path")
-def export_datasources(datasource_file: Optional[str] = None) -> None:
-    """Export datasources to a ZIP file."""
-    import anyio
-
-    async def _export() -> None:
-        from sqlalchemy import text
-
-        from superset.config import SupersetSettings
-        from superset.db.engine import create_db_engine, create_session_factory
-
-        settings = SupersetSettings()  # type: ignore[call-arg]
-        engine = create_db_engine(settings.sqlalchemy_database_uri)
-        session_factory = create_session_factory(engine)
-
-        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-        root = f"dataset_export_{timestamp}"
-        output_file = datasource_file or f"{root}.zip"
-
-        async with session_factory() as session:
-            result = await session.execute(
-                text(
-                    "SELECT id, table_name, schema, sql, description, "
-                    "database_id "
-                    "FROM tables ORDER BY id"
-                )
-            )
-            rows = result.fetchall()
-
-        if not rows:
-            click.echo("No datasources found to export.")
-            await engine.dispose()
-            return
-
-        with ZipFile(output_file, "w") as bundle:
-            for row in rows:
-                ds_id, table_name, schema, sql_text, desc, db_id = row
-                ds_data = {
-                    "id": ds_id,
-                    "table_name": table_name,
-                    "schema": schema,
-                    "sql": sql_text,
-                    "description": desc,
-                    "database_id": db_id,
-                }
-                filename = f"{root}/datasets/{table_name}.yaml"
-                with bundle.open(filename, "w") as fp:
-                    fp.write(yaml.safe_dump(ds_data, default_flow_style=False).encode())
-                click.echo(f"  Exported datasource: {table_name} (id={ds_id})")
-
-        click.secho(f"Datasources exported to {output_file}", fg="green")
-        await engine.dispose()
-
-    anyio.run(_export)
 
 
 # ------------------------------------------------------------------
@@ -270,78 +269,75 @@ def export_datasources(datasource_file: Optional[str] = None) -> None:
 
 
 @click.command("import-datasources")
-@click.option("--path", "-p", required=True, help="Path to a ZIP file")
+@click.option(
+    "--path",
+    "-p",
+    help="Path to a single ZIP file",
+)
 @click.option(
     "--username",
     "-u",
     required=False,
     default="admin",
-    help="User to assign datasources to",
+    help="Specify the user name to assign datasources to",
 )
 def import_datasources(path: str, username: Optional[str] = "admin") -> None:
-    """Import datasources from a ZIP file."""
-    if not Path(path).exists():
-        click.secho(f"File not found: {path}", fg="red")
-        sys.exit(1)
-
-    if not is_zipfile(path):
-        click.secho(f"Not a valid ZIP file: {path}", fg="red")
-        sys.exit(1)
-
+    """Import datasources from ZIP file"""
+    # 1:1 port of superset_old/cli/importexport.py import_datasources.
+    # Original: override_user + get_contents_from_bundle -> ImportDatasetsCommand(contents).run()
+    # Port: read zip as BytesIO -> ImportDatasetsCommand(buf).execute()
     import anyio
 
     async def _import() -> None:
-        from sqlalchemy import text
+        import io as _io
 
-        from superset.config import SupersetSettings
-        from superset.db.engine import create_db_engine, create_session_factory
+        from superset.commands.dataset.importers.v1 import ImportDatasetsCommand
+        from superset.db.daos.dataset import AsyncDatasetDAO
+        from superset.utils.core import override_user
 
-        settings = SupersetSettings()  # type: ignore[call-arg]
-        engine = create_db_engine(settings.sqlalchemy_database_uri)
-        session_factory = create_session_factory(engine)
+        session_factory, engine = _make_session()
 
-        count = 0
-        with ZipFile(path) as bundle:
-            for name in bundle.namelist():
-                if not (name.endswith(".yaml") or name.endswith(".yml")):
-                    continue
-                with bundle.open(name) as fp:
-                    data = yaml.safe_load(fp.read().decode())
-                if data is None:
-                    continue
+        try:
+            user = None
+            if username is not None:
+                from sqlalchemy import select
 
-                table_name = data.get("table_name", name)
+                from superset.models.security import User
+
                 async with session_factory() as session:
-                    result = await session.execute(
-                        text("SELECT id FROM tables WHERE table_name = :t"),
-                        {"t": table_name},
-                    )
-                    existing = result.first()
-                    if existing:
-                        click.echo(
-                            f"  Datasource {table_name} already exists, skipping."
-                        )
-                    else:
-                        await session.execute(
-                            text(
-                                "INSERT INTO tables "
-                                "(table_name, schema, sql, description, database_id) "
-                                "VALUES (:tn, :sch, :sql, :desc, :dbid)"
-                            ),
-                            {
-                                "tn": table_name,
-                                "sch": data.get("schema"),
-                                "sql": data.get("sql"),
-                                "desc": data.get("description"),
-                                "dbid": data.get("database_id"),
-                            },
-                        )
-                        click.echo(f"  Imported datasource: {table_name}")
-                    await session.commit()
-                count += 1
+                    stmt = select(User).where(User.username == username)
+                    user = (await session.execute(stmt)).scalars().first()
 
-        click.secho(f"Processed {count} datasource(s) from {path}", fg="green")
-        await engine.dispose()
+            if is_zipfile(path):
+                with open(path, "rb") as fp:
+                    buf = _io.BytesIO(fp.read())
+            else:
+                with open(path) as file:
+                    contents = {path: file.read()}
+                buf = _io.BytesIO()
+                with ZipFile(buf, "w") as zf:
+                    for fname, fcontent in contents.items():
+                        zf.writestr(fname, fcontent)
+                buf.seek(0)
+
+            with override_user(user=user):
+                async with session_factory() as session:
+                    dao = AsyncDatasetDAO(session)
+                    cmd = ImportDatasetsCommand(
+                        buf,
+                        dao=dao,
+                        overwrite=True,
+                    )
+                    try:
+                        await cmd.execute()
+                    except Exception:  # pylint: disable=broad-except
+                        logger.exception(
+                            "There was an error when importing the dataset(s), "
+                            "please check the exception traceback in the log"
+                        )
+                        sys.exit(1)
+        finally:
+            await engine.dispose()
 
     anyio.run(_import)
 
@@ -357,7 +353,7 @@ def import_datasources(path: str, username: Optional[str] = "admin") -> None:
     "--overwrite",
     "-o",
     is_flag=True,
-    help="Overwrite existing metadata definitions",
+    help="Overwriting existing metadata definitions",
 )
 @click.option(
     "--force",
@@ -366,52 +362,13 @@ def import_datasources(path: str, username: Optional[str] = "admin") -> None:
     help="Force load data even if table already exists",
 )
 def import_directory(directory: str, overwrite: bool, force: bool) -> None:
-    """Import configs from a given directory.
+    """Imports configs from a given directory"""
+    # 1:1 port of superset_old/cli/importexport.py import_directory which
+    # delegates to superset.examples.utils.load_configs_from_directory.
+    from superset.examples.utils import load_configs_from_directory  # pylint: disable=import-outside-toplevel
 
-    Reads JSON and YAML files from the directory and attempts to import
-    dashboards and datasources accordingly.
-    """
-    dir_path = Path(directory)
-    if not dir_path.exists() or not dir_path.is_dir():
-        click.secho(f"Directory not found: {directory}", fg="red")
-        sys.exit(1)
-
-    import anyio
-
-    async def _import() -> None:
-
-        from superset.config import SupersetSettings
-        from superset.db.engine import create_db_engine, create_session_factory
-
-        settings = SupersetSettings()  # type: ignore[call-arg]
-        engine = create_db_engine(settings.sqlalchemy_database_uri)
-        create_session_factory(engine)
-
-        json_files = list(dir_path.rglob("*.json"))
-        yaml_files = list(dir_path.rglob("*.yaml")) + list(dir_path.rglob("*.yml"))
-
-        click.echo(
-            f"Found {len(json_files)} JSON and {len(yaml_files)} YAML files "
-            f"in {directory}"
-        )
-
-        count = 0
-        for file_path in json_files + yaml_files:
-            try:
-                with open(file_path) as f:
-                    content = f.read()
-                if file_path.suffix == ".json":
-                    json.loads(content)
-                else:
-                    yaml.safe_load(content)
-
-                click.echo(f"  Processing: {file_path.name}")
-                count += 1
-            except Exception as exc:
-                click.secho(f"  Error reading {file_path}: {exc}", fg="yellow")
-                continue
-
-        click.secho(f"Processed {count} file(s) from {directory}", fg="green")
-        await engine.dispose()
-
-    anyio.run(_import)
+    load_configs_from_directory(
+        root=Path(directory),
+        overwrite=overwrite,
+        force_data=force,
+    )

@@ -688,3 +688,99 @@ def _update_metadata_chart_ids(  # noqa: C901
             new_chart_configuration[str(new_id)] = chart_config
 
         metadata["chart_configuration"] = new_chart_configuration
+
+
+def load_configs_from_directory(
+    root: Path,
+    overwrite: bool = True,
+    force_data: bool = False,
+) -> None:
+    """Load all the examples from a given directory.
+
+    1:1 port of ``superset_old/examples/utils.load_configs_from_directory``.
+    Reads YAML files relative to *root*, strips the ``type`` key from
+    ``metadata.yaml`` (so any exported model can be imported directly from an
+    unzipped bundle directory), then delegates to :func:`load_examples_from_configs`
+    after temporarily replacing the configs directory.
+
+    The original delegates to ``ImportExamplesCommand(contents, …).run()``;
+    the port reuses the equivalent direct-import pipeline via
+    :func:`_import_database`, :func:`_import_dataset`, :func:`_import_chart`,
+    and :func:`_import_dashboard` that :func:`load_examples_from_configs`
+    already calls.
+    """
+    contents: dict[str, str] = {}
+    queue: list[Path] = [root]
+    while queue:
+        path_name = queue.pop()
+        if path_name.is_dir():
+            queue.extend(path_name.glob("*"))
+        elif path_name.suffix.lower() in YAML_EXTENSIONS:
+            with open(path_name) as fp:
+                contents[str(path_name.relative_to(root))] = fp.read()
+
+    # removing "type" from the metadata allows us to import any exported model
+    # from the unzipped directory directly
+    metadata_key = "metadata.yaml"
+    raw_meta = contents.get(metadata_key, "{}")
+    try:
+        meta = yaml.safe_load(raw_meta) or {}
+    except yaml.YAMLError:
+        meta = {}
+    if "type" in meta:
+        del meta["type"]
+    contents[metadata_key] = yaml.safe_dump(meta)
+
+    # Re-use the same parse + import pipeline that load_examples_from_configs
+    # uses, but with the caller-supplied contents dict instead of the built-in
+    # examples/configs directory.
+    configs: dict[str, Any] = {}
+    for filename, raw_yaml in contents.items():
+        try:
+            parsed = yaml.safe_load(raw_yaml)
+            if isinstance(parsed, dict):
+                configs[filename] = parsed
+        except yaml.YAMLError:
+            logger.warning("Failed to parse YAML: %s", filename)
+            continue
+
+    from superset.examples import _ctx
+
+    database_ids: dict[str, int] = {}
+    for filename, config in configs.items():
+        if filename.startswith("databases/") and config:
+            db_rec = _import_database(config)
+            if db_rec:
+                database_ids[str(config.get("uuid", ""))] = db_rec.id
+
+    examples_db = _ctx.get_example_database()
+    dataset_info: dict[str, Any] = {}
+    for filename, config in configs.items():
+        if filename.startswith("datasets/") and config:
+            db_uuid = config.get("database_uuid", "")
+            config["database_id"] = (
+                database_ids[db_uuid] if db_uuid in database_ids else examples_db.id
+            )
+            ds = _import_dataset(config)
+            if ds:
+                dataset_info[str(config.get("uuid", ""))] = {
+                    "datasource_id": ds.id,
+                    "datasource_type": "table",
+                    "datasource_name": ds.table_name,
+                }
+
+    chart_ids: dict[str, int] = {}
+    for filename, config in configs.items():
+        if filename.startswith("charts/") and config:
+            ds_uuid = config.get("dataset_uuid", "")
+            if ds_uuid in dataset_info:
+                config.update(dataset_info[ds_uuid])
+                chart = _import_chart(config)
+                if chart:
+                    chart_ids[str(config.get("uuid", ""))] = chart.id
+
+    for filename, config in configs.items():
+        if filename.startswith("dashboards/") and config:
+            _import_dashboard(config, chart_ids, dataset_info)
+
+    _ctx.session.commit()

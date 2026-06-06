@@ -350,7 +350,7 @@ _TEST_USERS = [
     ("alpha", "alpha", "user", "alpha@fab.org", "Alpha"),
     ("gamma", "gamma", "user", "gamma@fab.org", "Gamma"),
     ("gamma2", "gamma2", "user", "gamma2@fab.org", "Gamma"),
-    ("gamma_sqllab", "gamma_sqllab", "user", "gamma_sqllab@fab.org", "sql_lab"),
+    ("gamma_sqllab", "gamma_sqllab", "user", "gamma_sqllab@fab.org", "gamma_sqllab"),
     ("gamma_no_csv", "gamma_no_csv", "user", "gamma_no_csv@fab.org", "gamma_no_csv"),
 ]
 
