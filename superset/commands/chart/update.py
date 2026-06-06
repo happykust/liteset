@@ -222,15 +222,15 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
         # ``changed_by_fk`` always tracks the acting user (consistent with the
         # SA ``changed_by`` listener). ``last_saved_*`` mirrors upstream
         # ``UpdateChartCommand.run`` (superset_old/commands/chart/update.py:69-71):
-        # only bumped on a real user save, NOT when a background report/cache
-        # worker regenerates the stored ``query_context``
-        # (``query_context_generation`` truthy).
+        # bumped ONLY when ``query_context_generation`` is absent (``is None``),
+        # NOT when a background report/cache worker regenerates the stored
+        # ``query_context`` (which passes the key explicitly, truthy OR False).
         query_context_generation = self._data.get("query_context_generation")
         if self._user_id is not None:
             self._chart.changed_by_fk = self._user_id
-            if not query_context_generation:
+            if query_context_generation is None:
                 self._chart.last_saved_by_fk = self._user_id
-        if not query_context_generation:
+        if query_context_generation is None:
             self._chart.last_saved_at = datetime.now()
         await self._dao.session.flush()
 
