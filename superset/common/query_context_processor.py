@@ -1111,13 +1111,34 @@ class AsyncQueryContextProcessor:
 
         df = df.replace([np.inf, -np.inf], np.nan)
 
+        # 1:1 with upstream ``normalize_df``'s ``_get_timestamp_format``
+        # (``superset_old/.../query_context_processor.py:314-326``): read the
+        # column's ``python_date_format`` off a sqla column object. dict specs
+        # and the Query datasource have no such attribute → None.
+        def _get_timestamp_format(column: str | None) -> str | None:
+            if not hasattr(self._datasource, "get_column"):
+                return None
+            column_obj = self._datasource.get_column(column)
+            if (
+                column_obj
+                # only sqla column was supported
+                and not isinstance(column_obj, dict)
+                and (formatter := getattr(column_obj, "python_date_format", None))
+            ):
+                return str(formatter)
+            return None
+
         date_columns: list[DateColumn] = []
 
-        # Handle DTTM_ALIAS (legacy time column)
+        # Handle DTTM_ALIAS (legacy time column). Upstream
+        # (``query_context_processor.py:352-361``) seeds the legacy column's
+        # ``timestamp_format`` from the *granularity* column's
+        # ``python_date_format`` so epoch_s / epoch_ms / custom-strftime
+        # temporal columns are converted correctly.
         if DTTM_ALIAS in df.columns:
             date_columns.append(
                 DateColumn.get_legacy_time_column(
-                    timestamp_format=None,
+                    timestamp_format=_get_timestamp_format(query_object.granularity),
                     offset=getattr(self._datasource, "offset", None),
                     time_shift=query_object.time_shift,
                 )
@@ -1158,15 +1179,10 @@ class AsyncQueryContextProcessor:
                 # Upstream's ``_get_timestamp_format`` only reads
                 # ``python_date_format`` off a sqla column object (dict specs
                 # have no such attribute → None).
-                timestamp_format: str | None = (
-                    None
-                    if isinstance(col_obj, dict)
-                    else getattr(col_obj, "python_date_format", None)
-                )
                 date_columns.append(
                     DateColumn(
                         col_label=label,
-                        timestamp_format=timestamp_format,
+                        timestamp_format=_get_timestamp_format(label),
                         offset=getattr(self._datasource, "offset", None),
                         time_shift=query_object.time_shift,
                     )

@@ -19,6 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+import dateutil.parser
 from sqlalchemy import select
 
 from superset.db.base_dao import BaseAsyncDAO
@@ -209,12 +210,45 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
 
         return await super().update(item, attributes)
 
+    @staticmethod
+    def validate_python_date_format(dt_format: str) -> bool:
+        """1:1 with ``superset_old/daos/dataset.py:validate_python_date_format``.
+
+        A ``python_date_format`` is valid when it is either the literal
+        ``epoch_s`` / ``epoch_ms`` sentinel, or a strftime format whose
+        rendered output parses back as an ISO datetime.
+        """
+        if dt_format in ("epoch_s", "epoch_ms"):
+            return True
+        try:
+            dt_str = datetime.now().strftime(dt_format)
+            dateutil.parser.isoparse(dt_str)
+            return True
+        except ValueError:
+            return False
+
     async def update_columns(
         self,
         model: SqlaTable,
         property_columns: list[dict[str, Any]],
     ) -> None:
         """Update dataset columns: insert new, update existing, delete removed."""
+        # 1:1 with upstream ``DatasetDAO.update_columns``
+        # (``superset_old/daos/dataset.py:222-232``): every supplied
+        # ``python_date_format`` is validated up front, before any persist,
+        # raising ``ValueError`` on the first invalid format.
+        for column in property_columns:
+            if (
+                "python_date_format" in column
+                and column["python_date_format"] is not None
+            ):
+                if not self.validate_python_date_format(
+                    column["python_date_format"]
+                ):
+                    raise ValueError(
+                        "python_date_format is an invalid date/timestamp format."
+                    )
+
         await self.session.refresh(model, ["columns"])
         existing_columns = {col.id: col for col in model.columns}
 
