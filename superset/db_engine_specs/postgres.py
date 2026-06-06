@@ -42,6 +42,10 @@ from superset.db_engine_specs.base import (
     BasicParametersMixin,
     ColumnTypeMapping,
 )
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+from superset.exceptions import SupersetSecurityException
+from superset.i18n import gettext as __
+from superset.sql.parse import process_jinja_sql
 from superset.typing import GenericDataType
 
 if TYPE_CHECKING:
@@ -320,6 +324,34 @@ class PostgresEngineSpec(BasicParametersMixin, PostgresBaseEngineSpec):
                 )
             return schemas[0]
         return None
+
+    @classmethod
+    def get_default_schema_for_query(
+        cls,
+        database: Database,
+        query: Query,
+        template_params: dict[str, Any] | None = None,
+    ) -> str | None:
+        """
+        Return the default schema for a given query.
+
+        This method simply uses the parent method after checking that there are no
+        malicious path setting in the query.
+        """
+        script = process_jinja_sql(query.sql, database, template_params).script
+        settings = script.get_settings()
+        if "search_path" in settings:
+            raise SupersetSecurityException(
+                SupersetError(
+                    error_type=SupersetErrorType.QUERY_SECURITY_ACCESS_ERROR,
+                    message=__(
+                        "Users are not allowed to set a search path for security reasons."  # noqa: E501
+                    ),
+                    level=ErrorLevel.ERROR,
+                )
+            )
+
+        return super().get_default_schema_for_query(database, query, template_params)
 
     @classmethod
     def adjust_engine_params(
