@@ -416,6 +416,38 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
     oauth2_token_request_type = "data"  # noqa: S105
 
     @classmethod
+    def impersonate_user(
+        cls,
+        database: Database,
+        username: str | None,
+        user_token: str | None,
+        url: URL,
+        engine_kwargs: dict[str, Any],
+    ) -> tuple[URL, dict[str, Any]]:
+        """Impersonate ``username`` on a Trino connection (1:1 upstream).
+
+        Sets ``connect_args["user"]`` (Trino runs the query as that user) and,
+        when an OAuth2 ``user_token`` is supplied, an HTTP session carrying the
+        Bearer token. ``requests`` is imported lazily so the no-token path
+        (the common case) has no hard dependency.
+        """
+        if username is None:
+            return url, engine_kwargs
+
+        backend_name = url.get_backend_name()
+        connect_args = engine_kwargs.setdefault("connect_args", {})
+        if backend_name == "trino":
+            connect_args["user"] = username
+            if user_token is not None:
+                import requests  # noqa: PLC0415
+
+                http_session = requests.Session()
+                http_session.headers.update({"Authorization": f"Bearer {user_token}"})
+                connect_args["http_session"] = http_session
+
+        return url, engine_kwargs
+
+    @classmethod
     def get_allow_cost_estimate(cls, extra: dict[str, Any]) -> bool:
         return True
 

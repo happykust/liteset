@@ -809,6 +809,60 @@ class BaseEngineSpec:  # noqa: PLR0904
         return new_exception(str(exception))
 
     @classmethod
+    def impersonate_user(
+        cls,
+        database: Database,
+        username: str | None,
+        user_token: str | None,
+        url: URL,
+        engine_kwargs: dict[str, Any],
+    ) -> tuple[URL, dict[str, Any]]:
+        """Modify URL and/or engine kwargs to impersonate a different user.
+
+        1:1 with ``superset_old/db_engine_specs/base.py`` (the ``@deprecated``
+        markers are dropped — they only emit warnings).
+        """
+        from inspect import signature
+
+        url = cls.get_url_for_impersonation(url, True, username, user_token)
+
+        connect_args = engine_kwargs.setdefault("connect_args", {})
+        args: list[Any] = [connect_args, url, username, user_token]
+        if "database" in signature(cls.update_impersonation_config).parameters:
+            args.insert(0, database)
+
+        cls.update_impersonation_config(*args)
+
+        return url, engine_kwargs
+
+    @classmethod
+    def get_url_for_impersonation(
+        cls,
+        url: URL,
+        impersonate_user: bool,
+        username: str | None,
+        access_token: str | None,  # noqa: ARG003
+    ) -> URL:
+        """Return a modified URL with the username set (1:1 upstream)."""
+        if impersonate_user and username is not None:
+            url = url.set(username=username)
+        return url
+
+    @classmethod
+    def update_impersonation_config(
+        cls,
+        database: Database,
+        connect_args: dict[str, Any],
+        uri: str,
+        username: str | None,
+        access_token: str | None,
+    ) -> None:
+        """Set engine-specific impersonation properties on ``connect_args``.
+
+        1:1 upstream — base is a no-op; engines (Hive/Presto/…) override.
+        """
+
+    @classmethod
     def get_allow_cost_estimate(
         cls,
         extra: dict[str, Any],

@@ -1115,10 +1115,23 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def get_effective_user(self, object_url: URL) -> str | None:
         """Get the effective user, especially during impersonation.
 
+        1:1 with ``superset_old/models/core.py`` — prefer the current request
+        user (from the async ``_current_user_ctx`` context-var via
+        ``get_username()``), falling back to the URL's own username when
+        impersonation is enabled.
+
         :param object_url: SQL Alchemy URL object
         :return: The effective username
         """
-        return object_url.username if self.impersonate_user else None
+        from superset.utils.core import get_username
+
+        return (
+            username
+            if (username := get_username())
+            else object_url.username
+            if self.impersonate_user
+            else None
+        )
 
     # ------------------------------------------------------------------
     # OAuth2 (1:1 with superset_old/models/core.py)

@@ -197,6 +197,32 @@ def get_sync_engine(
             except Exception as exc:  # noqa: BLE001
                 logger.debug("adjust_engine_params skipped for sync engine: %s", exc)
 
+        # Impersonation: when ``impersonate_user`` is enabled, let the engine
+        # spec rewrite the URL / connect_args to run queries as the effective
+        # user (the current request user via ``get_effective_user``) — 1:1 with
+        # upstream ``Database.get_sqla_engine``. The OAuth2 ``access_token`` is
+        # not threaded into the sync path (deferred); the ``connect_args["user"]``
+        # impersonation (Trino/Presto/Hive) works without it.
+        if getattr(database, "impersonate_user", False):
+            try:
+                from sqlalchemy.engine import make_url
+
+                spec = getattr(database, "db_engine_spec", None)
+                if spec is not None and hasattr(spec, "impersonate_user"):
+                    url_obj = make_url(sync_uri)
+                    effective = database.get_effective_user(url_obj)
+                    url_obj, _ek = spec.impersonate_user(
+                        database,
+                        effective,
+                        None,
+                        url_obj,
+                        {"connect_args": connect_args},
+                    )
+                    sync_uri = str(url_obj)
+                    connect_args = _ek.get("connect_args", connect_args)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("impersonation skipped for sync engine: %s", exc)
+
         engine_kwargs: dict[str, Any] = {"connect_args": connect_args}
         if nullpool:
             from sqlalchemy.pool import NullPool
@@ -249,6 +275,27 @@ async def get_async_connection(
 
     engine_spec = get_engine_spec_for_database(database)
     adjusted_uri, connect_args = engine_spec.adjust_engine_params(async_uri)
+
+    # Impersonation (1:1 upstream ``Database.get_sqla_engine``): rewrite the
+    # URL / connect_args to run as the effective user. The impersonation hook
+    # lives on the *sync* engine spec (it's a pure URL/connect_args transform,
+    # driver-agnostic), so use ``database.db_engine_spec``. OAuth2 access_token
+    # is not threaded here (deferred).
+    if getattr(database, "impersonate_user", False):
+        try:
+            from sqlalchemy.engine import make_url
+
+            sync_spec = getattr(database, "db_engine_spec", None)
+            if sync_spec is not None and hasattr(sync_spec, "impersonate_user"):
+                url_obj = make_url(adjusted_uri)
+                effective = database.get_effective_user(url_obj)
+                url_obj, _ek = sync_spec.impersonate_user(
+                    database, effective, None, url_obj, {"connect_args": connect_args}
+                )
+                adjusted_uri = str(url_obj)
+                connect_args = _ek.get("connect_args", connect_args)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("impersonation skipped for async connection: %s", exc)
 
     engine = create_async_engine(
         adjusted_uri,
