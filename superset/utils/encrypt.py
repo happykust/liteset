@@ -97,6 +97,27 @@ class EncryptedType(SqlaEncryptedType):
         # cipher-aware ``StringEncryptedType.process_result_value``.
         return SqlaStringEncryptedType.process_result_value(self, value, dialect)
 
+    def result_processor(self, dialect: Any, coltype: Any) -> Any:
+        """Decrypt without the ``LargeBinary`` impl coercion.
+
+        Superset stores encrypted secrets in TEXT/VARCHAR columns, but
+        ``sqlalchemy_utils.EncryptedType.impl`` is ``LargeBinary``.  The
+        default ``TypeDecorator`` chain runs the impl's result processor
+        first, which on **psycopg2** does ``bytes(value)`` on the ``str`` the
+        driver returns for a TEXT column → ``TypeError: string argument
+        without an encoding`` (asyncpg's ``LargeBinary`` processor is a no-op,
+        so the async path reached :meth:`process_result_value` and worked —
+        the sync path died before it).  Bypass the impl entirely and route the
+        raw DBAPI value straight to :meth:`process_result_value`, which
+        already handles ``str`` / ``bytes`` / legacy ``\\xHEX``.  Async reads
+        are unaffected (their impl processor was a no-op anyway).
+        """
+
+        def process(value: Any) -> Any:
+            return self.process_result_value(value, dialect)
+
+        return process
+
 
 # ---------------------------------------------------------------------------
 # Adapter abstraction
