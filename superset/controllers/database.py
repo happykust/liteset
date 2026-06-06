@@ -1046,6 +1046,36 @@ class DatabaseController(Controller):
                 )
                 raise
 
+        # Add catalog/schema DAR permissions for the newly-created database.
+        # Mirrors original CreateDatabaseCommand.run() line 101-102
+        # (``add_permissions(database, ssh_tunnel)``): enumerate the connection's
+        # catalogs/schemas and create the ``catalog_access`` / ``schema_access``
+        # permission-view-menus so per-schema RBAC grants can be made immediately.
+        # Best-effort: a connection/OAuth2 failure must not abort the create, so
+        # introspection errors are swallowed (the user can re-sync permissions
+        # later) — matching the original's per-catalog ``GenericDBException`` and
+        # OAuth2 tolerance.
+        from superset.commands.database.utils import add_permissions
+        from superset.exceptions import OAuth2RedirectError
+        from superset.security.manager import build_async_security_manager
+
+        try:
+            security_manager = build_async_security_manager(
+                dao.session,
+                SupersetSettings(),  # type: ignore[call-arg]
+            )
+            await add_permissions(db, security_manager, ssh_tunnel=tunnel)
+            await dao.session.flush()
+        except OAuth2RedirectError:
+            # Connection needs OAuth2 re-auth — defer permission sync.
+            pass
+        except Exception as _perm_exc:  # noqa: BLE001
+            _log.warning(
+                "Failed to add catalog/schema permissions for database %s: %s",
+                db_id,
+                _perm_exc,
+            )
+
         await event_logger.alog_with_context(
             "database.create",
             object_ref=f"database:{db_id}",

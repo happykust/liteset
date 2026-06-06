@@ -510,6 +510,103 @@ async def test_sync_permissions_success(mock_dao, mock_database):
 
 
 # ---------------------------------------------------------------------------
+# add_permissions — catalog/schema DAR PVMs on database CREATE
+#
+# Regression: a newly-created database had no schema/catalog access
+# permission-view-menus, so per-schema RBAC grants could not be made until a
+# later re-sync.  ``add_permissions`` (called from the create flow) must
+# enumerate the connection's catalogs/schemas and create the
+# ``catalog_access`` / ``schema_access`` PVMs via the security manager.
+# Mirrors superset_old/commands/database/utils.py::add_permissions.
+# ---------------------------------------------------------------------------
+
+
+def _perm_security_manager():
+    """SM mock whose perm-string helpers + async PVM creator are observable."""
+    sm = MagicMock()
+    sm.get_catalog_perm = MagicMock(
+        side_effect=lambda name, catalog: f"[{name}].[{catalog}]"
+    )
+    sm.get_schema_perm = MagicMock(
+        side_effect=lambda name, schema, catalog=None: (
+            f"[{name}].[{catalog}].[{schema}]" if catalog else f"[{name}].[{schema}]"
+        )
+    )
+    sm.add_permission_view_menu = AsyncMock(return_value=MagicMock())
+    return sm
+
+
+def _non_catalog_database():
+    db = MagicMock()
+    db.database_name = "test_db"
+    db.allow_multi_catalog = False
+    db.db_engine_spec.supports_catalog = False
+    db.db_engine_spec.get_schema_names.return_value = {"public", "secret"}
+    # get_inspector() is a context manager
+    db.get_inspector.return_value.__enter__.return_value = MagicMock()
+    db.get_inspector.return_value.__exit__.return_value = False
+    return db
+
+
+async def test_add_permissions_creates_schema_pvms_for_non_catalog_db():
+    """Non-catalog engine (e.g. Postgres-like): one schema_access PVM per schema,
+    no catalog_access PVMs."""
+    from superset.commands.database.utils import add_permissions
+
+    db = _non_catalog_database()
+    sm = _perm_security_manager()
+
+    await add_permissions(db, sm)
+
+    calls = sm.add_permission_view_menu.await_args_list
+    perm_types = {c.args[0] for c in calls}
+    assert perm_types == {"schema_access"}
+    created = {c.args[1] for c in calls}
+    assert created == {"[test_db].[public]", "[test_db].[secret]"}
+
+
+async def test_add_permissions_creates_catalog_and_schema_pvms():
+    """Catalog-aware engine with multi-catalog: a catalog_access PVM per catalog
+    plus schema_access PVMs scoped to that catalog."""
+    from superset.commands.database.utils import add_permissions
+
+    db = MagicMock()
+    db.database_name = "test_db"
+    db.allow_multi_catalog = True
+    db.db_engine_spec.supports_catalog = True
+    db.db_engine_spec.supports_cross_catalog_queries = True
+    db.db_engine_spec.get_catalog_names.return_value = {"cat1"}
+    db.db_engine_spec.get_schema_names.return_value = {"public"}
+    db.get_inspector.return_value.__enter__.return_value = MagicMock()
+    db.get_inspector.return_value.__exit__.return_value = False
+    sm = _perm_security_manager()
+
+    await add_permissions(db, sm)
+
+    calls = sm.add_permission_view_menu.await_args_list
+    by_type = {}
+    for c in calls:
+        by_type.setdefault(c.args[0], set()).add(c.args[1])
+    assert by_type["catalog_access"] == {"[test_db].[cat1]"}
+    assert by_type["schema_access"] == {"[test_db].[cat1].[public]"}
+
+
+async def test_add_permissions_swallows_introspection_errors():
+    """A failure enumerating one catalog's schemas must NOT abort: it logs and
+    continues (mirrors the original's per-catalog GenericDBException swallow)."""
+    from superset.commands.database.utils import add_permissions
+
+    db = _non_catalog_database()
+    db.get_inspector.side_effect = RuntimeError("connection refused")
+    sm = _perm_security_manager()
+
+    # Must not raise.
+    await add_permissions(db, sm)
+    # No schema PVMs could be created, but the call did not blow up.
+    sm.add_permission_view_menu.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # DeleteSSHTunnelCommand
 # ---------------------------------------------------------------------------
 

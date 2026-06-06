@@ -24,10 +24,13 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import re
 from typing import Any
 
 from superset.exceptions import CommandInvalidError
+
+logger = logging.getLogger(__name__)
 
 EXPORT_VERSION = "1.0.0"
 
@@ -193,3 +196,98 @@ def _mask_ssh_tunnel_passwords(payload: dict[str, Any]) -> dict[str, Any]:
         if masked.get(key):
             masked[key] = PASSWORD_MASK
     return masked
+
+
+async def add_permissions(
+    database: Any,
+    security_manager: Any,
+    ssh_tunnel: Any | None = None,
+) -> None:
+    """Add DAR (data-access-role) for the database's catalogs and schemas.
+
+    Async port of ``superset_old/commands/database/utils.py::add_permissions``
+    (called from ``CreateDatabaseCommand.run`` after the DB is created). For a
+    newly-created database this enumerates the connection's catalogs/schemas and
+    creates the ``catalog_access`` / ``schema_access`` permission-view-menus so
+    that per-catalog/per-schema RBAC grants can be made immediately.
+
+    Faithful to the original:
+
+    * For catalog-aware engines, permissions are added for every catalog when
+      cross-catalog queries are supported (or ``allow_multi_catalog`` is set),
+      otherwise only for the default catalog.
+    * Schema enumeration is best-effort and per-catalog: a failure to introspect
+      one catalog logs a warning and continues (the original swallows
+      ``GenericDBException``; here any introspection error is swallowed because
+      the new ``Database`` model surfaces driver errors through the sync
+      inspector run in a thread).
+
+    Unlike the original (which used Flask's blocking ``Database.get_all_*_names``)
+    the port runs the blocking sync inspector via ``asyncio.to_thread`` and uses
+    the async ``security_manager.add_permission_view_menu`` to create the PVM
+    rows on the active ``AsyncSession``.
+
+    NOTE: ``ssh_tunnel`` is accepted for call-site parity with the original
+    signature, but the port's ``Database.get_inspector`` does not yet forward an
+    ``override_ssh_tunnel`` (matching the existing ``SyncPermissionsCommand``
+    port, which also introspects without explicitly passing the tunnel). The
+    tunnel that was just created is already persisted, so the inspector picks it
+    up through the normal engine-build path.
+    """
+    import asyncio
+
+    _ = ssh_tunnel  # see NOTE above — accepted for parity, not threaded explicitly
+    db_engine_spec = database.db_engine_spec
+
+    if getattr(db_engine_spec, "supports_catalog", False):
+        # Adding permissions to all catalogs (and all their schemas) can take a
+        # long time. If the database does not support cross-catalog queries
+        # (like Postgres), and the multi-catalog feature is not enabled, then we
+        # only need to add permissions to the default catalog.
+        if getattr(
+            db_engine_spec, "supports_cross_catalog_queries", False
+        ) or getattr(database, "allow_multi_catalog", False):
+
+            def _fetch_catalogs() -> set[str | None]:
+                with database.get_inspector() as inspector:
+                    return db_engine_spec.get_catalog_names(database, inspector)
+
+            try:
+                catalogs: set[str | None] = await asyncio.to_thread(_fetch_catalogs)
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to get catalog names", exc_info=True)
+                catalogs = {database.get_default_catalog()}
+        else:
+            catalogs = {database.get_default_catalog()}
+
+        for catalog in catalogs:
+            await security_manager.add_permission_view_menu(
+                "catalog_access",
+                security_manager.get_catalog_perm(
+                    database.database_name,
+                    catalog,
+                ),
+            )
+    else:
+        catalogs = {None}
+
+    for catalog in catalogs:
+        try:
+
+            def _fetch_schemas(catalog: str | None = catalog) -> set[str]:
+                with database.get_inspector(catalog=catalog) as inspector:
+                    return db_engine_spec.get_schema_names(inspector)
+
+            schemas = await asyncio.to_thread(_fetch_schemas)
+            for schema in schemas:
+                await security_manager.add_permission_view_menu(
+                    "schema_access",
+                    security_manager.get_schema_perm(
+                        database.database_name,
+                        schema,
+                        catalog=catalog,
+                    ),
+                )
+        except Exception:  # noqa: BLE001
+            logger.warning("Error processing catalog '%s'", catalog, exc_info=True)
+            continue
