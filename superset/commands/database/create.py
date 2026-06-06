@@ -213,5 +213,21 @@ class CreateDatabaseCommand(AsyncBaseCommand["Database"]):
             data["created_by_fk"] = self._user_id
             data["changed_by_fk"] = self._user_id
         db = await self._dao.create(data)
+
+        # Split the cleartext password out of ``sqlalchemy_uri`` into the
+        # encrypted ``password`` column and store a masked URI — exactly like
+        # the original ``_create_database`` at
+        # superset_old/commands/database/create.py:162-164:
+        #
+        #     database = DatabaseDAO.create(attributes=self._properties)
+        #     database.set_sqlalchemy_uri(database.sqlalchemy_uri)
+        #
+        # ``set_sqlalchemy_uri`` (superset/models/core.py) is a pure-Python
+        # sync model method — it only parses/rewrites the URL string and sets
+        # ``self.password`` / ``self.sqlalchemy_uri`` attributes, performing no
+        # DB I/O — so it is safe to call directly (no await) on the transient
+        # instance before the flush below persists the masked values.
+        db.set_sqlalchemy_uri(db.sqlalchemy_uri)
+
         await self._dao.session.flush()
         return db
