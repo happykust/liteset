@@ -683,3 +683,79 @@ async def test_offset_cache_roundtrip(mock_settings, mock_security_manager,
     assert isinstance(out, dict) and "df" in out
     assert out["query"] == payload["query"]
     pd.testing.assert_frame_equal(out["df"], df)
+
+
+# ---------------------------------------------------------------------------
+# 1:1 parity: get_data CSV/XLSX (verbose_map rename + coltypes + config)
+# ---------------------------------------------------------------------------
+
+
+async def test_get_data_csv_applies_verbose_map():
+    """CSV export renames columns via the verbose_map (1:1 with upstream)."""
+    df = pd.DataFrame({"col_a": [1], "col_b": ["x"]})
+    out = AsyncQueryContextProcessor.get_data(
+        df, result_format="csv", verbose_map={"col_a": "Column A"}
+    )
+    assert isinstance(out, str)
+    assert "Column A" in out
+    assert "col_b" in out  # unmapped column keeps its name
+
+
+async def test_get_data_xlsx_applies_column_types_and_verbose_map():
+    """XLSX export applies coltypes + verbose_map and returns bytes."""
+    df = pd.DataFrame({"n": ["1", "2"], "s": ["a", "b"]})
+    out = AsyncQueryContextProcessor.get_data(
+        df,
+        result_format="xlsx",
+        coltypes=[0, 1],  # NUMERIC, STRING
+        verbose_map={"n": "Number"},
+    )
+    assert isinstance(out, bytes)
+    assert len(out) > 0
+
+
+# ---------------------------------------------------------------------------
+# 1:1 parity: result_type=query carries `language` + graceful error-in-payload
+# ---------------------------------------------------------------------------
+
+
+async def test_get_query_only_includes_language(
+    mock_settings, mock_security_manager
+):
+    """``result_type=query`` payload carries the datasource dialect language."""
+    ds = MagicMock()
+    ds.query_language = "sql"
+    ds._build_sql = MagicMock(return_value=("SELECT 1", None, None))
+    proc = AsyncQueryContextProcessor(
+        datasource=ds,
+        settings=mock_settings,
+        security_manager=mock_security_manager,
+    )
+    qo = AsyncQueryObject(datasource={"type": "table", "id": 1})
+    result = await proc._get_query_only(qo)
+    assert result["language"] == "sql"
+    assert result["query"] == "SELECT 1"
+    assert result["error"] is None
+
+
+async def test_get_query_only_validation_error_in_payload(
+    mock_settings, mock_security_manager
+):
+    """A QueryObjectValidationError during build surfaces in ``error``, not raised."""
+    from superset.exceptions import QueryObjectValidationError
+
+    ds = MagicMock()
+    ds.query_language = "sql"
+    ds._build_sql = MagicMock(
+        side_effect=QueryObjectValidationError("Empty query?")
+    )
+    proc = AsyncQueryContextProcessor(
+        datasource=ds,
+        settings=mock_settings,
+        security_manager=mock_security_manager,
+    )
+    qo = AsyncQueryObject(datasource={"type": "table", "id": 1})
+    result = await proc._get_query_only(qo)
+    assert result["error"] == "Empty query?"
+    assert "query" not in result or result.get("query") is None
+    assert result["language"] == "sql"

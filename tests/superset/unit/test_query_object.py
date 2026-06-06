@@ -476,3 +476,62 @@ def test_validate_passes_for_valid_query_object():
     )
     with patch("superset.common.query_object.sanitize_clause", None):
         qo.validate()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# 1:1 parity: _apply_filters syncs TEMPORAL_RANGE filter val to time_range
+# ---------------------------------------------------------------------------
+
+
+def test_apply_filters_syncs_temporal_range_to_time_range():
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        time_range="2020-01-01 : 2021-01-01",
+        filters=[
+            {"col": "ds", "op": "TEMPORAL_RANGE", "val": "Last week"},
+            {"col": "name", "op": "==", "val": "foo"},
+        ],
+    )
+    # __post_init__ runs _apply_filters automatically.
+    temporal = next(f for f in qo.filters if f["op"] == "TEMPORAL_RANGE")
+    assert temporal["val"] == "2020-01-01 : 2021-01-01"
+    # Non-temporal filter is untouched.
+    other = next(f for f in qo.filters if f["op"] == "==")
+    assert other["val"] == "foo"
+
+
+def test_apply_filters_noop_without_time_range():
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        filters=[{"col": "ds", "op": "TEMPORAL_RANGE", "val": "Last week"}],
+    )
+    assert qo.filters[0]["val"] == "Last week"
+
+
+# ---------------------------------------------------------------------------
+# 1:1 parity: _capped_row_limit honors server_pagination ceiling
+# ---------------------------------------------------------------------------
+
+
+def test_capped_row_limit_server_pagination_uses_higher_ceiling():
+    from superset.common.query_object import _capped_row_limit
+
+    with patch("superset.utils.core.apply_max_row_limit") as mock_cap:
+        mock_cap.return_value = 999
+        _capped_row_limit(500, None, server_pagination=True)
+        # server_pagination must be threaded through to apply_max_row_limit.
+        _, kwargs = mock_cap.call_args
+        assert kwargs.get("server_pagination") is True
+
+
+def test_from_request_threads_server_pagination():
+    from superset.common.query_object import _capped_row_limit
+
+    with patch("superset.common.query_object._capped_row_limit") as mock_cap:
+        mock_cap.return_value = 100
+        AsyncQueryObject.from_request(
+            {"row_limit": 10, "server_pagination": True},
+            {"type": "table", "id": 1},
+        )
+        _, kwargs = mock_cap.call_args
+        assert kwargs.get("server_pagination") is True

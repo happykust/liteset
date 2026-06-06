@@ -111,3 +111,47 @@ def test_query_context_empty_form_data_default(mock_datasource):
     qc = AsyncQueryContext(datasource=mock_datasource, queries=[])
     assert qc.form_data == {}
     assert isinstance(qc.form_data, dict)
+
+
+# ---------------------------------------------------------------------------
+# 1:1 parity: AsyncQueryContext.__post_init__ applies granularity transform
+# ---------------------------------------------------------------------------
+
+
+def test_query_context_applies_granularity_on_build():
+    """__post_init__ replaces the temporal x-axis column with the granularity
+    and removes the redundant temporal filter (1:1 with the upstream factory's
+    _process_query_object -> _apply_granularity)."""
+    ds = MagicMock()
+    col = MagicMock()
+    col.column_name = "order_date"
+    col.is_dttm = True
+    ds.columns = [col]
+
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        granularity="P1M",
+        columns=["order_date", "country"],
+        filters=[{"col": "order_date", "op": "TEMPORAL_RANGE", "val": "Last week"}],
+    )
+    AsyncQueryContext(
+        datasource=ds,
+        queries=[qo],
+        form_data={"x_axis": "order_date"},
+    )
+    # x-axis column replaced by the granularity.
+    assert "P1M" in qo.columns
+    assert "order_date" not in qo.columns
+    # redundant temporal filter removed.
+    assert all(f.get("col") != "order_date" for f in qo.filters)
+
+
+def test_query_context_granularity_noop_without_datasource():
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        granularity="P1M",
+        columns=["order_date"],
+    )
+    # No datasource -> no transform, no error.
+    AsyncQueryContext(datasource=None, queries=[qo])
+    assert qo.columns == ["order_date"]

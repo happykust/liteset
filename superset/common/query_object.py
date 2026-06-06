@@ -32,12 +32,21 @@ from superset.utils.sql import sanitize_clause
 logger = logging.getLogger(__name__)
 
 
-def _capped_row_limit(row_limit: int | None, result_type: str | None) -> int:
+def _capped_row_limit(
+    row_limit: int | None,
+    result_type: str | None,
+    server_pagination: bool | None = None,
+) -> int:
     """Apply the configured row-limit cap to a request-supplied limit — 1:1
     with upstream ``QueryObjectFactory._process_row_limit``: an absent/zero
     limit falls back to ``SAMPLES_ROW_LIMIT`` (samples) or ``ROW_LIMIT``, and the
-    result is capped at ``SQL_MAX_ROW``. Without this, ``row_limit=0``/unset
-    emitted an UNBOUNDED query and an oversized limit ran uncapped.
+    result is capped at ``SQL_MAX_ROW`` (or ``TABLE_VIZ_MAX_ROW_SERVER`` when
+    ``server_pagination`` is on — the Table viz pages server-side and so is
+    allowed a higher ceiling). Without this, ``row_limit=0``/unset emitted an
+    UNBOUNDED query and an oversized limit ran uncapped; without
+    ``server_pagination`` threaded through, a server-paginated Table was capped
+    at ``SQL_MAX_ROW`` instead of its higher ``TABLE_VIZ_MAX_ROW_SERVER``
+    ceiling.
     """
     from superset import config as _config
     from superset.utils.core import apply_max_row_limit
@@ -51,7 +60,9 @@ def _capped_row_limit(row_limit: int | None, result_type: str | None) -> int:
         )
     except Exception:  # noqa: BLE001
         default = 1000 if result_type == "samples" else 50000
-    return apply_max_row_limit(row_limit or default)
+    return apply_max_row_limit(
+        row_limit or default, server_pagination=server_pagination
+    )
 
 
 @dataclass
@@ -145,6 +156,17 @@ class AsyncQueryObject:
                 # Malformed time_range — leave dttms None, emit un-filtered SQL
                 pass
 
+        # 1:1 with ``QueryContextFactory._apply_filters``
+        # (``superset_old/common/query_context_factory.py:199-204``): when a
+        # top-level ``time_range`` is set, every ``TEMPORAL_RANGE`` filter's
+        # ``val`` is overwritten with it so the WHERE clause matches the
+        # request's effective time range (the Explore UI sends the canonical
+        # range as ``time_range`` while leaving stale ``val`` strings on the
+        # adhoc temporal filters). Upstream's factory runs this on every query
+        # object via ``_process_query_object``; here ``__post_init__`` is the
+        # equivalent build hook.
+        self._apply_filters()
+
         # Formula annotation filtering (client-side only)
         if self.annotation_layers:
             self.annotation_layers = [
@@ -152,6 +174,102 @@ class AsyncQueryObject:
                 for a in self.annotation_layers
                 if a.get("annotationType") != "FORMULA"
                 and a.get("annotation_type") != "FORMULA"
+            ]
+
+    def _apply_filters(self) -> None:
+        """1:1 with ``QueryContextFactory._apply_filters``.
+
+        When ``time_range`` is set, sync every ``TEMPORAL_RANGE`` filter's
+        ``val`` to it.
+        """
+        if self.time_range:
+            for filter_object in self.filters:
+                if filter_object.get("op") == "TEMPORAL_RANGE":
+                    filter_object["val"] = self.time_range
+
+    def apply_granularity(  # noqa: C901
+        self,
+        form_data: dict[str, Any] | None,
+        datasource: Any,
+    ) -> None:
+        """1:1 with ``QueryContextFactory._apply_granularity``.
+
+        Replaces a temporal x-axis column's expression with the granularity and
+        removes the now-redundant temporal filter (a fresh one keyed on the
+        granularity is added later by the SQL build). Requires the request
+        ``form_data`` (for ``x_axis``) and the resolved datasource model (for
+        its temporal columns), so — unlike :meth:`_apply_filters` — it cannot
+        run in ``__post_init__`` and must be invoked by the context builder once
+        those are available. A no-op when there is no ``granularity``.
+        """
+        from superset.utils.column import is_adhoc_column
+
+        granularity = self.granularity
+        if not granularity:
+            return
+
+        temporal_columns = {
+            column["column_name"]
+            if isinstance(column, dict)
+            else column.column_name
+            for column in getattr(datasource, "columns", []) or []
+            if (column["is_dttm"] if isinstance(column, dict) else column.is_dttm)
+        }
+        x_axis = form_data and form_data.get("x_axis")
+
+        filter_to_remove = None
+        if is_adhoc_column(x_axis):
+            x_axis = x_axis.get("sqlExpression")
+        if x_axis and x_axis in temporal_columns:
+            filter_to_remove = x_axis
+            x_axis_column = next(
+                (
+                    column
+                    for column in self.columns
+                    if column == x_axis
+                    or (
+                        isinstance(column, dict)
+                        and column.get("sqlExpression") == x_axis
+                    )
+                ),
+                None,
+            )
+            # Replace the x-axis column's values with the granularity.
+            if x_axis_column:
+                if isinstance(x_axis_column, dict):
+                    x_axis_column["sqlExpression"] = granularity
+                    x_axis_column["label"] = granularity
+                else:
+                    self.columns = [
+                        granularity if column == x_axis_column else column
+                        for column in self.columns
+                    ]
+                for post_processing in self.post_processing:
+                    if post_processing.get("operation") == "pivot":
+                        post_processing["options"]["index"] = [granularity]
+
+        # If no temporal x-axis, pick the default temporal filter to remove.
+        if not filter_to_remove:
+            temporal_filters = [
+                flt["col"]
+                for flt in self.filters
+                if flt.get("op") == "TEMPORAL_RANGE"
+            ]
+            if len(temporal_filters) > 0:
+                if granularity in temporal_filters:
+                    filter_to_remove = granularity
+                else:
+                    filter_to_remove = temporal_filters[0]
+
+        # Remove the temporal filter (x-axis or other). A granularity-keyed
+        # filter is re-added downstream — this replaces the prior default
+        # temporal filter.
+        if is_adhoc_column(filter_to_remove):
+            filter_to_remove = filter_to_remove.get("sqlExpression")
+
+        if filter_to_remove:
+            self.filters = [
+                flt for flt in self.filters if flt.get("col") != filter_to_remove
             ]
 
     def to_dict(self) -> dict[str, Any]:
@@ -379,7 +497,9 @@ class AsyncQueryObject:
                 extras=q.get("extras", {}),
                 orderby=q.get("orderby", []),
                 row_limit=_capped_row_limit(
-                    q.get("row_limit"), q.get("result_type")
+                    q.get("row_limit"),
+                    q.get("result_type"),
+                    server_pagination=bool(q.get("server_pagination")),
                 ),
                 row_offset=q.get("row_offset", 0),
                 time_range=q.get("time_range"),
@@ -446,7 +566,9 @@ class AsyncQueryObject:
             ),
             orderby=list(getattr(q, "orderby", [])),
             row_limit=_capped_row_limit(
-                q.row_limit, getattr(q, "result_type", None)
+                q.row_limit,
+                getattr(q, "result_type", None),
+                server_pagination=bool(getattr(q, "server_pagination", False)),
             ),
             row_offset=getattr(q, "row_offset", 0),
             time_range=q.time_range,

@@ -456,9 +456,40 @@ class AsyncQueryContextProcessor:
         }
 
     async def _get_query_only(self, query_object: AsyncQueryObject) -> dict[str, Any]:
-        """Build SQL without executing — returns the query string only."""
+        """Build SQL without executing — returns the query string only.
+
+        1:1 with ``superset_old/common/query_actions.py::_get_query``:
+          - the payload carries the datasource ``language`` (engine dialect,
+            e.g. ``"sql"``) alongside ``query``, so the SQL-preview pane knows
+            how to syntax-highlight it;
+          - a build/validation error is surfaced *in the payload*
+            (``error`` field) rather than raised — the original catches
+            ``QueryObjectValidationError`` (no SQL → just ``error``) and
+            ``SupersetParseError`` (SQL generated but un-optimizable → both
+            ``query`` and ``error``).
+        """
+        from superset.exceptions import (
+            QueryObjectValidationError,
+            SupersetParseError,
+        )
+
         datasource = self._datasource
         query_dict = query_object.to_dict()
+
+        # Engine dialect for the SQL-preview pane (default ``"sql"``).
+        result: dict[str, Any] = {
+            "language": getattr(datasource, "query_language", None) or "sql",
+            "status": "success",
+            "error": None,
+            "df": pd.DataFrame(),
+            "data": [],
+            "rowcount": 0,
+            "is_cached": False,
+            "label_map": {},
+            "applied_filters": [],
+            "rejected_filters": [],
+            "coltypes": [],
+        }
 
         # IMPORTANT: route through ``_build_sql`` (which calls
         # ``_adapt_query_dict_for_get_sqla_query`` first), NOT the raw
@@ -472,30 +503,30 @@ class AsyncQueryContextProcessor:
         # the keys exactly like the execute path does, so ``type=query``
         # produces the same SQL the chart would actually run, run in a
         # worker thread (sync engine pipeline under asyncpg).
-        if hasattr(datasource, "_build_sql"):
-            sql, _from_dttm, _to_dttm = await asyncio.to_thread(
-                datasource._build_sql, query_dict, None  # noqa: SLF001
-            )
-            query_str = sql
-        elif hasattr(datasource, "get_query_str_extended"):
-            result = datasource.get_query_str_extended(query_dict)
-            query_str = getattr(result, "sql", str(result))
-        else:
-            query_str = str(query_dict)
+        try:
+            if hasattr(datasource, "_build_sql"):
+                sql, _from_dttm, _to_dttm = await asyncio.to_thread(
+                    datasource._build_sql, query_dict, None  # noqa: SLF001
+                )
+                result["query"] = sql
+            elif hasattr(datasource, "get_query_str_extended"):
+                extended = datasource.get_query_str_extended(query_dict)
+                result["query"] = getattr(extended, "sql", str(extended))
+            else:
+                result["query"] = str(query_dict)
+        except QueryObjectValidationError as err:
+            # Validation error (missing required fields, invalid config) — no
+            # SQL was generated, so only the error message is surfaced.
+            result["error"] = getattr(err, "message", str(err))
+        except SupersetParseError as err:
+            # Parse/optimize error — SQL was generated but couldn't be
+            # optimized; show both the SQL and the error.
+            extra = getattr(getattr(err, "error", None), "extra", None)
+            if extra and (sql := extra.get("sql")) is not None:
+                result["query"] = sql
+            result["error"] = getattr(err.error, "message", str(err))
 
-        return {
-            "query": query_str,
-            "status": "success",
-            "error": None,
-            "df": pd.DataFrame(),
-            "data": [],
-            "rowcount": 0,
-            "is_cached": False,
-            "label_map": {},
-            "applied_filters": [],
-            "rejected_filters": [],
-            "coltypes": [],
-        }
+        return result
 
     async def _get_samples(self, query_object: AsyncQueryObject) -> dict[str, Any]:
         """Execute a simplified query for raw sample rows.
@@ -2176,17 +2207,59 @@ class AsyncQueryContextProcessor:
             )
 
     @staticmethod
-    def get_data(df: pd.DataFrame, result_format: str = "json") -> Any:
-        """Convert DataFrame to the requested result format."""
-        if result_format == "csv":
-            return _df_to_escaped_csv(df)
-        if result_format == "xlsx":
-            import io
+    def get_data(
+        df: pd.DataFrame,
+        result_format: str = "json",
+        coltypes: list[int] | None = None,
+        verbose_map: dict[str, str] | None = None,
+    ) -> Any:
+        """Convert DataFrame to the requested result format.
 
-            buf = io.BytesIO()
-            df.to_excel(buf, index=False, engine="openpyxl")
-            buf.seek(0)
-            return buf.getvalue()
+        1:1 with ``superset_old/common/query_context_processor.py::get_data``
+        for the table-like (CSV / XLSX) branches:
+
+          - The verbose column-name map (datasource ``data["verbose_map"]``)
+            renames physical column names to their human-readable label, so
+            the export uses the same headers the user sees in the chart.
+          - CSV is written via ``csv.df_to_escaped_csv(df, **CSV_EXPORT)`` —
+            the ``CSV_EXPORT`` config (default ``{"encoding": "utf-8-sig"}``)
+            sets the separator/encoding/etc. that pandas applies.
+          - XLSX runs ``excel.apply_column_types(df, coltypes)`` first (so
+            numerics export as numbers, tz-aware datetimes as strings) and is
+            then written via ``excel.df_to_excel(df, **EXCEL_EXPORT)``.
+
+        ``coltypes`` are computed from the DataFrame dtypes when not supplied;
+        ``verbose_map`` is applied when supplied (the export path threads it in
+        from the datasource).
+        """
+        if result_format in ("csv", "xlsx"):
+            from superset import config as _config
+            from superset.utils import csv as _csv, excel as _excel
+
+            # Rename columns to their verbose (human-readable) labels — 1:1
+            # with upstream ``get_data`` which reads
+            # ``datasource.data["verbose_map"]``.
+            if verbose_map:
+                df.columns = [verbose_map.get(col, col) for col in df.columns]
+
+            # Read the CSV_EXPORT / EXCEL_EXPORT pandas kwargs from settings
+            # (the Flask-free equivalent of ``current_app.config[...]``).
+            try:
+                settings = _config.SupersetSettings()
+                csv_export = dict(getattr(settings, "csv_export", {}) or {})
+                excel_export = dict(getattr(settings, "excel_export", {}) or {})
+            except Exception:  # noqa: BLE001 — never break export on config errors
+                csv_export, excel_export = {"encoding": "utf-8-sig"}, {}
+
+            if result_format == "csv":
+                return _csv.df_to_escaped_csv(df, index=False, **csv_export)
+
+            # XLSX — apply column types before writing (numerics → numbers,
+            # tz-aware datetimes → strings), matching upstream order.
+            if coltypes is None:
+                coltypes = AsyncQueryContextProcessor._extract_coltypes(df)
+            _excel.apply_column_types(df, coltypes)
+            return _excel.df_to_excel(df, index=False, **excel_export)
 
         # Serialize datetime columns as epoch milliseconds to match the
         # original Superset chart data API, which uses ``json_int_dttm_ser``
