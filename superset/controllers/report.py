@@ -561,10 +561,7 @@ class ReportScheduleController(Controller):
     )
     async def slack_channels(
         self,
-        search_string: str | None = None,
-        types: list[str] | None = None,
-        exact_match: bool = False,
-        force: bool = False,
+        rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """GET /api/v1/report/slack_channels/ -- list Slack channels.
 
@@ -576,22 +573,18 @@ class ReportScheduleController(Controller):
         Returns an empty list when Slack integration is not configured or
         ``slack_sdk`` is not installed.
 
-        Parameters
-        ----------
-        search_string:
-            Comma-separated channel names or IDs to filter by.  Supports
-            partial matching unless ``exact_match`` is ``True``.
-        types:
-            List of channel types to include; e.g. ``["public_channel"]``,
-            ``["private_channel"]``, or both.  When ``None`` (default) all
-            channel types are returned.
-        exact_match:
-            When ``True``, only channels whose name or id matches exactly.
-        force:
-            When ``True``, bypass the cached channel list and re-fetch from
-            the Slack API.
+        Filter parameters are read from the Rison ``q=`` query parameter
+        (``search_string``, ``types``, ``exact_match``, ``force``), matching
+        the original ``kwargs.get("rison", {})`` plumbing in
+        ``superset_old/reports/api.py:534-586``.
         """
         from litestar.exceptions import HTTPException
+
+        params = rison_params or {}
+        search_string = params.get("search_string") or params.get("searchString")
+        types = params.get("types", [])
+        exact_match = params.get("exact_match", False) or params.get("exactMatch", False)
+        force = params.get("force", False)
 
         try:
             channels = _get_slack_channels(
