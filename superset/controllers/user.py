@@ -564,7 +564,10 @@ class UserRegistrationsController(Controller):
     # ------------------------------------------------------------------
     # GET / — list pending registrations (paginated)
     # ------------------------------------------------------------------
-    @get("/")
+    @get(
+        "/",
+        guards=[require_permission("can_read", "UserRegistrationsRestAPI")],
+    )
     async def get_list(
         self,
         reg_dao: Any,
@@ -572,9 +575,11 @@ class UserRegistrationsController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/security/user_registrations/ — list pending registrations.
 
-        No auth guard: matches deployments where Public role has read
-        access to ``UserRegistrationsRestAPI`` (open self-registration
-        flows). Write endpoints below remain admin-gated.
+        Admin-only, matching the original ``UserRegistrationsRestAPI`` class
+        docstring ("Admin only") in ``superset_old/security/api.py:346``.
+        The original BaseSupersetModelRestApi maps ``get_list`` to
+        ``can_list`` / ``can_read`` on the resource, which is only granted
+        to the Admin role by default.
 
         Supports Rison query parameters for pagination, ordering, and filtering.
         Mirrors FAB's ``ModelRestApi.get_list`` behavior.
