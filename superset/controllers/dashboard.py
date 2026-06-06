@@ -1139,7 +1139,7 @@ class DashboardController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/export/",
-        guards=[require_permission("can_read", "Dashboard")],
+        guards=[require_permission("can_export", "Dashboard")],
         media_type="application/zip",
     )
     async def export(

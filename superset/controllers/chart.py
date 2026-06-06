@@ -1371,7 +1371,7 @@ class ChartController(Controller):
 
     @get(
         "/export/",
-        guards=[require_permission("can_read", "Chart")],
+        guards=[require_permission("can_export", "Chart")],
         media_type="application/zip",
     )
     async def export(

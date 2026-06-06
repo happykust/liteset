@@ -783,7 +783,7 @@ class DatasetController(Controller):
 
     @get(
         "/export/",
-        guards=[require_permission("can_read", "Dataset")],
+        guards=[require_permission("can_export", "Dataset")],
         media_type="application/zip",
     )
     async def export(

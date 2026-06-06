@@ -2157,7 +2157,7 @@ class DatabaseController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/export/",
-        guards=[require_permission("can_read", "Database")],
+        guards=[require_permission("can_export", "Database")],
         media_type="application/zip",
     )
     async def export(
