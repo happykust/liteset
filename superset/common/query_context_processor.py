@@ -1460,10 +1460,36 @@ class AsyncQueryContextProcessor:
                 f"was not found."
             )
 
-        # Legacy viz_types not used in superset — skip legacy viz path
-        viz_types: dict[str, Any] = {}
-        if getattr(chart, "viz_type", None) in viz_types:
-            pass  # pragma: no cover
+        # Mirror the original ``get_viz_annotation_data`` branch
+        # (superset_old/common/query_context_processor.py:1181-1202):
+        # legacy viz_type charts (e.g. "line", "area", "pie") are served via
+        # ``BaseViz.get_payload()``; modern charts go through
+        # ``chart.get_query_context()`` → ``AsyncQueryContextProcessor``.
+        # The original imported ``viz_types`` from ``superset.viz`` at module
+        # level; we do it lazily here to avoid a circular-import at load time.
+        from superset.viz import viz_types  # noqa: PLC0415
+
+        chart_viz_type = getattr(chart, "viz_type", None)
+        if chart_viz_type in viz_types:
+            # Legacy chart — run through the async viz pipeline.
+            if not getattr(chart, "datasource", None):
+                raise ValueError(
+                    f"The dataset for chart ID {chart.id} (referenced by "
+                    f"annotation layer '{annotation_layer['name']}') was not "
+                    f"found. Please check that the dataset exists and is "
+                    f"accessible."
+                )
+            from superset.viz import get_viz as _get_viz  # noqa: PLC0415
+
+            form_data = chart.form_data.copy() if chart.form_data else {}
+            form_data.update(annotation_layer.get("overrides", {}))
+            viz_obj = _get_viz(
+                datasource=chart.datasource,
+                form_data=form_data,
+                force=force,
+            )
+            payload = await viz_obj.get_payload()
+            return payload.get("data") or []
 
         get_qc = getattr(chart, "get_query_context", None)
         if get_qc is None:

@@ -816,15 +816,19 @@ class BaseViz:
                 stacktrace = _get_stacktrace()
 
             # --- Cache write ---
-            # 1:1 with the original (viz.py:615): a successful load is written
-            # to cache regardless of ``self.force`` — a forced refresh must
-            # update the cache, not just bypass the read. (CACHE_DISABLED_TIMEOUT
-            # is honored by the SyncVizCache backend's negative-TTL guard.)
+            # 1:1 with the original (viz.py:615-622): a successful load is
+            # written to cache regardless of ``self.force`` — a forced refresh
+            # must update the cache, not just bypass the read.
+            # CACHE_DISABLED_TIMEOUT (-1) is the sentinel meaning "do not
+            # cache" — skip the write entirely, matching the original's
+            # ``set_and_log_cache`` guard in
+            # ``superset_old/utils/cache.py:62-63``.
             if (
                 is_loaded
                 and cache_key
                 and data_cache is not None
                 and self.status != "failed"
+                and cache_timeout != CACHE_DISABLED_TIMEOUT
             ):
                 try:
                     cache_payload = {
