@@ -617,10 +617,19 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
 
         :param database: database instance from which to extract extras
         :param source: in which context is the connection needed
+        :raises CertificateException: If certificate is not valid/unparseable
+
+        1:1 with ``superset_old/db_engine_specs/trino.py`` adapted: Flask's
+        ``app.config`` is gone; ``get_user_agent`` reads from SupersetSettings.
         """
+        from superset.utils.core import get_user_agent
+
         extra: dict[str, Any] = BaseEngineSpec.get_extra_params(database, source)
         engine_params: dict[str, Any] = extra.setdefault("engine_params", {})
         connect_args: dict[str, Any] = engine_params.setdefault("connect_args", {})
+        user_agent = get_user_agent(database, source)
+
+        connect_args.setdefault("source", user_agent)
 
         if database.server_cert:
             from superset.utils.core import create_ssl_cert_file
@@ -660,10 +669,22 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
             elif auth_method == "jwt":
                 from trino.auth import JWTAuthentication as trino_auth  # noqa: N813
             else:
-                raise ValueError(
-                    f"Unsupported authentication method: '{auth_method}'. "
-                    f"Supported methods: basic, kerberos, certificate, jwt."
+                # Custom auth: consult ALLOWED_EXTRA_AUTHENTICATIONS config
+                # (1:1 with superset_old: app.config["ALLOWED_EXTRA_AUTHENTICATIONS"]
+                # → SupersetSettings().allowed_extra_authentications).
+                from superset.config import SupersetSettings
+
+                _settings = SupersetSettings()  # type: ignore[call-arg]
+                allowed_extra_auths: dict[str, Any] = (
+                    _settings.allowed_extra_authentications.get("trino", {})
                 )
+                if auth_method in allowed_extra_auths:
+                    trino_auth = allowed_extra_auths.get(auth_method)  # noqa: N813
+                else:
+                    raise ValueError(
+                        f"For security reason, custom authentication '{auth_method}' "
+                        f"must be listed in 'ALLOWED_EXTRA_AUTHENTICATIONS' config"
+                    )
 
             connect_args["auth"] = trino_auth(**auth_params)
         except json_utils.JSONDecodeError as ex:
