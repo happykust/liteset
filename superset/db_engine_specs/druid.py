@@ -31,7 +31,9 @@ from sqlalchemy import types
 
 from superset.constants import TimeGrain
 from superset.db_engine_specs.base import BaseEngineSpec
+from superset.db_engine_specs.exceptions import SupersetDBAPIConnectionError
 from superset.utils import json as json_utils
+from superset.utils.feature_flags import feature_flag_manager
 
 if TYPE_CHECKING:
     from superset.connectors.sqla.models import TableColumn
@@ -40,11 +42,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_feature_enabled(feature: str) -> bool:
+    """Port shim for upstream's ``superset.is_feature_enabled``."""
+    return feature_flag_manager.is_feature_enabled(feature)
+
+
 class DruidEngineSpec(BaseEngineSpec):
     """Engine spec for Druid.io"""
 
     engine = "druid"
     engine_name = "Apache Druid"
+    allows_joins = _is_feature_enabled("DRUID_JOINS")
     allows_subqueries = True
 
     _time_grain_expressions = {
@@ -121,6 +129,15 @@ class DruidEngineSpec(BaseEngineSpec):
     @classmethod
     def epoch_ms_to_dttm(cls) -> str:
         return "MILLIS_TO_TIMESTAMP({col})"
+
+    @classmethod
+    def get_dbapi_exception_mapping(cls) -> dict[type[Exception], type[Exception]]:
+        # pylint: disable=import-outside-toplevel
+        from requests import exceptions as requests_exceptions
+
+        return {
+            requests_exceptions.ConnectionError: SupersetDBAPIConnectionError,
+        }
 
 
 __all__ = [

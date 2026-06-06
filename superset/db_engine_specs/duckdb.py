@@ -25,28 +25,177 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from re import Pattern
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, TypedDict
 
 from sqlalchemy import types
 from sqlalchemy.engine.reflection import Inspector
+from sqlalchemy.engine.url import URL
 
 from superset.constants import TimeGrain
+from superset.databases.utils import make_url_safe
 from superset.db_engine_specs.base import BaseEngineSpec
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.typing import GenericDataType
+from superset.utils.core import get_user_agent, QuerySource
 
 if TYPE_CHECKING:
     from superset.models.core import Database
 
 COLUMN_DOES_NOT_EXIST_REGEX = re.compile("no such column: (?P<column_name>.+)")
+DEFAULT_ACCESS_TOKEN_URL = (
+    "https://app.motherduck.com/token-request?appName=Superset&close=y"  # noqa: S105
+)
+
+# ---------------------------------------------------------------------------
+# JSON-Schema fragment for DuckDB / MotherDuck connection parameters.
+# The original uses a Marshmallow Schema; in the port we supply the OpenAPI
+# fragment directly (same pattern as BasicParametersMixin in base.py).
+# ---------------------------------------------------------------------------
+DUCKDB_PARAMETERS_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "access_token": {
+            "type": "string",
+            "nullable": True,
+            "description": "MotherDuck token",
+            "default": DEFAULT_ACCESS_TOKEN_URL,
+        },
+        "database": {
+            "type": "string",
+            "description": "Database name",
+        },
+        "query": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Additional parameters",
+        },
+    },
+}
 
 
-class DuckDBEngineSpec(BaseEngineSpec):
+class DuckDBParametersType(TypedDict, total=False):
+    access_token: str | None
+    database: str
+    query: dict[str, Any]
+
+
+class DuckDBPropertiesType(TypedDict):
+    parameters: DuckDBParametersType
+
+
+class DuckDBParametersMixin:
+    """
+    Mixin for configuring DB engine specs via a dictionary.
+
+    With this mixin the SQLAlchemy engine can be configured through
+    individual parameters, instead of the full SQLAlchemy URI. This
+    mixin is for DuckDB:
+
+        duckdb:///file_path[?key=value&key=value...]
+        duckdb:///md:database[?key=value&key=value...]
+
+    """
+
+    engine = "duckdb"
+
+    # schema describing the parameters used to configure the DB
+    parameters_schema: dict[str, Any] = DUCKDB_PARAMETERS_JSON_SCHEMA
+
+    # recommended driver name for the DB engine spec
+    default_driver = ""
+
+    # query parameter to enable encryption in the database connection
+    # for Postgres this would be `{"sslmode": "verify-ca"}`, eg.
+    encryption_parameters: dict[str, str] = {}
+
+    @staticmethod
+    def _is_motherduck(database: str) -> bool:
+        return "md:" in database
+
+    @classmethod
+    def build_sqlalchemy_uri(  # pylint: disable=unused-argument
+        cls,
+        parameters: DuckDBParametersType,
+        encrypted_extra: dict[str, str] | None = None,
+    ) -> str:
+        """
+        Build SQLAlchemy URI for connecting to a DuckDB database.
+        If an access token is specified, return a URI to connect to a MotherDuck database.
+        """  # noqa: E501
+        if parameters is None:
+            parameters = {}
+        query = parameters.get("query", {})
+        database = parameters.get("database", ":memory:")
+        token = parameters.get("access_token")
+
+        if cls._is_motherduck(database) or (
+            token and token != DEFAULT_ACCESS_TOKEN_URL
+        ):
+            return MotherDuckEngineSpec.build_sqlalchemy_uri(parameters)
+
+        return str(URL.create(drivername=cls.engine, database=database, query=query))
+
+    @classmethod
+    def get_parameters_from_uri(  # pylint: disable=unused-argument
+        cls, uri: str, encrypted_extra: dict[str, Any] | None = None
+    ) -> DuckDBParametersType:
+        url = make_url_safe(uri)
+        query = {
+            key: value
+            for (key, value) in url.query.items()
+            if (key, value) not in cls.encryption_parameters.items()
+        }
+        access_token = query.pop("motherduck_token", "")
+        return {
+            "access_token": access_token,
+            "database": url.database,
+            "query": query,
+        }
+
+    @classmethod
+    def validate_parameters(
+        cls, properties: DuckDBPropertiesType
+    ) -> list[SupersetError]:
+        """
+        Validates any number of parameters, for progressive validation.
+        """
+        errors: list[SupersetError] = []
+
+        parameters = properties.get("parameters", {})
+        if cls._is_motherduck(parameters.get("database", "")):
+            required = {"access_token"}
+        else:
+            required = set()
+        present = {key for key in parameters if parameters.get(key, ())}
+
+        if missing := sorted(required - present):
+            errors.append(
+                SupersetError(
+                    message=f"One or more parameters are missing: {', '.join(missing)}",
+                    error_type=SupersetErrorType.CONNECTION_MISSING_PARAMETERS_ERROR,
+                    level=ErrorLevel.WARNING,
+                    extra={"missing": missing},
+                ),
+            )
+
+        return errors
+
+    @classmethod
+    def parameters_json_schema(cls) -> Any:
+        """
+        Return configuration parameters as OpenAPI JSON Schema.
+        """
+        return cls.parameters_schema or None
+
+
+class DuckDBEngineSpec(DuckDBParametersMixin, BaseEngineSpec):
     engine = "duckdb"
     engine_name = "DuckDB"
     default_driver = "duckdb_engine"
 
     sqlalchemy_uri_placeholder = "duckdb:////path/to/duck.db"
 
+    # DuckDB-specific column type mappings to ensure float/double types are recognized
     column_type_mappings = (
         (
             re.compile(r"^hugeint", re.IGNORECASE),
@@ -87,10 +236,10 @@ class DuckDBEngineSpec(BaseEngineSpec):
         TimeGrain.YEAR: "DATE_TRUNC('year', {col})",
     }
 
-    custom_errors: dict[Pattern[str], tuple[str, str, dict[str, Any]]] = {
+    custom_errors: dict[Pattern[str], tuple[str, SupersetErrorType, dict[str, Any]]] = {
         COLUMN_DOES_NOT_EXIST_REGEX: (
             'We can\'t seem to resolve the column "%(column_name)s"',
-            "COLUMN_DOES_NOT_EXIST_ERROR",
+            SupersetErrorType.COLUMN_DOES_NOT_EXIST_ERROR,
             {},
         ),
     }
@@ -121,7 +270,109 @@ class DuckDBEngineSpec(BaseEngineSpec):
     ) -> set[str]:
         return set(inspector.get_table_names(schema))
 
+    @staticmethod
+    def get_extra_params(
+        database: Database, source: QuerySource | None = None
+    ) -> dict[str, Any]:
+        """
+        Add a user agent to be used in the requests.
+        """
+        extra: dict[str, Any] = BaseEngineSpec.get_extra_params(database)
+        engine_params: dict[str, Any] = extra.setdefault("engine_params", {})
+        connect_args: dict[str, Any] = engine_params.setdefault("connect_args", {})
+        config: dict[str, Any] = connect_args.setdefault("config", {})
+        custom_user_agent = config.pop("custom_user_agent", "")
+        delim = " " if custom_user_agent else ""
+        user_agent = get_user_agent(database, source)
+        user_agent = user_agent.replace(" ", "-").lower()
+        try:
+            from superset.config import SupersetSettings
+
+            _settings = SupersetSettings()  # type: ignore[call-arg]
+            version_string = getattr(_settings, "version_string", "") or "dev"
+        except Exception:  # noqa: BLE001
+            version_string = "dev"
+        user_agent = f"{user_agent}/{version_string}{delim}{custom_user_agent}"
+        config.setdefault("custom_user_agent", user_agent)
+
+        return extra
+
+
+class MotherDuckEngineSpec(DuckDBEngineSpec):
+    engine = "motherduck"
+    engine_name = "MotherDuck"
+    engine_aliases: set[str] = {"duckdb"}
+
+    supports_catalog = True
+    supports_dynamic_catalog = True
+
+    sqlalchemy_uri_placeholder = (
+        "duckdb:///md:{database_name}?motherduck_token={SERVICE_TOKEN}"
+    )
+
+    @staticmethod
+    def _is_motherduck(database: str) -> bool:
+        return True
+
+    @classmethod
+    def build_sqlalchemy_uri(
+        cls,
+        parameters: DuckDBParametersType,
+        encrypted_extra: dict[str, str] | None = None,
+    ) -> str:
+        """
+        Build SQLAlchemy URI for connecting to a MotherDuck database
+        """
+        # make a copy so that we don't update the original
+        query = parameters.get("query", {}).copy()
+        database = parameters.get("database", "")
+        token = parameters.get("access_token", "")
+
+        if not database.startswith("md:"):
+            database = f"md:{database}"
+        if token and token != DEFAULT_ACCESS_TOKEN_URL:
+            query["motherduck_token"] = token
+        else:
+            raise ValueError(
+                f"Need MotherDuck token to connect to database '{database}'."
+            )
+
+        return str(
+            URL.create(drivername=DuckDBEngineSpec.engine, database=database, query=query)
+        )
+
+    @classmethod
+    def adjust_engine_params(
+        cls,
+        uri: URL,
+        connect_args: dict[str, Any],
+        catalog: str | None = None,
+        schema: str | None = None,
+    ) -> tuple[URL, dict[str, Any]]:
+        if catalog:
+            uri = uri.set(database=f"md:{catalog}")
+
+        return uri, connect_args
+
+    @classmethod
+    def get_default_catalog(cls, database: Database) -> str | None:
+        return database.url_object.database.split(":", 1)[1]
+
+    @classmethod
+    def get_catalog_names(
+        cls,
+        database: Database,
+        inspector: Inspector,
+    ) -> set[str]:
+        return {
+            catalog
+            for (catalog,) in inspector.bind.execute(
+                "SELECT alias FROM MD_ALL_DATABASES() WHERE is_attached;"
+            )
+        }
+
 
 __all__ = [
     "DuckDBEngineSpec",
+    "MotherDuckEngineSpec",
 ]
