@@ -352,6 +352,27 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
                 self._data["validator_config_json"]
             )
 
+        # ``custom_width`` must lie within [ALERT_REPORTS_MIN_CUSTOM_SCREENSHOT_WIDTH,
+        # ALERT_REPORTS_MAX_CUSTOM_SCREENSHOT_WIDTH].  1:1 port of
+        # ``@validates("custom_width")`` in
+        # ``superset_old/reports/schemas.py:246-263``.
+        custom_width = self._data.get("custom_width")
+        if custom_width is not None:
+            settings = _get_settings()
+            min_width = _settings_config_get(
+                settings, "ALERT_REPORTS_MIN_CUSTOM_SCREENSHOT_WIDTH", 600
+            )
+            max_width = _settings_config_get(
+                settings, "ALERT_REPORTS_MAX_CUSTOM_SCREENSHOT_WIDTH", 2400
+            )
+            if not (min_width <= custom_width <= max_width):
+                exceptions.append(
+                    ReportScheduleValidationError(
+                        f"Screenshot width must be between {min_width}px and {max_width}px",
+                        field_name="custom_width",
+                    )
+                )
+
         if exceptions:
             raise ReportScheduleInvalidError(exceptions=exceptions)
 
@@ -359,6 +380,15 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         # Map schema fields to model fields. ``validate`` may have replaced the
         # chart/dashboard/database ids with resolved ORM objects; normalise both.
         create_data = {**self._data}
+
+        # ``report_format`` must not be written as ``None`` — the DB column has
+        # ``default=ReportDataFormat.VISUALIZATION.value`` ("PNG") which only
+        # applies when the column is omitted entirely.  The POST schema now
+        # defaults to "PNG", but guard against any None that slips through
+        # (e.g., direct command usage without the schema).
+        if create_data.get("report_format") is None:
+            create_data.pop("report_format", None)
+
         if "chart" in create_data:
             create_data["chart_id"] = _resolve_fk(create_data.pop("chart"))
         if "dashboard" in create_data:
@@ -492,6 +522,25 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             self._data["validator_config_json"] = json.dumps(
                 self._data["validator_config_json"]
             )
+
+        # ``custom_width`` bounds check — 1:1 port of ``@validates("custom_width")``
+        # in ``superset_old/reports/schemas.py:384-401`` (PUT schema variant).
+        custom_width = self._data.get("custom_width")
+        if custom_width is not None:
+            settings = _get_settings()
+            min_width = _settings_config_get(
+                settings, "ALERT_REPORTS_MIN_CUSTOM_SCREENSHOT_WIDTH", 600
+            )
+            max_width = _settings_config_get(
+                settings, "ALERT_REPORTS_MAX_CUSTOM_SCREENSHOT_WIDTH", 2400
+            )
+            if not (min_width <= custom_width <= max_width):
+                exceptions.append(
+                    ReportScheduleValidationError(
+                        f"Screenshot width must be between {min_width}px and {max_width}px",
+                        field_name="custom_width",
+                    )
+                )
 
         # Check ownership — non-owners (and non-admins) get a 403, 1:1 with
         # ``superset_old/commands/report/update.py:124-128``.

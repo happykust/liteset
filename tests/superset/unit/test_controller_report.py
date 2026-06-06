@@ -181,6 +181,139 @@ async def test_create_report_without_database_allowed(mock_dao):
     await cmd.validate()
 
 
+async def test_create_report_rejects_custom_width_below_min(mock_dao):
+    """custom_width below ALERT_REPORTS_MIN_CUSTOM_SCREENSHOT_WIDTH → 422.
+
+    1:1 with upstream ``@validates("custom_width")``
+    (superset_old/reports/schemas.py:246-263).
+    """
+    from superset.commands.report_exceptions import ReportScheduleInvalidError
+
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
+    mock_dao.validate_unique_creation_method = AsyncMock(return_value=True)
+    cmd = CreateReportScheduleCommand(
+        dao=mock_dao,
+        data={
+            "name": "Test Report",
+            "type": "Report",
+            "crontab": "0 * * * *",
+            "chart": 1,
+            "custom_width": 10,  # below default min=600
+        },
+        user_id=1,
+    )
+    with pytest.raises(ReportScheduleInvalidError) as exc_info:
+        await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert "custom_width" in messages
+    assert "600px" in messages["custom_width"][0]
+
+
+async def test_create_report_rejects_custom_width_above_max(mock_dao):
+    """custom_width above ALERT_REPORTS_MAX_CUSTOM_SCREENSHOT_WIDTH → 422."""
+    from superset.commands.report_exceptions import ReportScheduleInvalidError
+
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
+    mock_dao.validate_unique_creation_method = AsyncMock(return_value=True)
+    cmd = CreateReportScheduleCommand(
+        dao=mock_dao,
+        data={
+            "name": "Test Report",
+            "type": "Report",
+            "crontab": "0 * * * *",
+            "chart": 1,
+            "custom_width": 9999,  # above default max=2400
+        },
+        user_id=1,
+    )
+    with pytest.raises(ReportScheduleInvalidError) as exc_info:
+        await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert "custom_width" in messages
+    assert "2400px" in messages["custom_width"][0]
+
+
+async def test_create_report_allows_valid_custom_width(mock_dao):
+    """custom_width within bounds must not raise the custom_width error."""
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
+    mock_dao.validate_unique_creation_method = AsyncMock(return_value=True)
+    cmd = CreateReportScheduleCommand(
+        dao=mock_dao,
+        data={
+            "name": "Test Report",
+            "type": "Report",
+            "crontab": "0 * * * *",
+            "chart": 1,
+            "custom_width": 1200,  # within [600, 2400]
+        },
+        user_id=1,
+    )
+    # Should not raise a custom_width error (chart validation handled separately)
+    from superset.commands.report_exceptions import ReportScheduleInvalidError
+
+    try:
+        await cmd.validate()
+    except ReportScheduleInvalidError as exc:
+        messages = exc.normalized_messages()
+        assert "custom_width" not in messages
+
+
+async def test_create_report_run_strips_none_report_format(mock_dao, mock_report):
+    """report_format=None must NOT be written; DB column default ("PNG") must apply.
+
+    1:1 with upstream ``dump_default=ReportDataFormat.PNG`` on the schema field
+    (superset_old/reports/schemas.py:228-230): when the field is absent from the
+    request body Marshmallow does not include it in the deserialized dict, so the
+    DB column default fires.  In the port's msgspec schema the default is now
+    "PNG" (fixes the None-override), but the command also strips it to guard
+    against direct command usage.
+    """
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
+    mock_dao.validate_unique_creation_method = AsyncMock(return_value=True)
+    mock_dao.create = AsyncMock(return_value=mock_report)
+
+    cmd = CreateReportScheduleCommand(
+        dao=mock_dao,
+        data={
+            "name": "Test Report",
+            "type": "Report",
+            "crontab": "0 * * * *",
+            "chart": 1,
+            "report_format": None,  # simulate old schema behaviour
+        },
+        user_id=1,
+    )
+    await cmd.validate()
+    await cmd.run()
+
+    # Verify that the dict passed to dao.create does NOT contain report_format=None
+    call_kwargs = mock_dao.create.call_args
+    passed_data: dict = call_kwargs[0][0] if call_kwargs[0] else call_kwargs[1].get("data", {})
+    assert passed_data.get("report_format") is not None or "report_format" not in passed_data
+
+
+async def test_update_report_rejects_custom_width_out_of_range(mock_dao, mock_report):
+    """custom_width validation runs on PUT as well.
+
+    1:1 with upstream ``@validates("custom_width")`` on
+    ``ReportSchedulePutSchema`` (superset_old/reports/schemas.py:384-401).
+    """
+    from superset.commands.report_exceptions import ReportScheduleInvalidError
+
+    mock_dao.find_by_id = AsyncMock(return_value=mock_report)
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
+    cmd = UpdateReportScheduleCommand(
+        dao=mock_dao,
+        pk=1,
+        data={"custom_width": 50},  # below min=600
+    )
+    with pytest.raises(ReportScheduleInvalidError) as exc_info:
+        await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert "custom_width" in messages
+    assert "600px" in messages["custom_width"][0]
+
+
 # --- UpdateReportScheduleCommand ---
 
 

@@ -25,6 +25,15 @@ from msgspec import Meta
 
 from superset.schemas.base import ModelStruct, UserRef
 
+# Valid report format values — mirrors ReportDataFormat enum (superset/models/reports.py)
+_REPORT_DATA_FORMATS = ("PDF", "PNG", "CSV", "TEXT")
+# Valid recipient type values — mirrors ReportRecipientType enum
+_RECIPIENT_TYPES = ("Email", "Slack", "SlackV2")
+# Valid validator type values — mirrors ReportScheduleValidatorType enum
+_VALIDATOR_TYPES = ("not null", "operator")
+# Valid schedule type values — mirrors ReportScheduleType enum
+_SCHEDULE_TYPES = ("Alert", "Report")
+
 
 class ReportRecipientConfigJSON(msgspec.Struct):
     """Nested config for a report recipient.
@@ -38,15 +47,21 @@ class ReportRecipientConfigJSON(msgspec.Struct):
 
 
 class ReportRecipientSchema(msgspec.Struct):
-    type: str  # "Email" | "Slack"
+    # OneOf(ReportRecipientType) — matches original ReportRecipientSchema field
+    # validator ``validate.OneOf(choices=tuple(key.value for key in ReportRecipientType))``.
+    type: Annotated[str, Meta(pattern=r"^(Email|Slack|SlackV2)$")]
     recipient_config_json: ReportRecipientConfigJSON
 
 
 class ReportSchedulePostSchema(msgspec.Struct):
-    name: Annotated[str, Meta(min_length=1)]
+    # ``name`` Length(1, 150) — matches original ``validate=[Length(1, 150)]``.
+    name: Annotated[str, Meta(min_length=1, max_length=150)]
     type: str  # "Report" | "Alert"
     description: str = ""
-    crontab: str = "0 * * * *"
+    # ``crontab`` Length(1, 1000) — matches original ``validate=[validate_crontab,
+    # Length(1, 1000)]``.  Cron *format* is validated in
+    # :meth:`CreateReportScheduleCommand.validate`.
+    crontab: Annotated[str, Meta(min_length=1, max_length=1000)] = "0 * * * *"
     timezone: str = "UTC"
     sql: str = ""
     chart: int | None = None
@@ -56,14 +71,21 @@ class ReportSchedulePostSchema(msgspec.Struct):
     recipients: list[ReportRecipientSchema] = []
     validator_type: str | None = None
     validator_config_json: dict[str, Any] | None = None
-    log_retention: int = 90
-    grace_period: int = 14400
+    # ``log_retention`` Range(min=1) — matches original
+    # ``validate=[Range(min=1, error="Value must be greater than 0")]``.
+    log_retention: Annotated[int, Meta(ge=1)] = 90
+    # ``grace_period`` Range(min=1) — matches original.
+    grace_period: Annotated[int, Meta(ge=1)] = 14400
     email_subject: str | None = None
     context_markdown: str | None = None
     creation_method: str | None = None
-    working_timeout: int = 3600
+    # ``working_timeout`` Range(min=1) — matches original.
+    working_timeout: Annotated[int, Meta(ge=1)] = 3600
     selected_tabs: list[int] | None = None
-    report_format: str | None = None
+    # ``report_format`` dump_default=ReportDataFormat.PNG — matches original
+    # ``dump_default=ReportDataFormat.PNG``.  Sending the default ensures the
+    # column default is not accidentally defeated by a None write.
+    report_format: str = "PNG"
     active: bool = True
     force_screenshot: bool = False
     custom_width: int | None = None
@@ -72,10 +94,12 @@ class ReportSchedulePostSchema(msgspec.Struct):
 
 
 class ReportSchedulePutSchema(msgspec.Struct):
-    name: str | None | msgspec.UnsetType = msgspec.UNSET
+    # ``name`` Length(1, 150) — matches original ``validate=[Length(1, 150)]``.
+    name: Annotated[str, Meta(min_length=1, max_length=150)] | None | msgspec.UnsetType = msgspec.UNSET
     type: str | None | msgspec.UnsetType = msgspec.UNSET
     description: str | None | msgspec.UnsetType = msgspec.UNSET
-    crontab: str | None | msgspec.UnsetType = msgspec.UNSET
+    # ``crontab`` Length(1, 1000) — matches original.
+    crontab: Annotated[str, Meta(min_length=1, max_length=1000)] | None | msgspec.UnsetType = msgspec.UNSET
     timezone: str | None | msgspec.UnsetType = msgspec.UNSET
     sql: str | None | msgspec.UnsetType = msgspec.UNSET
     chart: int | None | msgspec.UnsetType = msgspec.UNSET
@@ -85,12 +109,16 @@ class ReportSchedulePutSchema(msgspec.Struct):
     recipients: list[ReportRecipientSchema] | None | msgspec.UnsetType = msgspec.UNSET
     validator_type: str | None | msgspec.UnsetType = msgspec.UNSET
     validator_config_json: dict[str, Any] | None | msgspec.UnsetType = msgspec.UNSET
-    log_retention: int | None | msgspec.UnsetType = msgspec.UNSET
-    grace_period: int | None | msgspec.UnsetType = msgspec.UNSET
+    # ``log_retention`` Range(min=0) for PUT — matches original PUT schema
+    # ``validate=[Range(min=0, error="Value must be 0 or greater")]``.
+    log_retention: Annotated[int, Meta(ge=0)] | None | msgspec.UnsetType = msgspec.UNSET
+    # ``grace_period`` Range(min=1) for PUT — matches original.
+    grace_period: Annotated[int, Meta(ge=1)] | None | msgspec.UnsetType = msgspec.UNSET
     email_subject: str | None | msgspec.UnsetType = msgspec.UNSET
     context_markdown: str | None | msgspec.UnsetType = msgspec.UNSET
     creation_method: str | None | msgspec.UnsetType = msgspec.UNSET
-    working_timeout: int | None | msgspec.UnsetType = msgspec.UNSET
+    # ``working_timeout`` Range(min=1) for PUT — matches original.
+    working_timeout: Annotated[int, Meta(ge=1)] | None | msgspec.UnsetType = msgspec.UNSET
     selected_tabs: list[int] | None | msgspec.UnsetType = msgspec.UNSET
     report_format: str | None | msgspec.UnsetType = msgspec.UNSET
     active: bool | None | msgspec.UnsetType = msgspec.UNSET
