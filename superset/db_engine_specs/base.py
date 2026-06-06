@@ -1150,6 +1150,25 @@ class BaseEngineSpec:  # noqa: PLR0904
         try:
             cursor.execute(query)
         except Exception as ex:
+            # 1:1 with ``superset_old/db_engine_specs/base.py::execute`` — on a
+            # DB error, if OAuth2 is enabled for this database and the error
+            # indicates authorization is required, start the OAuth2 dance (which
+            # raises ``OAuth2RedirectError`` so the frontend re-authenticates)
+            # before mapping the exception.
+            #
+            # Caveat: the port's :meth:`start_oauth2_dance` is declared ``async``
+            # but performs no real ``await`` (it only assembles the authorization
+            # URL and raises ``OAuth2RedirectError``). ``execute`` runs in a
+            # synchronous worker thread, so we drive the coroutine to its single
+            # step via ``.send(None)`` — the same technique used by the sync
+            # SQL Lab path (``superset.tasks.sql_lab._check_for_oauth2``).
+            if database.is_oauth2_enabled() and cls.needs_oauth2(ex):
+                dance = cls.start_oauth2_dance(database)
+                if hasattr(dance, "send"):  # coroutine — drive it synchronously
+                    try:
+                        dance.send(None)
+                    except StopIteration:
+                        pass
             raise cls.get_dbapi_mapped_exception(ex) from ex
 
     @classmethod
