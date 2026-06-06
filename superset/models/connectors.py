@@ -2480,6 +2480,7 @@ class SqlaTable(
         column_name: str,
         limit: int = 10000,
         rls_filters: list[Any] | None = None,
+        denormalize_column: bool = False,
     ) -> list[Any]:
         """Return distinct values of ``column_name`` for filter dropdowns.
 
@@ -2512,6 +2513,15 @@ class SqlaTable(
         from sqlalchemy import and_
         from sqlalchemy.sql import literal_column, text as sa_text
         from sqlalchemy.sql.elements import ClauseElement
+
+        # Denormalize the column name before querying for values unless disabled
+        # in the dataset configuration — 1:1 with upstream ``values_for_column``.
+        # ``denormalize_name`` is a no-op except on dialects that normalize
+        # identifiers (Oracle/Snowflake), so the common case is unchanged.
+        if denormalize_column:
+            column_name = self.database.db_engine_spec.denormalize_name(
+                self.database.get_dialect(), column_name
+            )
 
         cols = {c.column_name: c for c in (self.columns or [])}
         if column_name not in cols:

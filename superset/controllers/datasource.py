@@ -242,8 +242,8 @@ class DatasourceController(Controller):
             # Row limit = ``apply_max_row_limit(FILTER_SELECT_ROW_LIMIT)`` 1:1
             # with upstream (``min(SQL_MAX_ROW, FILTER_SELECT_ROW_LIMIT)``); the
             # port previously hardcoded 1000, under-fetching distinct values for
-            # filter dropdowns. (NB ``denormalize_column`` for normalized-column
-            # datasets is still a gap — the async model method lacks the param.)
+            # filter dropdowns. ``denormalize_column`` is threaded below
+            # (1:1 upstream — ``not datasource.normalize_columns``).
             _row_limit = 10000
             try:
                 from superset import config as _config
@@ -259,6 +259,11 @@ class DatasourceController(Controller):
                     column_name=column_name,
                     limit=_row_limit,
                     rls_filters=rls_clauses or None,
+                    # 1:1 upstream datasource/api.py: denormalize unless the
+                    # dataset is configured with normalized columns.
+                    denormalize_column=not getattr(
+                        datasource, "normalize_columns", False
+                    ),
                 )
                 await event_logger.alog_with_context(
                     "datasource.column_values",
