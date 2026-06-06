@@ -25,7 +25,51 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import secrets
+
+# ---------------------------------------------------------------------------
+# Password complexity — ported 1:1 from
+# flask_appbuilder/validators.py::password_complexity_regex +
+# default_password_complexity().  Used by PUT /api/v1/me/ when
+# FAB_PASSWORD_COMPLEXITY_ENABLED is True.
+# ---------------------------------------------------------------------------
+
+_PASSWORD_COMPLEXITY_RE = re.compile(
+    r"""(
+    ^(?=.*[A-Z].*[A-Z])                # at least two capital letters
+    (?=.*[^0-9a-zA-Z])                 # at least one of these special characters
+    (?=.*[0-9].*[0-9])                 # at least two numeric digits
+    (?=.*[a-z].*[a-z].*[a-z])          # at least three lower case letters
+    .{10,}                             # at least 10 total characters
+    $
+    )""",
+    re.VERBOSE,
+)
+
+_PASSWORD_COMPLEXITY_MSG = (
+    "Must have at least two capital letters,"
+    " one special character, two digits, three lower case letters and"
+    " a minimal length of 10."
+)
+
+
+class PasswordComplexityError(ValueError):
+    """Raised when a password fails the complexity check."""
+
+
+def default_password_complexity(password: str) -> None:
+    """FAB-compatible default password complexity check.
+
+    Raises :class:`PasswordComplexityError` if *password* does not satisfy
+    the FAB complexity rules (≥2 uppercase, ≥1 special char, ≥2 digits,
+    ≥3 lowercase, ≥10 total characters).
+
+    Ported 1:1 from ``flask_appbuilder.validators.default_password_complexity``.
+    """
+    if not re.search(_PASSWORD_COMPLEXITY_RE, password):
+        raise PasswordComplexityError(_PASSWORD_COMPLEXITY_MSG)
+
 
 _SALT_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 

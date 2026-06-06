@@ -383,6 +383,8 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "FAB_ADD_SECURITY_PERMISSION_VIEW": "fab_add_security_permission_view",
     "FAB_ADD_SECURITY_VIEW_MENU_VIEW": "fab_add_security_view_menu_view",
     "FAB_ADD_SECURITY_PERMISSION_VIEWS_VIEW": "fab_add_security_permission_views_view",
+    "FAB_PASSWORD_COMPLEXITY_ENABLED": "fab_password_complexity_enabled",
+    "FAB_PASSWORD_COMPLEXITY_VALIDATOR": "fab_password_complexity_validator",
     # ── Troubleshooting / Permissions ──
     "TROUBLESHOOTING_LINK": "troubleshooting_link",
     "PERMISSION_INSTRUCTIONS_LINK": "permission_instructions_link",
@@ -1253,6 +1255,16 @@ class SupersetSettings(BaseSettings):
     fab_add_security_permission_view: bool = False
     fab_add_security_view_menu_view: bool = False
     fab_add_security_permission_views_view: bool = False
+    # When True the password field on PUT /api/v1/me/ is validated against the
+    # FAB default complexity rules (≥2 uppercase, ≥1 special char, ≥2 digits,
+    # ≥3 lowercase, ≥10 chars total) or a custom callable stored in
+    # ``fab_password_complexity_validator``.  Mirrors FAB's own
+    # ``FAB_PASSWORD_COMPLEXITY_ENABLED`` / ``FAB_PASSWORD_COMPLEXITY_VALIDATOR``
+    # config keys 1:1.
+    fab_password_complexity_enabled: bool = False
+    # Callable[[str], None] that raises on invalid passwords.  None → use the
+    # built-in default_password_complexity() rules.
+    fab_password_complexity_validator: Any | None = None
 
     # ── Troubleshooting / Permissions ──
     troubleshooting_link: str = ""

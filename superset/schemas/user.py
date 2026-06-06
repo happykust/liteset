@@ -18,7 +18,10 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 import msgspec
+from msgspec import Meta
 
 
 class RoleResponseSchema(msgspec.Struct):
@@ -43,6 +46,12 @@ class CurrentUserResponse(msgspec.Struct):
 
 
 class CurrentUserUpdateRequest(msgspec.Struct):
-    first_name: str | None = None
-    last_name: str | None = None
+    # Upstream ``CurrentUserPutSchema`` applies ``Length(1, 64)`` to both name
+    # fields (superset_old/views/users/schemas.py:44-53).  msgspec enforces
+    # these as decode-time constraints via ``Annotated[str, Meta(...)]``.
+    first_name: Annotated[str, Meta(min_length=1, max_length=64)] | None = None
+    last_name: Annotated[str, Meta(min_length=1, max_length=64)] | None = None
+    # Password length is intentionally unconstrained at the schema level;
+    # complexity is enforced at runtime in ``update_me`` (only when
+    # FAB_PASSWORD_COMPLEXITY_ENABLED is True, matching upstream).
     password: str | None = None

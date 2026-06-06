@@ -18,7 +18,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
@@ -178,6 +179,199 @@ async def test_update_me_empty(mock_user: MagicMock) -> None:
             None, data=data, current_user=mock_user, user_dao=user_dao
         )
     assert exc_info.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# update_me — name Length validation (1:1 with upstream Length(1, 64))
+# These constraints are applied at decode time by msgspec; we test that the
+# schema rejects invalid names before the handler even runs.
+# ---------------------------------------------------------------------------
+
+
+def test_update_request_name_too_short() -> None:
+    """Empty string violates min_length=1 on first_name / last_name."""
+    import msgspec
+
+    with pytest.raises(msgspec.ValidationError):
+        msgspec.json.decode(b'{"first_name":""}', type=CurrentUserUpdateRequest)
+
+
+def test_update_request_name_too_long() -> None:
+    """A 65-character name violates max_length=64."""
+    import msgspec
+
+    long_name = "A" * 65
+    payload = f'{{"first_name":"{long_name}"}}'.encode()
+    with pytest.raises(msgspec.ValidationError):
+        msgspec.json.decode(payload, type=CurrentUserUpdateRequest)
+
+
+def test_update_request_name_max_boundary() -> None:
+    """Exactly 64 characters is accepted."""
+    import msgspec
+
+    name_64 = "A" * 64
+    payload = f'{{"first_name":"{name_64}"}}'.encode()
+    req = msgspec.json.decode(payload, type=CurrentUserUpdateRequest)
+    assert req.first_name == name_64
+
+
+def test_update_request_name_min_boundary() -> None:
+    """Exactly 1 character is accepted."""
+    import msgspec
+
+    req = msgspec.json.decode(b'{"first_name":"X"}', type=CurrentUserUpdateRequest)
+    assert req.first_name == "X"
+
+
+def test_update_request_last_name_too_short() -> None:
+    """Empty last_name violates min_length=1."""
+    import msgspec
+
+    with pytest.raises(msgspec.ValidationError):
+        msgspec.json.decode(b'{"last_name":""}', type=CurrentUserUpdateRequest)
+
+
+def test_update_request_last_name_too_long() -> None:
+    """65-char last_name violates max_length=64."""
+    import msgspec
+
+    long_name = "B" * 65
+    payload = f'{{"last_name":"{long_name}"}}'.encode()
+    with pytest.raises(msgspec.ValidationError):
+        msgspec.json.decode(payload, type=CurrentUserUpdateRequest)
+
+
+def test_update_request_omitted_names_ok() -> None:
+    """Omitting first_name / last_name entirely is fine (None default)."""
+    import msgspec
+
+    req = msgspec.json.decode(b'{"password":"somepassword"}', type=CurrentUserUpdateRequest)
+    assert req.first_name is None
+    assert req.last_name is None
+
+
+# ---------------------------------------------------------------------------
+# update_me — password complexity (1:1 with upstream PasswordComplexityValidator)
+# The check only fires when FAB_PASSWORD_COMPLEXITY_ENABLED=True.
+# ---------------------------------------------------------------------------
+
+
+async def test_update_me_password_complexity_disabled(mock_user: MagicMock) -> None:
+    """When FAB_PASSWORD_COMPLEXITY_ENABLED=False (default), any password passes."""
+    data = CurrentUserUpdateRequest(password="weak")
+    user_dao = AsyncMock()
+    user_dao.get_by_id.return_value = _fresh_user()
+
+    # Patch SupersetSettings so the test is hermetic (no env needed).
+    settings_mock = MagicMock()
+    settings_mock.fab_password_complexity_enabled = False
+
+    with patch(
+        "superset.controllers.user_me.SupersetSettings",
+        return_value=settings_mock,
+    ):
+        result = await _update_me(
+            None, data=data, current_user=mock_user, user_dao=user_dao
+        )
+    assert result["result"] is not None  # didn't raise
+
+
+async def test_update_me_weak_password_complexity_enabled(mock_user: MagicMock) -> None:
+    """Weak password raises 422 when complexity is enabled."""
+    from litestar.exceptions import HTTPException
+
+    data = CurrentUserUpdateRequest(password="weak")
+    user_dao = AsyncMock()
+
+    settings_mock = MagicMock()
+    settings_mock.fab_password_complexity_enabled = True
+    settings_mock.fab_password_complexity_validator = None  # use default rules
+
+    with patch(
+        "superset.controllers.user_me.SupersetSettings",
+        return_value=settings_mock,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await _update_me(
+                None, data=data, current_user=mock_user, user_dao=user_dao
+            )
+    assert exc_info.value.status_code == 422
+    assert "password" in exc_info.value.detail
+
+
+async def test_update_me_strong_password_complexity_enabled(mock_user: MagicMock) -> None:
+    """A password satisfying all FAB rules passes when complexity is enabled."""
+    # Satisfies: ≥2 uppercase, ≥1 special, ≥2 digits, ≥3 lowercase, ≥10 chars
+    strong_pw = "ABcde12!fg"
+
+    data = CurrentUserUpdateRequest(password=strong_pw)
+    user_dao = AsyncMock()
+    user_dao.get_by_id.return_value = _fresh_user()
+
+    settings_mock = MagicMock()
+    settings_mock.fab_password_complexity_enabled = True
+    settings_mock.fab_password_complexity_validator = None
+
+    with patch(
+        "superset.controllers.user_me.SupersetSettings",
+        return_value=settings_mock,
+    ):
+        result = await _update_me(
+            None, data=data, current_user=mock_user, user_dao=user_dao
+        )
+    assert result["result"] is not None
+
+
+async def test_update_me_omitted_password_complexity_not_checked(
+    mock_user: MagicMock,
+) -> None:
+    """Omitting password entirely skips complexity check (1:1 with upstream)."""
+    data = CurrentUserUpdateRequest(first_name="Alice")
+    user_dao = AsyncMock()
+    user_dao.get_by_id.return_value = _fresh_user(first_name="Alice")
+
+    settings_mock = MagicMock()
+    settings_mock.fab_password_complexity_enabled = True
+    settings_mock.fab_password_complexity_validator = None
+
+    # SupersetSettings should never even be instantiated for this code path —
+    # the password block is guarded by ``if has_password``.
+    with patch(
+        "superset.controllers.user_me.SupersetSettings",
+        return_value=settings_mock,
+    ) as patched_cls:
+        result = await _update_me(
+            None, data=data, current_user=mock_user, user_dao=user_dao
+        )
+    patched_cls.assert_not_called()
+    assert result["result"]["first_name"] == "Alice"
+
+
+async def test_update_me_custom_complexity_validator_fires(mock_user: MagicMock) -> None:
+    """A custom FAB_PASSWORD_COMPLEXITY_VALIDATOR is called and its exception propagates."""
+    from litestar.exceptions import HTTPException
+
+    def bad_validator(pw: str) -> None:  # noqa: ARG001
+        raise ValueError("custom rule failed")
+
+    data = CurrentUserUpdateRequest(password="anypassword")
+    user_dao = AsyncMock()
+
+    settings_mock = MagicMock()
+    settings_mock.fab_password_complexity_enabled = True
+    settings_mock.fab_password_complexity_validator = bad_validator
+
+    with patch(
+        "superset.controllers.user_me.SupersetSettings",
+        return_value=settings_mock,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await _update_me(
+                None, data=data, current_user=mock_user, user_dao=user_dao
+            )
+    assert exc_info.value.status_code == 422
+    assert "custom rule failed" in str(exc_info.value.detail)
 
 
 # ---------------------------------------------------------------------------

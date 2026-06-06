@@ -23,6 +23,7 @@ from typing import Any
 from litestar import Controller, get, put
 from litestar.di import Provide
 
+from superset.config import SupersetSettings
 from superset.events import event_logger
 from superset.guards.rbac import require_authenticated_user as require_authentication
 from superset.schemas.user import (
@@ -170,7 +171,27 @@ class CurrentUserController(Controller):
 
         hashed_password: str | None = None
         if has_password:
-            from superset.utils.password import generate_password_hash
+            from superset.utils.password import (
+                default_password_complexity,
+                generate_password_hash,
+            )
+
+            settings = SupersetSettings()  # type: ignore[call-arg]
+            if settings.fab_password_complexity_enabled:
+                # Mirror upstream PasswordComplexityValidator.__call__:
+                # use custom callable if configured, else default rules.
+                # Raises HTTPException(422) with per-field detail on failure.
+                validator = settings.fab_password_complexity_validator
+                try:
+                    if validator is not None:
+                        validator(data.password)
+                    else:
+                        default_password_complexity(data.password or "")
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={"password": [str(exc)]},
+                    ) from exc
 
             hashed_password = generate_password_hash(data.password or "")
 
