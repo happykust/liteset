@@ -294,7 +294,11 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
     # ── Step 5: configure_feature_flags ────────────────────────────────────
     from superset.utils.feature_flags import feature_flag_manager
 
-    feature_flag_manager.init_from_config(settings.feature_flags)
+    feature_flag_manager.init_from_config(
+        settings.feature_flags,
+        get_feature_flags_func=getattr(settings, "get_feature_flags_func", None),
+        is_feature_enabled_func=getattr(settings, "is_feature_enabled_func", None),
+    )
 
     # ── Step 11: setup_event_logger (part A) ──────────────────────────────
     # Resolve the EVENT_LOGGER config value now so it's ready for part B
@@ -637,6 +641,71 @@ def _validate_global_async_queries_config(settings: SupersetSettings) -> None:
         )
 
 
+def _build_cors_config(settings: SupersetSettings) -> CORSConfig | None:
+    """Map the upstream Flask-CORS ``CORS_OPTIONS`` dict onto Litestar's
+    ``CORSConfig``.
+
+    1:1 with ``superset_old/initialization/__init__.py::configure_middlewares``::
+
+        if self.config["ENABLE_CORS"]:
+            from flask_cors import CORS
+            CORS(self.superset_app, **self.config["CORS_OPTIONS"])
+
+    When ``ENABLE_CORS`` is false, CORS is OFF (returns ``None`` — no permissive
+    default), matching Flask where ``flask_cors.CORS`` is never registered.
+
+    Flask-CORS option -> Litestar ``CORSConfig`` field mapping:
+
+    * ``origins``             -> ``allow_origins``
+    * ``methods``             -> ``allow_methods``
+    * ``allow_headers``       -> ``allow_headers``
+    * ``expose_headers``      -> ``expose_headers``
+    * ``supports_credentials``-> ``allow_credentials``
+    * ``max_age``             -> ``max_age``
+
+    Flask-CORS defaults are applied for keys the user omits so the wildcard
+    behaviour matches upstream (Flask-CORS defaults: ``origins='*'``, all
+    standard methods, ``allow_headers='*'``, ``supports_credentials=False``).
+
+    Limitation: Flask-CORS ``resources`` (per-path scoping / regex resource
+    maps) has no equivalent in Litestar's ``CORSConfig``, which is applied
+    app-wide. The ``resources`` key is therefore ignored; the common upstream
+    ``CORS_OPTIONS`` does not set it (it only scopes via ``origins``), so this
+    matches the broad-application case. ``send_wildcard``/``vary_header`` and
+    other Flask-CORS-only knobs are likewise not expressible and are ignored.
+    """
+    if not settings.enable_cors:
+        return None
+
+    opts = settings.cors_options or {}
+
+    def _as_list(value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        return list(value)
+
+    # Flask-CORS default origins is "*"; Litestar default allow_origins is ["*"].
+    allow_origins = _as_list(opts.get("origins", ["*"]))
+    # Flask-CORS default methods cover all standard verbs; "*" expresses that.
+    allow_methods = _as_list(opts["methods"]) if "methods" in opts else ["*"]
+    # Flask-CORS default allow_headers is "*".
+    allow_headers = (
+        _as_list(opts["allow_headers"]) if "allow_headers" in opts else ["*"]
+    )
+    expose_headers = (
+        _as_list(opts["expose_headers"]) if "expose_headers" in opts else []
+    )
+
+    return CORSConfig(
+        allow_origins=allow_origins,
+        allow_methods=allow_methods,  # type: ignore[arg-type]
+        allow_headers=allow_headers,
+        expose_headers=expose_headers,
+        allow_credentials=bool(opts.get("supports_credentials", False)),
+        max_age=int(opts["max_age"]) if opts.get("max_age") is not None else 600,
+    )
+
+
 def create_app(  # noqa: C901
     settings: SupersetSettings | None = None,
 ) -> Litestar:
@@ -972,11 +1041,7 @@ def create_app(  # noqa: C901
             path="/swagger/v1",
             render_plugins=[SwaggerRenderPlugin()],
         ),
-        cors_config=(
-            CORSConfig(allow_origins=settings.cors_allow_origins)
-            if settings.cors_allow_origins
-            else None
-        ),
+        cors_config=_build_cors_config(settings),
         compression_config=CompressionConfig(backend="gzip"),
         template_config=TemplateConfig(
             directory=Path(__file__).parent / "templates",
