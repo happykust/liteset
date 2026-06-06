@@ -304,6 +304,52 @@ def _sync_table_and_view_names(
     return tables, views
 
 
+def _get_schema_access_for_file_upload(
+    database: Any, user: Any = None
+) -> set[str]:
+    """Resolve the schemas a user may upload files into for ``database``.
+
+    1:1 with ``Database.get_schema_access_for_file_upload`` in
+    ``superset_old/models/core.py`` (line 1055): read
+    ``schemas_allowed_for_file_upload`` from the DB's ``extra`` (coercing a
+    legacy stringified list via ``literal_eval``), then union it with the
+    result of the configurable ``ALLOWED_USER_CSV_SCHEMA_FUNC(database, user)``.
+
+    The original reads ``g.user``; in the async port the current user is passed
+    explicitly. When the hook is unset (the default in ``superset/config.py``)
+    the function is skipped — equivalent to the upstream default that returns
+    ``[]`` unless ``UPLOADED_CSV_HIVE_NAMESPACE`` is configured.
+    """
+    from ast import literal_eval
+
+    extra: dict[str, Any] = {}
+    extra_raw = getattr(database, "extra", "") or ""
+    if extra_raw:
+        try:
+            extra = json.loads(extra_raw)
+        except (json.JSONDecodeError, TypeError):
+            extra = {}
+
+    allowed_databases = extra.get("schemas_allowed_for_file_upload", [])
+    if isinstance(allowed_databases, str):
+        try:
+            allowed_databases = literal_eval(allowed_databases)
+        except (ValueError, SyntaxError):
+            allowed_databases = []
+
+    allowed_databases = list(allowed_databases)
+
+    schema_func = getattr(
+        SupersetSettings(),  # type: ignore[call-arg]
+        "allowed_user_csv_schema_func",
+        None,
+    )
+    if callable(schema_func):
+        allowed_databases += list(schema_func(database, user))
+
+    return set(allowed_databases)
+
+
 def _sync_table_metadata(
     database: Any, catalog: str | None, name: str, schema: str | None
 ) -> dict[str, Any]:
@@ -1369,20 +1415,21 @@ class DatabaseController(Controller):
                 catalog=catalog,
                 user=current_user,
             )
-            # Filter to only schemas that allow file upload
+            # Filter to only schemas that allow file upload — 1:1 with
+            # ``superset_old/databases/api.py`` lines 800-815.
             if upload_allowed:
-                allowed_schemas: set[str] = set()
-                extra_raw = getattr(database, "extra", "")
-                if extra_raw:
-                    try:
-                        extra_parsed = json.loads(extra_raw)
-                        allowed_schemas = set(
-                            extra_parsed.get("schemas_allowed_for_file_upload", [])
-                        )
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                if allowed_schemas:
-                    schemas_list = [s for s in schemas_list if s in allowed_schemas]
+                if not getattr(database, "allow_file_upload", False):
+                    return SchemasResponse(result=[])
+                if allowed_schemas := _get_schema_access_for_file_upload(
+                    database, current_user
+                ):
+                    # some databases might return the list of schemas in
+                    # uppercase, while the list of allowed schemas is manually
+                    # inputted so could be lowercase
+                    allowed_lower = {schema.lower() for schema in allowed_schemas}
+                    schemas_list = [
+                        s for s in schemas_list if s.lower() in allowed_lower
+                    ]
             return SchemasResponse(result=schemas_list)
         except Exception as exc:
             _log.warning("Failed to fetch schemas for database %s: %s", pk, exc)
@@ -1441,24 +1488,39 @@ class DatabaseController(Controller):
             # ``TablesDatabaseCommand`` (``get_datasources_accessible_by_user``).
             # Without it any ``can_read Database`` holder (e.g. Gamma) could
             # enumerate every table/view name of a database they cannot access.
-            # Conservative port: database/catalog/schema access → all visible;
-            # otherwise nothing (upstream additionally surfaces individually
-            # ``datasource_access``-granted tables — a rare grant-without-schema
-            # case we deliberately under-expose rather than risk a leak).
-            if not await security_manager.can_access_database(
-                database, user=current_user
-            ):
-                _accessible_schemas = (
-                    await security_manager.get_schemas_accessible_by_user(
-                        database,
-                        [schema],
-                        catalog=_effective_catalog,
-                        user=current_user,
-                    )
+            # ``filter_datasources_by_perms`` is the full async port: it returns
+            # everything on database/catalog/schema access AND additionally
+            # surfaces individually ``datasource_access``-granted tables (the
+            # branch the previous conservative port dropped). The handler keeps
+            # working with plain string names, so we wrap into ``DatasourceName``
+            # tuples for the filter and unwrap afterwards.
+            if hasattr(security_manager, "filter_datasources_by_perms"):
+                from superset.utils.core import DatasourceName
+
+                _table_dsn = [
+                    DatasourceName(str(t), schema, _effective_catalog)
+                    for t in table_names
+                ]
+                _view_dsn = [
+                    DatasourceName(str(v), schema, _effective_catalog)
+                    for v in view_names
+                ]
+                _allowed_tables = await security_manager.filter_datasources_by_perms(
+                    database=database,
+                    datasource_names=_table_dsn,
+                    catalog=_effective_catalog,
+                    schema=schema,
+                    user=current_user,
                 )
-                if schema not in _accessible_schemas:
-                    table_names = []
-                    view_names = []
+                _allowed_views = await security_manager.filter_datasources_by_perms(
+                    database=database,
+                    datasource_names=_view_dsn,
+                    catalog=_effective_catalog,
+                    schema=schema,
+                    user=current_user,
+                )
+                table_names = [d.table for d in _allowed_tables]
+                view_names = [d.table for d in _allowed_views]
 
             # Batch-fetch extra (certification info) from SqlaTable for
             # all discovered tables/views so the frontend gets it.
@@ -2442,14 +2504,12 @@ class DatabaseController(Controller):
         # Check allow_file_upload flag on the database
         if not getattr(database, "allow_file_upload", False):
             return SchemaAccessForUploadResponse(schemas=[])
-        schemas: list[str] = []
-        extra_raw = getattr(database, "extra", "")
-        if extra_raw:
-            try:
-                extra_parsed = json.loads(extra_raw)
-                schemas = extra_parsed.get("schemas_allowed_for_file_upload", [])
-            except (json.JSONDecodeError, TypeError):
-                pass
+        # 1:1 with ``Database.get_schema_access_for_file_upload`` — union the
+        # ``schemas_allowed_for_file_upload`` extra (coercing a legacy stringified
+        # list) with ``ALLOWED_USER_CSV_SCHEMA_FUNC(database, user)``.
+        schemas: list[str] = list(
+            _get_schema_access_for_file_upload(database, current_user)
+        )
         if schemas and hasattr(security_manager, "get_schemas_accessible_by_user"):
             schemas = await security_manager.get_schemas_accessible_by_user(
                 database,

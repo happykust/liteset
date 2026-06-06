@@ -227,16 +227,17 @@ async def add_permissions(
     the async ``security_manager.add_permission_view_menu`` to create the PVM
     rows on the active ``AsyncSession``.
 
-    NOTE: ``ssh_tunnel`` is accepted for call-site parity with the original
-    signature, but the port's ``Database.get_inspector`` does not yet forward an
-    ``override_ssh_tunnel`` (matching the existing ``SyncPermissionsCommand``
-    port, which also introspects without explicitly passing the tunnel). The
-    tunnel that was just created is already persisted, so the inspector picks it
-    up through the normal engine-build path.
+    The ``ssh_tunnel`` (the tunnel just created in the same transaction) is
+    threaded through ``Database.get_inspector(ssh_tunnel=...)`` so catalog/schema
+    enumeration works for tunnel-only databases. The port's ``get_sync_engine``
+    only honours an *explicit* ``override_ssh_tunnel`` and does not auto-resolve
+    the stored tunnel (which, for a just-created DB inside the same transaction,
+    is not yet committed/visible to a fresh lookup anyway) — matching the
+    original, which passed ``ssh_tunnel`` to ``get_all_*_names`` →
+    ``get_inspector`` → ``get_sqla_engine(override_ssh_tunnel=ssh_tunnel)``.
     """
     import asyncio
 
-    _ = ssh_tunnel  # see NOTE above — accepted for parity, not threaded explicitly
     db_engine_spec = database.db_engine_spec
 
     if getattr(db_engine_spec, "supports_catalog", False):
@@ -249,7 +250,7 @@ async def add_permissions(
         ) or getattr(database, "allow_multi_catalog", False):
 
             def _fetch_catalogs() -> set[str | None]:
-                with database.get_inspector() as inspector:
+                with database.get_inspector(ssh_tunnel=ssh_tunnel) as inspector:
                     return db_engine_spec.get_catalog_names(database, inspector)
 
             try:
@@ -275,7 +276,9 @@ async def add_permissions(
         try:
 
             def _fetch_schemas(catalog: str | None = catalog) -> set[str]:
-                with database.get_inspector(catalog=catalog) as inspector:
+                with database.get_inspector(
+                    catalog=catalog, ssh_tunnel=ssh_tunnel
+                ) as inspector:
                     return db_engine_spec.get_schema_names(inspector)
 
             schemas = await asyncio.to_thread(_fetch_schemas)

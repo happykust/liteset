@@ -272,10 +272,24 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
         await self._dao.session.flush()
 
         # Introspect physical columns/metrics (1:1 ``fetch_metadata()``).
+        #
+        # Upstream ``UploadCommand.run`` calls ``sqla_table.fetch_metadata()``
+        # with NO local try/except — any failure propagates and is wrapped by
+        # the ``@transaction(on_error=partial(on_error,
+        # reraise=DatabaseUploadSaveMetadataFailed))`` decorator
+        # (superset_old/commands/database/uploaders/base.py:156-183).  The port
+        # must NOT swallow this: a metadata-introspection failure means the
+        # dataset row is incomplete, so we surface it as the equivalent
+        # ``DatabaseUploadSaveMetadataFailed`` (HTTP 500, same message).
+        from superset.commands.database.exceptions import (
+            DatabaseUploadSaveMetadataFailed,
+        )
+
         try:
             await AsyncDatasetDAO(self._dao.session).fetch_metadata(sqla_table)
-        except Exception:  # noqa: BLE001 — metadata introspection is best-effort
+        except Exception as ex:
             logger.warning("fetch_metadata failed for uploaded table", exc_info=True)
+            raise DatabaseUploadSaveMetadataFailed() from ex
 
         # 1:1 with the original API contract — ``self.response(201,
         # message="OK")`` (the endpoint returns only ``{"message": "OK"}``).

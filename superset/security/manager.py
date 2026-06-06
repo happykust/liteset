@@ -1773,6 +1773,99 @@ class AsyncSecurityManager:
             if perm_name == DATASOURCE_ACCESS
         ]
 
+    async def filter_datasources_by_perms(
+        self,
+        *,
+        database: Any,
+        datasource_names: list[Any],
+        catalog: str | None = None,
+        schema: str | None = None,
+        user: Any,
+    ) -> list[Any]:
+        """Filter ``DatasourceName`` tuples to those accessible by the user.
+
+        Async port of
+        ``superset_old/security/manager.py::SupersetSecurityManager
+        .get_datasources_accessible_by_user`` (line 1026). When ``catalog``
+        and/or ``schema`` are specified, every datasource in
+        ``datasource_names`` is assumed to live in that catalog/schema.
+
+        Access short-circuits (return ALL) on, in order:
+
+        * ``can_access_database`` (or admin / ``all_datasource_access``);
+        * ``catalog_access`` on the resolved catalog;
+        * ``schema_access`` on the (catalog, schema) pair.
+
+        Otherwise the user's individually-granted ``datasource_access`` /
+        ``catalog_access`` / ``schema_access`` view-menus are resolved and the
+        physical ``SqlaTable`` rows whose ``perm`` / ``schema_perm`` /
+        ``catalog_perm`` match are loaded; the input list is intersected with
+        those names — exactly mirroring the original's
+        ``SqlaTable.query_datasources_by_permissions`` branch (which the
+        previous port deliberately under-exposed).
+        """
+        if await self.can_access_database(database, user=user):
+            return datasource_names
+
+        catalog = catalog or database.get_default_catalog()
+        if catalog:
+            catalog_perm = self.get_catalog_perm(database.database_name, catalog)
+            if catalog_perm and await self.can_access(
+                CATALOG_ACCESS, catalog_perm, user=user
+            ):
+                return datasource_names
+
+        if schema:
+            schema_perm = self.get_schema_perm(
+                database.database_name,
+                schema,
+                catalog=catalog,
+            )
+            if schema_perm and await self.can_access(
+                SCHEMA_ACCESS, schema_perm, user=user
+            ):
+                return datasource_names
+
+        # No blanket grant — fall back to per-table ``datasource_access`` (plus
+        # any catalog/schema-scoped) view-menus and intersect with the inputs.
+        user_perms = await self.user_view_menu_names(DATASOURCE_ACCESS, user=user)
+        catalog_perms = await self.user_view_menu_names(CATALOG_ACCESS, user=user)
+        schema_perms = await self.user_view_menu_names(SCHEMA_ACCESS, user=user)
+
+        from sqlalchemy import or_, select
+
+        from superset.models.connectors import SqlaTable
+        from superset.utils.core import DatasourceName
+
+        filters = [
+            column.in_(perms)
+            for column, perms in (
+                (SqlaTable.perm, user_perms),
+                (SqlaTable.schema_perm, schema_perms),
+                (SqlaTable.catalog_perm, catalog_perms),
+            )
+            if perms
+        ]
+        if not filters:
+            return []
+
+        stmt = (
+            select(SqlaTable)
+            .where(SqlaTable.database_id == database.id)
+            .where(or_(*filters))
+        )
+        result = await self.dao.session.execute(stmt)
+        user_datasources = {
+            DatasourceName(t.table_name, t.schema, t.catalog)
+            for t in result.scalars().all()
+        }
+
+        return [
+            datasource
+            for datasource in datasource_names
+            if datasource in user_datasources
+        ]
+
     async def _resolve_user_roles_for_rls(self, user: Any) -> list[Any] | None:
         """Resolve the list of role objects to use for RLS filtering.
 

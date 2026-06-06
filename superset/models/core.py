@@ -413,6 +413,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         self,
         catalog: str | None = None,
         schema: str | None = None,
+        ssh_tunnel: Any | None = None,
     ) -> Any:
         """Return a context manager yielding a SQLAlchemy Inspector.
 
@@ -421,7 +422,10 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         (line 875). Both ``catalog`` and ``schema`` are forwarded to
         ``get_sqla_engine`` so dialects that scope inspectors per
         catalog/schema (e.g. BigQuery / MSSQL) bind to the right
-        namespace.
+        namespace. ``ssh_tunnel`` is forwarded as ``override_ssh_tunnel``
+        so catalog/schema enumeration works for tunnel-only databases
+        (the port's ``get_sync_engine`` only honours an *explicit*
+        override; it does not auto-resolve the stored tunnel).
         """
         from contextlib import contextmanager
 
@@ -431,7 +435,12 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         def _ctx() -> Any:
             from superset.utils.database import get_sync_engine
 
-            with get_sync_engine(self, catalog=catalog, schema=schema) as engine:
+            with get_sync_engine(
+                self,
+                catalog=catalog,
+                schema=schema,
+                override_ssh_tunnel=ssh_tunnel,
+            ) as engine:
                 yield sa_inspect(engine)
 
         return _ctx()
