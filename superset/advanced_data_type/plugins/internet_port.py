@@ -33,7 +33,7 @@ from superset.advanced_data_type.types import (
     AdvancedDataTypeRequest,
     AdvancedDataTypeResponse,
 )
-from superset.utils.core import FilterOperator
+from superset.utils.core import FilterOperator, FilterStringOperators
 
 port_conversion_dict: dict[str, list[int]] = {
     "http": [80],
@@ -64,16 +64,6 @@ port_conversion_dict: dict[str, list[int]] = {
     "pdap": [344],
 }
 
-_VALID_FILTER_OPERATORS = [
-    "Equal to (=)",
-    "Greater than or equal (>=)",
-    "Greater than (>)",
-    "In",
-    "Less than (<)",
-    "Less than or equal (<=)",
-]
-
-
 def port_translation_func(
     req: AdvancedDataTypeRequest,
 ) -> AdvancedDataTypeResponse:
@@ -81,7 +71,14 @@ def port_translation_func(
         "values": [],
         "error_message": "",
         "display_value": "",
-        "valid_filter_operators": list(_VALID_FILTER_OPERATORS),
+        "valid_filter_operators": [
+            FilterStringOperators.EQUALS,
+            FilterStringOperators.GREATER_THAN_OR_EQUAL,
+            FilterStringOperators.GREATER_THAN,
+            FilterStringOperators.IN,
+            FilterStringOperators.LESS_THAN,
+            FilterStringOperators.LESS_THAN_OR_EQUAL,
+        ],
     }
     if req["values"] == [""]:
         resp["values"].append([""])
