@@ -304,6 +304,8 @@ class KeyValueDAOProtocol(Protocol):
         resource_id: int,
         key: str,
         value: str,
+        user_id: int | None = None,
+        expires_on: datetime | None = None,
     ) -> None: ...
     async def get_value(
         self,

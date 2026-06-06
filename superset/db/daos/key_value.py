@@ -217,6 +217,7 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         key: str,
         value: str,
         user_id: int | None = None,
+        expires_on: datetime | None = None,
     ) -> None:
         """Store a string value keyed by resource name + UUID key.
 
@@ -229,6 +230,12 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         on insert and ``changed_by_fk`` + ``changed_on`` on update,
         1:1 with the original KeyValueDAO.create_entry / upsert_entry
         which thread ``get_user_id()`` into those columns.
+
+        ``expires_on`` (optional) sets the expiry datetime on the stored
+        entry — mirrors the original ``SupersetMetastoreCache.set()``
+        which passes ``_get_expiry(timeout)`` to
+        ``KeyValueDAO.upsert_entry(expires_on=...)``
+        (superset_old/extensions/metastore_cache.py:80-92).
         """
         key_uuid = self._coerce_uuid(key)
         if key_uuid is None:
@@ -251,6 +258,8 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
             existing.value = value.encode("utf-8")  # type: ignore[assignment]
             existing.changed_on = datetime.now()  # type: ignore[assignment]
             existing.changed_by_fk = user_id  # type: ignore[assignment]
+            if expires_on is not None:
+                existing.expires_on = expires_on  # type: ignore[assignment]
         else:
             entry = KeyValueEntry(
                 resource=resource,
@@ -258,6 +267,7 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
                 value=value.encode("utf-8"),
                 created_on=datetime.now(),
                 created_by_fk=user_id,
+                expires_on=expires_on,
             )
             self.session.add(entry)
         await self.session.flush()
