@@ -457,9 +457,7 @@ async def query_access_filters(
     if security_manager.is_admin(user):
         return []
 
-    can_access_all = await security_manager.can_access(
-        "can_access_all_queries", "Superset", user=user
-    )
+    can_access_all = await security_manager.can_access_all_queries(user=user)
     if can_access_all:
         return []
 
