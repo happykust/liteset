@@ -1489,7 +1489,7 @@ class ChartController(Controller):
 
     @put(
         "/warm_up_cache",
-        guards=[require_permission("can_write", "Chart")],
+        guards=[require_permission("can_warm_up_cache", "Chart")],
     )
     async def warm_up_cache(
         self,

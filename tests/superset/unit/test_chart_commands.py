@@ -146,6 +146,49 @@ async def test_update_chart_success(mock_dao, mock_chart):
     mock_dao.session.flush.assert_awaited()
 
 
+async def test_update_chart_normal_save_bumps_last_saved(mock_dao, mock_chart):
+    """A normal user save (no ``query_context_generation``) bumps both
+    ``last_saved_by_fk`` and ``last_saved_at`` — 1:1 with upstream
+    ``UpdateChartCommand.run`` (superset_old/commands/chart/update.py:69-71)."""
+    mock_chart.last_saved_by_fk = None
+    mock_chart.last_saved_at = None
+    _exec_returns(mock_dao, unique_one=mock_chart)
+    cmd = UpdateChartCommand(
+        dao=mock_dao,
+        chart_id=1,
+        data={"slice_name": "Updated"},
+        user_id=42,
+    )
+    await cmd.validate()
+    await cmd.run()
+    assert mock_chart.last_saved_by_fk == 42
+    assert mock_chart.last_saved_at is not None
+
+
+async def test_update_chart_query_context_regeneration_skips_last_saved(
+    mock_dao, mock_chart
+):
+    """A background report/cache worker regenerating the stored
+    ``query_context`` must NOT touch ``last_saved_*`` — upstream gates both
+    assignments on ``query_context_generation`` being falsy
+    (superset_old/commands/chart/update.py:69-71)."""
+    mock_chart.last_saved_by_fk = None
+    mock_chart.last_saved_at = None
+    _exec_returns(mock_dao, unique_one=mock_chart)
+    cmd = UpdateChartCommand(
+        dao=mock_dao,
+        chart_id=1,
+        data={"query_context": "{}", "query_context_generation": True},
+        user_id=42,
+    )
+    await cmd.validate()
+    await cmd.run()
+    # ``last_saved_*`` untouched; ``changed_by_fk`` still tracks the actor.
+    assert mock_chart.last_saved_by_fk is None
+    assert mock_chart.last_saved_at is None
+    assert mock_chart.changed_by_fk == 42
+
+
 async def test_delete_chart_not_found(mock_dao):
     mock_dao.find_by_id = AsyncMock(return_value=None)
     cmd = DeleteChartCommand(dao=mock_dao, chart_id=999)
