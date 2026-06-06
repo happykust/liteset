@@ -228,6 +228,29 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                     DatasetExistsValidationError(Table(table_name, schema))
                 )
 
+        # Validate/resolve owners here (not run()) so a bad owner id surfaces as
+        # a per-field ``owners`` error in the accumulated 422 — 1:1 with upstream
+        # ``update.py::validate`` (compute_owners + append). Resolved list is
+        # stashed for run() to reuse.
+        if self._security_manager is not None:
+            from superset.commands.dataset.exceptions import (
+                OwnersNotFoundValidationError,
+            )
+            from superset.exceptions import (
+                OwnersNotFoundValidationError as GenericOwnersNotFoundError,
+            )
+
+            await self._dao.session.refresh(self._dataset, ["owners"])
+            try:
+                self._owners = await compute_owner_list(
+                    self._security_manager,
+                    self._user_id,
+                    list(self._dataset.owners),
+                    self._data.get("owners"),
+                )
+            except GenericOwnersNotFoundError:
+                exceptions.append(OwnersNotFoundValidationError())
+
         if exceptions:
             raise DatasetInvalidError(exceptions=exceptions)
 
@@ -289,13 +312,18 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 dict(m) if not isinstance(m, dict) else m for m in metrics
             ]
         if self._security_manager is not None:
-            await self._dao.session.refresh(self._dataset, ["owners"])
-            update_attrs["owners"] = await compute_owner_list(
-                self._security_manager,
-                self._user_id,
-                list(self._dataset.owners),
-                owner_ids,
-            )
+            # Reuse the owners resolved+validated during validate() (per-field
+            # validated there); fall back to computing here if needed.
+            if getattr(self, "_owners", None) is not None:
+                update_attrs["owners"] = self._owners
+            else:
+                await self._dao.session.refresh(self._dataset, ["owners"])
+                update_attrs["owners"] = await compute_owner_list(
+                    self._security_manager,
+                    self._user_id,
+                    list(self._dataset.owners),
+                    owner_ids,
+                )
         for key, value in data.items():
             if hasattr(self._dataset, key):
                 update_attrs[key] = value

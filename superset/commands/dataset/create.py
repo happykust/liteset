@@ -156,6 +156,32 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                     )
                 )
 
+        # Validate/resolve owners here (not in run()) so a bad owner id is
+        # reported as a per-field ``owners`` error in the accumulated 422 —
+        # 1:1 with upstream ``create.py::validate`` (populate_owners + append).
+        # The resolved list is stashed for run() to reuse (no double lookup).
+        if self._security_manager is not None:
+            from superset.commands.dataset.exceptions import (
+                OwnersNotFoundValidationError,
+            )
+            from superset.commands.utils import populate_owner_list
+            from superset.exceptions import (
+                OwnersNotFoundValidationError as GenericOwnersNotFoundError,
+            )
+
+            try:
+                self._owners = await populate_owner_list(
+                    self._security_manager,
+                    self._user_id,
+                    self._data.get("owners"),
+                    default_to_user=True,
+                )
+            except GenericOwnersNotFoundError:
+                # ``populate_owner_list`` raises the generic
+                # ``superset.exceptions.OwnersNotFoundValidationError``; convert
+                # it to the per-field dataset error so it merges under ``owners``.
+                exceptions.append(OwnersNotFoundValidationError())
+
         if exceptions:
             raise DatasetInvalidError(exceptions=exceptions)
 
@@ -190,8 +216,12 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         # it (ownership checks failed) and no ``owner:`` implicit tag was made.
         # Assign the full list (not append) before flush to avoid a sync
         # lazy-load on a transient instance.
+        # Reuse the owners resolved during validate() (per-field validated
+        # there); fall back to populating here if validate() didn't run them.
         dataset.owners = []
-        if self._security_manager is not None:
+        if getattr(self, "_owners", None) is not None:
+            dataset.owners = self._owners
+        elif self._security_manager is not None:
             from superset.commands.utils import populate_owner_list
 
             dataset.owners = await populate_owner_list(

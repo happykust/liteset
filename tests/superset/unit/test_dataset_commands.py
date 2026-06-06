@@ -190,6 +190,25 @@ async def test_create_dataset_validation_success(mock_dao):
     await cmd.validate()  # Should not raise
 
 
+async def test_create_dataset_validates_owners(mock_dao):
+    """A non-resolvable owner id is reported per-field under ``owners`` (1:1
+    upstream — owner validation happens in validate(), not run())."""
+    mock_dao.get_database_by_id = AsyncMock(return_value=_physical_database())
+    mock_dao.validate_uniqueness = AsyncMock(return_value=True)
+    sm = MagicMock()
+    sm.find_user_by_id = AsyncMock(return_value=None)  # owner id 999 unresolved
+    sm.is_admin = MagicMock(return_value=True)
+    cmd = CreateDatasetCommand(
+        dao=mock_dao,
+        data={"table_name": "t", "database": 1, "owners": [999]},
+        user_id=1,
+        security_manager=sm,
+    )
+    with pytest.raises(DatasetInvalidError) as exc_info:
+        await cmd.validate()
+    assert exc_info.value.normalized_messages()["owners"] == ["Owners are invalid"]
+
+
 # ---- UpdateDatasetCommand ----
 
 
@@ -229,6 +248,27 @@ async def test_update_dataset_success(mock_dao, mock_dataset):
     assert result is mock_dataset
     # run() flushes for the update and again inside the owner-tag sync.
     mock_dao.session.flush.assert_awaited()
+
+
+async def test_update_dataset_validates_owners(mock_dao, mock_dataset):
+    """A non-resolvable owner id on update is reported per-field under
+    ``owners`` (1:1 upstream — validated in validate(), not run())."""
+    mock_dataset.owners = []
+    mock_dao.find_by_id = AsyncMock(return_value=mock_dataset)
+    mock_dao.validate_uniqueness = AsyncMock(return_value=True)
+    sm = MagicMock()
+    sm.raise_for_ownership = AsyncMock(return_value=None)
+    sm.find_user_by_id = AsyncMock(return_value=None)
+    sm.is_admin = MagicMock(return_value=True)
+    cmd = UpdateDatasetCommand(
+        dao=mock_dao,
+        dataset_id=1,
+        data={"owners": [999]},
+        security_manager=sm,
+    )
+    with pytest.raises(DatasetInvalidError) as exc_info:
+        await cmd.validate()
+    assert exc_info.value.normalized_messages()["owners"] == ["Owners are invalid"]
 
 
 # ---- DeleteDatasetCommand ----
