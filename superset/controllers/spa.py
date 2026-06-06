@@ -1007,18 +1007,27 @@ class SPAController(Controller):
             user = getattr(request, "user", None)
             user_id = getattr(user, "id", None)
 
+            # Upstream writes action="log" (the Flask view function name) for
+            # ALL frontend events.  The per-event "event_name" (e.g.
+            # "mount_dashboard") lives inside the json column, not in action.
+            # recent_activity queries: action=="log" AND json contains event_name.
+            referrer_raw = request.headers.get("Referer") or request.headers.get(
+                "referrer"
+            )
+            referrer = referrer_raw[:1000] if referrer_raw else None
+
             async with session_factory() as session:
                 log_dao = AsyncLogDAO(session)
                 for evt in events:
-                    action = evt.get("action", evt.get("event_name", ""))
                     await log_dao.create_log(
                         {
-                            "action": action,
+                            "action": "log",
                             "json": json.dumps(evt),
                             "user_id": user_id,
                             "dashboard_id": evt.get("dashboard_id"),
                             "slice_id": evt.get("slice_id"),
-                            "duration_ms": evt.get("duration_ms", 0),
+                            "duration_ms": 0,
+                            "referrer": referrer,
                         }
                     )
                 await session.commit()
