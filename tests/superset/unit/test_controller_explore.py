@@ -21,7 +21,10 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from superset.controllers.explore import ExploreController
+from superset.exceptions import ObjectNotFoundError
 
 
 def _explore_sm() -> MagicMock:
@@ -66,6 +69,7 @@ async def test_get_explore_empty():
         kv_dao=kv_dao,
         security_manager=AsyncMock(),
         current_user=MagicMock(),
+        session=AsyncMock(),
     )
     # On the empty-state path the handler fills form_data with explore
     # defaults (datasource/adhoc_filters/applied_time_extras/url_params) and
@@ -96,6 +100,7 @@ async def test_get_explore_with_form_data_key():
         kv_dao=kv_dao,
         security_manager=AsyncMock(),
         current_user=MagicMock(),
+        session=AsyncMock(),
     )
     # The handler applies upstream transforms (convert_legacy_filters_into_adhoc
     # / merge_extra_filters / merge_request_params) on top of the loaded
@@ -139,6 +144,7 @@ async def test_get_explore_with_slice_id():
         kv_dao=kv_dao,
         security_manager=AsyncMock(),
         current_user=MagicMock(),
+        session=AsyncMock(),
     )
     assert result["result"]["slice"]["slice_id"] == 10
     assert result["result"]["form_data"]["granularity"] == "day"
@@ -163,6 +169,132 @@ async def test_get_explore_chart_not_found():
         kv_dao=kv_dao,
         security_manager=AsyncMock(),
         current_user=MagicMock(),
+        session=AsyncMock(),
     )
     assert result["result"]["slice"] is None
     assert "not found" in result["result"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# Permalink resolution (regression: explore permalink never resolved → 404)
+# ---------------------------------------------------------------------------
+
+
+async def test_get_explore_with_permalink_key_round_trip(monkeypatch):
+    """A permalink_key (hashids string) must be decoded → int id, looked up in
+    the EXPLORE_PERMALINK resource, and its ``state.formData`` returned.
+
+    1:1 with superset_old/commands/explore/get.py:64-73 +
+    superset_old/commands/explore/permalink/get.py — and consistent with how
+    CreateExplorePermalinkCommand (superset.controllers.explore_permalink)
+    actually stores the payload: ``{..., "state": {"formData": {...},
+    "urlParams": [...]}}`` keyed by an auto-generated integer id, with the int
+    encoded into the URL string via ``encode_permalink_key``.
+    """
+    request = MagicMock()
+    request.query_params = {"permalink_key": "qQ8Rb3X"}
+    chart_dao = AsyncMock()
+    dataset_dao = AsyncMock()
+    kv_dao = AsyncMock()
+
+    # Stored permalink payload (the WRITE shape) keyed by int id 42.
+    stored = {
+        "chartId": None,
+        "datasourceId": 1,
+        "datasourceType": "table",
+        "datasource": "1__table",
+        "state": {
+            "formData": {"viz_type": "bar", "datasource": "1__table"},
+            "urlParams": [["foo", "bar"]],
+        },
+    }
+
+    # Decode the hashid string → the int id used on write.
+    monkeypatch.setattr(
+        "superset.key_value.shared_entries.get_permalink_salt",
+        AsyncMock(return_value="abc"),
+    )
+    monkeypatch.setattr(
+        "superset.key_value.utils.decode_permalink_id",
+        lambda key, salt: 42,
+    )
+
+    captured: dict[str, object] = {}
+
+    class _FakeDAO:
+        def __init__(self, session):
+            pass
+
+        async def get_value_by_key(self, resource, key):
+            captured["resource"] = resource
+            captured["key"] = key
+            return stored
+
+    monkeypatch.setattr(
+        "superset.db.daos.key_value.AsyncKeyValueDAO", _FakeDAO
+    )
+
+    get_fn = ExploreController.get_explore.fn
+    result = await get_fn(
+        None,
+        request=request,
+        chart_dao=chart_dao,
+        dataset_dao=dataset_dao,
+        kv_dao=kv_dao,
+        security_manager=_explore_sm(),
+        current_user=MagicMock(),
+        session=AsyncMock(),
+    )
+
+    # Looked up under the correct resource, by the decoded INTEGER key.
+    assert captured["resource"] == "explore_permalink"
+    assert captured["key"] == 42
+    # The stored state.formData is resolved into the response form_data, and
+    # state.urlParams is merged into form_data["url_params"] (1:1 with original).
+    form_data = result["result"]["form_data"]
+    assert form_data["viz_type"] == "bar"
+    # state.urlParams is merged into form_data["url_params"]; the handler also
+    # folds the request query params in downstream, so assert membership.
+    assert form_data["url_params"]["foo"] == "bar"
+
+
+async def test_get_explore_with_bad_permalink_key_404(monkeypatch):
+    """A bogus/expired permalink_key → 404 (ExplorePermalinkGetFailedError),
+    1:1 with GetExplorePermalinkCommand. Two failure modes: undecodable key,
+    and decodable key with no matching KV row."""
+    request = MagicMock()
+    request.query_params = {"permalink_key": "not-a-real-key"}
+
+    monkeypatch.setattr(
+        "superset.key_value.shared_entries.get_permalink_salt",
+        AsyncMock(return_value="abc"),
+    )
+    # Decode resolves to an int but no KV row exists → None → 404.
+    monkeypatch.setattr(
+        "superset.key_value.utils.decode_permalink_id",
+        lambda key, salt: 9999,
+    )
+
+    class _EmptyDAO:
+        def __init__(self, session):
+            pass
+
+        async def get_value_by_key(self, resource, key):
+            return None
+
+    monkeypatch.setattr(
+        "superset.db.daos.key_value.AsyncKeyValueDAO", _EmptyDAO
+    )
+
+    get_fn = ExploreController.get_explore.fn
+    with pytest.raises(ObjectNotFoundError):
+        await get_fn(
+            None,
+            request=request,
+            chart_dao=AsyncMock(),
+            dataset_dao=AsyncMock(),
+            kv_dao=AsyncMock(),
+            security_manager=_explore_sm(),
+            current_user=MagicMock(),
+            session=AsyncMock(),
+        )

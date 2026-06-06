@@ -24,6 +24,7 @@ from typing import Any
 from litestar import Controller, Response, get
 from litestar.connection import Request
 from litestar.di import Provide
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from superset.exceptions import ObjectNotFoundError, SupersetSecurityException
 from superset.guards.rbac import require_permission
@@ -139,6 +140,7 @@ class ExploreController(Controller):
         kv_dao: KeyValueDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
+        session: AsyncSession,
     ) -> dict[str, Any] | Response[Any]:
         """GET /api/v1/explore/ — assemble form_data from params.
 
@@ -158,21 +160,48 @@ class ExploreController(Controller):
         chart: Any = None
 
         # 1a. Load form_data from permalink key (metadata DB)
+        #
+        # 1:1 with superset_old/commands/explore/get.py:64-73 +
+        # superset_old/commands/explore/permalink/get.py:46-58. An explore
+        # permalink_key is a *hashids-encoded* string (NOT a UUID): the create
+        # path (CreateExplorePermalinkCommand →
+        # superset.controllers.explore_permalink) stores the payload under the
+        # EXPLORE_PERMALINK resource keyed by an auto-generated *integer* id,
+        # then encodes that int id into the URL string via ``encode_permalink_key``
+        # with a per-install salt. Resolution therefore MUST mirror the write:
+        # decode the hashid → int id (with the same salt), look the entry up by
+        # its integer key, and read ``value["state"]["formData"]`` /
+        # ``value["state"]["urlParams"]``.
+        #
+        # The previous implementation called ``kv_dao.get_value(key=permalink_key)``,
+        # whose ``_coerce_uuid`` always returned None for a hashid string → the
+        # lookup never matched → every permalink 404'd.
         if permalink_key:
-            raw = await kv_dao.get_value(
-                resource="explore_permalink",
-                resource_id=0,
-                key=permalink_key,
+            from superset.db.daos.key_value import AsyncKeyValueDAO
+            from superset.key_value.shared_entries import get_permalink_salt
+            from superset.key_value.types import KeyValueResource, SharedKey
+            from superset.key_value.utils import decode_permalink_id
+
+            salt = await get_permalink_salt(session, SharedKey.EXPLORE_PERMALINK_SALT)
+            try:
+                entry_id = decode_permalink_id(permalink_key, salt=salt)
+            except Exception as ex:  # noqa: BLE001
+                # Bad/garbled key → not a valid permalink → 404, 1:1 with
+                # ``GetExplorePermalinkCommand`` raising
+                # ``ExplorePermalinkGetFailedError`` (status 404).
+                raise ObjectNotFoundError("ExplorePermalink", permalink_key) from ex
+
+            value = await AsyncKeyValueDAO(session).get_value_by_key(
+                resource=KeyValueResource.EXPLORE_PERMALINK.value,
+                key=entry_id,
             )
-            if raw:
-                try:
-                    entry = json.loads(raw)
-                    if isinstance(entry, dict):
-                        # Permalink stores formData/form_data directly
-                        fd = entry.get("formData") or entry.get("form_data") or {}
-                        form_data = json.loads(fd) if isinstance(fd, str) else fd
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            if isinstance(value, dict):
+                state = value.get("state") or {}
+                fd = state.get("formData") or {}
+                form_data = json.loads(fd) if isinstance(fd, str) else fd
+                url_params = state.get("urlParams")
+                if url_params:
+                    form_data["url_params"] = dict(url_params)
             else:
                 # Permalink key not found / expired → 404, 1:1 with upstream
                 # ``GetExploreCommand`` raising ``ExplorePermalinkGetFailedError``

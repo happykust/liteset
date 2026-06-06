@@ -324,6 +324,7 @@ async def test_explore_datasource_denied_returns_403():
         kv_dao=MagicMock(),
         security_manager=sm,
         current_user=MagicMock(),
+        session=AsyncMock(),
     )
     assert result.status_code == 403
 
