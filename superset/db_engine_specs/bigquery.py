@@ -25,10 +25,12 @@ from __future__ import annotations
 
 import logging
 import re
+import urllib
 from datetime import datetime
 from re import Pattern
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, TypedDict
 
+import pandas as pd
 from sqlalchemy import column, func, types
 from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.engine.url import URL
@@ -36,9 +38,10 @@ from sqlalchemy.sql import column as sql_column, select, sqltypes
 from sqlalchemy.sql.expression import table as sql_table
 
 from superset.constants import TimeGrain
-from superset.db_engine_specs.base import BaseEngineSpec, ResultSetColumnType
+from superset.db_engine_specs.base import BaseEngineSpec, BasicPropertiesType, ResultSetColumnType
+from superset.exceptions import SupersetException
 from superset.sql.parse import SQLScript, Table
-from superset.utils import core as utils
+from superset.utils import core as utils, json
 from superset.utils.hashing import md5_sha_from_str
 
 if TYPE_CHECKING:
@@ -59,11 +62,37 @@ except ImportError:
     dependencies_installed = False
 
 try:
-    import pandas_gbq  # noqa: F401
+    import pandas_gbq
 
     can_upload = True
 except ModuleNotFoundError:
     can_upload = False
+
+
+# ---------------------------------------------------------------------------
+# Parameter types / schema
+# ---------------------------------------------------------------------------
+
+BIGQUERY_PARAMETERS_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "credentials_info": {
+            "type": "string",
+            "nullable": True,
+            "description": "Contents of BigQuery JSON credentials.",
+            "x-encrypted-extra": True,
+        },
+        "query": {
+            "type": "object",
+            "additionalProperties": {},
+        },
+    },
+}
+
+
+class BigQueryParametersType(TypedDict):
+    credentials_info: dict[str, Any]
+    query: dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +133,8 @@ class BigQueryEngineSpec(BaseEngineSpec):
     engine_name = "Google BigQuery"
     max_column_name_length = 128
     disable_ssh_tunneling = True
+
+    parameters_schema: dict[str, Any] = BIGQUERY_PARAMETERS_JSON_SCHEMA
 
     default_driver = "bigquery"
     sqlalchemy_uri_placeholder = "bigquery://{project_id}"
@@ -552,6 +583,113 @@ class BigQueryEngineSpec(BaseEngineSpec):
         cls, raw_cost: list[dict[str, Any]]
     ) -> list[dict[str, str]]:
         return [{k: str(v) for k, v in row.items()} for row in raw_cost]
+
+    @classmethod
+    def build_sqlalchemy_uri(
+        cls,
+        parameters: BigQueryParametersType,
+        encrypted_extra: dict[str, Any] | None = None,
+    ) -> str:
+        query = parameters.get("query", {})
+        query_params = urllib.parse.urlencode(query)
+
+        if encrypted_extra:
+            credentials_info = encrypted_extra.get("credentials_info")
+            if isinstance(credentials_info, str):
+                credentials_info = json.loads(credentials_info)
+            project_id = credentials_info.get("project_id")
+        if not encrypted_extra:
+            raise ValueError("Missing service credentials")
+
+        if project_id:
+            return f"{cls.default_driver}://{project_id}/?{query_params}"
+
+        raise ValueError("Invalid service credentials")
+
+    @classmethod
+    def get_parameters_from_uri(
+        cls,
+        uri: str,
+        encrypted_extra: dict[str, Any] | None = None,
+    ) -> Any:
+        from superset.databases.utils import make_url_safe
+
+        value = make_url_safe(uri)
+
+        # Building parameters from encrypted_extra and uri
+        if encrypted_extra:
+            # ``value.query`` needs to be explicitly converted into a dict (from an
+            # ``immutabledict``) so that it can be JSON serialized
+            return {**encrypted_extra, "query": dict(value.query)}
+
+        raise ValueError("Invalid service credentials")
+
+    @classmethod
+    def df_to_sql(
+        cls,
+        database: Database,
+        table: Table,
+        df: pd.DataFrame,
+        to_sql_kwargs: dict[str, Any],
+    ) -> None:
+        """
+        Upload data from a Pandas DataFrame to a database.
+
+        Calls `pandas_gbq.DataFrame.to_gbq` which requires `pandas_gbq` to be installed.
+
+        Note this method does not create metadata for the table.
+
+        :param database: The database to upload the data to
+        :param table: The table to upload the data to
+        :param df: The dataframe with data to be uploaded
+        :param to_sql_kwargs: The kwargs to be passed to pandas.DataFrame.to_sql` method
+        """
+        if not can_upload:
+            raise SupersetException(
+                "Could not import libraries needed to upload data to BigQuery."
+            )
+
+        if not table.schema:
+            raise SupersetException("The table schema must be defined")
+
+        to_gbq_kwargs = {}
+        with cls.get_engine(
+            database,
+            catalog=table.catalog,
+            schema=table.schema,
+        ) as engine:
+            to_gbq_kwargs = {
+                "destination_table": str(table),
+                "project_id": engine.url.host,
+            }
+
+        # Add credentials if they are set on the SQLAlchemy dialect.
+
+        if creds := engine.dialect.credentials_info:
+            to_gbq_kwargs["credentials"] = (
+                service_account.Credentials.from_service_account_info(creds)
+            )
+
+        # Only pass through supported kwargs.
+        supported_kwarg_keys = {"if_exists"}
+
+        for key in supported_kwarg_keys:
+            if key in to_sql_kwargs:
+                to_gbq_kwargs[key] = to_sql_kwargs[key]
+
+        pandas_gbq.to_gbq(df, **to_gbq_kwargs)
+
+    @classmethod
+    def validate_parameters(
+        cls,
+        properties: BasicPropertiesType,  # pylint: disable=unused-argument
+    ) -> list[Any]:
+        return []
+
+    @classmethod
+    def parameters_json_schema(cls) -> Any:
+        """Return configuration parameters as JSON Schema."""
+        return cls.parameters_schema or None
 
     @classmethod
     def select_star(
