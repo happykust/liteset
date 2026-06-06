@@ -79,11 +79,19 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
         if not self._chart:
             raise ObjectNotFoundError("Chart", self._chart_id)
 
-        # If only query_context is being updated, skip ownership validation
-        is_query_context_update = set(self._data.keys()) <= {
+        # Check and update ownership; when only updating query context we
+        # ignore ownership so the update can be performed by report workers.
+        # 1:1 with ``superset_old/commands/chart/update.py`` —
+        # ``is_query_context_update(properties)`` (lines 48-51) requires the
+        # property set to be EXACTLY ``{"query_context",
+        # "query_context_generation"}`` with a truthy
+        # ``query_context_generation``. Any payload with additional fields
+        # (name, owners, dashboards, params, ...) must go through full
+        # ownership validation.
+        is_query_context_update = set(self._data) == {
             "query_context",
             "query_context_generation",
-        }
+        } and bool(self._data.get("query_context_generation"))
         if not is_query_context_update and self._security_manager is not None:
             await self._security_manager.raise_for_ownership(self._chart, self._user_id)
 
