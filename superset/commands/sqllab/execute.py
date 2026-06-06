@@ -264,7 +264,12 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
                     query_id=query_id,
                     rendered_query=rendered_sql,
                     return_results=False,
-                    store_results=True,
+                    # 1:1 with ``ASynchronousSqlJsonExecutor.execute``
+                    # (superset_old/sqllab/sql_json_executer.py:173): the async
+                    # path stores results unless this is a CTAS — it does NOT
+                    # gate on SQLLAB_BACKEND_PERSISTENCE (only the sync path does
+                    # via ``_is_store_results``).
+                    store_results=not self._select_as_cta,
                     username=getattr(self._current_user, "username", None),
                     start_time=start_time,
                     expand_data=self._expand_data,

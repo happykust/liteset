@@ -35,7 +35,7 @@ import time
 import uuid
 from contextlib import closing, contextmanager
 from datetime import datetime
-from typing import Any, cast, Optional
+from typing import Any, Optional
 
 import sqlalchemy as sa
 from celery.exceptions import SoftTimeLimitExceeded
@@ -732,15 +732,15 @@ def _apply_limit(
 
 
 def _get_cancel_query_id(db_engine_spec: Any, cursor: Any, query: Any) -> str | None:
-    """Best-effort wrapper around ``BaseEngineSpec.get_cancel_query_id``."""
-    fn = getattr(db_engine_spec, "get_cancel_query_id", None)
-    if fn is None:
-        return None
-    try:
-        result = fn(cursor, query)
-        return None if result is None else str(result)
-    except Exception:  # noqa: BLE001
-        return None
+    """1:1 with ``superset_old/sql_lab.py:464``.
+
+    Calls ``BaseEngineSpec.get_cancel_query_id`` directly — extraction errors
+    propagate to ``_handle_query_error`` exactly as upstream (the call sits
+    inside ``execute_sql_statements``' guarded block), they are NOT swallowed.
+    ``db_engine_spec`` here is the *sync* spec
+    (``superset/db_engine_specs/base.py``), which always defines this method.
+    """
+    return db_engine_spec.get_cancel_query_id(cursor, query)
 
 
 @contextmanager
@@ -1102,20 +1102,22 @@ def cancel_query(query: Any) -> bool:
 
     db_engine_spec = query.database.db_engine_spec
 
-    if hasattr(db_engine_spec, "has_implicit_cancel") and db_engine_spec.has_implicit_cancel():
+    # 1:1 with ``superset_old/sql_lab.py::cancel_query`` (lines 682-696): both
+    # ``has_implicit_cancel`` and ``prepare_cancel_query`` are called UNGUARDED
+    # (the sync ``db_engine_spec`` always defines them) — failures propagate.
+    if db_engine_spec.has_implicit_cancel():
         return True
 
-    if hasattr(db_engine_spec, "prepare_cancel_query"):
-        try:
-            db_engine_spec.prepare_cancel_query(query)
-        except Exception:  # noqa: BLE001
-            logger.debug("prepare_cancel_query failed", exc_info=True)
+    # Some databases may need to make preparations for query cancellation.
+    db_engine_spec.prepare_cancel_query(query)
 
-    extra = cast(dict[str, Any], getattr(query, "extra", {}) or {})
-    if extra.get(QUERY_EARLY_CANCEL_KEY):
+    if query.extra.get(QUERY_EARLY_CANCEL_KEY):
+        # Query has been cancelled prior to being able to set the cancel key.
+        # This can happen if the query cancellation key can only be acquired
+        # after the query has been executed.
         return True
 
-    cancel_query_id = extra.get(QUERY_CANCEL_KEY)
+    cancel_query_id = query.extra.get(QUERY_CANCEL_KEY)
     if cancel_query_id is None:
         return False
 
