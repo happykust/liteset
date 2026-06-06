@@ -239,14 +239,11 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
         # RLS_IN_SQLLAB
         # ------------------------------------------------------------------
         if _is_feature_enabled("RLS_IN_SQLLAB"):
-            try:
-                from superset.utils.rls import apply_rls
+            from superset.utils.rls import apply_rls
 
-                default_schema = database.get_default_schema_for_query(query) or ""
-                for statement in parsed_script.statements:
-                    apply_rls(database, query.catalog, default_schema, statement)
-            except Exception:  # noqa: BLE001
-                logger.warning("apply_rls failed in async task", exc_info=True)
+            default_schema = database.get_default_schema_for_query(query) or ""
+            for statement in parsed_script.statements:
+                apply_rls(database, query.catalog, default_schema, statement)
 
         # ------------------------------------------------------------------
         # CTAS / CVAS
