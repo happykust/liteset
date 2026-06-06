@@ -25,7 +25,6 @@ from typing import Any, TYPE_CHECKING
 from sqlalchemy.exc import SQLAlchemyError
 
 from superset.commands.base import AsyncBaseCommand
-from superset.exceptions import CommandInvalidError
 from superset.tags.core import add_implicit_tags_after_insert
 
 if TYPE_CHECKING:
@@ -50,41 +49,78 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         self._database: Any | None = None
 
     async def validate(self) -> None:  # noqa: C901
-        if not self._data.get("table_name"):
-            raise CommandInvalidError("table_name is required")
-        if not self._data.get("database"):
-            raise CommandInvalidError("database is required")
-        self._database = await self._dao.get_database_by_id(self._data["database"])
-        if not self._database:
-            raise CommandInvalidError("Database not found")
-        is_unique = await self._dao.validate_uniqueness(
-            database_id=self._data["database"],
-            table_name=self._data["table_name"],
-            schema=self._data.get("schema"),
+        # ACCUMULATE all per-field validation errors (1:1 with
+        # ``superset_old/commands/dataset/create.py::validate``) and raise a
+        # single ``DatasetInvalidError`` at the end — so the controller emits a
+        # per-field ``{"message": {field: [messages]}}`` 422 body instead of a
+        # flat string. Each check guards on the prerequisites it needs, exactly
+        # like the original (e.g. uniqueness/table-exists only run once the
+        # database is resolved).
+        from superset.commands.dataset.exceptions import (
+            DatabaseNotFoundValidationError,
+            DatasetDataAccessIsNotAllowed,
+            DatasetExistsValidationError,
+            DatasetInvalidError,
+            DatasetValidationError,
+            TableNotFoundValidationError,
         )
-        if not is_unique:
-            raise CommandInvalidError(
-                "Dataset with this table_name/schema/database already exists"
-            )
-        # Validate table exists in the database (for physical datasets)
-        sql = self._data.get("sql")
-        if not sql and hasattr(self._database, "has_table"):
-            import asyncio
+        from superset.sql.parse import Table
 
-            table_name = self._data["table_name"]
-            schema = self._data.get("schema")
-            try:
-                exists = await asyncio.to_thread(
-                    self._database.has_table, table_name, schema=schema
+        exceptions: list[DatasetValidationError] = []
+        table_name = self._data.get("table_name")
+        database_id = self._data.get("database")
+        catalog = self._data.get("catalog")
+        schema = self._data.get("schema")
+        sql = self._data.get("sql")
+
+        if not table_name:
+            exceptions.append(
+                DatasetValidationError(
+                    "table_name is required", field_name="table_name"
                 )
-                if not exists:
-                    raise CommandInvalidError(
-                        f"Table '{table_name}' does not exist in database"
+            )
+        if not database_id:
+            exceptions.append(
+                DatasetValidationError("database is required", field_name="database")
+            )
+
+        # Validate/populate database
+        self._database = (
+            await self._dao.get_database_by_id(database_id) if database_id else None
+        )
+        if database_id and not self._database:
+            exceptions.append(DatabaseNotFoundValidationError())
+
+        # Validate uniqueness (only when the database resolved + a name exists)
+        table: Table | None = None
+        if self._database is not None and table_name:
+            if not catalog and hasattr(self._database, "get_default_catalog"):
+                catalog = self._database.get_default_catalog()
+                self._data["catalog"] = catalog
+            table = Table(table_name, schema, catalog)
+            is_unique = await self._dao.validate_uniqueness(
+                database_id=database_id,
+                table_name=table_name,
+                schema=schema,
+            )
+            if not is_unique:
+                exceptions.append(DatasetExistsValidationError(table))
+
+            # Validate the physical table exists when no sql is provided —
+            # 1:1 with ``DatasetDAO.validate_table_exists``. ``has_table`` may
+            # be unavailable on the connection; skip the check in that case.
+            if not sql and hasattr(self._database, "has_table"):
+                import asyncio
+
+                try:
+                    exists = await asyncio.to_thread(
+                        self._database.has_table, table_name, schema=schema
                     )
-            except CommandInvalidError:
-                raise
-            except Exception:  # noqa: S110
-                pass  # Skip check if has_table is not available
+                except Exception:  # noqa: BLE001
+                    exists = True  # skip check if has_table is not available
+                if not exists:
+                    exceptions.append(TableNotFoundValidationError(table))
+
         # Validate SQL access for virtual datasets — 1:1 with
         # ``superset_old/commands/dataset/create.py``: only virtual datasets
         # (``sql`` provided) require ``raise_for_access`` against the parsed
@@ -106,15 +142,22 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                     user=user,
                     database=self._database,
                     sql=sql,
-                    catalog=self._data.get("catalog"),
-                    schema=self._data.get("schema"),
+                    catalog=catalog,
+                    schema=schema,
                 )
             except SupersetSecurityException as ex:
                 message = ex.error.message if getattr(ex, "error", None) else str(ex)
-                raise CommandInvalidError(message) from ex
+                exceptions.append(DatasetDataAccessIsNotAllowed(message))
             except SupersetParseError as ex:
                 message = ex.error.message if getattr(ex, "error", None) else str(ex)
-                raise CommandInvalidError(f"Invalid SQL: {message}") from ex
+                exceptions.append(
+                    DatasetValidationError(
+                        f"Invalid SQL: {message}", field_name="sql"
+                    )
+                )
+
+        if exceptions:
+            raise DatasetInvalidError(exceptions=exceptions)
 
     async def run(self) -> "SqlaTable":
         from superset.models.connectors import SqlaTable
@@ -204,10 +247,29 @@ class GetOrCreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         self._user_id = user_id
 
     async def validate(self) -> None:
+        # ACCUMULATE per-field errors → single ``DatasetInvalidError`` so the
+        # controller returns a per-field 422 body (1:1 with upstream, which
+        # routes get_or_create creation through ``CreateDatasetCommand``).
+        from superset.commands.dataset.exceptions import (
+            DatasetInvalidError,
+            DatasetValidationError,
+        )
+
+        exceptions: list[DatasetValidationError] = []
         if not self._data.get("table_name"):
-            raise CommandInvalidError("table_name is required")
+            exceptions.append(
+                DatasetValidationError(
+                    "table_name is required", field_name="table_name"
+                )
+            )
         if not self._data.get("database_id"):
-            raise CommandInvalidError("database_id is required")
+            exceptions.append(
+                DatasetValidationError(
+                    "database_id is required", field_name="database_id"
+                )
+            )
+        if exceptions:
+            raise DatasetInvalidError(exceptions=exceptions)
 
     async def run(self) -> "SqlaTable":
         from superset.models.connectors import SqlaTable

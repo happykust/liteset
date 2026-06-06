@@ -106,6 +106,23 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         self._dataset: Any | None = None
 
     async def validate(self) -> None:  # noqa: C901
+        # Not-found (404) and ownership (403) short-circuit immediately — 1:1
+        # with upstream (``raise DatasetNotFoundError()`` / ``DatasetForbidden
+        # Error``). Every *field* validation below ACCUMULATES into a single
+        # ``DatasetInvalidError`` so the controller emits a per-field 422 body.
+        from superset.commands.dataset.exceptions import (
+            DatasetColumnNotFoundValidationError,
+            DatasetColumnsDuplicateValidationError,
+            DatasetColumnsExistsValidationError,
+            DatasetExistsValidationError,
+            DatasetInvalidError,
+            DatasetMetricsDuplicateValidationError,
+            DatasetMetricsExistsValidationError,
+            DatasetMetricsNotFoundValidationError,
+            DatasetValidationError,
+        )
+        from superset.sql.parse import Table
+
         self._dataset = await self._dao.find_by_id(self._dataset_id)
         if not self._dataset:
             raise ObjectNotFoundError("Dataset", self._dataset_id)
@@ -113,6 +130,9 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             await self._security_manager.raise_for_ownership(
                 self._dataset, self._user_id
             )
+
+        exceptions: list[DatasetValidationError] = []
+
         # Column semantics — 1:1 with upstream ``_validate_columns``: reject
         # duplicate names, then verify submitted ``id``s belong to THIS dataset
         # (no cross-dataset column-id injection) and — unless ``override_columns``
@@ -124,32 +144,28 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 for c in columns
                 if isinstance(c, dict)
             ]
-            seen: set[str] = set()
-            for name in col_names:
-                if name in seen:
-                    raise CommandInvalidError(f"Duplicate column name: '{name}'")
-                seen.add(name)
-            column_ids = [
-                c["id"] for c in columns if isinstance(c, dict) and "id" in c
-            ]
-            if not await self._dao.validate_columns_exist(
-                self._dataset_id, column_ids
-            ):
-                raise CommandInvalidError(
-                    "One or more columns do not exist on this dataset"
-                )
-            if not self._override_columns:
-                new_col_names = [
-                    c["column_name"]
-                    for c in columns
-                    if isinstance(c, dict) and "id" not in c and c.get("column_name")
+            if len(col_names) != len(set(col_names)):
+                exceptions.append(DatasetColumnsDuplicateValidationError())
+            else:
+                column_ids = [
+                    c["id"] for c in columns if isinstance(c, dict) and "id" in c
                 ]
-                if not await self._dao.validate_columns_uniqueness(
-                    self._dataset_id, new_col_names
+                if not await self._dao.validate_columns_exist(
+                    self._dataset_id, column_ids
                 ):
-                    raise CommandInvalidError(
-                        "One or more column names already exist on this dataset"
-                    )
+                    exceptions.append(DatasetColumnNotFoundValidationError())
+                if not self._override_columns:
+                    new_col_names = [
+                        c["column_name"]
+                        for c in columns
+                        if isinstance(c, dict)
+                        and "id" not in c
+                        and c.get("column_name")
+                    ]
+                    if not await self._dao.validate_columns_uniqueness(
+                        self._dataset_id, new_col_names
+                    ):
+                        exceptions.append(DatasetColumnsExistsValidationError())
 
         # Metric semantics — 1:1 with upstream ``_validate_metrics`` (no
         # ``override`` flag for metrics).
@@ -160,57 +176,60 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 for m in metrics
                 if isinstance(m, dict)
             ]
-            seen_metrics: set[str] = set()
-            for name in metric_names:
-                if name in seen_metrics:
-                    raise CommandInvalidError(f"Duplicate metric name: '{name}'")
-                seen_metrics.add(name)
-            metric_ids = [
-                m["id"] for m in metrics if isinstance(m, dict) and "id" in m
-            ]
-            if not await self._dao.validate_metrics_exist(
-                self._dataset_id, metric_ids
-            ):
-                raise CommandInvalidError(
-                    "One or more metrics do not exist on this dataset"
-                )
-            new_metric_names = [
-                m["metric_name"]
-                for m in metrics
-                if isinstance(m, dict) and "id" not in m and m.get("metric_name")
-            ]
-            if not await self._dao.validate_metrics_uniqueness(
-                self._dataset_id, new_metric_names
-            ):
-                raise CommandInvalidError(
-                    "One or more metric names already exist on this dataset"
-                )
+            if len(metric_names) != len(set(metric_names)):
+                exceptions.append(DatasetMetricsDuplicateValidationError())
+            else:
+                metric_ids = [
+                    m["id"] for m in metrics if isinstance(m, dict) and "id" in m
+                ]
+                if not await self._dao.validate_metrics_exist(
+                    self._dataset_id, metric_ids
+                ):
+                    exceptions.append(DatasetMetricsNotFoundValidationError())
+                new_metric_names = [
+                    m["metric_name"]
+                    for m in metrics
+                    if isinstance(m, dict) and "id" not in m and m.get("metric_name")
+                ]
+                if not await self._dao.validate_metrics_uniqueness(
+                    self._dataset_id, new_metric_names
+                ):
+                    exceptions.append(DatasetMetricsExistsValidationError())
 
         # Folder-structure validation — 1:1 with upstream ``_validate_semantics``:
         # only when ``folders`` is provided. Rejects with 422 when DATASET_FOLDERS
-        # is disabled (the default), else validates UUIDs/names/cycles.
+        # is disabled (the default), else validates UUIDs/names/cycles. Upstream
+        # appends a field-less marshmallow ``ValidationError`` here → normalized
+        # under the ``"_schema"`` key; ``DatasetValidationError`` defaults to it.
         folders = self._data.get("folders")
         if folders:
             await self._dao.session.refresh(self._dataset, ["metrics", "columns"])
-            validate_folders(
-                folders,
-                list(getattr(self._dataset, "metrics", []) or []),
-                list(getattr(self._dataset, "columns", []) or []),
-            )
+            try:
+                validate_folders(
+                    folders,
+                    list(getattr(self._dataset, "metrics", []) or []),
+                    list(getattr(self._dataset, "columns", []) or []),
+                )
+            except CommandInvalidError as ex:
+                exceptions.append(DatasetValidationError(str(ex)))
 
         table_name = self._data.get("table_name")
         if table_name:
             database_id = self._data.get("database_id") or self._dataset.database_id
+            schema = self._data.get("schema")
             is_unique = await self._dao.validate_uniqueness(
                 database_id=int(database_id),
                 table_name=table_name,
-                schema=self._data.get("schema"),
+                schema=schema,
                 dataset_id=self._dataset_id,
             )
             if not is_unique:
-                raise CommandInvalidError(
-                    "Dataset with this table_name/schema/database already exists"
+                exceptions.append(
+                    DatasetExistsValidationError(Table(table_name, schema))
                 )
+
+        if exceptions:
+            raise DatasetInvalidError(exceptions=exceptions)
 
     async def run(self) -> "SqlaTable":
         assert self._dataset is not None

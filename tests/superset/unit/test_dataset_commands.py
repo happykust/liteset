@@ -34,6 +34,7 @@ from superset.commands.dataset.delete import (
     DeleteDatasetCommand,
 )
 from superset.commands.dataset.duplicate import DuplicateDatasetCommand
+from superset.commands.dataset.exceptions import DatasetInvalidError
 from superset.commands.dataset.export import ExportDatasetsCommand
 from superset.commands.dataset.metrics.delete import DeleteDatasetMetricCommand
 from superset.commands.dataset.refresh import RefreshDatasetCommand
@@ -120,35 +121,66 @@ def mock_dataset():
 # ---- CreateDatasetCommand ----
 
 
+def _physical_database() -> MagicMock:
+    """A mock Database whose ``get_default_catalog`` returns a real string so
+    that ``Table(...).__str__`` (used in error messages) never sees a
+    MagicMock, and whose ``has_table`` reports the physical table exists."""
+    db = MagicMock()
+    db.get_default_catalog.return_value = None
+    db.has_table.return_value = True
+    return db
+
+
 async def test_create_dataset_validates_table_name(mock_dao):
+    mock_dao.get_database_by_id = AsyncMock(return_value=_physical_database())
+    mock_dao.validate_uniqueness = AsyncMock(return_value=True)
     cmd = CreateDatasetCommand(dao=mock_dao, data={"database": 1})
-    with pytest.raises(CommandInvalidError, match="table_name"):
+    with pytest.raises(DatasetInvalidError) as exc_info:
         await cmd.validate()
+    assert "table_name" in exc_info.value.normalized_messages()
 
 
 async def test_create_dataset_validates_database(mock_dao):
     cmd = CreateDatasetCommand(dao=mock_dao, data={"table_name": "t"})
-    with pytest.raises(CommandInvalidError, match="database"):
+    with pytest.raises(DatasetInvalidError) as exc_info:
         await cmd.validate()
+    assert "database" in exc_info.value.normalized_messages()
 
 
 async def test_create_dataset_validates_database_not_found(mock_dao):
     mock_dao.get_database_by_id = AsyncMock(return_value=None)
     cmd = CreateDatasetCommand(dao=mock_dao, data={"table_name": "t", "database": 999})
-    with pytest.raises(CommandInvalidError, match="Database not found"):
+    with pytest.raises(DatasetInvalidError) as exc_info:
         await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert messages["database"] == ["Database does not exist"]
 
 
 async def test_create_dataset_validates_uniqueness(mock_dao):
-    mock_dao.get_database_by_id = AsyncMock(return_value=MagicMock())
+    mock_dao.get_database_by_id = AsyncMock(return_value=_physical_database())
     mock_dao.validate_uniqueness = AsyncMock(return_value=False)
     cmd = CreateDatasetCommand(dao=mock_dao, data={"table_name": "t", "database": 1})
-    with pytest.raises(CommandInvalidError, match="already exists"):
+    with pytest.raises(DatasetInvalidError) as exc_info:
         await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert "table" in messages
+    assert "already exists" in messages["table"][0]
+
+
+async def test_create_dataset_accumulates_multiple_field_errors(mock_dao):
+    """Blank table_name AND a non-existent database id are reported TOGETHER
+    in the same 422 — proving accumulation (no early-return)."""
+    mock_dao.get_database_by_id = AsyncMock(return_value=None)
+    cmd = CreateDatasetCommand(dao=mock_dao, data={"table_name": "", "database": 999})
+    with pytest.raises(DatasetInvalidError) as exc_info:
+        await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert set(messages) == {"table_name", "database"}
+    assert messages["database"] == ["Database does not exist"]
 
 
 async def test_create_dataset_validation_success(mock_dao):
-    mock_dao.get_database_by_id = AsyncMock(return_value=MagicMock())
+    mock_dao.get_database_by_id = AsyncMock(return_value=_physical_database())
     mock_dao.validate_uniqueness = AsyncMock(return_value=True)
     cmd = CreateDatasetCommand(
         dao=mock_dao,
@@ -176,8 +208,11 @@ async def test_update_dataset_uniqueness_check(mock_dao, mock_dataset):
         dataset_id=1,
         data={"table_name": "new_name"},
     )
-    with pytest.raises(CommandInvalidError, match="already exists"):
+    with pytest.raises(DatasetInvalidError) as exc_info:
         await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert "table" in messages
+    assert "already exists" in messages["table"][0]
 
 
 async def test_update_dataset_success(mock_dao, mock_dataset):
@@ -236,8 +271,9 @@ async def test_bulk_delete_success(mock_dao, mock_dataset):
 
 async def test_duplicate_validates_table_name(mock_dao):
     cmd = DuplicateDatasetCommand(dao=mock_dao, base_model_id=1, table_name="")
-    with pytest.raises(CommandInvalidError, match="table_name"):
+    with pytest.raises(DatasetInvalidError) as exc_info:
         await cmd.validate()
+    assert "table_name" in exc_info.value.normalized_messages()
 
 
 async def test_duplicate_source_not_found(mock_dao):
@@ -288,14 +324,16 @@ async def test_refresh_success(mock_dao, mock_dataset):
 
 async def test_get_or_create_validates_table_name(mock_dao):
     cmd = GetOrCreateDatasetCommand(dao=mock_dao, data={"database": 1})
-    with pytest.raises(CommandInvalidError, match="table_name"):
+    with pytest.raises(DatasetInvalidError) as exc_info:
         await cmd.validate()
+    assert "table_name" in exc_info.value.normalized_messages()
 
 
 async def test_get_or_create_validates_database(mock_dao):
     cmd = GetOrCreateDatasetCommand(dao=mock_dao, data={"table_name": "t"})
-    with pytest.raises(CommandInvalidError, match="database"):
+    with pytest.raises(DatasetInvalidError) as exc_info:
         await cmd.validate()
+    assert "database_id" in exc_info.value.normalized_messages()
 
 
 async def test_get_or_create_returns_existing(mock_dao, mock_dataset):
@@ -536,10 +574,14 @@ async def test_refresh_non_owner_raises_forbidden(mock_dao, mock_dataset):
 async def test_duplicate_physical_dataset_rejected(mock_dao, mock_dataset):
     """Duplicating a physical dataset (kind != 'virtual') raises error."""
     mock_dataset.kind = "physical"
+    mock_dataset.sql = None
     mock_dao.find_by_id = AsyncMock(return_value=mock_dataset)
+    mock_dao.find_one_or_none = AsyncMock(return_value=None)
     cmd = DuplicateDatasetCommand(dao=mock_dao, base_model_id=1, table_name="dup")
-    with pytest.raises(CommandInvalidError, match="Only virtual datasets"):
+    with pytest.raises(DatasetInvalidError) as exc_info:
         await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert messages["datasource_type"] == ["Datasource type is invalid"]
 
 
 async def test_duplicate_dataset_no_kind_attribute_rejected(mock_dao):
@@ -549,9 +591,11 @@ async def test_duplicate_dataset_no_kind_attribute_rejected(mock_dao):
     source.kind = None
     source.sql = None
     mock_dao.find_by_id = AsyncMock(return_value=source)
+    mock_dao.find_one_or_none = AsyncMock(return_value=None)
     cmd = DuplicateDatasetCommand(dao=mock_dao, base_model_id=1, table_name="dup")
-    with pytest.raises(CommandInvalidError, match="Only virtual datasets"):
+    with pytest.raises(DatasetInvalidError) as exc_info:
         await cmd.validate()
+    assert "datasource_type" in exc_info.value.normalized_messages()
 
 
 # ---------------------------------------------------------------------------
@@ -567,3 +611,107 @@ async def test_bulk_delete_some_ids_not_found(mock_dao, mock_dataset):
     cmd = BulkDeleteDatasetsCommand(dao=mock_dao, dataset_ids=[1, 2, 3])
     with pytest.raises(ObjectNotFoundError):
         await cmd.validate()
+
+
+# ---------------------------------------------------------------------------
+# Per-field DatasetInvalidError / normalized_messages (upstream-1:1 422 shape)
+# ---------------------------------------------------------------------------
+
+
+def test_dataset_invalid_error_normalized_messages_merges_per_field():
+    """``normalized_messages`` merges each child into ``{field: [messages]}``
+    1:1 with upstream FAB ``response_422(message=ex.normalized_messages())``."""
+    from superset.commands.dataset.exceptions import (
+        DatabaseNotFoundValidationError,
+        DatasetInvalidError,
+        DatasetValidationError,
+    )
+
+    err = DatasetInvalidError(
+        exceptions=[
+            DatasetValidationError("table_name is required", field_name="table_name"),
+            DatabaseNotFoundValidationError(),
+        ]
+    )
+    assert err.normalized_messages() == {
+        "table_name": ["table_name is required"],
+        "database": ["Database does not exist"],
+    }
+    # append() extends the accumulator just like upstream CommandInvalidError.
+    err.append(DatasetValidationError("Invalid SQL: boom", field_name="sql"))
+    assert err.normalized_messages()["sql"] == ["Invalid SQL: boom"]
+    assert err.status_code == 422
+
+
+def test_dataset_validation_error_field_keys_match_upstream():
+    """Field keys + message text are 1:1 with
+    ``superset_old/commands/dataset/exceptions.py``."""
+    from superset.commands.dataset.exceptions import (
+        DatabaseNotFoundValidationError,
+        DatasetColumnNotFoundValidationError,
+        DatasetColumnsDuplicateValidationError,
+        DatasetColumnsExistsValidationError,
+        DatasetMetricsDuplicateValidationError,
+        DatasetMetricsExistsValidationError,
+        DatasetMetricsNotFoundValidationError,
+        DatasourceTypeInvalidError,
+        MultiCatalogDisabledValidationError,
+        OwnersNotFoundValidationError,
+    )
+
+    assert DatabaseNotFoundValidationError().normalized_messages() == {
+        "database": ["Database does not exist"]
+    }
+    assert DatasetColumnsDuplicateValidationError().normalized_messages() == {
+        "columns": ["One or more columns are duplicated"]
+    }
+    assert DatasetColumnNotFoundValidationError().normalized_messages() == {
+        "columns": ["One or more columns do not exist"]
+    }
+    assert DatasetColumnsExistsValidationError().normalized_messages() == {
+        "columns": ["One or more columns already exist"]
+    }
+    assert DatasetMetricsDuplicateValidationError().normalized_messages() == {
+        "metrics": ["One or more metrics are duplicated"]
+    }
+    assert DatasetMetricsNotFoundValidationError().normalized_messages() == {
+        "metrics": ["One or more metrics do not exist"]
+    }
+    assert DatasetMetricsExistsValidationError().normalized_messages() == {
+        "metrics": ["One or more metrics already exist"]
+    }
+    assert MultiCatalogDisabledValidationError().normalized_messages() == {
+        "catalog": ["Only the default catalog is supported for this connection"]
+    }
+    assert OwnersNotFoundValidationError().normalized_messages() == {
+        "owners": ["Owners are invalid"]
+    }
+    assert DatasourceTypeInvalidError().normalized_messages() == {
+        "datasource_type": ["Datasource type is invalid"]
+    }
+
+
+def test_dataset_invalid_error_handler_emits_message_dict():
+    """The Litestar handler emits ``{"message": {field: [messages]}}`` (no
+    ``errors``/``detail`` keys) — 1:1 with upstream FAB ``response_422``."""
+    from superset.commands.dataset.exceptions import (
+        DatabaseNotFoundValidationError,
+        dataset_invalid_error_handler,
+        DatasetInvalidError,
+        DatasetValidationError,
+    )
+
+    err = DatasetInvalidError(
+        exceptions=[
+            DatasetValidationError("table_name is required", field_name="table_name"),
+            DatabaseNotFoundValidationError(),
+        ]
+    )
+    response = dataset_invalid_error_handler(MagicMock(), err)
+    assert response.status_code == 422
+    assert response.content == {
+        "message": {
+            "table_name": ["table_name is required"],
+            "database": ["Database does not exist"],
+        }
+    }

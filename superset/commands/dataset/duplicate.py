@@ -22,7 +22,7 @@ from __future__ import annotations
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
-from superset.exceptions import CommandInvalidError, ObjectNotFoundError
+from superset.exceptions import ObjectNotFoundError
 
 if TYPE_CHECKING:
     from superset.db.daos.dataset import AsyncDatasetDAO
@@ -44,15 +44,36 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         self._source: Any | None = None
 
     async def validate(self) -> None:
-        if not self._table_name:
-            raise CommandInvalidError("table_name is required")
+        # Not-found (404) short-circuits immediately; the field validations
+        # below ACCUMULATE into a single ``DatasetInvalidError`` so the
+        # controller emits a per-field 422 body (1:1 with upstream, which
+        # appends ``DatasourceTypeInvalidError`` + ``DatasetExistsValidation
+        # Error`` to ``exceptions`` then raises ``DatasetInvalidError``).
+        from superset.commands.dataset.exceptions import (
+            DatasetExistsValidationError,
+            DatasetInvalidError,
+            DatasetValidationError,
+            DatasourceTypeInvalidError,
+        )
+        from superset.sql.parse import Table
+
         self._source = await self._dao.find_by_id(self._base_model_id)
         if not self._source:
             raise ObjectNotFoundError("Dataset", self._base_model_id)
 
-        # Only virtual datasets (with SQL) can be duplicated
+        exceptions: list[DatasetValidationError] = []
+        if not self._table_name:
+            exceptions.append(
+                DatasetValidationError(
+                    "table_name is required", field_name="table_name"
+                )
+            )
+
+        # Only virtual datasets (with SQL) can be duplicated — 1:1 with
+        # upstream ``self._base_model.kind != "virtual"`` →
+        # ``DatasourceTypeInvalidError`` (field ``datasource_type``).
         if not getattr(self._source, "sql", None):
-            raise CommandInvalidError("Only virtual datasets can be duplicated")
+            exceptions.append(DatasourceTypeInvalidError())
 
         # Check that the new name doesn't already exist. Mirrors
         # ``superset_old/commands/dataset/duplicate.py:118``: the original
@@ -61,9 +82,10 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         # the source database/schema.
         existing = await self._dao.find_one_or_none(table_name=self._table_name)
         if existing is not None:
-            raise CommandInvalidError(
-                f"Dataset with name '{self._table_name}' already exists"
-            )
+            exceptions.append(DatasetExistsValidationError(Table(self._table_name)))
+
+        if exceptions:
+            raise DatasetInvalidError(exceptions=exceptions)
 
     async def run(self) -> "SqlaTable":
         from superset.models.connectors import SqlaTable, SqlMetric, TableColumn
