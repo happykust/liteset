@@ -850,30 +850,31 @@ def _sync_find_dataset(dataset_id: int) -> Any:
 _DATABASE_PERM_RE = re.compile(r"^\[.+\]\.\(id:(?P<id>\d+)\)$")
 
 
-def _sync_user_can_access_dataset(dataset: Any, user: Any) -> bool:
-    """Sync replica of ``DatasourceFilter`` access, for ``metric_macro``.
+def _sync_user_can_access_dataset(
+    dataset: Any, user: Any, skip_base_filter: bool = False
+) -> bool:
+    """Sync replica of ``DatasourceFilter`` access for the Jinja macros.
 
-    1:1 with upstream
-    ``DatasetDAO.find_by_id(dataset_id, skip_base_filter=is_guest)`` →
-    ``get_dataset_access_filters(SqlaTable)``: guests skip the base filter;
-    admins and holders of ``all_database_access``/``all_datasource_access``
-    see all; everyone else needs the dataset's database OR its
-    ``perm``/``catalog_perm``/``schema_perm`` to be granted. Role-only, matching
-    the precedent in ``_sync_get_rls_rules`` (group roles omitted in sync).
+    1:1 with upstream ``DatasetDAO.find_by_id(dataset_id[, skip_base_filter])``
+    → ``get_dataset_access_filters(SqlaTable)``: admins and holders of
+    ``all_database_access``/``all_datasource_access`` see all; everyone else
+    needs the dataset's database OR its ``perm``/``catalog_perm``/``schema_perm``
+    to be granted. Role-only, matching the precedent in ``_sync_get_rls_rules``
+    (group roles omitted in sync).
 
-    Without this gate ``{{ metric('m', <id>) }}`` (template processing) would
-    leak metric expressions from datasets the user cannot access.
+    ``skip_base_filter`` mirrors the upstream argument: ``metric_macro`` passes
+    ``skip_base_filter=is_guest`` (embedded/guest access is validated at the
+    dashboard level), whereas ``dataset_macro`` never skips the base filter, so
+    guests are subject to it like any other user.
+
+    Without this gate ``{{ metric('m', <id>) }}`` / ``{{ dataset(<id>) }}``
+    (template processing) would leak metric/column expressions from datasets the
+    user cannot access.
     """
+    if skip_base_filter:
+        return True
     if user is None:
         return False
-    # Guest → skip base filter (1:1 ``skip_base_filter=is_guest``).
-    try:
-        from superset.security.manager import AsyncSecurityManager
-
-        if AsyncSecurityManager.is_guest_user(None, user):
-            return True
-    except Exception:  # noqa: BLE001
-        pass
 
     roles = getattr(user, "roles", []) or []
     if any(getattr(r, "name", None) == "Admin" for r in roles):
@@ -1050,8 +1051,14 @@ def dataset_macro(
 
     The generated SQL includes all columns (including computed) by default.
     """
+    # 1:1 with upstream ``DatasetDAO.find_by_id(dataset_id)`` (no
+    # ``skip_base_filter``): the ``DatasourceFilter`` RBAC base filter applies
+    # to every user, including guests. A denial manifests as
+    # ``DatasetNotFoundError`` exactly like the original's filtered lookup
+    # returning ``None`` — without it, ``{{ dataset(<id>) }}`` would leak the
+    # dataset's column/metric SQL expressions to a user with no access.
     dataset = _sync_find_dataset(dataset_id)
-    if not dataset:
+    if not dataset or not _sync_user_can_access_dataset(dataset, get_current_user()):
         raise DatasetNotFoundError(f"Dataset {dataset_id} not found!")
 
     columns = columns or [column.column_name for column in dataset.columns]
@@ -1148,8 +1155,18 @@ def metric_macro(
     # original's filtered lookup returning ``None`` — without it,
     # ``{{ metric('m', <id>) }}`` would leak metric expressions from datasets
     # the caller cannot access.
+    user = get_current_user()
+    is_guest = False
+    try:
+        from superset.security.manager import AsyncSecurityManager
+
+        is_guest = AsyncSecurityManager.is_guest_user(None, user)
+    except Exception:  # noqa: BLE001
+        pass
     dataset = _sync_find_dataset(dataset_id)
-    if not dataset or not _sync_user_can_access_dataset(dataset, get_current_user()):
+    if not dataset or not _sync_user_can_access_dataset(
+        dataset, user, skip_base_filter=is_guest
+    ):
         raise DatasetNotFoundError(f"Dataset ID {dataset_id} not found.")
 
     metrics: dict[str, str] = {
