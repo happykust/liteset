@@ -142,6 +142,102 @@ def _sync_oauth2_access_token(database: Any, spec: Any) -> str | None:
         return None
 
 
+def _get_query_source_from_request() -> Any:
+    """Resolve the :class:`QuerySource` from the in-flight request, or ``None``.
+
+    1:1 with ``superset_old/utils/core.py::get_query_source_from_request``,
+    which inspected Flask's thread-local ``request.referrer``.  In the async
+    port the active request is bound to a ContextVar
+    (``superset.utils.core.get_current_request``); Litestar exposes the
+    ``Referer`` header as ``request.headers.get("referer")``.  Returns ``None``
+    when there is no request / no referrer (Celery, CLI), matching upstream's
+    ``if not request or not request.referrer`` guard.
+    """
+    try:
+        from superset.utils.core import get_current_request, QuerySource
+
+        request = get_current_request()
+        if request is None:
+            return None
+        referrer = None
+        headers = getattr(request, "headers", None)
+        if headers is not None:
+            referrer = headers.get("referer") or headers.get("referrer")
+        if not referrer:
+            return None
+        if "/superset/dashboard/" in referrer:
+            return QuerySource.DASHBOARD
+        if "/explore/" in referrer:
+            return QuerySource.CHART
+        if "/sqllab/" in referrer:
+            return QuerySource.SQL_LAB
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _apply_connection_hooks(
+    database: Any,
+    sqlalchemy_url: Any,
+    engine_kwargs: dict[str, Any],
+    source: Any | None,
+) -> tuple[Any, dict[str, Any]]:
+    """Apply the encrypted-extra merge and ``DB_CONNECTION_MUTATOR`` hooks.
+
+    1:1 with the tail of ``superset_old/models/core.py::_get_sqla_engine``
+    (lines 536-547), applied right before ``create_engine``:
+
+    1. ``database.update_params_from_encrypted_extra(engine_kwargs)`` — the
+       generic wrapper delegates to the engine spec, merging encrypted-extra
+       connect args into the engine kwargs.
+    2. ``DB_CONNECTION_MUTATOR(url, params, effective_username,
+       security_manager, source)`` — when configured, lets operators rewrite
+       the URL / engine kwargs.  ``source`` falls back to the request-derived
+       value exactly as upstream (``source or get_query_source_from_request()``).
+
+    Returns the (possibly mutated) ``(sqlalchemy_url, engine_kwargs)`` tuple.
+    No-op (identity) when encrypted_extra is empty and the mutator is unset.
+    """
+    # (1) Merge encrypted-extra connect args via the engine-spec wrapper.
+    try:
+        if hasattr(database, "update_params_from_encrypted_extra"):
+            database.update_params_from_encrypted_extra(engine_kwargs)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("update_params_from_encrypted_extra skipped: %s", exc)
+
+    # (2) DB_CONNECTION_MUTATOR.
+    try:
+        from superset.config import SupersetSettings
+
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        mutator = getattr(settings, "db_connection_mutator", None)
+    except Exception:  # noqa: BLE001
+        mutator = None
+
+    if mutator:
+        source = source or _get_query_source_from_request()
+        effective_username = _impersonation_username(
+            database.get_effective_user(sqlalchemy_url)
+            if hasattr(database, "get_effective_user")
+            else None
+        )
+        try:
+            from superset.security.manager import get_sync_security_manager_proxy
+
+            security_manager = get_sync_security_manager_proxy()
+        except Exception:  # noqa: BLE001
+            security_manager = None
+        sqlalchemy_url, engine_kwargs = mutator(
+            sqlalchemy_url,
+            engine_kwargs,
+            effective_username,
+            security_manager,
+            source,
+        )
+
+    return sqlalchemy_url, engine_kwargs
+
+
 def _to_sync_uri(uri: str) -> str:
     """Convert an async SQLAlchemy URI to its sync equivalent.
 
@@ -165,6 +261,7 @@ def get_sync_engine(
     schema: str | None = None,
     nullpool: bool = True,
     override_ssh_tunnel: Any | None = None,
+    source: Any | None = None,
 ) -> Iterator[Engine]:
     """Yield a synchronous SQLAlchemy ``Engine`` for the given database.
 
@@ -292,6 +389,26 @@ def get_sync_engine(
 
             engine_kwargs["poolclass"] = NullPool
 
+        # Apply the encrypted-extra merge + DB_CONNECTION_MUTATOR hooks right
+        # before ``create_engine`` — 1:1 with upstream
+        # ``Database._get_sqla_engine`` (superset_old/models/core.py:536-547).
+        # The mutator receives a ``URL`` object (as upstream does); render the
+        # possibly-mutated URL back to a password-revealing string for
+        # ``create_engine`` (``str(URL)`` masks the password under SA 2.0).
+        from sqlalchemy.engine import make_url
+        from sqlalchemy.engine.url import URL
+
+        sqlalchemy_url, engine_kwargs = _apply_connection_hooks(
+            database,
+            make_url(sync_uri),
+            engine_kwargs,
+            source,
+        )
+        if isinstance(sqlalchemy_url, URL):
+            sync_uri = sqlalchemy_url.render_as_string(hide_password=False)
+        else:
+            sync_uri = str(sqlalchemy_url)
+
         engine = create_engine(sync_uri, **engine_kwargs)
         try:
             yield engine
@@ -364,6 +481,30 @@ async def get_async_connection(
                 connect_args = _ek.get("connect_args", connect_args)
         except Exception as exc:  # noqa: BLE001
             logger.debug("impersonation skipped for async connection: %s", exc)
+
+    # Apply the encrypted-extra merge + DB_CONNECTION_MUTATOR hooks right
+    # before ``create_async_engine`` — 1:1 with upstream
+    # ``Database._get_sqla_engine`` (superset_old/models/core.py:536-547). A
+    # mutator that rewrites the URL / connect args must be respected on the
+    # async runtime path too, otherwise it would be silently ignored for
+    # postgres/mysql. ``pool_pre_ping``/``pool_size``/``max_overflow`` are
+    # async-engine-only kwargs and are intentionally kept out of the
+    # mutator-visible ``engine_kwargs`` (upstream's mutator never saw them).
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.engine.url import URL
+
+    async_engine_kwargs: dict[str, Any] = {"connect_args": connect_args}
+    mutated_url, async_engine_kwargs = _apply_connection_hooks(
+        database,
+        make_url(adjusted_uri),
+        async_engine_kwargs,
+        None,
+    )
+    if isinstance(mutated_url, URL):
+        adjusted_uri = mutated_url.render_as_string(hide_password=False)
+    else:
+        adjusted_uri = str(mutated_url)
+    connect_args = async_engine_kwargs.get("connect_args", connect_args)
 
     engine = create_async_engine(
         adjusted_uri,
