@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json  # noqa: TID251 — superset must not depend on superset for core imports
 import logging
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +44,7 @@ from sqlalchemy.exc import (
 )
 
 from superset.config import SupersetSettings
+from superset.constants import CHANGE_ME_SECRET_KEY
 from superset.controllers.auth import AuthController
 from superset.controllers.security import SecurityController
 from superset.controllers.spa import SPAController
@@ -203,6 +206,11 @@ async def readiness_probe(state: State) -> Response[dict[str, Any]]:
 
 async def on_startup(app: Litestar) -> None:  # noqa: C901
     settings: SupersetSettings = app.state.settings
+
+    # ── check_secret_key ──────────────────────────────────────────────────
+    # 1:1 with SupersetAppInitializer.check_secret_key: refuse to start (or
+    # warn in debug/test mode) when SECRET_KEY is the default placeholder.
+    _check_secret_key(settings)
 
     # ── i18n: load translation catalogs ───────────────────────────────────
     # Load all available language packs from ``superset/translations/`` and
@@ -611,23 +619,76 @@ async def on_shutdown(app: Litestar) -> None:
         logger.info("Redis connection closed")
 
 
+def _check_secret_key(settings: SupersetSettings) -> None:
+    """Refuse to start (or warn in debug/test mode) when SECRET_KEY is the
+    default placeholder.
+
+    1:1 with ``SupersetAppInitializer.check_secret_key`` in
+    ``superset_old/initialization/__init__.py``.
+    """
+
+    def _log_default_secret_key_warning() -> None:
+        top_banner = 80 * "-" + "\n" + 36 * " " + "WARNING\n" + 80 * "-"
+        bottom_banner = 80 * "-" + "\n" + 80 * "-"
+        logger.warning(top_banner)
+        logger.warning(
+            "A Default SECRET_KEY was detected, please use superset_config.py "
+            "to override it.\n"
+            "Use a strong complex alphanumeric string and use a tool to help"
+            " you generate \n"
+            "a sufficiently random sequence, ex: openssl rand -base64 42 \n"
+            "For more info, see: https://superset.apache.org/docs/"
+            "configuration/configuring-superset#specifying-a-secret_key"
+        )
+        logger.warning(bottom_banner)
+
+    _raw = settings.secret_key
+    secret_key_val: str = (
+        _raw.get_secret_value() if hasattr(_raw, "get_secret_value") else str(_raw)
+    )
+    if secret_key_val != CHANGE_ME_SECRET_KEY:
+        return
+
+    # is_test(): mirrors ``superset_old/utils/core.py::is_test()``
+    _is_test = os.environ.get("SUPERSET_TESTENV", "false").lower() in ("true", "1", "yes")
+    if settings.debug or _is_test:
+        logger.warning("Debug mode identified with default secret key")
+        _log_default_secret_key_warning()
+        return
+
+    _log_default_secret_key_warning()
+    logger.error("Refusing to start due to insecure SECRET_KEY")
+    sys.exit(1)
+
+
 def _validate_global_async_queries_config(settings: SupersetSettings) -> None:
     """Validate Global Async Queries config at app build time.
 
     1:1 with the original ``AsyncQueryManager.init_app`` guard, which only ran
     when the ``GLOBAL_ASYNC_QUERIES`` feature flag was enabled
     (``configure_async_queries`` → ``init_app``) and refused to start the app
-    if the JWT secret was shorter than 32 bytes. The async-token JWT is signed
-    with this secret; a short HMAC key is a real security weakness, so the app
-    fails fast rather than silently signing with a weak key.
+    if:
+      1. CACHE_CONFIG or DATA_CACHE_CONFIG has a null/None cache type, or
+      2. the JWT secret is shorter than 32 bytes.
 
-    The secret checked is the one actually used to sign/verify async tokens
-    (``_resolve_secret_key`` — ``GLOBAL_ASYNC_QUERIES_JWT_SECRET`` with fallback
-    to ``SECRET_KEY``), which matches the WS handler, the polling endpoint and
-    ``AsyncTokenMiddleware``.
+    Both checks mirror ``superset_old/async_events/async_query_manager.py::init_app``
+    exactly.
     """
     if not getattr(settings, "global_async_queries", False):
         return
+
+    # ── Cache-backend-null check ──────────────────────────────────────────
+    # Original: ``if cache_type in [None, "null"] or data_cache_type in
+    # [None, "null"]: raise Exception(...)``
+    cache_type = (getattr(settings, "cache_config", None) or {}).get("CACHE_TYPE")
+    data_cache_type = (getattr(settings, "data_cache_config", None) or {}).get(
+        "CACHE_TYPE"
+    )
+    if cache_type in [None, "null"] or data_cache_type in [None, "null"]:
+        raise Exception(  # noqa: TRY002
+            "\nCache backends (CACHE_CONFIG, DATA_CACHE_CONFIG) must be configured"
+            "\nand non-null in order to enable async queries\n"
+        )
 
     from superset.commands.chart.data.create_async_job_command import (
         AsyncQueryTokenException,

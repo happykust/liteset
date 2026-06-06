@@ -48,9 +48,28 @@ def _settings(**kw):
         "global_async_queries": False,
         "global_async_queries_jwt_secret": None,
         "secret_key": "",
+        # Non-null cache backends so the upstream-ordered cache-null guard
+        # (which runs BEFORE the JWT check, 1:1 with
+        # async_query_manager.init_app) passes and these tests reach the
+        # JWT-secret logic they target.
+        "cache_config": {"CACHE_TYPE": "RedisCache"},
+        "data_cache_config": {"CACHE_TYPE": "RedisCache"},
     }
     base.update(kw)
     return SimpleNamespace(**base)
+
+
+def test_gaq_enabled_null_cache_raises():
+    # 1:1 with async_query_manager.init_app: GAQ requires non-null
+    # CACHE_CONFIG/DATA_CACHE_CONFIG; a null cache type refuses to start.
+    with pytest.raises(Exception, match="Cache backends"):
+        _validate_global_async_queries_config(
+            _settings(
+                global_async_queries=True,
+                global_async_queries_jwt_secret="x" * 32,
+                cache_config={"CACHE_TYPE": "null"},
+            )
+        )
 
 
 def test_gaq_disabled_short_secret_is_ignored():

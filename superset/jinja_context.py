@@ -52,6 +52,7 @@ from superset.utils.core import (
     AdhocFilterClause,
     convert_legacy_filters_into_adhoc,
     FilterOperator,
+    get_current_request,
     get_current_user,
     get_user_email,
     get_user_id,
@@ -264,15 +265,19 @@ class ExtraCache:
         """
         Read a url or post parameter and use it in your SQL Lab query.
 
-        In the original Superset this first checks Flask request.args, then
-        falls back to form_data.url_params. In Liteset the controller must
-        merge request query_params into form_data["url_params"] before
-        rendering templates.
+        1:1 with upstream: first checks request.query_params (Litestar equivalent
+        of Flask request.args), then falls back to form_data["url_params"].
         """
-        url_params = self.form_data.get("url_params") or {}
+        # Mirror upstream: ``if has_request_context() and request.args.get(param)``
+        _request = get_current_request()
+        if _request is not None:
+            _query_params = getattr(_request, "query_params", None)
+            if _query_params is not None:
+                _val = _query_params.get(param)
+                if _val:
+                    return _val
 
-        # Check url_params from form_data (includes request.query_params
-        # merged by controller)
+        url_params = self.form_data.get("url_params") or {}
         result = url_params.get(param, default)
         if result and escape_result and self.dialect:
             result = String().literal_processor(  # type: ignore[no-untyped-call]
@@ -545,6 +550,9 @@ class BaseTemplateProcessor:
             TemplateSyntaxError,
             SecurityError,
             UndefinedError,
+            UnicodeError,
+            UnicodeDecodeError,
+            UnicodeEncodeError,
         ) as ex:
             error_msg = str(ex)
             exception_type = type(ex).__name__
