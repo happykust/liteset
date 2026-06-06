@@ -176,6 +176,9 @@ async def _import_chart(  # noqa: C901
     if isinstance(config.get("params"), dict):
         config["params"] = _json.dumps(config["params"])
 
+    # Migrate old viz types to new ones (1:1 port of import_chart()).
+    config = migrate_chart(config)
+
     chart_id = config.pop("id", None)
     _NON_MODEL_FIELDS = {  # noqa: N806
         "dataset_uuid",
@@ -209,6 +212,59 @@ async def _import_chart(  # noqa: C901
             chart.owners.append(current_user)
 
     return chart
+
+
+def migrate_chart(config: dict[str, Any]) -> dict[str, Any]:
+    """Migrate deprecated viz types to their modern equivalents.
+
+    1:1 port of ``superset_old/commands/chart/importers/v1/utils.py``
+    ``migrate_chart``. Builds the source-viz-type -> migrator map from the
+    :mod:`superset.migrations.shared.migrate_viz.processors` module, applies
+    the matching :class:`MigrateViz` pipeline to the chart's ``params`` and
+    keeps ``query_context.form_data`` in sync.
+    """
+    import copy
+    from inspect import isclass
+
+    from superset.migrations.shared.migrate_viz import processors
+    from superset.migrations.shared.migrate_viz.base import MigrateViz
+
+    migrators = {
+        class_.source_viz_type: class_
+        for class_ in processors.__dict__.values()
+        if isclass(class_)
+        and issubclass(class_, MigrateViz)
+        and hasattr(class_, "source_viz_type")
+    }
+
+    output = copy.deepcopy(config)
+    if config["viz_type"] not in migrators:
+        return output
+
+    migrator = migrators[config["viz_type"]](output["params"])
+    migrator._pre_action()  # noqa: SLF001
+    migrator._migrate()  # noqa: SLF001
+    migrator._post_action()  # noqa: SLF001
+    params = migrator.data
+
+    params["viz_type"] = migrator.target_viz_type
+    output.update(
+        {
+            "params": _json.dumps(params),
+            "viz_type": migrator.target_viz_type,
+        }
+    )
+
+    # also update ``query_context``
+    try:
+        query_context = _json.loads(output.get("query_context") or "{}")
+    except (_json.JSONDecodeError, TypeError):
+        query_context = {}
+    if "form_data" in query_context:
+        query_context["form_data"] = output["params"]
+        output["query_context"] = _json.dumps(query_context)
+
+    return output
 
 
 # --------------------------------------------------------------------------- #

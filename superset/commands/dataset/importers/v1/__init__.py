@@ -273,7 +273,25 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         if uuid_str:
             existing = await self._dao.find_one_or_none(uuid=_UUID(uuid_str))
 
+        # 1:1 port of import_dataset(): the importing user must own the
+        # existing dataset (or be an admin) before they may overwrite it.
+        from superset.utils.core import get_current_user
+
+        user = get_current_user()
+
         if existing:
+            if self._overwrite and can_write and user:
+                await self._dao.session.refresh(existing, ["owners"])  # type: ignore[union-attr]
+                is_admin = False
+                if self._security_manager is not None and hasattr(
+                    self._security_manager, "is_admin"
+                ):
+                    is_admin = self._security_manager.is_admin(user)
+                if user not in existing.owners and not is_admin:
+                    raise CommandInvalidError(
+                        "A dataset already exists and user doesn't "
+                        "have permissions to overwrite it"
+                    )
             if not self._overwrite or not can_write:
                 return  # skip
             config["id"] = existing.id
@@ -401,16 +419,30 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         await self._dao.session.flush()
 
         # --- Load data from URI if needed ---
-        if data_uri and self._force_data:
+        # 1:1 port of import_dataset(): data is loaded when a ``data`` URI is
+        # present AND either the target table does not yet exist OR the caller
+        # forced a reload (``force_data``).
+        if data_uri:
             try:
-                await self._load_data(data_uri, dataset)
-            except Exception:
+                table_exists = await self._table_exists(dataset)
+            except Exception:  # noqa: BLE001
+                # MySQL doesn't play nice with GSheets table names
                 logger.warning(
-                    "Failed to load data from %s for dataset %s",
-                    data_uri,
+                    "Couldn't check if table %s exists, assuming it does",
                     getattr(dataset, "table_name", ""),
-                    exc_info=True,
                 )
+                table_exists = True
+
+            if not table_exists or self._force_data:
+                try:
+                    await self._load_data(data_uri, dataset)
+                except Exception:
+                    logger.warning(
+                        "Failed to load data from %s for dataset %s",
+                        data_uri,
+                        getattr(dataset, "table_name", ""),
+                        exc_info=True,
+                    )
 
         # --- Owner management ---
         # Add current user as owner if not already
@@ -621,6 +653,58 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                 raise
         raise CommandInvalidError("Data URI is not allowed.")
 
+    @staticmethod
+    def _to_sync_uri(raw_uri: str) -> str:
+        """Convert an async-driver SQLAlchemy URI to its sync equivalent."""
+        uri = raw_uri
+        if "+asyncpg" in uri:
+            uri = uri.replace("+asyncpg", "+psycopg2")
+        elif "+aiomysql" in uri or "+asyncmy" in uri:
+            uri = uri.replace("+aiomysql", "+pymysql").replace("+asyncmy", "+pymysql")
+        elif "+aiosqlite" in uri:
+            uri = uri.replace("+aiosqlite", "")
+        return uri
+
+    async def _table_exists(self, dataset: "SqlaTable") -> bool:
+        """1:1 port of ``Database.has_table`` used by ``import_dataset``.
+
+        Inspects the dataset's physical table on its backing database via a
+        sync engine (run in a worker thread). Mirrors the original
+        ``engine.has_table(table, schema)`` with the lowercase fallback.
+        Raises on connection/inspection failure so the caller can apply the
+        original "assume it exists" behaviour.
+        """
+        import asyncio
+
+        from sqlalchemy import create_engine, inspect
+
+        database = getattr(dataset, "database", None)
+        if database is None:
+            database = await self._dao.get_database_by_id(dataset.database_id)
+        if database is None:
+            # No database -> treat as not existing so example data can load.
+            return False
+
+        raw_uri = getattr(database, "sqlalchemy_uri", "")
+        if not raw_uri:
+            return False
+
+        uri = self._to_sync_uri(raw_uri)
+        table_name = dataset.table_name
+        schema = getattr(dataset, "schema", None) or None
+
+        def _check_sync() -> bool:
+            engine = create_engine(uri)
+            try:
+                inspector = inspect(engine)
+                if inspector.has_table(table_name, schema):
+                    return True
+                return inspector.has_table(table_name.lower(), schema)
+            finally:
+                engine.dispose()
+
+        return await asyncio.to_thread(_check_sync)
+
     async def _load_data(  # noqa: C901
         self,
         data_uri: str,
@@ -682,13 +766,7 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
             return
 
         # Convert async driver URI to sync for pandas to_sql
-        uri = raw_uri
-        if "+asyncpg" in uri:
-            uri = uri.replace("+asyncpg", "+psycopg2")
-        elif "+aiomysql" in uri or "+asyncmy" in uri:
-            uri = uri.replace("+aiomysql", "+pymysql").replace("+asyncmy", "+pymysql")
-        elif "+aiosqlite" in uri:
-            uri = uri.replace("+aiosqlite", "")
+        uri = self._to_sync_uri(raw_uri)
 
         def _load_sync() -> None:
             engine = create_engine(uri)
