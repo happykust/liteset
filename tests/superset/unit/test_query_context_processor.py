@@ -634,3 +634,52 @@ async def test_ensure_totals_propagates_failed_query(
     ):
         with pytest.raises(QueryObjectValidationError, match="totals boom"):
             await proc._ensure_totals_available([contrib_qo, totals_qo])
+
+
+# --- per-offset cache (time comparison) ---------------------------------------
+
+
+async def test_get_cache_key_offset_distinct(processor):
+    """Different time offsets must yield DISTINCT cache keys (no collision →
+    no stale time-comparison data); the same offset is stable; and any offset
+    differs from the offset-less base key."""
+    qo = AsyncQueryObject(datasource={"type": "table", "id": 1})
+    base = await processor._get_cache_key(qo)
+    k_1y = await processor._get_cache_key(qo, time_offset="1 year ago|P1D")
+    k_1w = await processor._get_cache_key(qo, time_offset="1 week ago|P1D")
+    k_1y_again = await processor._get_cache_key(qo, time_offset="1 year ago|P1D")
+
+    assert k_1y != k_1w  # distinct offsets → distinct keys
+    assert k_1y != base  # offset key differs from base
+    assert k_1y == k_1y_again  # same offset → stable key
+
+
+async def test_offset_cache_roundtrip(mock_settings, mock_security_manager,
+                                      mock_datasource, mock_user):
+    """The per-offset payload ({df, query}) survives the pickle store/retrieve
+    via the cache manager."""
+
+    class _DictCache:
+        def __init__(self):
+            self.store = {}
+
+        async def get(self, key):
+            return self.store.get(key)
+
+        async def set(self, key, value, timeout):
+            self.store[key] = value
+
+    proc = AsyncQueryContextProcessor(
+        datasource=mock_datasource,
+        settings=mock_settings,
+        security_manager=mock_security_manager,
+        user=mock_user,
+        cache_manager=_DictCache(),
+    )
+    df = pd.DataFrame({"col1": [1, 2], "SUM(x)__1 year ago": [10, 20]})
+    payload = {"df": df, "query": "SELECT ... -- 1 year ago"}
+    await proc._cache_set("off-key", payload, 300)
+    out = await proc._cache_get("off-key")
+    assert isinstance(out, dict) and "df" in out
+    assert out["query"] == payload["query"]
+    pd.testing.assert_frame_equal(out["df"], df)

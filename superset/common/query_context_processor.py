@@ -911,8 +911,16 @@ class AsyncQueryContextProcessor:
     async def _get_cache_key(
         self,
         query_object: AsyncQueryObject,
+        time_offset: str | None = None,
     ) -> str:
-        """Generate cache key from datasource.uid + RLS + query params."""
+        """Generate cache key from datasource.uid + RLS + query params.
+
+        ``time_offset`` is folded into the key (1:1 with upstream
+        ``query_cache_key(..., time_offset=..., time_grain=...)``) so each
+        time-comparison offset subquery caches under a DISTINCT key — without
+        it two offsets whose shifted clones happened to hash alike could
+        collide and serve stale comparison data.
+        """
         datasource = self._datasource
         extra_cache_keys = (
             datasource.get_extra_cache_keys(query_object.to_dict())
@@ -924,6 +932,8 @@ class AsyncQueryContextProcessor:
         )
 
         cache_dict = query_object.cache_key()
+        if time_offset is not None:
+            cache_dict["time_offset"] = time_offset
         cache_dict.update(
             {
                 "datasource": getattr(datasource, "uid", str(id(datasource))),
@@ -1737,6 +1747,29 @@ class AsyncQueryContextProcessor:
                 )
                 query_object_clone.row_offset = 0
 
+            # Per-offset cache (1:1 upstream): look up this offset's result
+            # under an offset-distinct key before recomputing. The key folds in
+            # the RESOLVED+original offset and the time grain so distinct offsets
+            # never collide. ``force`` bypasses the read (always recompute).
+            cached_time_offset_key = (
+                offset
+                if offset == original_offset
+                else f"{offset}_{original_offset}"
+            )
+            offset_cache_key = await self._get_cache_key(
+                query_object_clone,
+                time_offset=f"{cached_time_offset_key}|{time_grain}",
+            )
+            force = bool(getattr(self._query_context, "force", False))
+            cached_offset = (
+                None if force else await self._cache_get(offset_cache_key)
+            )
+            if isinstance(cached_offset, dict) and "df" in cached_offset:
+                offset_dfs[offset] = cached_offset["df"]
+                queries.append(cached_offset.get("query", ""))
+                cache_keys.append(offset_cache_key)
+                continue
+
             # Execute the shifted query. A failed offset query propagates (1:1
             # with the original, where ``datasource.query`` raises a build error
             # out of ``processing_time_offsets`` → the main query fails) instead
@@ -1773,6 +1806,15 @@ class AsyncQueryContextProcessor:
                     offset_metrics_df, query_object_clone
                 )
                 offset_metrics_df = offset_metrics_df.rename(columns=metrics_mapping)
+
+            # Cache the finalized (post-rename) offset df + query under the
+            # offset-distinct key so a force=False repeat is served from cache
+            # (1:1 upstream ``cache.set({"df": ..., "query": ...})``).
+            await self._cache_set(
+                offset_cache_key,
+                {"df": offset_metrics_df, "query": result.get("query", "")},
+                self._get_cache_timeout(),
+            )
 
             # Key by the RESOLVED offset so ``join_offset_dfs`` shifts the join
             # column by the real time delta.
