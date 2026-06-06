@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Hashable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -308,6 +309,21 @@ class BaseDatasource:
     catalog_perm = Column(String(1000))
     is_managed_externally = Column(Boolean, nullable=False, default=False)
     external_url = Column(Text, nullable=True)
+
+    def get_extra_cache_keys(
+        self,
+        query_obj: dict[str, Any],  # noqa: ARG002
+    ) -> list[Hashable]:
+        """If a datasource needs to provide additional keys for calculation of
+        cache keys, those can be provided via this method.
+
+        1:1 with ``BaseDatasource.get_extra_cache_keys`` in
+        ``superset_old/connectors/sqla/models.py`` (line 609).
+
+        :param query_obj: The dict representation of a query object
+        :return: list of keys
+        """
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -1556,7 +1572,9 @@ class SqlaTable(
 
         # SqlaTable-specific extensions (matches original .data property)
         data_["granularity_sqla"] = [(c, c) for c in self.dttm_cols]
-        data_["time_grain_sqla"] = []
+        data_["time_grain_sqla"] = [
+            (g.duration, g.name) for g in self.database.grains() or []
+        ]
         data_["main_dttm_col"] = self.main_dttm_col
         data_["fetch_values_predicate"] = self.fetch_values_predicate
         data_["template_params"] = self.template_params
@@ -1628,9 +1646,120 @@ class SqlaTable(
                 return col
         return None
 
-    def get_extra_cache_keys(self, query_dict: dict[str, Any]) -> list[str]:
-        """Return extra cache keys for per-query cache isolation."""
-        return []
+    def has_extra_cache_key_calls(self, query_obj: dict[str, Any]) -> bool:  # noqa: C901
+        """Detect calls to ``ExtraCache`` template methods in templatable items.
+
+        1:1 with ``SqlaTable.has_extra_cache_key_calls`` in
+        ``superset_old/connectors/sqla/models.py`` (line 1859). If any present,
+        the query must be evaluated to extract additional cache keys. This avoids
+        executing the (potentially expensive) template code unnecessarily.
+
+        :param query_obj: query object to analyze
+        :return: True if there are call(s) to an ``ExtraCache`` method
+        """
+        from superset.jinja_context import ExtraCache
+        from superset.utils.column import is_adhoc_column, is_adhoc_metric
+
+        templatable_statements: list[str] = []
+        if self.sql:
+            templatable_statements.append(self.sql)
+        if self.fetch_values_predicate:
+            templatable_statements.append(self.fetch_values_predicate)
+        extras = query_obj.get("extras", {})
+        if "where" in extras:
+            templatable_statements.append(extras["where"])
+        if "having" in extras:
+            templatable_statements.append(extras["having"])
+        if columns := query_obj.get("columns"):
+            calculated_columns: dict[str, Any] = {
+                c.column_name: c.expression for c in self.columns if c.expression
+            }
+            for column_ in columns:
+                if is_adhoc_column(column_):
+                    templatable_statements.append(
+                        column_.get("sqlExpression") or column_.get("sql_expression")
+                    )
+                elif isinstance(column_, str) and column_ in calculated_columns:
+                    templatable_statements.append(calculated_columns[column_])
+        if metrics := query_obj.get("metrics"):
+            metrics_by_name: dict[str, Any] = {
+                m.metric_name: m.expression for m in self.metrics
+            }
+            for metric in metrics:
+                if is_adhoc_metric(metric) and (
+                    sql := (
+                        metric.get("sqlExpression") or metric.get("sql_expression")
+                    )
+                ):
+                    templatable_statements.append(sql)
+                elif isinstance(metric, str) and metric in metrics_by_name:
+                    templatable_statements.append(metrics_by_name[metric])
+        if self.is_rls_supported:
+            templatable_statements += [
+                clause for clause in self._get_rls_clause_strings()
+            ]
+        for statement in templatable_statements:
+            if statement and ExtraCache.regex.search(statement):
+                return True
+        return False
+
+    def _get_rls_clause_strings(self) -> list[str]:
+        """Return the raw (untemplated) RLS clause strings for this table.
+
+        Sync port of the ``f.clause for f in security_manager.get_rls_filters``
+        iteration used by ``SqlaTable.has_extra_cache_key_calls`` /
+        ``get_extra_cache_keys`` in the original. Resolves the current user from
+        :func:`superset.utils.core.get_current_user` (set by auth middleware)
+        and reads the matching filters via the sync RLS getter.
+        """
+        from superset.utils.core import get_current_user
+        from superset.utils.rls import (
+            _sync_get_rls_filters_for_user,
+            _sync_resolve_user_role_ids,
+        )
+
+        user = get_current_user()
+        user_role_ids = _sync_resolve_user_role_ids(user)
+        if user_role_ids is None:
+            return []
+        return [
+            f.clause for f in _sync_get_rls_filters_for_user(self.id, user_role_ids)
+        ]
+
+    def get_extra_cache_keys(self, query_obj: dict[str, Any]) -> list[Hashable]:
+        """
+        The cache key of a SqlaTable needs to consider any keys added by the
+        parent class and any keys added via ``ExtraCache``.
+
+        For virtual datasets, RLS predicates are included in the cache key to
+        ensure users with different RLS rules get different cached results.
+
+        1:1 with ``SqlaTable.get_extra_cache_keys`` in
+        ``superset_old/connectors/sqla/models.py`` (line 1909).
+
+        :param query_obj: query object to analyze
+        :return: The extra cache keys
+        """
+        from superset.utils.rls import collect_rls_predicates_for_sql
+
+        extra_cache_keys = super().get_extra_cache_keys(query_obj)
+        if self.has_extra_cache_key_calls(query_obj):
+            sqla_query = self.get_sqla_query(**query_obj)
+            extra_cache_keys += sqla_query.extra_cache_keys
+
+        # For virtual datasets, include RLS predicates in the cache key
+        if self.is_virtual and self.sql:
+            default_schema = self.database.get_default_schema(self.catalog)
+            rls_predicates = collect_rls_predicates_for_sql(
+                self.sql,
+                self.database,
+                self.catalog,
+                self.schema or default_schema or "",
+            )
+            # Add each predicate as a separate cache key component
+            extra_cache_keys.extend(rls_predicates)
+
+        return list(set(extra_cache_keys))
 
     # -- AST hooks used by helpers.ExploreMixin.get_sqla_query --------------
 
@@ -2511,7 +2640,7 @@ class SqlaTable(
                 the WHERE clause.
         """
         from sqlalchemy import and_
-        from sqlalchemy.sql import literal_column, text as sa_text
+        from sqlalchemy.sql import text as sa_text
         from sqlalchemy.sql.elements import ClauseElement
 
         # Denormalize the column name before querying for values unless disabled
@@ -2529,17 +2658,29 @@ class SqlaTable(
 
         target_col = cols[column_name]
 
-        # Respect calculated columns: use ``expression`` when present,
-        # otherwise quote the physical column name.  ``literal_column``
-        # carries the verbatim expression while the ``.label("column_values")``
-        # alias is rendered with engine-correct quoting at compile time.
-        col_expr = getattr(target_col, "expression", None)
-        if col_expr:
-            select_col = literal_column(col_expr).label("column_values")
-        else:
-            select_col = literal_column(self._quote_identifier(column_name)).label(
-                "column_values"
+        # Build a single template processor up-front and reuse it for both the
+        # SELECT column and the fetch-values predicate — 1:1 with original
+        # ``helpers.values_for_column`` (line 1570) which creates ``tp`` once
+        # via ``self.get_template_processor()`` and threads it through
+        # ``get_sqla_col`` / ``get_fetch_values_predicate``.
+        from superset.jinja_context import get_template_processor
+
+        processor = get_template_processor(database=self.database, table=self)
+
+        # Use ``TableColumn.get_sqla_col`` so calculated columns get their
+        # ``expression`` run through Jinja templating (e.g. macros referencing
+        # ``{{ current_user_id() }}``) exactly like the original which uses
+        # ``target_col.get_sqla_col(template_processor=tp).label(...)``.
+        # ``process_template`` is pure CPU/Jinja work with no I/O, so it is
+        # safe to run inside this coroutine; hand it to a worker thread to
+        # match how the other sync helpers are invoked from the async path.
+        select_col = (
+            await asyncio.to_thread(
+                target_col.get_sqla_col,
+                None,
+                processor,
             )
+        ).label("column_values")
 
         # Resolve the FROM clause as a native SQLAlchemy AST node.
         # For virtual datasets this may produce a CTE that has to be
@@ -2572,9 +2713,6 @@ class SqlaTable(
             # so calling it from async code is safe; we still wrap it
             # in ``asyncio.to_thread`` to match how other long-running
             # sync helpers are invoked from the async pipeline.
-            from superset.jinja_context import get_template_processor
-
-            processor = get_template_processor(database=self.database, table=self)
             fvp_processed = await asyncio.to_thread(processor.process_template, fvp)
             where_clauses.append(sa_text(f"({fvp_processed})"))
 
@@ -2613,6 +2751,19 @@ class SqlaTable(
         # Prepend the CTE (if any) so engines that disallow CTEs
         # inside a subquery still execute a well-formed statement.
         sql = self._apply_cte(sql, cte_sql)
+
+        # Apply the user-defined ``SQL_QUERY_MUTATOR`` config hook — 1:1 with
+        # original ``helpers.values_for_column`` (line 1594)
+        # ``self.database.mutate_sql_based_on_config(sql)``. Sync/CPU work, so
+        # dispatched to a worker thread like the other sync DB helpers.
+        sql = await asyncio.to_thread(self.database.mutate_sql_based_on_config, sql)
+
+        # ``literal_binds`` rendering doubles literal percent signs on dialects
+        # whose identifier preparer escapes them (``%`` -> ``%%``); undo this
+        # so the executed SQL matches the user's intent — 1:1 with original
+        # ``helpers.values_for_column`` (lines 1597-1598).
+        if dialect.identifier_preparer._double_percents:  # noqa: SLF001
+            sql = sql.replace("%%", "%")
 
         df = await self._execute_sql(sql)
         if df.empty or "column_values" not in df.columns:
