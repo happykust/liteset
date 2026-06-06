@@ -295,6 +295,22 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
                 )
             )
 
+        # A REPORT (as opposed to an ALERT) must not carry a database
+        # reference. 1:1 with the original ``@validates_schema
+        # validate_report_references`` (superset_old/reports/schemas.py:265-275)
+        # which raises ``{"database": ["Database reference is not allowed on a
+        # report"]}`` for ``type == REPORT`` payloads containing a ``database``.
+        if (
+            report_type == ReportScheduleType.REPORT.value
+            and self._data.get("database") is not None
+        ):
+            exceptions.append(
+                ReportScheduleValidationError(
+                    "Database reference is not allowed on a report",
+                    field_name="database",
+                )
+            )
+
         # Validate if DB exists (for alerts)
         if report_type == ReportScheduleType.ALERT.value:
             database_id = self._data.get("database")

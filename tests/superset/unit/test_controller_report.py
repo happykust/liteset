@@ -133,6 +133,54 @@ async def test_create_report_success(mock_dao, mock_report):
     mock_dao.create.assert_awaited_once()
 
 
+async def test_create_report_rejects_database_reference(mock_dao):
+    """A REPORT-type payload carrying a database must be rejected.
+
+    1:1 with upstream ``validate_report_references``
+    (superset_old/reports/schemas.py:265-275) → field-keyed
+    ``{"database": ["Database reference is not allowed on a report"]}``.
+    """
+    from superset.commands.report_exceptions import ReportScheduleInvalidError
+
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
+    mock_dao.validate_unique_creation_method = AsyncMock(return_value=True)
+    cmd = CreateReportScheduleCommand(
+        dao=mock_dao,
+        data={
+            "name": "Test Report",
+            "type": "Report",
+            "crontab": "0 * * * *",
+            "chart": 1,
+            "database": 5,
+        },
+        user_id=1,
+    )
+    with pytest.raises(ReportScheduleInvalidError) as exc_info:
+        await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert messages["database"] == ["Database reference is not allowed on a report"]
+
+
+async def test_create_report_without_database_allowed(mock_dao):
+    """A REPORT-type payload with no database reference is fine."""
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
+    mock_dao.validate_unique_creation_method = AsyncMock(return_value=True)
+    cmd = CreateReportScheduleCommand(
+        dao=mock_dao,
+        data={
+            "name": "Test Report",
+            "type": "Report",
+            "crontab": "0 * * * *",
+            "chart": 1,
+            "database": None,
+        },
+        user_id=1,
+    )
+    # Must not raise on the database-reference rule (chart is set so the
+    # chart/dashboard rule passes too).
+    await cmd.validate()
+
+
 # --- UpdateReportScheduleCommand ---
 
 

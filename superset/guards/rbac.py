@@ -104,6 +104,31 @@ def deny_anon_with_404(
         raise NotFoundException(detail="Not found")
 
 
+def require_feature_flag(feature: str) -> GuardFn:
+    """Guard factory that hides a route with 404 when *feature* is disabled.
+
+    1:1 with the original FAB ``@before_request ensure_*_enabled`` hooks
+    (e.g. ``superset_old/reports/api.py:69-73`` and
+    ``superset_old/reports/logs/api.py:38-41``) which return
+    ``self.response_404()`` when ``is_feature_enabled(<feature>)`` is False.
+
+    Applied at the controller level, it gates *every* route on the
+    controller — exactly like ``@before_request`` did.
+    """
+
+    def guard_fn(
+        connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandler
+    ) -> None:
+        from litestar.exceptions import NotFoundException
+
+        from superset.utils.feature_flags import feature_flag_manager
+
+        if not feature_flag_manager.is_feature_enabled(feature):
+            raise NotFoundException(detail="Not found")
+
+    return guard_fn
+
+
 def require_permission(action: str, resource: str) -> GuardFn:
     permission_tuple = (action, resource)
 

@@ -42,7 +42,7 @@ from superset.controllers.base import (
 )
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError
-from superset.guards.rbac import require_permission
+from superset.guards.rbac import require_feature_flag, require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_report_dao
 from superset.schemas.report import (
@@ -292,6 +292,10 @@ _LIST_COLUMNS = [
 class ReportScheduleController(Controller):
     path = "/api/v1/report"
     tags = ["Report Schedule"]
+    # 1:1 with the original ``@before_request ensure_alert_reports_enabled``
+    # (superset_old/reports/api.py:69-73): every report endpoint returns 404
+    # when the ALERT_REPORTS feature flag is disabled.
+    guards = [require_feature_flag("ALERT_REPORTS")]
     dependencies = {
         "dao": Provide(provide_report_dao, sync_to_thread=False),
         "rison_params": Provide(provide_rison_query),

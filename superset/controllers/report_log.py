@@ -28,7 +28,7 @@ from superset.controllers.base import (
     serialize_list_response,
 )
 from superset.exceptions import ObjectNotFoundError
-from superset.guards.rbac import require_permission
+from superset.guards.rbac import require_feature_flag, require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_report_execution_log_dao
 
@@ -48,6 +48,10 @@ _LIST_COLUMNS = [
 class ReportExecutionLogController(Controller):
     path = "/api/v1/report/{pk:int}/log"
     tags = ["Report Execution Log"]
+    # 1:1 with the original ``@before_request ensure_alert_reports_enabled``
+    # (superset_old/reports/logs/api.py:38-41): every report-log endpoint
+    # returns 404 when the ALERT_REPORTS feature flag is disabled.
+    guards = [require_feature_flag("ALERT_REPORTS")]
     dependencies = {
         "dao": Provide(provide_report_execution_log_dao, sync_to_thread=False),
         "rison_params": Provide(provide_rison_query),
