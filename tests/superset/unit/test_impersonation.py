@@ -147,3 +147,110 @@ def test_get_sync_engine_no_impersonation_when_disabled(monkeypatch: Any) -> Non
         pass
 
     assert "user" not in (captured.get("connect_args") or {})
+
+
+def test_get_sync_engine_preserves_password_when_impersonating(
+    monkeypatch: Any,
+) -> None:
+    """Regression: the impersonation URL round-trip must NOT mask the password.
+
+    ``str(URL)`` renders the password as ``***``; the wiring must use
+    ``render_as_string(hide_password=False)`` so a password-bearing DB still
+    authenticates under impersonation.
+    """
+    import superset.utils.database as ud
+    from superset.utils.core import get_username, set_current_user
+
+    captured: dict[str, Any] = {}
+
+    def _spy(uri: Any, **kw: Any) -> Any:
+        captured["uri"] = str(uri)
+
+        class _E:
+            url = make_url(str(uri))
+
+            def dispose(self) -> None:
+                pass
+
+        return _E()
+
+    monkeypatch.setattr(ud, "create_engine", _spy)
+
+    class _DB:
+        sqlalchemy_uri = "trino://svc:secretpass@localhost:8085/tpch"
+        sqlalchemy_uri_decrypted = sqlalchemy_uri
+        impersonate_user = True
+        db_engine_spec = _spec("trino")
+
+        def get_extra(self) -> dict[str, Any]:
+            return {}
+
+        def get_effective_user(self, url: Any) -> str | None:
+            return get_username() or (url.username if self.impersonate_user else None)
+
+    class _User:
+        username = "alice"
+
+    set_current_user(_User())
+    try:
+        with ud.get_sync_engine(_DB()):
+            pass
+    finally:
+        set_current_user(None)
+
+    assert "secretpass" in captured["uri"]
+    assert "***" not in captured["uri"]
+
+
+def test_impersonate_with_email_prefix(monkeypatch: Any) -> None:
+    """IMPERSONATE_WITH_EMAIL_PREFIX rewrites the effective user to the email
+    local-part (1:1 upstream get_sqla_engine)."""
+    import superset.utils.database as ud
+    from superset.utils.core import get_username, set_current_user
+    from superset.utils.feature_flags import feature_flag_manager
+
+    captured: dict[str, Any] = {}
+
+    def _spy(uri: Any, **kw: Any) -> Any:
+        captured["connect_args"] = kw.get("connect_args")
+
+        class _E:
+            url = make_url(str(uri))
+
+            def dispose(self) -> None:
+                pass
+
+        return _E()
+
+    monkeypatch.setattr(ud, "create_engine", _spy)
+
+    class _DB:
+        sqlalchemy_uri = "trino://svc@localhost:8085/tpch"
+        sqlalchemy_uri_decrypted = sqlalchemy_uri
+        impersonate_user = True
+        db_engine_spec = _spec("trino")
+
+        def get_extra(self) -> dict[str, Any]:
+            return {}
+
+        def get_effective_user(self, url: Any) -> str | None:
+            return get_username() or (url.username if self.impersonate_user else None)
+
+    class _User:
+        username = "alice"
+        email = "bob.smith@corp.com"
+
+    set_current_user(_User())
+    try:
+        feature_flag_manager.init_from_config({"IMPERSONATE_WITH_EMAIL_PREFIX": False})
+        with ud.get_sync_engine(_DB()):
+            pass
+        assert captured["connect_args"]["user"] == "alice"
+
+        feature_flag_manager.init_from_config({"IMPERSONATE_WITH_EMAIL_PREFIX": True})
+        with ud.get_sync_engine(_DB()):
+            pass
+        assert captured["connect_args"]["user"] == "bob.smith"
+    finally:
+        feature_flag_manager.init_from_config({"IMPERSONATE_WITH_EMAIL_PREFIX": False})
+        set_current_user(None)

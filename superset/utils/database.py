@@ -82,6 +82,37 @@ def get_engine_spec_for_database(database: Any) -> type[BaseAsyncEngineSpec]:
     return get_async_engine_spec(backend)
 
 
+def _impersonation_username(effective: str | None) -> str | None:
+    """Apply ``IMPERSONATE_WITH_EMAIL_PREFIX`` to an effective username.
+
+    1:1 with upstream ``Database.get_sqla_engine`` (``superset_old/models/core.py``):
+    when the feature flag is on, the effective username is rewritten to the
+    local-part of the user's email. Upstream looks the user up by username;
+    the port resolves the *current request* user's email directly via the
+    user context-var (``get_user_email``) — which is exactly where
+    ``Database.get_effective_user`` sourced the username from
+    (``get_username()``), so the two agree whenever impersonation targets the
+    logged-in user.
+    """
+    if not effective:
+        return effective
+    try:
+        from superset.utils.feature_flags import feature_flag_manager
+
+        if not feature_flag_manager.is_feature_enabled(
+            "IMPERSONATE_WITH_EMAIL_PREFIX"
+        ):
+            return effective
+        from superset.utils.core import get_user_email
+
+        email = get_user_email()
+        if email:
+            return email.split("@")[0]
+    except Exception:  # noqa: BLE001
+        pass
+    return effective
+
+
 def _to_sync_uri(uri: str) -> str:
     """Convert an async SQLAlchemy URI to its sync equivalent.
 
@@ -193,7 +224,7 @@ def get_sync_engine(
                     catalog=catalog,
                     schema=schema,
                 )
-                sync_uri = str(adjusted_url)
+                sync_uri = adjusted_url.render_as_string(hide_password=False)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("adjust_engine_params skipped for sync engine: %s", exc)
 
@@ -210,7 +241,9 @@ def get_sync_engine(
                 spec = getattr(database, "db_engine_spec", None)
                 if spec is not None and hasattr(spec, "impersonate_user"):
                     url_obj = make_url(sync_uri)
-                    effective = database.get_effective_user(url_obj)
+                    effective = _impersonation_username(
+                        database.get_effective_user(url_obj)
+                    )
                     url_obj, _ek = spec.impersonate_user(
                         database,
                         effective,
@@ -218,7 +251,7 @@ def get_sync_engine(
                         url_obj,
                         {"connect_args": connect_args},
                     )
-                    sync_uri = str(url_obj)
+                    sync_uri = url_obj.render_as_string(hide_password=False)
                     connect_args = _ek.get("connect_args", connect_args)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("impersonation skipped for sync engine: %s", exc)
@@ -288,11 +321,13 @@ async def get_async_connection(
             sync_spec = getattr(database, "db_engine_spec", None)
             if sync_spec is not None and hasattr(sync_spec, "impersonate_user"):
                 url_obj = make_url(adjusted_uri)
-                effective = database.get_effective_user(url_obj)
+                effective = _impersonation_username(
+                    database.get_effective_user(url_obj)
+                )
                 url_obj, _ek = sync_spec.impersonate_user(
                     database, effective, None, url_obj, {"connect_args": connect_args}
                 )
-                adjusted_uri = str(url_obj)
+                adjusted_uri = url_obj.render_as_string(hide_password=False)
                 connect_args = _ek.get("connect_args", connect_args)
         except Exception as exc:  # noqa: BLE001
             logger.debug("impersonation skipped for async connection: %s", exc)
