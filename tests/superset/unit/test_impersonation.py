@@ -24,6 +24,7 @@ wiring that runs queries as the effective user.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock
 
 from sqlalchemy.engine import make_url
 
@@ -254,3 +255,101 @@ def test_impersonate_with_email_prefix(monkeypatch: Any) -> None:
     finally:
         feature_flag_manager.init_from_config({"IMPERSONATE_WITH_EMAIL_PREFIX": False})
         set_current_user(None)
+
+
+# --- OAuth2 access-token resolution for impersonation (#3) ---------------------
+
+
+def _token(access: str | None, exp_delta_h: int, refresh: str | None):
+    from datetime import datetime, timedelta
+
+    t = MagicMock()
+    t.access_token = access
+    t.access_token_expiration = datetime.now() + timedelta(hours=exp_delta_h)
+    t.refresh_token = refresh
+    return t
+
+
+def _sync_session_cm(one_or_none_value):
+    sess = MagicMock()
+    sess.query.return_value.filter_by.return_value.one_or_none.return_value = (
+        one_or_none_value
+    )
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=sess)
+    cm.__exit__ = MagicMock(return_value=False)
+    return cm, sess
+
+
+def test_sync_oauth2_token_valid_returned() -> None:
+    from unittest.mock import patch
+
+    from superset.utils.oauth2 import sync_get_oauth2_access_token
+
+    cm, _ = _sync_session_cm(_token("TOK123", +1, None))
+    with patch("superset.db.session.get_sync_session", return_value=cm):
+        assert sync_get_oauth2_access_token({}, 5, 1, MagicMock()) == "TOK123"
+
+
+def test_sync_oauth2_token_expired_no_refresh_deletes() -> None:
+    from unittest.mock import patch
+
+    from superset.utils.oauth2 import sync_get_oauth2_access_token
+
+    cm, sess = _sync_session_cm(_token("OLD", -1, None))
+    with patch("superset.db.session.get_sync_session", return_value=cm):
+        assert sync_get_oauth2_access_token({}, 5, 1, MagicMock()) is None
+    assert sess.delete.called
+
+
+def test_sync_oauth2_token_missing_returns_none() -> None:
+    from unittest.mock import patch
+
+    from superset.utils.oauth2 import sync_get_oauth2_access_token
+
+    cm, _ = _sync_session_cm(None)
+    with patch("superset.db.session.get_sync_session", return_value=cm):
+        assert sync_get_oauth2_access_token({}, 5, 1, MagicMock()) is None
+
+
+def test_sync_oauth2_resolver_gating() -> None:
+    """_sync_oauth2_access_token only resolves when oauth2-config + a user exist."""
+    from unittest.mock import patch
+
+    import superset.utils.database as ud
+    from superset.utils.core import set_current_user
+
+    spec = _spec("trino")
+
+    class _NonOAuthDB:
+        id = 1
+
+        def get_oauth2_config(self):
+            return None
+
+    # No OAuth2 config → None (no resolver call).
+    assert ud._sync_oauth2_access_token(_NonOAuthDB(), spec) is None
+
+    class _OAuthDB:
+        id = 2
+
+        def get_oauth2_config(self):
+            return {"id": "client"}
+
+    class _User:
+        id = 1
+        username = "alice"
+
+    # OAuth2 config + bound user → delegates to sync_get_oauth2_access_token.
+    set_current_user(_User())
+    try:
+        with patch(
+            "superset.utils.oauth2.sync_get_oauth2_access_token",
+            return_value="BEARER",
+        ):
+            assert ud._sync_oauth2_access_token(_OAuthDB(), spec) == "BEARER"
+    finally:
+        set_current_user(None)
+
+    # OAuth2 config but no bound user → None.
+    assert ud._sync_oauth2_access_token(_OAuthDB(), spec) is None

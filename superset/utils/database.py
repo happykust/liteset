@@ -113,6 +113,35 @@ def _impersonation_username(effective: str | None) -> str | None:
     return effective
 
 
+def _sync_oauth2_access_token(database: Any, spec: Any) -> str | None:
+    """Resolve the current user's OAuth2 access token for ``database`` (sync).
+
+    1:1 with upstream ``Database.get_sqla_engine``: when the database carries an
+    OAuth2 client config and a current user is bound, fetch the stored per-user
+    token so it can be threaded into impersonation (e.g. the Trino Bearer
+    ``http_session``). Returns ``None`` when the database isn't OAuth2, no user
+    is bound, or no valid token exists — impersonation then proceeds tokenless.
+    """
+    try:
+        get_config = getattr(database, "get_oauth2_config", None)
+        oauth2_config = get_config() if get_config else None
+        if not oauth2_config:
+            return None
+        from superset.utils.core import get_user_id
+
+        user_id = get_user_id()
+        if user_id is None:
+            return None
+        from superset.utils.oauth2 import sync_get_oauth2_access_token
+
+        return sync_get_oauth2_access_token(
+            oauth2_config, database.id, user_id, spec
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("OAuth2 access-token resolution skipped: %s", exc)
+        return None
+
+
 def _to_sync_uri(uri: str) -> str:
     """Convert an async SQLAlchemy URI to its sync equivalent.
 
@@ -244,10 +273,11 @@ def get_sync_engine(
                     effective = _impersonation_username(
                         database.get_effective_user(url_obj)
                     )
+                    access_token = _sync_oauth2_access_token(database, spec)
                     url_obj, _ek = spec.impersonate_user(
                         database,
                         effective,
-                        None,
+                        access_token,
                         url_obj,
                         {"connect_args": connect_args},
                     )
@@ -312,8 +342,11 @@ async def get_async_connection(
     # Impersonation (1:1 upstream ``Database.get_sqla_engine``): rewrite the
     # URL / connect_args to run as the effective user. The impersonation hook
     # lives on the *sync* engine spec (it's a pure URL/connect_args transform,
-    # driver-agnostic), so use ``database.db_engine_spec``. OAuth2 access_token
-    # is not threaded here (deferred).
+    # driver-agnostic), so use ``database.db_engine_spec``. The OAuth2
+    # access_token is intentionally NOT resolved here: every OAuth2-impersonation
+    # engine (Trino/BigQuery/Snowflake/Databricks/GSheets) is sync-only and
+    # connects via ``get_sync_engine`` (where the token IS threaded). An async
+    # driver implies a non-OAuth2 backend (postgres/mysql), so None is correct.
     if getattr(database, "impersonate_user", False):
         try:
             from sqlalchemy.engine import make_url

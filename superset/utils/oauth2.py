@@ -421,6 +421,61 @@ async def refresh_oauth2_token(
         return token.access_token
 
 
+def sync_get_oauth2_access_token(
+    config: "OAuth2ClientConfig",  # noqa: ARG001
+    database_id: int,
+    user_id: int,
+    db_engine_spec: type["BaseEngineSpec"],  # noqa: ARG001
+) -> str | None:
+    """Synchronous OAuth2 access-token lookup for the connection path.
+
+    Mirrors the valid-token + stale-delete branches of upstream's (originally
+    synchronous) ``get_oauth2_access_token``, reading
+    ``database_user_oauth2_tokens`` via the sync metadata session
+    (``get_sync_session`` / psycopg2). Used by :func:`get_sync_engine` to
+    thread a per-user OAuth2 Bearer into impersonation — the OAuth2 engines
+    (Trino / BigQuery / Snowflake / Databricks / GSheets) are sync-only, so
+    this is the connection path that matters.
+
+    Deferred (1 sub-piece): silent refresh of an expired-but-refreshable token.
+    Upstream refreshes it inline; in the port that path is async-only
+    (``BaseEngineSpec.get_oauth2_fresh_token`` + the async
+    ``KeyValueDistributedLock``) and can't be driven safely from this sync
+    context. An expired token therefore returns ``None`` → re-triggering the
+    OAuth2 dance, the same fallback upstream takes when no refresh token
+    exists. ``config``/``db_engine_spec`` are accepted for signature parity
+    with the async resolver (and for a future sync refresh).
+    """
+    # pylint: disable=import-outside-toplevel
+    from superset.db.session import get_sync_session
+    from superset.models.core import DatabaseUserOAuth2Tokens
+
+    try:
+        with get_sync_session() as session:
+            token = (
+                session.query(DatabaseUserOAuth2Tokens)
+                .filter_by(user_id=user_id, database_id=database_id)
+                .one_or_none()
+            )
+            if token is None:
+                return None
+            if (
+                token.access_token
+                and token.access_token_expiration
+                and datetime.now() < token.access_token_expiration
+            ):
+                return token.access_token
+            # Expired and no sync refresh available: drop a non-refreshable
+            # row (1:1 upstream) so the OAuth2 dance re-triggers.
+            if not token.refresh_token:
+                session.delete(token)
+                session.commit()
+            return None
+    except Exception:  # noqa: BLE001
+        logger.debug("sync OAuth2 access-token lookup failed", exc_info=True)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # OAuth2 dance trigger (1:1 with original ``check_for_oauth2``)
 # ---------------------------------------------------------------------------
