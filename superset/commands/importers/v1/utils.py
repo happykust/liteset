@@ -294,6 +294,106 @@ async def _existing_database_secrets(
     return db_passwords, ssh_passwords, ssh_pkeys, ssh_pk_passwords
 
 
+def _validate_database_masked_credentials(  # noqa: C901
+    config: dict[str, Any],
+    file_name: str,
+    existing_uuids: dict[str, str],
+) -> None:
+    """Raise :class:`CommandInvalidError` when a NEW database bundle entry
+    contains masked passwords / SSH-tunnel credentials without real values.
+
+    1:1 port of the Marshmallow ``@validates_schema`` methods
+    ``validate_password`` and ``validate_ssh_tunnel_credentials`` from
+    ``superset_old/databases/schemas.py:873-946``.
+
+    Only applies to databases that do NOT already exist (existing entries
+    keep their stored secrets — the caller splices those in before calling
+    this function).  ``existing_uuids`` is the UUID→password dict built
+    from the current DB rows in :func:`_existing_database_secrets`.
+    """
+    uuid = config.get("uuid")
+    if uuid and str(uuid) in existing_uuids:
+        # Database already exists — keep stored secrets, no validation needed.
+        return
+
+    # validate_password: if the URI's embedded password is the mask and no
+    # explicit ``password`` override was provided in the request, reject.
+    from superset.databases.utils import make_url_safe
+
+    try:
+        uri_password = make_url_safe(config.get("sqlalchemy_uri", "")).password
+    except Exception:  # noqa: BLE001
+        uri_password = None
+    if uri_password == _PASSWORD_MASK and config.get("password") is None:
+        raise CommandInvalidError(
+            {file_name: {"password": ["Must provide a password for the database"]}}
+        )
+
+    # validate_ssh_tunnel_credentials: check SSH tunnel credential masking.
+    ssh_tunnel = config.get("ssh_tunnel")
+    if not ssh_tunnel:
+        return
+
+    try:
+        from superset.utils.feature_flags import feature_flag_manager
+
+        if not feature_flag_manager.is_feature_enabled("SSH_TUNNELING"):
+            from superset.commands.database.ssh_tunnel.exceptions import (
+                SSHTunnelingNotEnabledError,
+            )
+
+            raise SSHTunnelingNotEnabledError()
+    except ImportError:
+        pass
+
+    password = ssh_tunnel.get("password")
+    private_key = ssh_tunnel.get("private_key")
+    private_key_password = ssh_tunnel.get("private_key_password")
+
+    if password is not None:
+        # Login method #1 (password) — must not mix with key-based method.
+        if private_key is not None or private_key_password is not None:
+            from superset.commands.database.ssh_tunnel.exceptions import (
+                SSHTunnelInvalidCredentials,
+            )
+
+            raise SSHTunnelInvalidCredentials()
+        if password == _PASSWORD_MASK:
+            raise CommandInvalidError(
+                {
+                    file_name: {
+                        "ssh_tunnel": {
+                            "password": [
+                                "Must provide a password for the ssh tunnel"
+                            ]
+                        }
+                    }
+                }
+            )
+    else:
+        # Login method #2 (private key + key password).
+        if private_key is None and private_key_password is None:
+            from superset.commands.database.ssh_tunnel.exceptions import (
+                SSHTunnelMissingCredentials,
+            )
+
+            raise SSHTunnelMissingCredentials()
+
+        exception_messages: list[str] = []
+        if private_key is None or private_key == _PASSWORD_MASK:
+            exception_messages.append(
+                "Must provide a private key for the ssh tunnel"
+            )
+        if private_key_password is None or private_key_password == _PASSWORD_MASK:
+            exception_messages.append(
+                "Must provide a private key password for the ssh tunnel"
+            )
+        if exception_messages:
+            raise CommandInvalidError(
+                {file_name: {"ssh_tunnel": exception_messages}}
+            )
+
+
 async def load_configs(  # noqa: C901
     contents: dict[str, str],
     schemas: dict[str, SchemaCallable],
@@ -389,6 +489,17 @@ async def load_configs(  # noqa: C901
                 config["data"] = _normalize_example_data_url(config["data"])
 
             schema(config)
+
+            # Masked-credential validation for database bundles.
+            # 1:1 with ``ImportV1DatabaseSchema.validate_password`` and
+            # ``validate_ssh_tunnel_credentials`` from
+            # ``superset_old/databases/schemas.py``.
+            # Only applies to NEW databases (existing ones keep stored secrets).
+            if prefix == "databases":
+                _validate_database_masked_credentials(
+                    config, file_name, db_passwords
+                )
+
             configs[file_name] = config
         except CommandInvalidError as exc:
             logger.error(

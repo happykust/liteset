@@ -44,16 +44,12 @@ class UpdateRLSRuleCommand(AsyncBaseCommand[Any]):
         self._dao = dao
         self._model_id = model_id
         self._properties = dict(data)
-        self._tables = (
-            list(self._properties["tables"])
-            if "tables" in self._properties and self._properties["tables"] is not None
-            else None
-        )
-        self._roles = (
-            list(self._properties["roles"])
-            if "roles" in self._properties and self._properties["roles"] is not None
-            else None
-        )
+        # 1:1 with the original: default to [] when the key is absent, so that
+        # an omitted field clears the collection (full-replace semantics, not
+        # partial-patch). The original uses ``self._properties.get("tables", [])``
+        # and ``self._properties.get("roles", [])`` unconditionally.
+        self._tables: list[Any] = list(self._properties.get("tables") or [])
+        self._roles: list[Any] = list(self._properties.get("roles") or [])
         self._model: Any = None
 
     async def validate(self) -> None:
@@ -61,40 +57,33 @@ class UpdateRLSRuleCommand(AsyncBaseCommand[Any]):
         if not self._model:
             raise RLSRuleNotFoundError()
 
-        # Eager-load the M2M relationships that ``run()`` re-assigns. Without
-        # this, ``dao.update``'s ``setattr(model, "roles", [...])`` triggers
-        # SA's diff-load of the existing collection — a sync SELECT under
-        # asyncpg → MissingGreenlet 500. Only refresh the ones the caller
-        # is actually replacing. See [[sa-lazy-load-on-transient-asyncpg]].
-        to_refresh = [
-            attr
-            for attr, supplied in (("roles", self._roles), ("tables", self._tables))
-            if supplied is not None
-        ]
-        if to_refresh:
-            await self._dao.session.refresh(self._model, to_refresh)
+        # Eager-load both M2M relationships before re-assigning them.
+        # Without this, ``dao.update``'s ``setattr(model, "roles", [...])``
+        # triggers SA's diff-load of the existing collection — a sync SELECT
+        # under asyncpg → MissingGreenlet 500.
+        # See [[sa-lazy-load-on-transient-asyncpg]].
+        await self._dao.session.refresh(self._model, ["roles", "tables"])
 
-        # Only resolve roles/tables when the caller actually sent them —
-        # ``RLSPutSchema`` lets clients PATCH a subset of fields.
-        if self._roles is not None:
-            self._properties["roles"] = await populate_roles(
-                self._dao.session, self._roles
-            )
-        if self._tables is not None:
-            # Resolve dataset ids to ``SqlaTable`` objects — inlined from the
-            # legacy sync ``UpdateRLSRuleCommand.validate``.  Raises
-            # :class:`DatasourceNotFoundValidationError` if any of the
-            # requested ids does not exist.
-            from superset.models.connectors import SqlaTable
+        # Resolve role names/ids to Role ORM objects — 1:1 with the original
+        # ``populate_roles(self._roles)`` call in validate().
+        self._properties["roles"] = await populate_roles(
+            self._dao.session, self._roles
+        )
 
-            tables: list[Any] = []
-            if self._tables:
-                stmt = select(SqlaTable).where(SqlaTable.id.in_(self._tables))
-                result = await self._dao.session.execute(stmt)
-                tables = list(result.scalars().all())
-                if len(tables) != len(self._tables):
-                    raise DatasourceNotFoundValidationError()
-            self._properties["tables"] = tables
+        # Resolve dataset ids to ``SqlaTable`` objects — inlined from the
+        # legacy sync ``UpdateRLSRuleCommand.validate``.  Raises
+        # :class:`DatasourceNotFoundValidationError` if any of the
+        # requested ids does not exist.
+        from superset.models.connectors import SqlaTable
+
+        tables: list[Any] = []
+        if self._tables:
+            stmt = select(SqlaTable).where(SqlaTable.id.in_(self._tables))
+            result = await self._dao.session.execute(stmt)
+            tables = list(result.scalars().all())
+            if len(tables) != len(self._tables):
+                raise DatasourceNotFoundValidationError()
+        self._properties["tables"] = tables
 
     async def run(self) -> Any:
         return await self._dao.update(self._model, self._properties)

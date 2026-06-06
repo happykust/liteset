@@ -171,12 +171,26 @@ async def test_update_rls_not_found(mock_dao: AsyncMock) -> None:
         await cmd.validate()
 
 
-async def test_update_rls_resolves_only_supplied_relations(
+async def test_update_rls_replaces_both_collections(
     mock_dao: AsyncMock,
 ) -> None:
+    """1:1 with upstream: both ``tables`` and ``roles`` are always replaced.
+
+    When the PUT omits ``tables``, the original defaults it to ``[]`` and
+    replaces the collection with an empty list (full-replace semantics, not
+    partial-patch).  The port previously kept stale tables when the key was
+    absent — this test verifies the fix.
+
+    See ``superset_old/commands/security/update.py`` lines 38-39:
+        ``self._tables = self._properties.get("tables", [])``
+        ``self._roles = self._properties.get("roles", [])``
+    """
     existing = MagicMock(id=1)
     mock_dao.find_by_id = AsyncMock(return_value=existing)
     role = MagicMock(id=2)
+    # First execute(): populate_roles (Roles); second execute(): tables (empty list
+    # because tables not supplied → _tables=[] → no IN query → execute not called
+    # for tables).  populate_roles calls execute for Role lookup.
     mock_dao.session.execute = _execute_returning([role])
     mock_dao.update = AsyncMock(return_value=existing)
 
@@ -190,8 +204,8 @@ async def test_update_rls_resolves_only_supplied_relations(
     assert update_args[0] is existing
     payload = update_args[1]
     assert payload["roles"] == [role]
-    # ``tables`` was not supplied — it must remain absent in the payload
-    assert "tables" not in payload
+    # ``tables`` was not supplied — original defaults to [] and always writes it.
+    assert payload["tables"] == []
 
 
 # ---------------------------------------------------------------------------
