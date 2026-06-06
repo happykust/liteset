@@ -723,27 +723,26 @@ class ExploreMixin:
 
     def get_sqla_row_level_filters(
         self,
-        template_processor: Any | None = None,
+        template_processor: Any | None = None,  # noqa: ARG002
     ) -> list[TextClause]:
-        """Synchronous RLS hook used by SQL Lab pipelines.
+        """RLS hook for ``ExploreMixin``-only datasources (SQL Lab Query).
 
-        Delegates to :func:`superset.utils.rls.compose_rls_text_clauses`
-        which mirrors the original
-        ``superset_old.connectors.sqla.models.BaseDatasource.get_sqla_row_level_filters``
-        (group_key OR-within / AND-across, Jinja templating,
-        ``EMBEDDED_SUPERSET`` guest RLS).
+        1:1 with
+        ``superset_old.models.helpers.ExploreMixin.get_sqla_row_level_filters``
+        (line 823): RLS is *not* applicable for datasources of type
+        ``query`` (a SQL Lab result), so this returns an empty list.
 
-        The async chart-data pipeline uses
-        :func:`superset.utils.rls.compose_rls_where_clauses` instead —
-        that variant takes the security manager as an argument because
-        it can ``await`` async session calls; this sync variant opens
-        its own session against the metadata DB and resolves the
-        current user from the ``ContextVar`` populated by auth
-        middleware.
+        The real RLS implementation lives on
+        :class:`superset.models.connectors.BaseDatasource` — which
+        precedes :class:`ExploreMixin` in the :class:`SqlaTable` MRO, so
+        dataset-backed datasources get the genuine filters while a
+        :class:`~superset.models.sql_lab.Query` (mixing in only
+        ``ExploreMixin``) falls through to this stub.
         """
-        from superset.utils.rls import compose_rls_text_clauses
-
-        return compose_rls_text_clauses(self, template_processor=template_processor)
+        # TODO: We should refactor this mixin and remove this method
+        # as it exists in the BaseDatasource and is not applicable
+        # for datasources of type query
+        return []
 
     def _process_sql_expression(
         self,

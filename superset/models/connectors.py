@@ -325,6 +325,30 @@ class BaseDatasource:
         """
         return []
 
+    def get_sqla_row_level_filters(
+        self,
+        template_processor: Any | None = None,
+    ) -> list[Any]:
+        """Return the row-level-security filters for this datasource.
+
+        1:1 with
+        ``superset_old.connectors.sqla.models.BaseDatasource.get_sqla_row_level_filters``
+        (line 654). Delegates to
+        :func:`superset.utils.rls.compose_rls_text_clauses` which mirrors
+        the original group_key OR-within / AND-across composition, Jinja
+        templating, and ``EMBEDDED_SUPERSET`` guest RLS.
+
+        This lives on :class:`BaseDatasource` (not :class:`ExploreMixin`)
+        so that — exactly like the original — only real dataset-backed
+        datasources (:class:`SqlaTable`) get RLS applied. A SQL Lab
+        :class:`~superset.models.sql_lab.Query` mixes in only
+        :class:`ExploreMixin`, whose stub returns ``[]`` because RLS is
+        not applicable for datasources of type ``query``.
+        """
+        from superset.utils.rls import compose_rls_text_clauses
+
+        return compose_rls_text_clauses(self, template_processor=template_processor)
+
 
 # ---------------------------------------------------------------------------
 # TableColumn

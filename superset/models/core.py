@@ -445,6 +445,20 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
 
         return _ctx()
 
+    def update_params_from_encrypted_extra(self, params: dict[str, Any]) -> None:
+        """Merge sensitive connect params from ``encrypted_extra`` into ``params``.
+
+        1:1 with ``Database.update_params_from_encrypted_extra`` in
+        ``superset_old/models/core.py`` (line 985) — a thin delegate to
+        the engine spec's
+        :meth:`BaseEngineSpec.update_params_from_encrypted_extra`, which
+        parses ``encrypted_extra`` JSON and updates the engine kwargs.
+        Mounted on :class:`Database` so connection-building paths and
+        callers that need the raw engine kwargs decorated with the
+        encrypted secrets can invoke it exactly as upstream did.
+        """
+        self.db_engine_spec.update_params_from_encrypted_extra(self, params)
+
     def get_metrics(self, table: Any) -> list[dict[str, Any]]:
         """Fetch metric definitions for a table via the engine spec.
 
@@ -1182,7 +1196,13 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         """
         try:
             client_config = self.get_oauth2_config()
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            # 1:1 with the original, which catches marshmallow's
+            # ``ValidationError`` here. Our msgspec validator
+            # (:func:`validate_oauth2_client_config`) raises ``ValueError``
+            # for a missing required field (e.g. ``scope``) or a bad
+            # ``request_content_type`` — both must be treated as
+            # "not configured", not propagated.
             logger.warning("Invalid OAuth2 client configuration for database %s", self)
             client_config = None
         return client_config is not None or self.db_engine_spec.is_oauth2_enabled()
@@ -1192,29 +1212,24 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
 
         Per-database overrides live in ``encrypted_extra.oauth2_client_info``;
         falls back to the global engine-spec-level config.
+
+        1:1 with ``Database.get_oauth2_config`` in
+        ``superset_old/models/core.py`` (line 1162), which does
+        ``OAuth2ClientConfigSchema().load(oauth2_client_info)``. We route
+        the in-row override through
+        :func:`superset.utils.oauth2.validate_oauth2_client_config` —
+        the msgspec port of that schema — so the same validation is
+        enforced: ``scope`` is *required* (a missing scope raises rather
+        than silently defaulting to ``""``), ``request_content_type`` is
+        restricted to ``json``/``data``, and ``redirect_uri`` defaults to
+        the deployment callback. A malformed override surfaces as a
+        ``ValueError`` exactly as the original marshmallow load would.
         """
         encrypted_extra = self.get_encrypted_extra()
         if oauth2_client_info := encrypted_extra.get("oauth2_client_info"):
-            # Mirror the marshmallow load_default behaviour: ensure all
-            # required keys exist so consumers don't crash on a half-baked
-            # in-row override.
-            from superset.utils.oauth2 import get_default_oauth2_redirect_uri
+            from superset.utils.oauth2 import validate_oauth2_client_config
 
-            return {
-                "id": oauth2_client_info["id"],
-                "secret": oauth2_client_info["secret"],
-                "scope": oauth2_client_info.get("scope", ""),
-                "redirect_uri": oauth2_client_info.get(
-                    "redirect_uri", get_default_oauth2_redirect_uri()
-                ),
-                "authorization_request_uri": oauth2_client_info[
-                    "authorization_request_uri"
-                ],
-                "token_request_uri": oauth2_client_info["token_request_uri"],
-                "request_content_type": oauth2_client_info.get(
-                    "request_content_type", "json"
-                ),
-            }
+            return dict(validate_oauth2_client_config(oauth2_client_info))
         return self.db_engine_spec.get_oauth2_config()
 
 
