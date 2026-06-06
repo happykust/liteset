@@ -64,19 +64,113 @@ class AsyncLogDAO(BaseAsyncDAO[Log]):
         self,
         user_id: int,
         actions: list[str],
+        distinct: bool = True,
         page: int = 0,
         page_size: int = 25,
     ) -> list[Log]:
-        """Get recent activity logs for a user filtered by actions."""
-        stmt = (
-            select(Log)
-            .where(
-                Log.user_id == user_id,
-                Log.action.in_(actions),
+        """Get recent activity logs for a user filtered by actions.
+
+        When ``distinct`` is ``True`` (default), deduplicates by
+        (dashboard_id, slice_id, action) keeping only the most-recent
+        entry per combination — mirroring the subquery in
+        ``superset_old/daos/log.py:LogDAO.get_recent_activity``.
+        When ``False``, returns all matching rows ordered by dttm desc.
+        """
+        from datetime import datetime, timedelta
+
+        from sqlalchemy import and_, func, or_
+
+        if distinct:
+            one_year_ago = datetime.today() - timedelta(days=365)
+            subqry = (
+                select(
+                    Log.dashboard_id,
+                    Log.slice_id,
+                    Log.action,
+                    func.max(Log.dttm).label("dttm"),
+                )
+                .where(
+                    and_(
+                        Log.action == "log",
+                        Log.user_id == user_id,
+                        or_(
+                            *{
+                                Log.json.contains(f'"event_name": "{action}"')
+                                for action in actions
+                            },
+                        ),
+                        Log.dttm > one_year_ago,
+                        or_(Log.dashboard_id.isnot(None), Log.slice_id.isnot(None)),
+                    )
+                )
+                .group_by(Log.dashboard_id, Log.slice_id, Log.action)
+                .subquery()
             )
-            .order_by(Log.dttm.desc())
-            .offset(page * page_size)
-            .limit(page_size)
-        )
+            stmt = (
+                select(
+                    subqry.c.dttm,
+                    subqry.c.action,
+                    subqry.c.dashboard_id,
+                    subqry.c.slice_id,
+                    Dashboard.slug.label("dashboard_slug"),
+                    Dashboard.dashboard_title,
+                    Slice.slice_name,
+                )
+                .outerjoin(Dashboard, Dashboard.id == subqry.c.dashboard_id)
+                .outerjoin(Slice, Slice.id == subqry.c.slice_id)
+                .where(
+                    or_(
+                        and_(
+                            Dashboard.dashboard_title.isnot(None),
+                            Dashboard.dashboard_title != "",
+                        ),
+                        and_(
+                            Slice.slice_name.isnot(None),
+                            Slice.slice_name != "",
+                        ),
+                    )
+                )
+                .order_by(subqry.c.dttm.desc())
+                .limit(page_size)
+                .offset(page * page_size)
+            )
+        else:
+            stmt = (
+                select(
+                    Log.dttm,
+                    Log.action,
+                    Log.dashboard_id,
+                    Log.slice_id,
+                    Dashboard.slug.label("dashboard_slug"),
+                    Dashboard.dashboard_title,
+                    Slice.slice_name,
+                )
+                .outerjoin(Dashboard, Dashboard.id == Log.dashboard_id)
+                .outerjoin(Slice, Slice.id == Log.slice_id)
+                .where(
+                    or_(
+                        and_(
+                            Dashboard.dashboard_title.isnot(None),
+                            Dashboard.dashboard_title != "",
+                        ),
+                        and_(
+                            Slice.slice_name.isnot(None),
+                            Slice.slice_name != "",
+                        ),
+                    ),
+                    Log.action == "log",
+                    Log.user_id == user_id,
+                    or_(
+                        *{
+                            Log.json.contains(f'"event_name": "{action}"')
+                            for action in actions
+                        },
+                    ),
+                )
+                .order_by(Log.dttm.desc())
+                .limit(page_size)
+                .offset(page * page_size)
+            )
+
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        return list(result.all())

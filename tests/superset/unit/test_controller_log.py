@@ -194,6 +194,7 @@ async def test_recent_activity(controller, mock_dao, mock_user):
     mock_dao.get_recent_activity.assert_awaited_once_with(
         user_id=1,
         actions=["mount_explorer", "mount_dashboard"],
+        distinct=True,
         page=0,
         page_size=25,
     )
@@ -213,6 +214,7 @@ async def test_recent_activity_with_params(controller, mock_dao, mock_user):
     mock_dao.get_recent_activity.assert_awaited_once_with(
         user_id=1,
         actions=["explore"],
+        distinct=True,
         page=1,
         page_size=10,
     )

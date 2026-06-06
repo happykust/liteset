@@ -185,6 +185,7 @@ class LogController(Controller):
         items = await dao.get_recent_activity(
             user_id=current_user.id,
             actions=actions,
+            distinct=distinct,
             page=page,
             page_size=page_size,
         )
