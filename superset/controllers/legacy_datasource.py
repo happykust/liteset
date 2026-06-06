@@ -456,15 +456,40 @@ class LegacyDatasourceController(Controller):
 
         if is_guest:
             # Embedded dashboard drill-to-detail permission check.
+            # Mirrors the original ``Datasource.samples`` guest branch:
+            # a dashboard_id is required, the dashboard must exist (404 if not),
+            # and the guest must be allowed to drill the dataset via that
+            # dashboard. Fails CLOSED (403) on any denial.
             dashboard_id = params.get("dashboard_id")
             if not dashboard_id:
                 return Response(content={"message": "Forbidden"}, status_code=403)
-            if hasattr(sec_mgr, "can_drill_dataset_via_dashboard_access"):
-                allowed = await sec_mgr.can_drill_dataset_via_dashboard_access(
-                    datasource, dashboard_id, user=user
+
+            from sqlalchemy import select as _select
+            from sqlalchemy.orm import selectinload as _selectinload
+
+            from superset.models.dashboard import Dashboard
+
+            dash_stmt = (
+                _select(Dashboard)
+                .where(Dashboard.id == dashboard_id)
+                .options(
+                    _selectinload(Dashboard.slices),
+                    _selectinload(Dashboard.roles),
+                    _selectinload(Dashboard.embedded),
                 )
-                if not allowed:
-                    return Response(content={"message": "Forbidden"}, status_code=403)
+            )
+            dash_result = await ds_dao.session.execute(dash_stmt)
+            dashboard = dash_result.scalars().one_or_none()
+            if dashboard is None:
+                return Response(
+                    content={"message": "Not found"}, status_code=404
+                )
+
+            allowed = await sec_mgr.can_drill_dataset_via_dashboard_access(
+                datasource, dashboard, user=user
+            )
+            if not allowed:
+                return Response(content={"message": "Forbidden"}, status_code=403)
         else:
             # Regular datasource-access check (mirrors raise_for_access).
             if hasattr(sec_mgr, "raise_for_access"):

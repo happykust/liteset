@@ -2417,6 +2417,53 @@ class AsyncSecurityManager:
                     return True
         return False
 
+    async def can_drill_dataset_via_dashboard_access(
+        self, dataset: Any, dashboard: Any, *, user: Any
+    ) -> bool:
+        """Return True if an embedded/DASHBOARD_RBAC user can drill a dataset.
+
+        Mirrors the original ``SupersetSecurityManager
+        .can_drill_dataset_via_dashboard_access`` exactly: a guest user (with
+        EMBEDDED_SUPERSET enabled) who has guest access to the dashboard, *or* a
+        DASHBOARD_RBAC user whose roles intersect a published dashboard's roles,
+        may drill — but only if ``dataset`` is one of the dashboard's
+        datasources. Fails closed (returns False) otherwise.
+        """
+        # First branch: embedded guest access.
+        access_via_dashboard = (
+            self._embedded_superset_enabled
+            and self.is_guest_user(user)
+            and await self.has_guest_access(dashboard, user=user)
+        )
+
+        # Second branch: DASHBOARD_RBAC role intersection.
+        if not access_via_dashboard:
+            dashboard_roles = getattr(dashboard, "roles", [])
+            if (
+                self._dashboard_rbac_enabled
+                and dashboard_roles
+                and getattr(dashboard, "published", False)
+            ):
+                user_role_ids = {r.id for r in await self.get_user_roles(user)}
+                dashboard_role_ids = {role.id for role in dashboard_roles}
+                access_via_dashboard = bool(user_role_ids & dashboard_role_ids)
+
+        if not access_via_dashboard:
+            return False
+
+        # The dataset must belong to the dashboard. The original iterates
+        # ``dashboard.datasources`` (a property aggregating slice datasources);
+        # here we enumerate the dashboard's slice ``datasource_id`` values
+        # through the async session and compare by id, matching the original
+        # ``dataset.id in {dataset.id for dataset in dashboard.datasources}``.
+        await self._ensure_relationship_loaded(dashboard, "slices")
+        dashboard_dataset_ids = {
+            slc.datasource_id
+            for slc in (getattr(dashboard, "slices", None) or [])
+            if slc.datasource_id is not None
+        }
+        return getattr(dataset, "id", None) in dashboard_dataset_ids
+
     # --- Anonymous/Public user ---
 
     def get_anonymous_user(self) -> Any:
