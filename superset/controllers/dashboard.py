@@ -1769,7 +1769,9 @@ class DashboardController(Controller):
         await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
         embedded = await embedded_dao.find_by_dashboard_id(dashboard.id)
         if not embedded:
-            return {"result": None}
+            # 1:1 with ``superset_old/dashboards/api.py:1667-1668``:
+            # ``if not dashboard.embedded: return self.response(404)``
+            raise ObjectNotFoundError("EmbeddedDashboard", dashboard.id)
         return {
             "result": EmbeddedDashboardResponse(
                 uuid=str(embedded.uuid),

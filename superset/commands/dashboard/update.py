@@ -27,6 +27,7 @@ from superset.commands.utils import compute_owner_list, update_tags, validate_ta
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.tags.core import sync_owner_tags_after_update
 from superset.tags.models import ObjectType
+from superset.utils.feature_flags import feature_flag_manager
 
 if TYPE_CHECKING:
     from superset.db.daos.dashboard import AsyncDashboardDAO
@@ -87,19 +88,22 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         # (lines 106-110). Checks the caller has permission to manage tags
         # and that every new tag id exists.  Raises ``TagForbiddenError``
         # (403) / ``TagNotFoundValidationError`` (422).
-        if self._security_manager is not None:
-            user = (
-                await self._security_manager.find_user_by_id(self._user_id)
-                if self._user_id is not None
-                else None
-            )
-            await validate_tags(
-                ObjectType.dashboard,
-                list(self._dashboard.tags),
-                self._data.get("tags"),
-                self._security_manager,
-                user,
-            )
+        # Only when TAGGING_SYSTEM is enabled — 1:1 with upstream where the
+        # tag subsystem is only active when the feature flag is on.
+        if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+            if self._security_manager is not None:
+                user = (
+                    await self._security_manager.find_user_by_id(self._user_id)
+                    if self._user_id is not None
+                    else None
+                )
+                await validate_tags(
+                    ObjectType.dashboard,
+                    list(self._dashboard.tags),
+                    self._data.get("tags"),
+                    self._security_manager,
+                    user,
+                )
 
     async def run(self) -> "Dashboard":  # noqa: C901
         assert self._dashboard is not None
@@ -119,15 +123,18 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         # Update tags — 1:1 with
         # ``superset_old/commands/dashboard/update.py::UpdateDashboardCommand.run``
         # (lines 64-65): apply the add/remove of custom tags on the dashboard.
-        tag_ids = self._data.get("tags")
-        if tag_ids is not None:
-            await update_tags(
-                ObjectType.dashboard,
-                self._dashboard.id,
-                list(self._dashboard.tags),
-                tag_ids,
-                self._dao.session,
-            )
+        # Only when TAGGING_SYSTEM is enabled — mirrors the original event-listener
+        # approach (listeners only registered when the flag is on).
+        if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+            tag_ids = self._data.get("tags")
+            if tag_ids is not None:
+                await update_tags(
+                    ObjectType.dashboard,
+                    self._dashboard.id,
+                    list(self._dashboard.tags),
+                    tag_ids,
+                    self._dao.session,
+                )
 
         if "position_json" in self._data:
             await self._process_tab_diff(old_position_json)
@@ -163,15 +170,18 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         await self._dao.session.flush()
 
         # Sync implicit owner: tags (async port of DashboardUpdater.after_update)
-        await self._dao.session.refresh(self._dashboard, ["owners"])
-        owner_ids = (
-            [o.id for o in self._dashboard.owners]
-            if hasattr(self._dashboard, "owners")
-            else []
-        )
-        await sync_owner_tags_after_update(
-            self._dao.session, "dashboard", self._dashboard.id, owner_ids
-        )
+        # Only when TAGGING_SYSTEM is enabled — 1:1 with upstream where the
+        # after_update event listener only fires when the flag is on.
+        if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+            await self._dao.session.refresh(self._dashboard, ["owners"])
+            owner_ids = (
+                [o.id for o in self._dashboard.owners]
+                if hasattr(self._dashboard, "owners")
+                else []
+            )
+            await sync_owner_tags_after_update(
+                self._dao.session, "dashboard", self._dashboard.id, owner_ids
+            )
 
         return self._dashboard
 

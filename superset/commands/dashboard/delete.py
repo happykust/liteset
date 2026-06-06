@@ -28,6 +28,7 @@ from superset.commands.dashboard.exceptions import (
 )
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.tags.core import delete_tagged_objects
+from superset.utils.feature_flags import feature_flag_manager
 
 if TYPE_CHECKING:
     from superset.db.daos.dashboard import AsyncDashboardDAO, AsyncEmbeddedDashboardDAO
@@ -74,9 +75,12 @@ class DeleteDashboardCommand(AsyncBaseCommand[None]):
     async def run(self) -> None:
         assert self._dashboard is not None
         dashboard_id = self._dashboard.id
-        # Remove implicit tags before deleting
-        # (async port of DashboardUpdater.after_delete)
-        await delete_tagged_objects(self._dao.session, "dashboard", dashboard_id)
+        # Remove implicit tags before deleting — 1:1 with
+        # ``DashboardUpdater.after_delete`` which fires only when the
+        # TAGGING_SYSTEM feature flag is enabled (listeners are only registered
+        # when the flag is on; see ``superset_old/app.py:158``).
+        if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+            await delete_tagged_objects(self._dao.session, "dashboard", dashboard_id)
         await self._dao.delete([self._dashboard])
         await self._dao.session.flush()
 
@@ -124,6 +128,15 @@ class BulkDeleteDashboardsCommand(AsyncBaseCommand[None]):
                 )
 
     async def run(self) -> None:
+        # Remove implicit tags before deleting — 1:1 with
+        # ``DeleteDashboardCommand.run()`` which ports
+        # ``DashboardUpdater.after_delete`` (fires per-row when TAGGING_SYSTEM
+        # is enabled; see ``superset_old/app.py:158``).
+        if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+            for dashboard in self._dashboards:
+                await delete_tagged_objects(
+                    self._dao.session, "dashboard", dashboard.id
+                )
         await self._dao.delete(self._dashboards)
         await self._dao.session.flush()
 

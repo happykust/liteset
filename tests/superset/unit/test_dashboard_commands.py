@@ -713,3 +713,174 @@ async def test_bulk_delete_some_ids_not_found(mock_dao, mock_dashboard):
     cmd = BulkDeleteDashboardsCommand(dao=mock_dao, dashboard_ids=[1, 2, 3])
     with pytest.raises(ObjectNotFoundError):
         await cmd.validate()
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM fix 1: BulkDelete cleans up TaggedObject rows (TAGGING_SYSTEM gated)
+# ---------------------------------------------------------------------------
+
+
+async def test_bulk_delete_calls_delete_tagged_objects_when_flag_on(
+    mock_dao, mock_dashboard
+):
+    """BulkDeleteDashboardsCommand.run() removes tagged_object rows per dashboard
+    when TAGGING_SYSTEM is enabled — 1:1 with DashboardUpdater.after_delete."""
+    mock_dao.find_by_ids = AsyncMock(return_value=[mock_dashboard])
+
+    cmd = BulkDeleteDashboardsCommand(dao=mock_dao, dashboard_ids=[1])
+    cmd._dashboards = [mock_dashboard]
+
+    with (
+        patch("superset.commands.dashboard.delete.feature_flag_manager") as mock_ffm,
+        patch(
+            "superset.commands.dashboard.delete.delete_tagged_objects",
+            new_callable=AsyncMock,
+        ) as mock_dtm,
+    ):
+        mock_ffm.is_feature_enabled.return_value = True
+        await cmd.run()
+
+    mock_ffm.is_feature_enabled.assert_called_with("TAGGING_SYSTEM")
+    mock_dtm.assert_awaited_once_with(mock_dao.session, "dashboard", mock_dashboard.id)
+    mock_dao.delete.assert_awaited_once_with([mock_dashboard])
+
+
+async def test_bulk_delete_skips_delete_tagged_objects_when_flag_off(
+    mock_dao, mock_dashboard
+):
+    """BulkDeleteDashboardsCommand.run() does NOT touch tagged_object rows when
+    TAGGING_SYSTEM is disabled — mirrors the original behavior (SQLA event
+    listeners only registered when the flag is on)."""
+    mock_dao.find_by_ids = AsyncMock(return_value=[mock_dashboard])
+
+    cmd = BulkDeleteDashboardsCommand(dao=mock_dao, dashboard_ids=[1])
+    cmd._dashboards = [mock_dashboard]
+
+    with (
+        patch("superset.commands.dashboard.delete.feature_flag_manager") as mock_ffm,
+        patch(
+            "superset.commands.dashboard.delete.delete_tagged_objects",
+            new_callable=AsyncMock,
+        ) as mock_dtm,
+    ):
+        mock_ffm.is_feature_enabled.return_value = False
+        await cmd.run()
+
+    mock_dtm.assert_not_awaited()
+    mock_dao.delete.assert_awaited_once_with([mock_dashboard])
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM fix 3: TAGGING_SYSTEM gate on delete single dashboard
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_dashboard_calls_delete_tagged_when_flag_on(
+    mock_dao, mock_dashboard
+):
+    """DeleteDashboardCommand.run() removes tagged_object rows when TAGGING_SYSTEM is on."""
+    cmd = DeleteDashboardCommand(dao=mock_dao, dashboard_id=1)
+    cmd._dashboard = mock_dashboard
+
+    with (
+        patch("superset.commands.dashboard.delete.feature_flag_manager") as mock_ffm,
+        patch(
+            "superset.commands.dashboard.delete.delete_tagged_objects",
+            new_callable=AsyncMock,
+        ) as mock_dtm,
+    ):
+        mock_ffm.is_feature_enabled.return_value = True
+        await cmd.run()
+
+    mock_dtm.assert_awaited_once_with(mock_dao.session, "dashboard", mock_dashboard.id)
+
+
+async def test_delete_dashboard_skips_delete_tagged_when_flag_off(
+    mock_dao, mock_dashboard
+):
+    """DeleteDashboardCommand.run() does NOT touch tagged_object rows when
+    TAGGING_SYSTEM is disabled."""
+    cmd = DeleteDashboardCommand(dao=mock_dao, dashboard_id=1)
+    cmd._dashboard = mock_dashboard
+
+    with (
+        patch("superset.commands.dashboard.delete.feature_flag_manager") as mock_ffm,
+        patch(
+            "superset.commands.dashboard.delete.delete_tagged_objects",
+            new_callable=AsyncMock,
+        ) as mock_dtm,
+    ):
+        mock_ffm.is_feature_enabled.return_value = False
+        await cmd.run()
+
+    mock_dtm.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM fix 3: TAGGING_SYSTEM gate on create
+# ---------------------------------------------------------------------------
+
+
+async def test_create_dashboard_skips_implicit_tags_when_flag_off(mock_dao):
+    """CreateDashboardCommand.run() does NOT call add_implicit_tags when
+    TAGGING_SYSTEM is disabled."""
+    mock_dao.validate_slug_uniqueness = AsyncMock(return_value=True)
+
+    cmd = CreateDashboardCommand(dao=mock_dao, data={"dashboard_title": "Test"})
+
+    mock_dashboard_cls = MagicMock()
+    instance = MagicMock()
+    instance.id = 1
+    instance.owners = []
+    instance.roles = []
+    mock_dashboard_cls.return_value = instance
+
+    with (
+        patch.dict(
+            "sys.modules",
+            {"superset.models.dashboard": MagicMock(Dashboard=mock_dashboard_cls)},
+        ),
+        patch(
+            "superset.commands.dashboard.create.feature_flag_manager"
+        ) as mock_ffm,
+        patch(
+            "superset.commands.dashboard.create.add_implicit_tags_after_insert",
+            new_callable=AsyncMock,
+        ) as mock_tags,
+    ):
+        mock_ffm.is_feature_enabled.return_value = False
+        await cmd.run()
+
+    mock_tags.assert_not_awaited()
+
+
+async def test_create_dashboard_calls_implicit_tags_when_flag_on(mock_dao):
+    """CreateDashboardCommand.run() calls add_implicit_tags when TAGGING_SYSTEM is on."""
+    mock_dao.validate_slug_uniqueness = AsyncMock(return_value=True)
+
+    cmd = CreateDashboardCommand(dao=mock_dao, data={"dashboard_title": "Test"})
+
+    mock_dashboard_cls = MagicMock()
+    instance = MagicMock()
+    instance.id = 1
+    instance.owners = []
+    instance.roles = []
+    mock_dashboard_cls.return_value = instance
+
+    with (
+        patch.dict(
+            "sys.modules",
+            {"superset.models.dashboard": MagicMock(Dashboard=mock_dashboard_cls)},
+        ),
+        patch(
+            "superset.commands.dashboard.create.feature_flag_manager"
+        ) as mock_ffm,
+        patch(
+            "superset.commands.dashboard.create.add_implicit_tags_after_insert",
+            new_callable=AsyncMock,
+        ) as mock_tags,
+    ):
+        mock_ffm.is_feature_enabled.return_value = True
+        await cmd.run()
+
+    mock_tags.assert_awaited_once_with(mock_dao.session, "dashboard", instance.id, [])

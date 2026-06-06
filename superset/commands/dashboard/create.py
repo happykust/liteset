@@ -26,6 +26,7 @@ from superset.commands.base import AsyncBaseCommand
 from superset.commands.utils import populate_owner_list
 from superset.exceptions import CommandInvalidError
 from superset.tags.core import add_implicit_tags_after_insert
+from superset.utils.feature_flags import feature_flag_manager
 
 if TYPE_CHECKING:
     from superset.db.daos.dashboard import AsyncDashboardDAO
@@ -98,11 +99,13 @@ class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
 
             dashboard.roles = await populate_roles(self._dao.session, role_ids)
 
-        # Add implicit type: and owner: tags
-        # (async port of DashboardUpdater.after_insert)
-        owner_ids = resolved_owner_ids
-        await add_implicit_tags_after_insert(
-            self._dao.session, "dashboard", dashboard.id, owner_ids
-        )
+        # Add implicit type: and owner: tags — 1:1 with
+        # ``DashboardUpdater.after_insert`` which only fires when the
+        # TAGGING_SYSTEM feature flag is enabled (see ``superset_old/app.py:158``).
+        if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+            owner_ids = resolved_owner_ids
+            await add_implicit_tags_after_insert(
+                self._dao.session, "dashboard", dashboard.id, owner_ids
+            )
 
         return dashboard
