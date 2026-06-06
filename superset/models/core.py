@@ -219,6 +219,31 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def unique_name(self) -> str:
         return self.database_name
 
+    @staticmethod
+    def _custom_password_store() -> Any | None:
+        """Resolve the configured ``SQLALCHEMY_CUSTOM_PASSWORD_STORE`` callback.
+
+        1:1 with the original's ``app.config["SQLALCHEMY_CUSTOM_PASSWORD_STORE"]``
+        lookup (``superset_old/models/core.py``). Liteset has no Flask
+        ``app.config`` so the value is discovered from ``superset.config``
+        using the same two-path scheme as ``mutate_sql_based_on_config``:
+        the legacy uppercase module-level constant first, then the
+        Pydantic ``SupersetSettings`` lowercase attribute.
+        """
+        try:
+            from superset import config as _config
+        except ImportError:
+            return None
+
+        store = getattr(_config, "SQLALCHEMY_CUSTOM_PASSWORD_STORE", None)
+        if store is None:
+            try:
+                settings = _config.SupersetSettings()
+                store = getattr(settings, "sqlalchemy_custom_password_store", None)
+            except Exception:  # noqa: BLE001, S110
+                pass
+        return store
+
     @property
     def sqlalchemy_uri_decrypted(self) -> str:
         """Full URI with password unmasked.
@@ -229,6 +254,11 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         of the value set on the URL object — we have to use
         ``render_as_string(hide_password=False)`` to actually emit the
         plaintext password from the encrypted ``password`` column.
+
+        When ``SQLALCHEMY_CUSTOM_PASSWORD_STORE`` is configured the
+        password is resolved via that callback (passed the parsed URL)
+        instead of the ``password`` column — 1:1 with
+        ``superset_old/models/core.py:1078-1084``.
         """
         try:
             conn = make_url_safe(self.sqlalchemy_uri)
@@ -236,7 +266,10 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
             # if the URI is invalid, ignore and return a placeholder url
             # (so users see 500 less often)
             return "dialect://invalid_uri"
-        conn = conn.set(password=self.password)
+        if custom_password_store := self._custom_password_store():
+            conn = conn.set(password=custom_password_store(conn))
+        else:
+            conn = conn.set(password=self.password)
         return conn.render_as_string(hide_password=False)
 
     @property
@@ -1097,7 +1130,8 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
 
     def set_sqlalchemy_uri(self, uri: str) -> None:
         conn = make_url_safe(uri.strip())
-        if conn.password != PASSWORD_MASK:
+        custom_password_store = self._custom_password_store()
+        if conn.password != PASSWORD_MASK and not custom_password_store:
             # do not over-write the password with the password mask
             self.password = conn.password
         conn = conn.set(password=PASSWORD_MASK if conn.password else None)
