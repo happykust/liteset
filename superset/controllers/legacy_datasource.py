@@ -934,11 +934,15 @@ class LegacyDatasourceController(Controller):
                 status_code=409,
             )
 
-        # Sync ORM instance from the editor payload
+        # Sync ORM instance from the editor payload.  Runs INLINE on the
+        # event loop: the mutation is pure Python over a fully eager-loaded
+        # graph (``get_datasource`` selectinload's database/columns/metrics/
+        # owners), so there is no blocking IO to offload — and running it in
+        # a thread against AsyncSession-attached instances was unsafe (the
+        # Session is not thread-safe; any stray lazy load from a foreign
+        # thread raises MissingGreenlet).
         try:
-            await asyncio.to_thread(
-                _update_from_object, orm_datasource, datasource_dict
-            )
+            _update_from_object(orm_datasource, datasource_dict)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to update datasource from object")
             # ``_update_from_object`` may have partially mutated the ORM

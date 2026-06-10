@@ -41,6 +41,7 @@ import sqlalchemy as sa
 from jinja2.exceptions import TemplateError
 from sqlalchemy import and_, or_, Text, types as sa_types
 from sqlalchemy.dialects.mysql import LONGTEXT, MEDIUMTEXT
+from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.orm import DeclarativeBase, relationship, validates
 from sqlalchemy.sql.elements import ColumnElement, literal_column, TextClause
@@ -76,8 +77,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class Base(DeclarativeBase):
-    """Declarative base for all Superset models."""
+class Base(AsyncAttrs, DeclarativeBase):
+    """Declarative base for all Superset models.
+
+    ``AsyncAttrs`` adds the ``awaitable_attrs`` accessor
+    (``await obj.awaitable_attrs.roles``) for point-wise relationship loads
+    in async context — purely additive, no behaviour change for normal
+    attribute access.
+
+    Lazy-loading policy: relationships keep the default ``lazy="select"``
+    because the models are SHARED between the async request path and the
+    sync Celery/Jinja helpers — Celery tasks (e.g. ``tasks/sql_lab.py``'s
+    ``query.database``) legitimately lazy-load via sync sessions, 1:1 with
+    upstream.  ``lazy="raise"`` is therefore NOT applicable here; async
+    callers must eager-load (selectinload) or use ``awaitable_attrs``, and
+    a missed load in async context fails loudly as MissingGreenlet, which
+    the aiosqlite test suite reproduces deterministically.
+    """
 
     __allow_unmapped__ = True
 

@@ -23,11 +23,9 @@ serialized value in a KV table keyed by a UUID.
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime, timedelta
 from typing import Any, Literal
-from uuid import UUID, uuid3, uuid4
+from uuid import uuid4
 
 import msgspec
 from litestar import Controller, delete, get, post, put
@@ -39,17 +37,14 @@ from superset.commands.explore_form_data.utils import check_access
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError
 from superset.guards.rbac import require_permission
-from superset.key_value.utils import get_uuid_namespace
 from superset.providers import (
     provide_chart_dao,
     provide_dataset_dao,
-    provide_kv_dao,
     provide_query_dao,
 )
 from superset.typing import (
     ChartDAOProtocol,
     DatasetDAOProtocol,
-    KeyValueDAOProtocol,
     QueryDAOProtocol,
     SecurityManagerProtocol,
     UserProtocol,
@@ -57,33 +52,19 @@ from superset.typing import (
 
 logger = logging.getLogger(__name__)
 
-# Namespace UUID for derive contextual-key UUIDs (one per explore session+tab).
-# Using "explore_form_data_contextual" matches the approach of
-# ``SupersetMetastoreCache.get_key()``, which does
-# ``uuid3(namespace_of_cache_prefix, key_string)`` so contextual keys and
-# value keys live in the same table but under deterministically different UUIDs.
-_FORM_DATA_CONTEXTUAL_NS: UUID = get_uuid_namespace("explore_form_data_contextual")
+def _form_data_cache() -> Any:
+    """The ``cache_manager.explore_form_data_cache`` slot.
 
-
-def _form_data_expires_on() -> datetime:
-    """Return the expiry datetime for a new form_data entry.
-
-    1:1 with ``SupersetMetastoreCache._get_expiry()`` called from
-    ``SupersetMetastoreCache.set()`` via
-    ``EXPLORE_FORM_DATA_CACHE_CONFIG["CACHE_DEFAULT_TIMEOUT"] = timedelta(days=7)``.
-    We read ``settings.explore_form_data_cache_config`` so a user-supplied
-    override (via ``EXPLORE_FORM_DATA_CACHE_CONFIG`` in their
-    ``superset_config.py``) is honoured at runtime.
+    Honours ``EXPLORE_FORM_DATA_CACHE_CONFIG["CACHE_TYPE"]`` (metastore by
+    default, Redis when configured) and owns the TTL
+    (``CACHE_DEFAULT_TIMEOUT``).  Entry keys are the raw upstream key
+    strings — the metastore backend hashes them to uuid3 under the
+    ``superset_metastore_cache`` resource, so entries written by an
+    upstream Superset instance keep resolving after a migration.
     """
-    try:
-        from superset.config import settings as _settings
+    from superset.extensions import cache_manager
 
-        timeout: int = _settings.explore_form_data_cache_config.get(
-            "CACHE_DEFAULT_TIMEOUT", 604800
-        )
-    except Exception:  # noqa: BLE001
-        timeout = 604800  # 7 days fallback
-    return datetime.now() + timedelta(seconds=timeout)
+    return cache_manager.explore_form_data_cache
 
 
 def _contextual_key_str(
@@ -103,19 +84,6 @@ def _contextual_key_str(
     return ";".join(
         str(a) for a in [session_id, tab_id, datasource_id, chart_id, datasource_type]
     )
-
-
-def _contextual_uuid(ctx_key: str) -> str:
-    """Derive a deterministic UUID string from a contextual key string.
-
-    The original stores the contextual→value-key mapping in the *same*
-    ``SupersetMetastoreCache`` instance used for the value entries, but the
-    cache's ``get_key()`` converts string keys to ``uuid3(namespace, key)``
-    (``superset_old/extensions/metastore_cache.py:71-72``).  We replicate
-    that transform so contextual UUIDs are stable across restarts and cannot
-    collide with random value-key UUIDs.
-    """
-    return str(uuid3(_FORM_DATA_CONTEXTUAL_NS, ctx_key))
 
 
 DatasourceType = Literal["table", "dataset", "query", "saved_query", "view"]
@@ -165,7 +133,6 @@ class ExploreFormDataController(Controller):
     tags = ["Explore Form Data"]
     resource = "explore_form_data"
     dependencies = {
-        "kv_dao": Provide(provide_kv_dao, sync_to_thread=False),
         "chart_dao": Provide(provide_chart_dao, sync_to_thread=False),
         "dataset_dao": Provide(provide_dataset_dao, sync_to_thread=False),
         "query_dao": Provide(provide_query_dao, sync_to_thread=False),
@@ -178,7 +145,6 @@ class ExploreFormDataController(Controller):
     async def get_value(
         self,
         key: str,
-        kv_dao: KeyValueDAOProtocol,
         chart_dao: ChartDAOProtocol,
         dataset_dao: DatasetDAOProtocol,
         query_dao: QueryDAOProtocol,
@@ -194,18 +160,10 @@ class ExploreFormDataController(Controller):
           is True (default), refreshes the entry TTL on every successful read
           (``cache_manager.explore_form_data_cache.set(key, state)``).
         """
-        raw = await kv_dao.get_value(
-            resource=self.resource,
-            resource_id=0,
-            key=key,
-        )
-        if raw is None:
+        cache = _form_data_cache()
+        entry = await cache.get(key)
+        if entry is None:
             raise ObjectNotFoundError(self.resource, key)
-
-        try:
-            entry = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            entry = {}
 
         if isinstance(entry, dict):
             datasource_id: int = entry.get("datasource_id") or 0
@@ -244,17 +202,12 @@ class ExploreFormDataController(Controller):
                     "Failed to read REFRESH_TIMEOUT_ON_RETRIEVAL", exc_info=True
                 )
             if _refresh:
-                await kv_dao.set_value(
-                    resource=self.resource,
-                    resource_id=0,
-                    key=key,
-                    value=raw,
-                    expires_on=_form_data_expires_on(),
-                )
+                # Slot ``set`` stamps a fresh full-TTL window.
+                await cache.set(key, entry)
             if "form_data" in entry:
                 return {"form_data": entry["form_data"]}
 
-        return {"form_data": raw}
+        return {"form_data": entry}
 
     @post(
         "/",
@@ -272,7 +225,6 @@ class ExploreFormDataController(Controller):
         self,
         request: Request[Any, Any, Any],
         data: FormDataPostSchema,
-        kv_dao: KeyValueDAOProtocol,
         chart_dao: ChartDAOProtocol,
         dataset_dao: DatasetDAOProtocol,
         query_dao: QueryDAOProtocol,
@@ -315,20 +267,15 @@ class ExploreFormDataController(Controller):
             data.chart_id,
             data.datasource_type,
         )
-        ctx_uuid = _contextual_uuid(ctx_str)
+        cache = _form_data_cache()
         # Try to reuse an existing key for the same tab context.
         # 1:1 with ``key = cache_manager.explore_form_data_cache.get(contextual_key)``
         # and the guard ``if not key or not tab_id: key = random_key()``.
-        existing_key_raw = await kv_dao.get_value(
-            resource=self.resource,
-            resource_id=0,
-            key=ctx_uuid,
-        )
+        existing_key = await cache.get(ctx_str)
         # ``tab_id is not None`` — the original reads request.args.get("tab_id")
         # as a STRING, so "0" is truthy; an int 0 here must also reuse the key.
-        if existing_key_raw and tab_id is not None:
-            # Reuse the stored form_data UUID key.
-            key = existing_key_raw.strip()
+        if existing_key and isinstance(existing_key, str) and tab_id is not None:
+            key = existing_key
         else:
             key = str(uuid4())
 
@@ -336,37 +283,17 @@ class ExploreFormDataController(Controller):
         # mapping when ``form_data`` is truthy; when empty the original
         # returns the key without any cache write.
         if data.form_data:
-            expires_on = _form_data_expires_on()
-            envelope = json.dumps(
-                {
-                    "owner": current_user.id,
-                    "datasource_id": data.datasource_id,
-                    "datasource_type": data.datasource_type,
-                    "chart_id": data.chart_id,
-                    "form_data": data.form_data,
-                }
-            )
-            # Store form_data under the (possibly reused) UUID key with TTL.
-            # 1:1 with ``cache_manager.explore_form_data_cache.set(key, state)``.
-            await kv_dao.set_value(
-                resource=self.resource,
-                resource_id=0,
-                key=key,
-                value=envelope,
-                user_id=current_user.id,
-                expires_on=expires_on,
-            )
-            # Store/refresh the contextual → form_data key mapping with same TTL.
-            # 1:1 with
-            # ``cache_manager.explore_form_data_cache.set(contextual_key, key)``.
-            await kv_dao.set_value(
-                resource=self.resource,
-                resource_id=0,
-                key=ctx_uuid,
-                value=key,
-                user_id=current_user.id,
-                expires_on=expires_on,
-            )
+            state = {
+                "owner": current_user.id,
+                "datasource_id": data.datasource_id,
+                "datasource_type": data.datasource_type,
+                "chart_id": data.chart_id,
+                "form_data": data.form_data,
+            }
+            # 1:1 with ``cache_manager.explore_form_data_cache.set(key, state)``
+            # then ``.set(contextual_key, key)`` — the slot stamps the TTL.
+            await cache.set(key, state)
+            await cache.set(ctx_str, key)
         await event_logger.alog_with_context(
             "explore_form_data.create",
             user_id=current_user.id,
@@ -382,7 +309,6 @@ class ExploreFormDataController(Controller):
         request: Request[Any, Any, Any],
         key: str,
         data: FormDataPutSchema,
-        kv_dao: KeyValueDAOProtocol,
         chart_dao: ChartDAOProtocol,
         dataset_dao: DatasetDAOProtocol,
         query_dao: QueryDAOProtocol,
@@ -405,12 +331,9 @@ class ExploreFormDataController(Controller):
 
         _validate_form_data_json(data.form_data)
 
-        existing = await kv_dao.get_value(
-            resource=self.resource,
-            resource_id=0,
-            key=key,
-        )
-        # When the KV entry is absent (cache miss / expired), the original
+        cache = _form_data_cache()
+        entry = await cache.get(key)
+        # When the cache entry is absent (cache miss / expired), the original
         # UpdateFormDataCommand.run() falls through the ``if state and form_data``
         # guard and returns the original key unchanged → HTTP 200 (not 404).
         # Do NOT raise here; let the guard at ``if entry and data.form_data`` below
@@ -427,13 +350,6 @@ class ExploreFormDataController(Controller):
             security_manager=security_manager,
             user=current_user,
         )
-
-        # Parse the existing envelope — used for the ``state and form_data``
-        # guard (1:1 with update.py:57-61).
-        try:
-            entry = json.loads(existing)
-        except (json.JSONDecodeError, TypeError):
-            entry = {}
 
         # 1:1 with update.py:61 ``if state and form_data:`` — when the state
         # exists but form_data is falsy (empty string), the original returns
@@ -464,50 +380,33 @@ class ExploreFormDataController(Controller):
                 data.chart_id,
                 data.datasource_type,
             )
-            ctx_uuid = _contextual_uuid(ctx_str)
-            existing_ctx_key = await kv_dao.get_value(
-                resource=self.resource,
-                resource_id=0,
-                key=ctx_uuid,
-            )
+            existing_ctx_key = await cache.get(ctx_str)
             # As in create: "0" is a truthy tab id in the original.
-            if existing_ctx_key and tab_id is not None:
+            if (
+                existing_ctx_key
+                and isinstance(existing_ctx_key, str)
+                and tab_id is not None
+            ):
                 # Reuse the contextual key's mapped UUID.
-                key = existing_ctx_key.strip()
+                key = existing_ctx_key
             else:
                 # Mint a fresh UUID and persist the contextual mapping.
                 key = str(uuid4())
                 # 1:1 with update.py:73 — only store the contextual mapping
                 # when a new key is minted.
-                await kv_dao.set_value(
-                    resource=self.resource,
-                    resource_id=0,
-                    key=ctx_uuid,
-                    value=key,
-                    user_id=current_user.id,
-                    expires_on=_form_data_expires_on(),
-                )
+                await cache.set(ctx_str, key)
 
-            expires_on = _form_data_expires_on()
-            envelope = json.dumps(
-                {
-                    "owner": current_user.id,
-                    "datasource_id": data.datasource_id,
-                    "datasource_type": data.datasource_type,
-                    "chart_id": data.chart_id,
-                    "form_data": data.form_data,
-                }
-            )
-            # Store form_data under the (possibly rotated) UUID key with TTL.
-            # 1:1 with ``cache_manager.explore_form_data_cache.set(key, new_state)``.
-            await kv_dao.set_value(
-                resource=self.resource,
-                resource_id=0,
-                key=key,
-                value=envelope,
-                user_id=current_user.id,
-                expires_on=expires_on,
-            )
+            new_state = {
+                "owner": current_user.id,
+                "datasource_id": data.datasource_id,
+                "datasource_type": data.datasource_type,
+                "chart_id": data.chart_id,
+                "form_data": data.form_data,
+            }
+            # Store form_data under the (possibly rotated) UUID key — the
+            # slot stamps the TTL.  1:1 with
+            # ``cache_manager.explore_form_data_cache.set(key, new_state)``.
+            await cache.set(key, new_state)
         await event_logger.alog_with_context(
             "explore_form_data.update",
             user_id=current_user.id,
@@ -523,7 +422,6 @@ class ExploreFormDataController(Controller):
         self,
         request: Request[Any, Any, Any],
         key: str,
-        kv_dao: KeyValueDAOProtocol,
         chart_dao: ChartDAOProtocol,
         dataset_dao: DatasetDAOProtocol,
         query_dao: QueryDAOProtocol,
@@ -542,18 +440,10 @@ class ExploreFormDataController(Controller):
         """
         from litestar.exceptions import PermissionDeniedException
 
-        raw = await kv_dao.get_value(
-            resource=self.resource,
-            resource_id=0,
-            key=key,
-        )
-        if raw is None:
+        cache = _form_data_cache()
+        entry = await cache.get(key)
+        if entry is None:
             raise ObjectNotFoundError(self.resource, key)
-
-        try:
-            entry = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            entry = {}
 
         if isinstance(entry, dict):
             datasource_id: int = entry.get("datasource_id") or 0
@@ -600,21 +490,12 @@ class ExploreFormDataController(Controller):
                 chart_id,
                 datasource_type,
             )
-            ctx_uuid = _contextual_uuid(ctx_str)
-            # Best-effort: ignore errors if the contextual entry is already gone.
-            await kv_dao.delete_value(
-                resource=self.resource,
-                resource_id=0,
-                key=ctx_uuid,
-            )
+            # Best-effort: a missing contextual entry is simply a no-op.
+            await cache.delete(ctx_str)
 
-        deleted = await kv_dao.delete_value(
-            resource=self.resource,
-            resource_id=0,
-            key=key,
-        )
-        if not deleted:
-            raise ObjectNotFoundError(self.resource, key)
+        # The entry existed above — delete it.  1:1 with
+        # ``cache_manager.explore_form_data_cache.delete(key)``.
+        await cache.delete(key)
         await event_logger.alog_with_context(
             "explore_form_data.delete",
             user_id=current_user.id,

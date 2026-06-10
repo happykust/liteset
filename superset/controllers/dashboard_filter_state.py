@@ -43,11 +43,10 @@ from superset.commands.temporary_cache.exceptions import (
 from superset.events import event_logger
 from superset.exceptions import SupersetNotFoundError
 from superset.guards.rbac import require_permission
-from superset.providers import provide_dashboard_dao, provide_kv_dao
+from superset.providers import provide_dashboard_dao
 from superset.schemas.dashboard import FilterStateSchema
 from superset.typing import (
     DashboardDAOProtocol,
-    KeyValueDAOProtocol,
     SecurityManagerProtocol,
     UserProtocol,
 )
@@ -57,7 +56,6 @@ class DashboardFilterStateController(Controller):
     path = "/api/v1/dashboard/{pk:int}/filter_state"
     tags = ["Dashboard Filter State"]
     dependencies = {
-        "kv_dao": Provide(provide_kv_dao, sync_to_thread=False),
         "dashboard_dao": Provide(provide_dashboard_dao, sync_to_thread=False),
     }
 
@@ -70,7 +68,6 @@ class DashboardFilterStateController(Controller):
         self,
         pk: int,
         data: FilterStateSchema,
-        kv_dao: KeyValueDAOProtocol,
         dashboard_dao: DashboardDAOProtocol,
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
@@ -78,7 +75,6 @@ class DashboardFilterStateController(Controller):
     ) -> dict[str, str]:
         try:
             cmd = CreateFilterStateCommand(
-                dao=kv_dao,  # type: ignore[arg-type]
                 dashboard_id=pk,
                 value=data.value,
                 user_id=current_user.id,
@@ -106,7 +102,6 @@ class DashboardFilterStateController(Controller):
         pk: int,
         key: str,
         data: FilterStateSchema,
-        kv_dao: KeyValueDAOProtocol,
         dashboard_dao: DashboardDAOProtocol,
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
@@ -114,7 +109,6 @@ class DashboardFilterStateController(Controller):
     ) -> dict[str, str]:
         try:
             cmd = UpdateFilterStateCommand(
-                dao=kv_dao,  # type: ignore[arg-type]
                 dashboard_id=pk,
                 key=key,
                 value=data.value,
@@ -142,14 +136,12 @@ class DashboardFilterStateController(Controller):
         self,
         pk: int,
         key: str,
-        kv_dao: KeyValueDAOProtocol,
         dashboard_dao: DashboardDAOProtocol,
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
         try:
             cmd = GetFilterStateCommand(
-                dao=kv_dao,  # type: ignore[arg-type]
                 dashboard_id=pk,
                 key=key,
                 security_manager=security_manager,
@@ -181,14 +173,12 @@ class DashboardFilterStateController(Controller):
         self,
         pk: int,
         key: str,
-        kv_dao: KeyValueDAOProtocol,
         dashboard_dao: DashboardDAOProtocol,
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
         try:
             cmd = DeleteFilterStateCommand(
-                dao=kv_dao,  # type: ignore[arg-type]
                 dashboard_id=pk,
                 key=key,
                 user_id=current_user.id,

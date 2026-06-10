@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -97,16 +96,14 @@ async def test_check_dataset_access_missing_raises_not_found():
 
 
 def _make_envelope(owner: int | None) -> str:
-    """Return a JSON-encoded envelope with the given owner."""
-    return json.dumps(
-        {
-            "owner": owner,
-            "datasource_id": 1,
-            "datasource_type": "table",
-            "chart_id": None,
-            "form_data": '{"viz_type": "table"}',
-        }
-    )
+    """Return a cache-slot entry dict with the given owner."""
+    return {
+        "owner": owner,
+        "datasource_id": 1,
+        "datasource_type": "table",
+        "chart_id": None,
+        "form_data": '{"viz_type": "table"}',
+    }
 
 
 def _controller_self() -> MagicMock:
@@ -124,8 +121,8 @@ async def test_update_value_owner_none_raises_permission_denied():
     short-circuiting to False when owner=None (should raise, matches
     original ``state["owner"] != get_user_id()`` → ``None != 456`` → True).
     """
-    kv_dao = AsyncMock()
-    kv_dao.get_value = AsyncMock(return_value=_make_envelope(owner=None))
+    cache = AsyncMock()
+    cache.get = AsyncMock(return_value=_make_envelope(owner=None))
 
     user = MagicMock()
     user.id = 456
@@ -137,14 +134,19 @@ async def test_update_value_owner_none_raises_permission_denied():
     data.chart_id = None
 
     update_fn = ExploreFormDataController.update_value.fn
-    with patch("superset.controllers.explore_form_data.check_access", new=AsyncMock()):
+    with (
+        patch("superset.controllers.explore_form_data.check_access", new=AsyncMock()),
+        patch(
+            "superset.controllers.explore_form_data._form_data_cache",
+            return_value=cache,
+        ),
+    ):
         with pytest.raises(PermissionDeniedException):
             await update_fn(
                 _controller_self(),
                 request=MagicMock(),
                 key="some-key",
                 data=data,
-                kv_dao=kv_dao,
                 chart_dao=AsyncMock(),
                 dataset_dao=AsyncMock(),
                 query_dao=AsyncMock(),
@@ -157,8 +159,8 @@ async def test_update_value_owner_none_raises_permission_denied():
 async def test_update_value_owner_mismatch_raises_permission_denied():
     """PUT with a mismatched owner (non-None) must also raise — the normal
     ownership enforcement path that existed before this regression."""
-    kv_dao = AsyncMock()
-    kv_dao.get_value = AsyncMock(return_value=_make_envelope(owner=99))
+    cache = AsyncMock()
+    cache.get = AsyncMock(return_value=_make_envelope(owner=99))
 
     user = MagicMock()
     user.id = 456
@@ -170,14 +172,19 @@ async def test_update_value_owner_mismatch_raises_permission_denied():
     data.chart_id = None
 
     update_fn = ExploreFormDataController.update_value.fn
-    with patch("superset.controllers.explore_form_data.check_access", new=AsyncMock()):
+    with (
+        patch("superset.controllers.explore_form_data.check_access", new=AsyncMock()),
+        patch(
+            "superset.controllers.explore_form_data._form_data_cache",
+            return_value=cache,
+        ),
+    ):
         with pytest.raises(PermissionDeniedException):
             await update_fn(
                 _controller_self(),
                 request=MagicMock(),
                 key="some-key",
                 data=data,
-                kv_dao=kv_dao,
                 chart_dao=AsyncMock(),
                 dataset_dao=AsyncMock(),
                 query_dao=AsyncMock(),
@@ -195,20 +202,25 @@ async def test_delete_value_owner_none_raises_permission_denied():
     short-circuiting to False when owner=None (should raise, matches
     original ``state["owner"] != get_user_id()`` → ``None != 456`` → True).
     """
-    kv_dao = AsyncMock()
-    kv_dao.get_value = AsyncMock(return_value=_make_envelope(owner=None))
+    cache = AsyncMock()
+    cache.get = AsyncMock(return_value=_make_envelope(owner=None))
 
     user = MagicMock()
     user.id = 456
 
     delete_fn = ExploreFormDataController.delete_value.fn
-    with patch("superset.controllers.explore_form_data.check_access", new=AsyncMock()):
+    with (
+        patch("superset.controllers.explore_form_data.check_access", new=AsyncMock()),
+        patch(
+            "superset.controllers.explore_form_data._form_data_cache",
+            return_value=cache,
+        ),
+    ):
         with pytest.raises(PermissionDeniedException):
             await delete_fn(
                 _controller_self(),
                 request=MagicMock(),
                 key="some-key",
-                kv_dao=kv_dao,
                 chart_dao=AsyncMock(),
                 dataset_dao=AsyncMock(),
                 query_dao=AsyncMock(),
@@ -219,20 +231,25 @@ async def test_delete_value_owner_none_raises_permission_denied():
 
 async def test_delete_value_owner_mismatch_raises_permission_denied():
     """DELETE with a mismatched non-None owner must also raise."""
-    kv_dao = AsyncMock()
-    kv_dao.get_value = AsyncMock(return_value=_make_envelope(owner=99))
+    cache = AsyncMock()
+    cache.get = AsyncMock(return_value=_make_envelope(owner=99))
 
     user = MagicMock()
     user.id = 456
 
     delete_fn = ExploreFormDataController.delete_value.fn
-    with patch("superset.controllers.explore_form_data.check_access", new=AsyncMock()):
+    with (
+        patch("superset.controllers.explore_form_data.check_access", new=AsyncMock()),
+        patch(
+            "superset.controllers.explore_form_data._form_data_cache",
+            return_value=cache,
+        ),
+    ):
         with pytest.raises(PermissionDeniedException):
             await delete_fn(
                 _controller_self(),
                 request=MagicMock(),
                 key="some-key",
-                kv_dao=kv_dao,
                 chart_dao=AsyncMock(),
                 dataset_dao=AsyncMock(),
                 query_dao=AsyncMock(),

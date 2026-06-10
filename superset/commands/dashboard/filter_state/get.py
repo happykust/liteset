@@ -14,22 +14,25 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/dashboard/filter_state/get.py``."""
+"""Async port of ``superset_old/commands/dashboard/filter_state/get.py``.
+
+Reads via ``cache_manager.filter_state_cache`` (CACHE_TYPE-honouring slot);
+see create.py for the storage-format notes.
+"""
 
 from __future__ import annotations
 
-import json  # noqa: TID251
 import logging
-from datetime import datetime, timedelta
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
+from superset.commands.dashboard.filter_state.create import _default_cache
 from superset.commands.dashboard.filter_state.utils import check_access
 from superset.exceptions import ObjectNotFoundError
+from superset.temporary_cache.utils import cache_key
 
 if TYPE_CHECKING:
     from superset.db.daos.dashboard import AsyncDashboardDAO
-    from superset.db.daos.key_value import AsyncKeyValueDAO
 
 logger = logging.getLogger(__name__)
 
@@ -37,21 +40,21 @@ logger = logging.getLogger(__name__)
 class GetFilterStateCommand(AsyncBaseCommand[str | None]):
     def __init__(
         self,
-        dao: AsyncKeyValueDAO,
         dashboard_id: int,
         key: str,
         security_manager: Any | None = None,
         user_id: int | None = None,
         dashboard_dao: AsyncDashboardDAO | None = None,
         user: Any | None = None,
+        cache: Any | None = None,
     ) -> None:
-        self._dao = dao
         self._dashboard_id = dashboard_id
         self._key = key
         self._security_manager = security_manager
         self._user_id = user_id
         self._dashboard_dao = dashboard_dao
         self._user = user
+        self._cache = cache if cache is not None else _default_cache()
 
         # 1:1 with original: read REFRESH_TIMEOUT_ON_RETRIEVAL from
         # FILTER_STATE_CACHE_CONFIG (superset_old/commands/dashboard/
@@ -61,15 +64,6 @@ class GetFilterStateCommand(AsyncBaseCommand[str | None]):
         settings = SupersetSettings()  # type: ignore[call-arg]
         self._refresh_timeout = settings.filter_state_cache_config.get(
             "REFRESH_TIMEOUT_ON_RETRIEVAL"
-        )
-        # Cache default timeout (seconds) used to compute expires_on when
-        # re-storing the entry on retrieval — mirrors the original's
-        # ``SupersetMetastoreCache.set()`` which calls
-        # ``_get_expiry(self.default_timeout)``
-        # to refresh the TTL to a full window from *now*.
-        self._cache_default_timeout: int = settings.filter_state_cache_config.get(
-            "CACHE_DEFAULT_TIMEOUT",
-            7776000,  # 90 days default
         )
 
     async def validate(self) -> None:
@@ -83,39 +77,22 @@ class GetFilterStateCommand(AsyncBaseCommand[str | None]):
         )
 
     async def run(self) -> str | None:
-        raw = await self._dao.get_value(
-            resource="dashboard_filter_state",
-            resource_id=self._dashboard_id,
-            key=self._key,
-        )
-        if raw is None:
+        ck = cache_key(self._dashboard_id, self._key)
+        entry = await self._cache.get(ck)
+        if entry is None:
             raise ObjectNotFoundError("FilterState", self._key)
-        # Unwrap envelope written by Create/Update commands
-        try:
-            entry = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            entry = {}
 
         # 1:1 with original (superset_old/commands/dashboard/filter_state/
         # get.py:40-41): if the entry exists and REFRESH_TIMEOUT_ON_RETRIEVAL
-        # is truthy, re-store the entry to refresh its TTL.
-        # The original ``cache_manager.filter_state_cache.set(key, entry)``
-        # calls ``SupersetMetastoreCache.set()`` which passes
-        # ``_get_expiry(self.default_timeout)`` — a fresh expiry window from
-        # *now* using CACHE_DEFAULT_TIMEOUT.  Replicate that here.
+        # is truthy, re-store the entry — the slot's ``set`` stamps a fresh
+        # TTL window from *now* (CACHE_DEFAULT_TIMEOUT), refreshing the
+        # entry's expiry on both the metastore and Redis backends.
         if entry and self._refresh_timeout:
-            await self._dao.set_value(
-                resource="dashboard_filter_state",
-                resource_id=self._dashboard_id,
-                key=self._key,
-                value=raw,
-                expires_on=datetime.now()
-                + timedelta(seconds=self._cache_default_timeout),
-            )
+            await self._cache.set(ck, entry)
 
         if isinstance(entry, dict) and "value" in entry:
             return entry["value"]
         # Original: entry.get("value") → None when "value" key absent (including
         # malformed / non-dict entries).  Returning None lets the controller surface
-        # {"value": null} rather than leaking raw KV-store bytes to the caller.
+        # a 404 rather than leaking raw cache bytes to the caller.
         return None

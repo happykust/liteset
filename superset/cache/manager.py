@@ -505,9 +505,10 @@ class MetastoreSyncCacheManager:
                     exc_info=True,
                 )
                 return None
-            if self._refresh_timeout_on_retrieval and self._default_ttl > 0:
-                entry.expires_on = self._expiry(None)
-                session.commit()
+            # No TTL refresh — mirror the async slot (see
+            # MetastoreAsyncCacheManager.get): the original
+            # SupersetMetastoreCache never refreshes on read; the
+            # temporary-cache GET commands re-set the entry instead.
             return value
         finally:
             session.close()
@@ -922,12 +923,12 @@ class MetastoreAsyncCacheManager:
                     exc_info=True,
                 )
                 return None
-            if self._refresh_timeout_on_retrieval and self._default_ttl > 0:
-                # Mirrors the original
-                # ``REFRESH_TIMEOUT_ON_RETRIEVAL`` knob: every read
-                # extends the entry's TTL by ``default_timeout``.
-                entry.expires_on = self._expiry(None)  # type: ignore[assignment]
-                await session.commit()
+            # NB: no TTL refresh here — the original
+            # ``SupersetMetastoreCache`` has no refresh-on-read behaviour;
+            # ``REFRESH_TIMEOUT_ON_RETRIEVAL`` is implemented by the
+            # temporary-cache GET commands re-``set``-ting the entry
+            # (superset_old/commands/dashboard/filter_state/get.py:40-41),
+            # which works uniformly for Redis-backed slots too.
             return value
 
     async def set(self, key: str, value: Any, ttl: int | None = None) -> None:
@@ -960,6 +961,44 @@ class MetastoreAsyncCacheManager:
             if entry is not None:
                 await session.delete(entry)
                 await session.commit()
+
+    async def has(self, key: str) -> bool:
+        return (await self.get(key)) is not None
+
+
+class JsonValueCacheAdapter:
+    """JSON (de)serialisation shim for byte-oriented cache backends.
+
+    The temporary-cache slots (filter_state / explore_form_data) store dict
+    entries.  The metastore backend encodes them via its codec, but the raw
+    Redis backend stores bytes verbatim — this adapter JSON-encodes on write
+    and decodes on read so the temporary-cache commands can work with dicts
+    on any backend.  (Upstream Flask-Caching ``RedisCache`` pickled values;
+    JSON is the safe equivalent for these untrusted payloads.)
+    """
+
+    def __init__(self, inner: AsyncCacheProtocol | Any) -> None:
+        self._inner = inner
+
+    async def get(self, key: str) -> Any:
+        raw = await self._inner.get(key)
+        if raw is None:
+            return None
+        if isinstance(raw, (bytes, str)):
+            try:
+                return _json.loads(raw)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "JSON cache adapter: failed to decode entry for key %r", key
+                )
+                return None
+        return raw
+
+    async def set(self, key: str, value: Any, ttl: int | None = None) -> None:
+        await self._inner.set(key, _json.dumps(value), ttl=ttl)
+
+    async def delete(self, key: str) -> None:
+        await self._inner.delete(key)
 
     async def has(self, key: str) -> bool:
         return (await self.get(key)) is not None
@@ -1169,6 +1208,7 @@ def _build_async_redis_slot(
     default_redis: Any | None,
     fallback_default_ttl: int,
     is_explore_form_data: bool,
+    json_values: bool = False,
 ) -> AsyncCacheProtocol:
     """Build a Redis async cache slot, falling back to Null on missing client."""
     client = _build_async_redis_from_config(cfg, default_redis)
@@ -1181,6 +1221,8 @@ def _build_async_redis_slot(
             client,
             default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)),
         )
+        if json_values:
+            inner = JsonValueCacheAdapter(inner)
     return _wrap_if_explore(inner, is_explore_form_data)
 
 
@@ -1191,6 +1233,7 @@ def _build_cache_for_slot(
     is_explore_form_data: bool = False,
     fallback_default_ttl: int = 300,
     session_factory: Callable[[], Any] | None = None,
+    json_values: bool = False,
 ) -> AsyncCacheProtocol:
     """Wire a single cache slot from a Flask-Caching-style config dict.
 
@@ -1212,6 +1255,8 @@ def _build_cache_for_slot(
             default_inner: AsyncCacheProtocol = NullAsyncCacheManager(default_ttl=ttl)
         else:
             default_inner = AsyncCacheManager(default_redis, default_ttl=ttl)
+            if json_values:
+                default_inner = JsonValueCacheAdapter(default_inner)
         return _wrap_if_explore(default_inner, is_explore_form_data)
 
     cache_type = cfg.get("CACHE_TYPE")
@@ -1224,7 +1269,7 @@ def _build_cache_for_slot(
 
     if cache_type in _REDIS_CACHE_TYPES:
         return _build_async_redis_slot(
-            cfg, default_redis, fallback_default_ttl, is_explore_form_data
+            cfg, default_redis, fallback_default_ttl, is_explore_form_data, json_values
         )
 
     if cache_type in _SIMPLE_CACHE_TYPES:
@@ -1428,6 +1473,7 @@ class CacheManager:
             default_async,
             fallback_default_ttl=cache_default_timeout,
             session_factory=session_factory,
+            json_values=True,
         )
         self._explore_form_data_cache = _build_cache_for_slot(
             explore_form_data_cache_config,
@@ -1435,6 +1481,7 @@ class CacheManager:
             is_explore_form_data=True,
             fallback_default_ttl=cache_default_timeout,
             session_factory=session_factory,
+            json_values=True,
         )
 
         # ---- Sync siblings ----

@@ -16,6 +16,9 @@
 # under the License.
 """Async port of ``superset_old/commands/dashboard/filter_state/update.py``.
 
+Storage goes through ``cache_manager.filter_state_cache`` — see create.py
+for the CACHE_TYPE / key-format notes.
+
 The original update command performs tab_id-based key rotation:
 when ``tab_id`` changes (or is falsy), a new key is generated and the
 contextual mapping is updated. This liteset port replicates that logic
@@ -25,25 +28,24 @@ instead of Flask's ``session._id`` + ``cache_manager`` contextual keys.
 
 from __future__ import annotations
 
-import json  # noqa: TID251
 import uuid
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
+from superset.commands.dashboard.filter_state.create import _default_cache
 from superset.commands.dashboard.filter_state.utils import check_access
 from superset.commands.temporary_cache.exceptions import (
     TemporaryCacheAccessDeniedError,
 )
+from superset.temporary_cache.utils import cache_key
 
 if TYPE_CHECKING:
     from superset.db.daos.dashboard import AsyncDashboardDAO
-    from superset.db.daos.key_value import AsyncKeyValueDAO
 
 
 class UpdateFilterStateCommand(AsyncBaseCommand[str]):
     def __init__(
         self,
-        dao: AsyncKeyValueDAO,
         dashboard_id: int,
         key: str,
         value: str,
@@ -52,8 +54,8 @@ class UpdateFilterStateCommand(AsyncBaseCommand[str]):
         security_manager: Any | None = None,
         dashboard_dao: AsyncDashboardDAO | None = None,
         user: Any | None = None,
+        cache: Any | None = None,
     ) -> None:
-        self._dao = dao
         self._dashboard_id = dashboard_id
         self._key = key
         self._value = value
@@ -62,6 +64,7 @@ class UpdateFilterStateCommand(AsyncBaseCommand[str]):
         self._security_manager = security_manager
         self._dashboard_dao = dashboard_dao
         self._user = user
+        self._cache = cache if cache is not None else _default_cache()
 
     async def validate(self) -> None:
         # ``check_access`` raises ``TemporaryCacheResourceNotFoundError`` /
@@ -86,58 +89,30 @@ class UpdateFilterStateCommand(AsyncBaseCommand[str]):
         #
         # Do NOT raise ObjectNotFoundError on missing entry — that would change the HTTP
         # status from 200 to 404, breaking the API contract.
-        existing = await self._dao.get_value(
-            resource="dashboard_filter_state",
-            resource_id=self._dashboard_id,
-            key=self._key,
-        )
+        entry = await self._cache.get(cache_key(self._dashboard_id, self._key))
 
-        if existing is not None:
+        if entry is not None:
+            if not isinstance(entry, dict):
+                entry = {}
             # Original raises ``TemporaryCacheAccessDeniedError`` when the
             # current user is not the owner.
-            try:
-                entry = json.loads(existing)
-            except (json.JSONDecodeError, TypeError):
-                entry = {}
             owner = entry.get("owner")
             if owner != self._user_id:
                 raise TemporaryCacheAccessDeniedError()
 
-            # --- tab_id-based key rotation (1:1 with original) ---
-            #
-            # Original logic (superset_old/.../filter_state/update.py:44-51):
-            #   contextual_key = cache_key(session._id, tab_id, resource_id)
-            #   key = cache.get(contextual_key)
-            #   if not key or not tab_id:
-            #       key = random_key()
-            #       cache.set(contextual_key, key)
-            #
-            # In liteset we use uuid5 deterministic keys (same as
-            # CreateFilterStateCommand) instead of Flask session._id + cache
-            # contextual keys. When tab_id is present, the deterministic key
-            # ensures the same user+dashboard+tab always maps to the same key.
-            # When tab_id is falsy (None or 0), we generate a new random key,
-            # matching the original's ``if not tab_id: key = random_key()``.
+            # Key rotation — deterministic uuid5 when tab_id is truthy,
+            # fresh random key otherwise, matching the original's
+            # ``if not key or not tab_id: key = random_key()``.
             if self._tab_id:
                 seed = f"{self._user_id}:{self._dashboard_id}:{self._tab_id}"
                 key = str(uuid.uuid5(uuid.NAMESPACE_DNS, seed))
             else:
                 key = str(uuid.uuid4())
 
-            envelope = json.dumps({"owner": self._user_id, "value": self._value})
-            # Refresh the TTL window on every write — 1:1 with
+            # Slot stamps a fresh TTL window on every write — 1:1 with
             # ``SupersetMetastoreCache.set()`` (see create.py).
-            from superset.commands.dashboard.filter_state.create import (
-                _filter_state_expiry,
-            )
-
-            await self._dao.set_value(
-                resource="dashboard_filter_state",
-                resource_id=self._dashboard_id,
-                key=key,
-                value=envelope,
-                expires_on=_filter_state_expiry(),
-            )
+            new_entry = {"owner": self._user_id, "value": self._value}
+            await self._cache.set(cache_key(self._dashboard_id, key), new_entry)
             return key
 
         # Entry not found — original silently skips the write and returns the

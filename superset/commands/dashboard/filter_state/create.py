@@ -19,7 +19,16 @@
 Mirrors the original layout — one Command per file under
 ``commands/dashboard/filter_state/``.
 
-The original sync command keys cache entries with
+Storage goes through ``cache_manager.filter_state_cache`` exactly like the
+original (``superset_old/commands/dashboard/filter_state/create.py:42``):
+the slot honours ``FILTER_STATE_CACHE_CONFIG["CACHE_TYPE"]`` (metastore by
+default, Redis when configured) and owns the TTL
+(``CACHE_DEFAULT_TIMEOUT``).  Entry keys are the upstream
+``cache_key(resource_id, key)`` strings, so metastore rows land in the
+``superset_metastore_cache`` resource under uuid3 — entries written by an
+upstream Superset instance keep resolving after a migration.
+
+The original keys the per-tab dedup with
 ``cache_key(session.get("_id"), tab_id, resource_id)`` so that repeated
 opens of the same Flask session+tab+dashboard reuse the same key.  In
 Liteset there is no Flask session id, so the deterministic-key path uses
@@ -32,47 +41,29 @@ we fall back to a random UUID, matching the original's falsy check
 
 from __future__ import annotations
 
-import json  # noqa: TID251
 import logging
 import uuid
-from datetime import datetime, timedelta
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
 from superset.commands.dashboard.filter_state.utils import check_access
+from superset.temporary_cache.utils import cache_key
 
 if TYPE_CHECKING:
     from superset.db.daos.dashboard import AsyncDashboardDAO
-    from superset.db.daos.key_value import AsyncKeyValueDAO
 
 logger = logging.getLogger(__name__)
 
 
-def _filter_state_expiry() -> datetime | None:
-    """Expiry timestamp for a filter-state write.
+def _default_cache() -> Any:
+    from superset.extensions import cache_manager
 
-    Mirrors ``SupersetMetastoreCache._get_expiry(self.default_timeout)``
-    (superset_old/extensions/metastore_cache.py:74-78) with the
-    FILTER_STATE_CACHE_CONFIG ``CACHE_DEFAULT_TIMEOUT`` (90 days default):
-    a ``None`` or non-positive timeout means NO expiration (returns None),
-    not a TypeError from ``timedelta(seconds=None)``.
-    """
-    from superset.config import SupersetSettings
-
-    settings = SupersetSettings()  # type: ignore[call-arg]
-    timeout: int | None = settings.filter_state_cache_config.get(
-        "CACHE_DEFAULT_TIMEOUT",
-        7776000,  # 90 days default
-    )
-    if timeout is not None and timeout > 0:
-        return datetime.now() + timedelta(seconds=timeout)
-    return None
+    return cache_manager.filter_state_cache
 
 
 class CreateFilterStateCommand(AsyncBaseCommand[str]):
     def __init__(
         self,
-        dao: AsyncKeyValueDAO,
         dashboard_id: int,
         value: str,
         user_id: int,
@@ -80,8 +71,8 @@ class CreateFilterStateCommand(AsyncBaseCommand[str]):
         security_manager: Any | None = None,
         dashboard_dao: AsyncDashboardDAO | None = None,
         user: Any | None = None,
+        cache: Any | None = None,
     ) -> None:
-        self._dao = dao
         self._dashboard_id = dashboard_id
         self._value = value
         self._user_id = user_id
@@ -89,9 +80,11 @@ class CreateFilterStateCommand(AsyncBaseCommand[str]):
         self._security_manager = security_manager
         self._dashboard_dao = dashboard_dao
         self._user = user
+        self._cache = cache if cache is not None else _default_cache()
 
     async def validate(self) -> None:
-        # ``check_access`` raises ``TemporaryCacheResourceNotFoundError`` /
+        # Dashboard must exist and be accessible — raises
+        # ``TemporaryCacheResourceNotFoundError`` /
         # ``TemporaryCacheAccessDeniedError`` 1:1 with the original.
         # Pass the Dashboard DAO (which has get_by_id_or_slug) — NOT the KV DAO.
         # The real user is required so the can_access_dashboard gate is enforced.
@@ -103,40 +96,21 @@ class CreateFilterStateCommand(AsyncBaseCommand[str]):
         )
 
     async def run(self) -> str:
-        # Contextual key generation: when tab_id is truthy, build a
-        # deterministic UUID (uuid5) from user+dashboard+tab so repeated
-        # opens of the same tab reuse the same filter-state entry instead
-        # of creating duplicates.  The KV table stores UUIDs, so the key
-        # itself must be a valid UUID — see AsyncKeyValueDAO.set_value.
+        # Deterministic per-tab token: uuid5(user:dashboard:tab) replaces the
+        # original's session-contextual mapping (see module docstring).
         # Falsy tab_id (None or "") always produces a fresh random key,
-        # matching the original: ``if not key or not tab_id: key = random_key()``
+        # matching the original ``if not key or not tab_id: key = random_key()``
         # (superset_old/commands/dashboard/filter_state/create.py:37).
         if self._tab_id:
             seed = f"{self._user_id}:{self._dashboard_id}:{self._tab_id}"
             key = str(uuid.uuid5(uuid.NAMESPACE_DNS, seed))
-
-            # Check cache for existing state at that key (deduplication)
-            existing = await self._dao.get_value(
-                resource="dashboard_filter_state",
-                resource_id=self._dashboard_id,
-                key=key,
-            )
-            if existing is not None:
-                logger.debug("Reusing existing filter state key %s", key)
-                # Fall through to write the new value with the same key
         else:
             key = str(uuid.uuid4())
 
-        envelope = json.dumps({"owner": self._user_id, "value": self._value})
-        # 1:1 with the original write path: ``SupersetMetastoreCache.set()``
-        # stores ``expires_on = now + CACHE_DEFAULT_TIMEOUT`` (the
-        # FILTER_STATE_CACHE_CONFIG ttl) on EVERY write — entries are not
-        # immortal, and a re-create resets the TTL window.
-        await self._dao.set_value(
-            resource="dashboard_filter_state",
-            resource_id=self._dashboard_id,
-            key=key,
-            value=envelope,
-            expires_on=_filter_state_expiry(),
-        )
+        # 1:1 with ``cache_manager.filter_state_cache.set(
+        # cache_key(resource_id, key), entry)`` — the slot stamps the TTL
+        # (CACHE_DEFAULT_TIMEOUT) on every write, so a re-create resets the
+        # TTL window.
+        entry = {"owner": self._user_id, "value": self._value}
+        await self._cache.set(cache_key(self._dashboard_id, key), entry)
         return key
