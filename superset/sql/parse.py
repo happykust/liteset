@@ -32,6 +32,7 @@ from sqlglot import exp
 from sqlglot.dialects.dialect import (
     Dialect,
     Dialects,
+    DialectType,
 )
 from sqlglot.dialects.singlestore import SingleStore
 from sqlglot.errors import ParseError
@@ -55,7 +56,7 @@ logger = logging.getLogger(__name__)
 
 
 # mapping between DB engine specs and sqlglot dialects
-SQLGLOT_DIALECTS: dict[str, str | type[Dialect] | Dialects] = {
+SQLGLOT_DIALECTS: dict[str, DialectType] = {
     "base": Dialects.DIALECT,
     "ascend": Dialects.HIVE,
     "awsathena": Dialects.PRESTO,
@@ -158,6 +159,9 @@ class RLSTransformer:
         self.schema = schema
         self.rules = rules
 
+    def __call__(self, node: exp.Expression) -> exp.Expression:
+        raise NotImplementedError
+
     def get_predicate(self, table_node: exp.Table) -> exp.Expression | None:
         """
         Get the combined RLS predicate for a table.
@@ -209,12 +213,12 @@ class RLSAsPredicateTransformer(RLSTransformer):
 
         if isinstance(node.parent, exp.From):
             select = node.parent.parent
-            if where := select.args.get("where"):
+            if where := select.args.get("where"):  # type: ignore[union-attr]
                 predicate = exp.And(
                     this=predicate,
                     expression=exp.Paren(this=where.this),
                 )
-            select.set("where", exp.Where(this=predicate))
+            select.set("where", exp.Where(this=predicate))  # type: ignore[union-attr]
 
         elif isinstance(node.parent, exp.Join):
             join = node.parent
@@ -256,6 +260,7 @@ class RLSAsSubqueryTransformer(RLSTransformer):
             return node
 
         if predicate := self.get_predicate(node):
+            alias: str | exp.TableAlias
             if node.alias:
                 alias = node.alias
             else:
@@ -582,15 +587,15 @@ class SQLStatement(BaseSQLStatement[exp.Expression]):
         # statement; move them back to the last token in the last real statement
         if len(statements) > 1 and isinstance(statements[-1], exp.Semicolon):
             last_statement = statements.pop()
-            target = statements[-1]
+            target: Any = statements[-1]
             for node in statements[-1].walk():
                 if hasattr(node, "comments"):  # pragma: no cover
                     target = node
 
             target.comments = target.comments or []
-            target.comments.extend(last_statement.comments)
+            target.comments.extend(last_statement.comments)  # type: ignore[union-attr]
 
-        return statements
+        return statements  # type: ignore[return-value]
 
     @classmethod
     def split_script(
@@ -728,7 +733,9 @@ class SQLStatement(BaseSQLStatement[exp.Expression]):
         if not self._dialect:
             return SQLStatement(ast=self._parsed.copy(), engine=self.engine)
 
-        optimized = pushdown_predicates(self._parsed, dialect=self._dialect)
+        optimized = pushdown_predicates(  # type: ignore[no-untyped-call]
+            self._parsed, dialect=self._dialect
+        )
 
         return SQLStatement(ast=optimized, engine=self.engine)
 
@@ -741,8 +748,8 @@ class SQLStatement(BaseSQLStatement[exp.Expression]):
         """
         present = {
             (
-                function.sql_name()
-                if function.sql_name() != "ANONYMOUS"
+                function.sql_name()  # type: ignore[no-untyped-call]
+                if function.sql_name() != "ANONYMOUS"  # type: ignore[no-untyped-call]
                 else function.name.upper()
             )
             for function in self._parsed.find_all(exp.Func)
@@ -1315,7 +1322,7 @@ class SQLScript:
 
 def extract_tables_from_statement(
     statement: exp.Expression,
-    dialect: Dialects | None,
+    dialect: DialectType,
 ) -> set[Table]:
     """
     Extract all table references in a single statement.
@@ -1465,9 +1472,9 @@ def process_jinja_sql(
                 pass
 
             # Replace the potentially problematic Jinja macro with some benign SQL.
-            node.__class__ = nodes.TemplateData
-            node.fields = nodes.TemplateData.fields
-            node.data = "NULL"
+            node.__class__ = nodes.TemplateData  # type: ignore[assignment]
+            node.fields = nodes.TemplateData.fields  # type: ignore[assignment]
+            node.data = "NULL"  # type: ignore[attr-defined]
 
     # re-render template back into a string
     code = processor.env.compile(ast)

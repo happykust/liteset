@@ -140,18 +140,20 @@ def run_migrations_online() -> None:
         # 1:1 with upstream env.py: sqlite/mysql lack reliable transactional
         # DDL, so run each migration in its own transaction to avoid a failed
         # migration leaving a half-applied schema.
-        kwargs: dict[str, object] = {}
         if connectable.name in ("sqlite", "mysql"):
-            kwargs = {
-                "transaction_per_migration": True,
-                "transactional_ddl": True,
-            }
-        context.configure(
-            connection=connection,
-            target_metadata=_get_target_metadata(),
-            process_revision_directives=_process_revision_directives,
-            **kwargs,
-        )
+            context.configure(
+                connection=connection,
+                target_metadata=_get_target_metadata(),
+                process_revision_directives=_process_revision_directives,
+                transaction_per_migration=True,
+                transactional_ddl=True,
+            )
+        else:
+            context.configure(
+                connection=connection,
+                target_metadata=_get_target_metadata(),
+                process_revision_directives=_process_revision_directives,
+            )
         with context.begin_transaction():
             context.run_migrations()
 

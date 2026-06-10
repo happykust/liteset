@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,7 +55,7 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
             # spec knows its own sensitive fields (e.g. BigQuery ``private_key``,
             # GSheets credentials) instead of a blanket ``{"$.*"}`` reveal.
             attributes["encrypted_extra"] = item.db_engine_spec.unmask_encrypted_extra(
-                item.encrypted_extra,
+                cast("str | None", item.encrypted_extra),
                 attributes["encrypted_extra"],
             )
 

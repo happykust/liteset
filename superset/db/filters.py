@@ -176,7 +176,7 @@ def _apply_extra_dynamic_database_filters() -> list[Any]:
     from superset.models.core import Database
 
     session = get_sync_session()
-    base_query = LegacyQuery(Database, session=session)
+    base_query: LegacyQuery[Any] = LegacyQuery(Database, session=session)
     try:
         filtered_query = dynamic_db_filter(base_query)
     finally:
@@ -255,7 +255,7 @@ async def database_access_filters(
 
     return dynamic_clauses + [
         or_(
-            Database.perm.in_(database_perms),
+            Database.perm.in_(database_perms),  # type: ignore[attr-defined]
             Database.database_name.in_(sorted(database_names)),
         )
     ]

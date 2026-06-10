@@ -684,7 +684,9 @@ class SupersetConfigSettingsSource(PydanticBaseSettingsSource):
             if cache_key in _superset_config_cache:
                 return _superset_config_cache[cache_key]
             try:
-                import superset_config as module
+                import superset_config
+
+                module = superset_config
             except Exception as exc:
                 raise ImportError(
                     f"Found but failed to import local superset_config: {exc}"
@@ -1749,9 +1751,7 @@ class SupersetSettings(BaseSettings):
         import json as _json
         import os as _os
 
-        path = _os.path.join(
-            _os.path.dirname(__file__), "static", "version_info.json"
-        )
+        path = _os.path.join(_os.path.dirname(__file__), "static", "version_info.json")
         try:
             with open(path) as f:
                 data = _json.load(f)

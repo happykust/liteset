@@ -179,7 +179,7 @@ def import_from_dict(  # noqa: C901
         obj = cls(**dict_rep)
         logger.debug("Importing new %s %s", obj.__tablename__, str(obj))
         if getattr(cls, "export_parent", None) and parent:
-            setattr(obj, cls.export_parent, parent)
+            setattr(obj, cls.export_parent, parent)  # type: ignore[attr-defined]
         session.add(obj)
     else:
         is_new_obj = False
@@ -208,7 +208,7 @@ def import_from_dict(  # noqa: C901
             if child in sync and not is_new_obj:
                 back_refs = _parent_foreign_key_mappings(child_class)
                 delete_filters = [
-                    getattr(child_class, k) == getattr(obj, back_refs.get(k))
+                    getattr(child_class, k) == getattr(obj, back_refs.get(k) or "")
                     for k in back_refs
                 ]
                 to_delete = set(

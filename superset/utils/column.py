@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 # Re-export: the single canonical implementation lives in utils/core.py (ported
 # 1:1 from superset_old/utils/core.py:1678-1722).  The broken Druid-only stub
@@ -278,7 +278,7 @@ def _get_metric_type_from_column(column: Any, datasource: Any) -> str:
     if metric.metric_name == "":
         return ""
 
-    expression: str = metric.expression
+    expression: str = cast("str", metric.expression)
 
     match = re.match(
         r"(SUM|AVG|COUNT|COUNT_DISTINCT|MIN|MAX|FIRST|LAST)\((.*)\)", expression
@@ -334,7 +334,7 @@ def extract_dataframe_dtypes(
     if datasource:
         for column in datasource.columns:
             if isinstance(column, dict):
-                columns_by_name[column.get("column_name")] = column
+                columns_by_name[column.get("column_name")] = column  # type: ignore[index]
             else:
                 columns_by_name[column.column_name] = column
 

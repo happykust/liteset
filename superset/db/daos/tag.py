@@ -16,7 +16,7 @@
 # under the License.
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import delete, select
 
@@ -130,7 +130,9 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         tag = await self.find_by_name(tag_name.strip())
         if not tag:
             raise ObjectNotFoundError("Tag", tag_name)
-        tagged_object = await self._find_tagged_object(object_type, object_id, tag.id)
+        tagged_object = await self._find_tagged_object(
+            object_type, object_id, cast("int", tag.id)
+        )
         if tagged_object is None:
             raise ObjectNotFoundError("TaggedObject", tag_name)
         await self.session.delete(tagged_object)
@@ -335,7 +337,7 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
             # Enum or already-str depending on dialect quirks; coerce.
             t = link.object_type
             t_name = getattr(t, "name", str(t)).rsplit(".", 1)[-1]
-            by_type[t_name].append(link.object_id)
+            by_type[t_name].append(cast("int", link.object_id))
 
         results: list[dict[str, Any]] = []
 
@@ -416,7 +418,7 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                     SavedQuery as _SavedQuery,  # noqa: N813
                 )
             except ImportError:
-                _SavedQuery = None  # type: ignore[assignment]  # noqa: N806
+                _SavedQuery = None  # type: ignore[assignment,misc]  # noqa: N806
             if _SavedQuery is not None:
                 q = await self.session.execute(
                     select(_SavedQuery)

@@ -200,7 +200,7 @@ class CSRFMiddleware(MiddlewareProtocol):
             await self.app(scope, receive, send)
             return
 
-        method = scope.get("method", "GET").upper()
+        method = str(scope.get("method", "GET")).upper()
         path = scope.get("path", "/")
 
         # Safe methods pass through
@@ -279,7 +279,9 @@ class CSRFMiddleware(MiddlewareProtocol):
                         ],
                     }
                 )
-                await send({"type": "http.response.body", "body": b""})
+                await send(
+                    {"type": "http.response.body", "body": b""}  # type: ignore[arg-type]
+                )
                 return
 
             # JSON request → 400 with GENERIC_BACKEND_ERROR (mirrors show_http_exception
@@ -319,7 +321,7 @@ class CSRFMiddleware(MiddlewareProtocol):
                 }
             )
             await send(
-                {
+                {  # type: ignore[arg-type]
                     "type": "http.response.body",
                     "body": body,
                 }

@@ -27,8 +27,8 @@ from sqlalchemy.orm import selectinload
 from superset.commands.base import AsyncBaseCommand
 from superset.commands.chart.warm_up_cache import WarmUpChartCacheCommand
 from superset.commands.dataset.exceptions import WarmUpCacheTableNotFoundError
-from superset.connectors.sqla.models import SqlaTable
 from superset.db.daos.chart import AsyncChartDAO
+from superset.models.connectors import SqlaTable
 from superset.models.core import Database
 from superset.models.slice import Slice
 

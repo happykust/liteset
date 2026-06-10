@@ -37,7 +37,7 @@ from superset.utils import json as json_utils
 from superset.utils.feature_flags import feature_flag_manager
 
 if TYPE_CHECKING:
-    from superset.connectors.sqla.models import TableColumn
+    from superset.models.connectors import TableColumn
     from superset.models.core import Database
 
 logger = logging.getLogger(__name__)

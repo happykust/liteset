@@ -50,7 +50,7 @@ from superset.utils.column import (
 )
 
 if TYPE_CHECKING:
-    from superset.connectors.sqla.models import BaseDatasource
+    from superset.models.connectors import SqlaTable
     from superset.models.sql_lab import Query
 
 
@@ -277,7 +277,9 @@ pivot_v2_aggfunc_map: dict[str, Callable[..., Any]] = {
     "Average": pd.Series.mean,
     "Median": pd.Series.median,
     "Sample Variance": lambda series: pd.series.var(series) if len(series) > 1 else 0,
-    "Sample Standard Deviation": (
+    # 1:1 with upstream client_processing.py:241 — the trailing comma makes
+    # this a 1-tuple (a known upstream wart); kept verbatim for parity.
+    "Sample Standard Deviation": (  # type: ignore[dict-item]
         lambda series: pd.series.std(series) if len(series) > 1 else 0,
     ),
     "Minimum": pd.Series.min,
@@ -296,7 +298,7 @@ pivot_v2_aggfunc_map: dict[str, Callable[..., Any]] = {
 def pivot_table_v2(
     df: pd.DataFrame,
     form_data: dict[str, Any],
-    datasource: Optional[Union["BaseDatasource", "Query"]] = None,
+    datasource: Optional[Union["SqlaTable", "Query"]] = None,
 ) -> pd.DataFrame:
     """
     Pivot table v2.
@@ -321,7 +323,7 @@ def table(
     df: pd.DataFrame,
     form_data: dict[str, Any],
     datasource: Optional[  # pylint: disable=unused-argument
-        Union["BaseDatasource", "Query"]
+        Union["SqlaTable", "Query"]
     ] = None,
 ) -> pd.DataFrame:
     """
@@ -350,7 +352,7 @@ post_processors: dict[str, Callable[..., pd.DataFrame]] = {
 def apply_client_processing(  # noqa: C901
     result: dict[Any, Any],
     form_data: Optional[dict[str, Any]] = None,
-    datasource: Optional[Union["BaseDatasource", "Query"]] = None,
+    datasource: Optional[Union["SqlaTable", "Query"]] = None,
 ) -> dict[Any, Any]:
     form_data = form_data or {}
 

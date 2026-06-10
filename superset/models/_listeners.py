@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, TYPE_CHECKING
+from typing import Any, cast, TYPE_CHECKING
 
 import sqlalchemy as sa
 from sqlalchemy import event, text
@@ -367,7 +367,7 @@ def _sqlatable_before_update(
     """
     perm = _dataset_perm(connection, target)
     if perm is not None:
-        target.perm = perm
+        target.perm = perm  # type: ignore[assignment]
 
 
 def _sqlatable_after_insert(
@@ -377,7 +377,7 @@ def _sqlatable_after_insert(
     perm = _dataset_perm(connection, target)
     if perm is None:
         return
-    target.perm = perm
+    target.perm = perm  # type: ignore[assignment]
     _ensure_pvm(connection, "datasource_access", perm)
 
 
@@ -387,7 +387,7 @@ def _sqlatable_after_delete(
     """Remove the ``datasource_access`` PVM after a dataset delete."""
     if not target.perm:
         return
-    _delete_pvm(connection, "datasource_access", target.perm)
+    _delete_pvm(connection, "datasource_access", str(target.perm))
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +549,7 @@ def _dataset_owners_ids(target: "SqlaTable") -> list[int]:
 
 
 def _query_owners_ids(target: "Query") -> list[int]:
-    return [target.user_id] if target.user_id is not None else []
+    return [cast("int", target.user_id)] if target.user_id is not None else []
 
 
 # Wrappers that match SQLA's listener signature
@@ -707,7 +707,7 @@ def _ensure_permission(connection: Connection, name: str) -> int:
         text("SELECT id FROM ab_permission WHERE name = :name"),
         {"name": name},
     ).first()
-    return int(row.id)
+    return int(row.id)  # type: ignore[union-attr]
 
 
 def _ensure_view_menu(connection: Connection, name: str) -> int:
@@ -725,7 +725,7 @@ def _ensure_view_menu(connection: Connection, name: str) -> int:
         text("SELECT id FROM ab_view_menu WHERE name = :name"),
         {"name": name},
     ).first()
-    return int(row.id)
+    return int(row.id)  # type: ignore[union-attr]
 
 
 def _delete_pvm(connection: Connection, perm_name: str, view_menu_name: str) -> None:

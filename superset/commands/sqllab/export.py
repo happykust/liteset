@@ -64,7 +64,9 @@ class SqlResultExportCommand(AsyncBaseCommand[SqlExportResult]):
         self._client_id = client_id
         self._security_manager = security_manager
         self._current_user = current_user
-        self._query: Any | None = None
+        # ``validate()`` raises when the query is missing, so post-validate
+        # access is non-None; typed Any to avoid per-line union narrowing.
+        self._query: Any = None
 
     async def validate(self) -> None:
         if not self._client_id:

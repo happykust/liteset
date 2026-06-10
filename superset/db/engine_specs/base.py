@@ -298,7 +298,9 @@ class BaseAsyncEngineSpec(ABC):
                     datatype = cls.get_datatype(type_code)
                     sqla_type = cls.get_sqla_column_type(datatype)
                     if sqla_type is not None:
-                        func = cls.column_type_mutators.get(type(sqla_type))
+                        func = cls.column_type_mutators.get(
+                            type(sqla_type)  # type: ignore[arg-type]
+                        )
                         if func is not None:
                             column_mutators[idx] = func
 
@@ -527,7 +529,7 @@ class BaseAsyncEngineSpec(ABC):
 
             from superset.config import SupersetSettings
 
-            _settings = SupersetSettings()
+            _settings = SupersetSettings()  # type: ignore[call-arg]
             grain_addon_expressions = _settings.time_grain_addon_expressions
             denylist = _settings.time_grain_denylist
         except _PydanticValidationError:
@@ -727,3 +729,18 @@ class BaseAsyncEngineSpec(ABC):
         :return: SQL expression string, or ``None`` for unsupported types.
         """
         return None
+
+    @classmethod
+    async def estimate_statement_cost(
+        cls,
+        conn: Any,
+        statement: str,
+    ) -> dict[str, Any]:
+        """Estimate the cost of a single SQL statement.
+
+        Base contract mirroring the sync ``BaseEngineSpec``; engines that
+        support estimation (postgres, trino) override this. Callers gate on
+        ``get_allow_cost_estimate`` first, so this default is unreachable in
+        practice.
+        """
+        raise Exception("Database does not support cost estimation")  # noqa: TRY002

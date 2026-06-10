@@ -389,8 +389,9 @@ class SecurityManagerProtocol(Protocol):
         self,
         database: Any,
         schema_names: list[str],
-        catalog: str | None = None,
         *,
+        catalog: str | None = None,
+        hierarchical: bool = True,
         user: Any,
     ) -> list[str]: ...
 

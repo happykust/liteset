@@ -315,7 +315,7 @@ def import_dashboard(  # noqa: C901
         "filter_immune_slices" in i_params_dict
         or "filter_immune_slice_fields" in i_params_dict
     ):
-        filter_scopes = convert_filter_scopes(old_json_metadata, slices)
+        converted_scopes = convert_filter_scopes(old_json_metadata, slices)
 
     if "filter_scopes" in i_params_dict:
         filter_scopes = old_json_metadata.get("filter_scopes")
@@ -323,7 +323,7 @@ def import_dashboard(  # noqa: C901
     if filter_scopes:
         new_filter_scopes = copy_filter_scopes(
             old_to_new_slc_id_dict=old_to_new_slc_id_dict,
-            old_filter_scopes=filter_scopes,
+            old_filter_scopes=converted_scopes,
         )
 
     # Override the dashboard if it already exists (matching by remote_id).

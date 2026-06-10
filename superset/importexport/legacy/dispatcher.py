@@ -94,7 +94,9 @@ class ImportDashboardsCommand:
         if V1ImportDashboardsCommand is not None:
             try:
                 cmd = V1ImportDashboardsCommand(
-                    self.contents, *self.args, **self.kwargs
+                    self.contents,  # type: ignore[arg-type]
+                    *self.args,
+                    **self.kwargs,
                 )
                 # v1 commands are async; only invoke when the caller is
                 # already running inside an event loop (via :func:`asyncio.run`
@@ -157,7 +159,7 @@ class ImportDashboardsCommand:
 
         if v1_command is not None:
             try:
-                cmd = v1_command(
+                cmd = v1_command(  # type: ignore[misc]
                     _contents_to_zip(self.contents),
                     *self.args,
                     dao=dao,
@@ -206,7 +208,11 @@ class ImportDatasetsCommand:
 
         if V1ImportDatasetsCommand is not None:
             try:
-                cmd = V1ImportDatasetsCommand(self.contents, *self.args, **self.kwargs)
+                cmd = V1ImportDatasetsCommand(
+                    self.contents,  # type: ignore[arg-type]
+                    *self.args,
+                    **self.kwargs,
+                )
                 run_method = getattr(cmd, "run", None)
                 if run_method is not None and not _is_coroutine_method(run_method):
                     run_method()
@@ -254,7 +260,7 @@ class ImportDatasetsCommand:
 
         if v1_command is not None:
             try:
-                cmd = v1_command(
+                cmd = v1_command(  # type: ignore[misc]
                     _contents_to_zip(self.contents),
                     *self.args,
                     dao=dao,

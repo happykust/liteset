@@ -200,9 +200,9 @@ def parse_upload_form(form: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
 
     # --- ints --------------------------------------------------------------
     for key in ("header_row", "rows_to_read", "skip_rows"):
-        coerced = _coerce_int(form.get(key))
-        if coerced is not None:
-            parsed[key] = coerced
+        coerced_int = _coerce_int(form.get(key))
+        if coerced_int is not None:
+            parsed[key] = coerced_int
 
     # --- delimited lists ---------------------------------------------------
     for key in ("columns_read", "column_dates", "null_values"):
@@ -212,7 +212,7 @@ def parse_upload_form(form: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
 
     # --- column_data_types (JSON-encoded dict) -----------------------------
     raw_cdt = form.get("column_data_types")
-    if raw_cdt not in (None, ""):
+    if raw_cdt is not None and raw_cdt != "":
         if isinstance(raw_cdt, dict):
             parsed["column_data_types"] = raw_cdt
         else:

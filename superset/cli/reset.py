@@ -123,7 +123,7 @@ async def _run_factory_reset(
             )
             user = (await session.execute(stmt)).scalars().first()
 
-            if not user or not check_password_hash(user.password, password):
+            if not user or not check_password_hash(str(user.password), password):
                 click.secho("Invalid credentials", fg="red")
                 sys.exit(1)
 

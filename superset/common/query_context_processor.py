@@ -416,7 +416,7 @@ class AsyncQueryContextProcessor:
             # format) directly.
             await self._cache_set(
                 cache_key,
-                {"data": self._query_context.form_data},
+                {"data": self._query_context.form_data},  # type: ignore[union-attr]
                 self._get_cache_timeout(),
             )
             return_value["cache_key"] = cache_key
@@ -464,7 +464,7 @@ class AsyncQueryContextProcessor:
                     "function": grain.function,
                     "duration": grain.duration,
                 }
-                for grain in self._datasource.database.grains()
+                for grain in self._datasource.database.grains()  # type: ignore[attr-defined]
             ]
         }
 
@@ -1333,9 +1333,11 @@ class AsyncQueryContextProcessor:
         if datasource:
             for column in getattr(datasource, "columns", None) or []:
                 if isinstance(column, dict):
-                    columns_by_name[column.get("column_name")] = column
+                    columns_by_name[column.get("column_name")] = column  # type: ignore[index]
                 else:
-                    columns_by_name[getattr(column, "column_name", None)] = column
+                    columns_by_name[getattr(column, "column_name", None)] = (  # type: ignore[index]
+                        column
+                    )
 
         generic_types: list[int] = []
         for column in df.columns:
@@ -1734,7 +1736,7 @@ class AsyncQueryContextProcessor:
                     force=force,
                 )
                 payload = await viz_obj.get_payload()
-                return payload.get("data") or []
+                return payload.get("data") or []  # type: ignore[return-value]
 
             get_qc = getattr(chart, "get_query_context", None)
             if get_qc is None:
@@ -2479,7 +2481,7 @@ class AsyncQueryContextProcessor:
             # Read the CSV_EXPORT / EXCEL_EXPORT pandas kwargs from settings
             # (the Flask-free equivalent of ``current_app.config[...]``).
             try:
-                settings = _config.SupersetSettings()
+                settings = _config.SupersetSettings()  # type: ignore[call-arg]
                 csv_export = dict(getattr(settings, "csv_export", {}) or {})
                 excel_export = dict(getattr(settings, "excel_export", {}) or {})
             except Exception:  # noqa: BLE001 — never break export on config errors
@@ -2492,7 +2494,7 @@ class AsyncQueryContextProcessor:
             # tz-aware datetimes → strings), matching upstream order.
             if coltypes is None:
                 coltypes = AsyncQueryContextProcessor._extract_coltypes(df)
-            _excel.apply_column_types(df, coltypes)
+            _excel.apply_column_types(df, coltypes)  # type: ignore[arg-type]
             return _excel.df_to_excel(df, **excel_export)
 
         # Serialize datetime columns as epoch milliseconds to match the

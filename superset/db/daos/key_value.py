@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import delete, or_, select
@@ -140,7 +140,7 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         import json as _json
 
         try:
-            return _json.loads(entry.value)
+            return _json.loads(cast("bytes", entry.value))
         except TypeError as ex:
             raise KeyValueCodecDecodeException(str(ex)) from ex
 

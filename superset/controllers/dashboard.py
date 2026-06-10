@@ -769,9 +769,7 @@ class DashboardController(Controller):
 
         try:
             position = (
-                _json.loads(dashboard.position_json)
-                if dashboard.position_json
-                else {}
+                _json.loads(dashboard.position_json) if dashboard.position_json else {}
             )
         except (ValueError, TypeError) as err:
             from litestar.exceptions import ClientException
@@ -1391,7 +1389,7 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
         request: Request,  # type: ignore[type-arg]
-    ) -> Response[bytes]:
+    ) -> Response[Any]:
         """Get a computed dashboard screenshot from cache.
 
         The *digest* path parameter is the cache key.  If the cache
@@ -1487,7 +1485,7 @@ class DashboardController(Controller):
         state: State,
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
-    ) -> Response[bytes]:
+    ) -> Response[Any]:
         """Compute or get already computed dashboard thumbnail from cache.
 
         If the dashboard's current digest differs from *digest* we redirect

@@ -119,7 +119,7 @@ def apply_max_row_limit(limit: int, server_pagination: bool | None = None) -> in
     from superset import config as _config
 
     try:
-        settings = _config.SupersetSettings()
+        settings = _config.SupersetSettings()  # type: ignore[call-arg]
         sql_max_row = int(getattr(settings, "sql_max_row", 100000))
         table_viz_max = int(getattr(settings, "table_viz_max_row_server", sql_max_row))
     except Exception:  # noqa: BLE001 — never break query building on config errors

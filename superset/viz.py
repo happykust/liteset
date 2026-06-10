@@ -411,6 +411,9 @@ class BaseViz:
     is_timeseries = False
     cache_type = "df"
     enforce_numerical_metrics = True
+    # Injection point: explore_json wires a sync viz-cache manager here so
+    # ``force_cached`` reads the worker-written DATA_CACHE_CONFIG slot.
+    cache_manager: Any
 
     def __init__(
         self,
@@ -2633,7 +2636,7 @@ class PartitionViz(NVD3TimeSeriesViz):
             "point_diff": [pd.Series.sub, lambda a, b, fill_value: a - b],
             "point_factor": [pd.Series.div, lambda a, b, fill_value: a / float(b)],
             "point_percent": [
-                lambda a, b, fill_value=0: a.div(b, fill_value=fill_value) - 1,
+                lambda a, b, fill_value=0: a.div(b, fill_value=fill_value) - 1,  # type: ignore[misc]
                 lambda a, b, fill_value: a / float(b) - 1,
             ],
         }[time_op]

@@ -74,12 +74,12 @@ try:
     )
 except ImportError:
     # Define dummy classes when playwright is not available
-    BrowserContext = Any  # type: ignore[misc,assignment]
-    PlaywrightError = Exception  # type: ignore[misc,assignment]
-    PlaywrightTimeout = Exception  # type: ignore[misc,assignment]
-    Locator = Any  # type: ignore[misc,assignment]
-    Page = Any  # type: ignore[misc,assignment]
-    sync_playwright = None  # type: ignore[assignment]
+    BrowserContext = Any
+    PlaywrightError = Exception
+    PlaywrightTimeout = Exception
+    Locator = Any
+    Page = Any
+    sync_playwright = None
 
 
 # ---------------------------------------------------------------------------
@@ -385,9 +385,11 @@ class WebDriverSelenium(WebDriverProxy):
         if self._driver_type == "firefox":
             driver_class: type[WebDriver] = firefox.webdriver.WebDriver
             service_class: type[Service] = firefox.service.Service
-            options = firefox.options.Options()
-            profile = FirefoxProfile()
-            profile.set_preference("layout.css.devPixelsPerPx", str(pixel_density))
+            options: Any = firefox.options.Options()
+            profile = FirefoxProfile()  # type: ignore[no-untyped-call]
+            profile.set_preference(  # type: ignore[no-untyped-call]
+                "layout.css.devPixelsPerPx", str(pixel_density)
+            )
             options.profile = profile
             kwargs: dict[str, Any] = {"options": options}
         elif self._driver_type == "chrome":
@@ -497,9 +499,9 @@ class WebDriverSelenium(WebDriverProxy):
                     _cfg("screenshot_wait_for_error_modal_invisible", 5),
                 ).until(EC.invisibility_of_element(modal))
 
-                error_as_html = err_msg_div.get_attribute("innerHTML").replace(
-                    "'", "\\'"
-                )
+                error_as_html = err_msg_div.get_attribute(  # type: ignore[union-attr]
+                    "innerHTML"
+                ).replace("'", "\\'")
 
                 try:
                     driver.execute_script(

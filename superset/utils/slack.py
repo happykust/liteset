@@ -23,6 +23,7 @@ to be installed (optional dependency).
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ def get_user_avatar(email: str) -> str:
     except Exception as exc:
         raise SlackClientError(f"Failed to lookup user by email: {email}") from exc
 
-    user = response.data.get("user")
+    user = cast("dict[str, Any]", response.data).get("user")
     if user is None:
         raise SlackClientError("No user found with that email.")
 

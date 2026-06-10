@@ -94,7 +94,7 @@ def _get_fk_many_from_list(
     for fk in fkmany:
         obj = object_dict.get(getattr(fk, key_attr))
         if obj:
-            for attr in fkmany_class.update_from_object_fields:
+            for attr in fkmany_class.update_from_object_fields:  # type: ignore[attr-defined]
                 setattr(fk, attr, obj.get(attr))
 
     # create new fks
@@ -108,7 +108,7 @@ def _get_fk_many_from_list(
             orm_kwargs: dict[str, Any] = {
                 k: obj_copy[k]
                 for k in obj_copy
-                if k in fkmany_class.update_from_object_fields
+                if k in fkmany_class.update_from_object_fields  # type: ignore[attr-defined]
             }
             new_obj = fkmany_class(**orm_kwargs)
             new_fks.append(new_obj)
@@ -546,7 +546,9 @@ class LegacyDatasourceController(Controller):
                     _selectinload(Dashboard.embedded),
                 )
             )
-            dash_result = await ds_dao.session.execute(dash_stmt)
+            dash_result = await ds_dao.session.execute(  # type: ignore[attr-defined]
+                dash_stmt
+            )
             dashboard = dash_result.scalars().one_or_none()
             if dashboard is None:
                 return Response(content={"message": "Not found"}, status_code=404)

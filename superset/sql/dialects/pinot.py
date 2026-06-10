@@ -54,12 +54,12 @@ class Pinot(MySQL):
     class Parser(MySQL.Parser):
         FUNCTIONS = {
             **MySQL.Parser.FUNCTIONS,
-            "DATE_ADD": lambda args: exp.DateAdd(
+            "DATE_ADD": lambda args: exp.DateAdd(  # type: ignore[no-untyped-call]
                 this=seq_get(args, 2),
                 expression=seq_get(args, 1),
                 unit=seq_get(args, 0),
             ),
-            "DATE_SUB": lambda args: exp.DateSub(
+            "DATE_SUB": lambda args: exp.DateSub(  # type: ignore[no-untyped-call]
                 this=seq_get(args, 2),
                 expression=seq_get(args, 1),
                 unit=seq_get(args, 0),
@@ -88,9 +88,9 @@ class Pinot(MySQL):
 
         # Override MySQL's CAST_MAPPING - don't convert integer or string types
         CAST_MAPPING = {
-            exp.DataType.Type.LONGBLOB: exp.DataType.Type.VARBINARY,
-            exp.DataType.Type.MEDIUMBLOB: exp.DataType.Type.VARBINARY,
-            exp.DataType.Type.TINYBLOB: exp.DataType.Type.VARBINARY,
+            exp.DataType.Type.LONGBLOB: exp.DataType.Type.VARBINARY,  # type: ignore[dict-item]
+            exp.DataType.Type.MEDIUMBLOB: exp.DataType.Type.VARBINARY,  # type: ignore[dict-item]
+            exp.DataType.Type.TINYBLOB: exp.DataType.Type.VARBINARY,  # type: ignore[dict-item]
             exp.DataType.Type.UBIGINT: "UNSIGNED",
         }
 

@@ -90,7 +90,7 @@ class AsyncRoleDAO:
 
         # group_ids filter
         if group_ids_filter is not None:
-            cond = Role.groups.any(id=group_ids_filter)
+            cond = Role.groups.any(id=group_ids_filter)  # type: ignore[attr-defined]
             stmt = stmt.where(cond)
             count_stmt = count_stmt.where(cond)
 
@@ -108,7 +108,7 @@ class AsyncRoleDAO:
         stmt = stmt.options(
             selectinload(Role.permissions),
             selectinload(Role.user),  # type: ignore[attr-defined]
-            selectinload(Role.groups),
+            selectinload(Role.groups),  # type: ignore[attr-defined]
         )
 
         # Pagination
@@ -133,7 +133,7 @@ class AsyncRoleDAO:
             .options(
                 selectinload(Role.permissions),
                 selectinload(Role.user),  # type: ignore[attr-defined]
-                selectinload(Role.groups),
+                selectinload(Role.groups),  # type: ignore[attr-defined]
             )
         )
         result = await self.session.execute(stmt)

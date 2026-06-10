@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 from timeit import default_timer
+from typing import Any
 
 import msgspec
 from litestar import Controller, post
@@ -116,7 +117,7 @@ class CacheController(Controller):
         self,
         data: CacheInvalidateSchema,
         dao: AsyncCacheKeyDAO,
-    ) -> Response[None]:
+    ) -> Response[Any]:
         """POST /api/v1/cachekey/invalidate -- invalidate cache keys.
 
         Takes a list of datasource UIDs (and/or datasource name tuples),
@@ -146,9 +147,12 @@ class CacheController(Controller):
 
         # 1:1 with @statsd_metrics send_stats_metrics
         duration_ms = (default_timer() - start) * 1000.0
-        if 200 <= response.status_code < 400:
+        # ``Response.status_code`` is Optional in Litestar's typing; every
+        # branch above sets it explicitly, so 0 is unreachable.
+        status_code = response.status_code or 0
+        if 200 <= status_code < 400:
             stats_logger_manager.instance.incr(f"{_metric_prefix}.success")
-        elif 400 <= response.status_code < 500:
+        elif 400 <= status_code < 500:
             stats_logger_manager.instance.incr(f"{_metric_prefix}.warning")
         else:
             stats_logger_manager.instance.incr(f"{_metric_prefix}.error")
@@ -160,7 +164,7 @@ class CacheController(Controller):
         self,
         data: CacheInvalidateSchema,
         dao: AsyncCacheKeyDAO,
-    ) -> Response[None]:
+    ) -> Response[Any]:
         """Inner body of ``invalidate``, separated for metrics/logging wrapping.
 
         The event logger fires only on successful (non-exception) return,
@@ -235,7 +239,7 @@ class CacheController(Controller):
         self,
         data: CacheInvalidateSchema,
         dao: AsyncCacheKeyDAO,
-    ) -> Response[None]:
+    ) -> Response[Any]:
         """Core invalidation logic."""
         # -- 1. Resolve datasource UIDs --------------------------------
         datasource_uids: set[str] = set(data.datasource_uids)

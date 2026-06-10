@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator, TYPE_CHECKING, TypedDict
+from typing import Any, AsyncIterator, cast, TYPE_CHECKING, TypedDict
 
 import backoff
 import jwt
@@ -514,7 +514,7 @@ def sync_get_oauth2_access_token(
                 and token.access_token_expiration
                 and datetime.now() < token.access_token_expiration
             ):
-                return token.access_token
+                return cast("str | None", token.access_token)
             # Expired but refreshable: refresh inline (1:1 upstream).
             if token.refresh_token:
                 return sync_refresh_oauth2_token(

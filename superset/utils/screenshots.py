@@ -70,8 +70,8 @@ from superset.utils.webdriver import (
     cached_settings as _cached_settings,
     ChartStandaloneMode,
     DashboardStandaloneMode,
-    WebDriver,
     WebDriverPlaywright,
+    WebDriverProxy,
     WebDriverSelenium,
     WindowSize,
 )
@@ -284,7 +284,7 @@ class BaseScreenshot:
         self.url = url
         self.screenshot = None
 
-    def driver(self, window_size: WindowSize | None = None) -> WebDriver:
+    def driver(self, window_size: WindowSize | None = None) -> WebDriverProxy:
         window_size = window_size or self.window_size
         if feature_flag_manager.is_feature_enabled("PLAYWRIGHT_REPORTS_AND_THUMBNAILS"):
             return WebDriverPlaywright(self.driver_type, window_size)

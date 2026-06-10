@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import contextvars
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 
 _current_locale: contextvars.ContextVar[str] = contextvars.ContextVar(
     "current_locale", default="en"
@@ -171,13 +171,17 @@ class LazyString:
         return format(str(self), format_spec)
 
 
-def lazy_gettext(msgid: str, **variables: Any) -> LazyString:
+def lazy_gettext(msgid: str, **variables: Any) -> str:
     """Return a lazy proxy that resolves translation on access.
 
     ``variables`` are stored on the proxy and applied via ``%`` interpolation
     once the string is materialised (matches the legacy lazy-gettext API).
+
+    Typed as ``str`` even though a :class:`LazyString` proxy is returned —
+    the same deliberate lie the ``flask_babel`` stubs make: the proxy
+    duck-types ``str``, and call sites assign it to ``str``-typed fields.
     """
-    return LazyString(msgid, **variables)
+    return cast(str, LazyString(msgid, **variables))
 
 
 # ``_`` is the conventional alias used across the codebase for the active

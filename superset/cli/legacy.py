@@ -199,7 +199,7 @@ async def _legacy_import_dashboards_async(
         if username is not None:
             from sqlalchemy import select
 
-            from superset.models.user import User
+            from superset.models.security import User
 
             async with session_factory() as session:
                 stmt = select(User).where(User.username == username)

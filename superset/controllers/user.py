@@ -129,7 +129,7 @@ def _check_password_complexity(password: str, settings: Any | None) -> None:
     except Exception as exc:
         raise HTTPException(
             status_code=400,
-            detail={"password": [str(exc)]},
+            detail={"password": [str(exc)]},  # type: ignore[arg-type]
         ) from exc
 
 
@@ -153,10 +153,9 @@ async def _validate_entity_ids(
         return
     from sqlalchemy import select
 
-    if field_name == "roles":
-        from superset.models.security import Role as _EntityModel
-    else:
-        from superset.models.security import Group as _EntityModel
+    from superset.models.security import Group, Role
+
+    _EntityModel: type[Any] = Role if field_name == "roles" else Group  # noqa: N806
 
     stmt = select(_EntityModel.id).where(_EntityModel.id.in_(requested_ids))
     result = await session.execute(stmt)
@@ -165,7 +164,7 @@ async def _validate_entity_ids(
     if missing_ids:
         raise HTTPException(
             status_code=status_code,
-            detail={
+            detail={  # type: ignore[arg-type]
                 field_name: [f"{model_name}(s) with ID(s) {missing_ids} not found."]
             },
         )

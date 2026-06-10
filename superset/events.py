@@ -884,9 +884,7 @@ class AsyncDBEventLogger(EventLogger):
         audit records never reach the ``Log`` table.
         """
         while self._pending_persists:
-            await asyncio.gather(
-                *list(self._pending_persists), return_exceptions=True
-            )
+            await asyncio.gather(*list(self._pending_persists), return_exceptions=True)
 
     # ------------------------------------------------------------------
     # private persistence

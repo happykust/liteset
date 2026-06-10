@@ -33,15 +33,22 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from zipfile import is_zipfile, ZipFile
 
 import click
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import (
+        async_sessionmaker,
+        AsyncEngine,
+        AsyncSession,
+    )
+
 logger = logging.getLogger(__name__)
 
 
-def _make_session() -> tuple[object, object]:
+def _make_session() -> tuple[async_sessionmaker[AsyncSession], AsyncEngine]:
     """Create an async session-factory + engine from current settings."""
     from superset.config import SupersetSettings
     from superset.db.engine import create_db_engine, create_session_factory

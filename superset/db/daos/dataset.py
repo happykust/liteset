@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 import dateutil.parser
 from sqlalchemy import select
@@ -383,9 +383,9 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
 
         new_columns = await asyncio.to_thread(model.external_metadata)
         parsed_table = ParsedTable(
-            model.table_name,
-            model.schema or None,
-            model.catalog or None,
+            cast("str", model.table_name),
+            cast("str | None", model.schema or None),
+            cast("str | None", model.catalog or None),
         )
         metric_dicts = await asyncio.to_thread(model.database.get_metrics, parsed_table)
         metrics = [SqlMetric(**metric) for metric in metric_dicts]
@@ -411,7 +411,7 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
                     type=col["type"],
                     table=model,
                 )
-                new_column.is_dttm = new_column.is_temporal
+                new_column.is_dttm = new_column.is_temporal  # type: ignore[assignment]
                 if col.get("comment"):
                     new_column.description = col["comment"]
                 db_engine_spec.alter_new_orm_column(new_column)
@@ -423,8 +423,8 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
                 new_column.expression = ""
                 if col.get("comment"):
                     new_column.description = col["comment"]
-            new_column.groupby = True
-            new_column.filterable = True
+            new_column.groupby = True  # type: ignore[assignment]
+            new_column.filterable = True  # type: ignore[assignment]
             columns.append(new_column)
             if not any_date_col and new_column.is_temporal:
                 any_date_col = col["column_name"]
@@ -436,7 +436,7 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         model.columns = columns
 
         if not model.main_dttm_col:
-            model.main_dttm_col = any_date_col
+            model.main_dttm_col = any_date_col  # type: ignore[assignment]
         model.add_missing_metrics(metrics)
 
         _apply_sqla_table_mutator(model)

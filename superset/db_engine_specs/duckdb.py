@@ -147,8 +147,8 @@ class DuckDBParametersMixin:
         }
         access_token = query.pop("motherduck_token", "")
         return {
-            "access_token": access_token,
-            "database": url.database,
+            "access_token": access_token,  # type: ignore[typeddict-item]
+            "database": url.database,  # type: ignore[typeddict-item]
             "query": query,
         }
 
@@ -358,7 +358,7 @@ class MotherDuckEngineSpec(DuckDBEngineSpec):
 
     @classmethod
     def get_default_catalog(cls, database: Database) -> str | None:
-        return database.url_object.database.split(":", 1)[1]
+        return database.url_object.database.split(":", 1)[1]  # type: ignore[union-attr]
 
     @classmethod
     def get_catalog_names(
@@ -368,7 +368,7 @@ class MotherDuckEngineSpec(DuckDBEngineSpec):
     ) -> set[str]:
         return {
             catalog
-            for (catalog,) in inspector.bind.execute(
+            for (catalog,) in inspector.bind.execute(  # type: ignore[union-attr,call-overload]
                 "SELECT alias FROM MD_ALL_DATABASES() WHERE is_attached;"
             )
         }

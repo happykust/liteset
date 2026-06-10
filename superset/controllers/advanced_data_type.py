@@ -63,7 +63,7 @@ def _invoke_handler(handler: Any, adv_type: str, values: list[Any]) -> Any:
         # 1:1 with the original call shape (superset_old/advanced_data_type/
         # api.py:105-109): the request dict carries ONLY ``values`` — no
         # extra ``advanced_data_type`` key that third-party plugins never saw.
-        return handler.translate_type({"values": values})
+        return handler.translate_type({"values": values})  # type: ignore[typeddict-item]
     if callable(handler):
         return handler(values)
     if hasattr(handler, "fetch_data"):

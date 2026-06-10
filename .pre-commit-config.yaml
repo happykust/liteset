@@ -25,6 +25,8 @@ repos:
       - id: mypy
         args: [--check-untyped-defs]
         additional_dependencies: [
+            # for the sqlalchemy.ext.mypy.plugin declared in pyproject.toml
+            sqlalchemy,
             types-simplejson,
             types-python-dateutil,
             types-requests,

@@ -31,7 +31,7 @@ working through the migration.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def export_dashboards() -> str:
     session = get_sync_session()
     try:
         dashboard_ids = {dashboard.id for dashboard in session.query(Dashboard)}
-        return _export_dashboards(session, dashboard_ids)
+        return _export_dashboards(session, cast("set[int]", dashboard_ids))
     finally:
         session.close()
 
@@ -107,9 +107,7 @@ def _export_dashboards(session: Any, dashboard_ids: set[int]) -> str:
                 id_ = target.get("datasetId")
                 if id_ is None:
                     continue
-                datasource = (
-                    session.query(SqlaTable).filter_by(id=int(id_)).first()
-                )
+                datasource = session.query(SqlaTable).filter_by(id=int(id_)).first()
                 if datasource is not None:
                     datasource_ids.add((datasource.id, datasource.type))
 

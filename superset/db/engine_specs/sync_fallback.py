@@ -201,7 +201,9 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
                     datatype = cls.get_datatype(type_code)
                     sqla_type = cls.get_sqla_column_type(datatype)
                     if sqla_type is not None:
-                        func = cls.column_type_mutators.get(type(sqla_type))
+                        func = cls.column_type_mutators.get(
+                            type(sqla_type)  # type: ignore[arg-type]
+                        )
                         if func is not None:
                             column_mutators[idx] = func
 

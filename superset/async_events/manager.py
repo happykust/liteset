@@ -143,7 +143,7 @@ class AsyncEventManager:
 
     def __init__(
         self,
-        redis: Redis,
+        redis: Redis[Any],
         stream_prefix: str = "async-events-",
         global_stream_key: str = "async-events-full",
         global_stream_limit: int = 1_000_000,
@@ -182,14 +182,14 @@ class AsyncEventManager:
         # maps to Redis ``XADD ... MAXLEN ~ N`` so trimming stays cheap.
         await self.redis.xadd(
             self._channel_key(channel_id),
-            payload,  # type: ignore[arg-type]
+            payload,
             maxlen=self.channel_stream_limit,
             approximate=True,
         )
         # Write to global firehose stream
         await self.redis.xadd(
             self.global_stream_key,
-            payload,  # type: ignore[arg-type]
+            payload,
             maxlen=self.global_stream_limit,
             approximate=True,
         )
@@ -226,14 +226,14 @@ class AsyncEventManager:
         # the original ``xadd(..., self._stream_limit)``).
         await self.redis.xadd(
             self._channel_key(channel_id),
-            payload,  # type: ignore[arg-type]
+            payload,
             maxlen=self.channel_stream_limit,
             approximate=True,
         )
         # Write to global stream
         await self.redis.xadd(
             self.global_stream_key,
-            payload,  # type: ignore[arg-type]
+            payload,
             maxlen=self.global_stream_limit,
             approximate=True,
         )

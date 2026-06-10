@@ -87,7 +87,7 @@ class UpdateAnnotationCommand(AsyncBaseCommand["Annotation"]):
             import json as _json
 
             try:
-                _json.loads(json_metadata)
+                _json.loads(json_metadata)  # type: ignore[arg-type]
             except (TypeError, ValueError) as ex:
                 raise CommandInvalidError("JSON not valid") from ex
 

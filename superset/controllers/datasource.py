@@ -230,7 +230,7 @@ class DatasourceController(Controller):
         try:
             from superset import config as _config
 
-            _settings = _config.SupersetSettings()
+            _settings = _config.SupersetSettings()  # type: ignore[call-arg]
             _fsrl = int(getattr(_settings, "filter_select_row_limit", 10000))
             _smr = int(getattr(_settings, "sql_max_row", 100000))
             return min(_smr, _fsrl) if _fsrl else _smr

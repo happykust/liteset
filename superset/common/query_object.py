@@ -58,7 +58,7 @@ def _capped_row_limit(
     from superset.utils.core import apply_max_row_limit
 
     try:
-        settings = _config.SupersetSettings()
+        settings = _config.SupersetSettings()  # type: ignore[call-arg]
         default = (
             int(getattr(settings, "samples_row_limit", 1000))
             if result_type == "samples"
@@ -303,8 +303,8 @@ class AsyncQueryObject:
         x_axis = form_data and form_data.get("x_axis")
 
         filter_to_remove = None
-        if is_adhoc_column(x_axis):
-            x_axis = x_axis.get("sqlExpression")
+        if is_adhoc_column(x_axis):  # type: ignore[arg-type]
+            x_axis = x_axis.get("sqlExpression")  # type: ignore[union-attr]
         if x_axis and x_axis in temporal_columns:
             filter_to_remove = x_axis
             x_axis_column = next(
@@ -347,8 +347,8 @@ class AsyncQueryObject:
         # Remove the temporal filter (x-axis or other). A granularity-keyed
         # filter is re-added downstream — this replaces the prior default
         # temporal filter.
-        if is_adhoc_column(filter_to_remove):
-            filter_to_remove = filter_to_remove.get("sqlExpression")
+        if is_adhoc_column(filter_to_remove):  # type: ignore[arg-type]
+            filter_to_remove = filter_to_remove.get("sqlExpression")  # type: ignore[union-attr]
 
         if filter_to_remove:
             self.filters = [

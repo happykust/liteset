@@ -213,5 +213,5 @@ async def update_tags(
     if tag_ids_to_add:
         tags_to_add = await tag_dao.find_by_ids(tag_ids_to_add)
         await tag_dao.create_custom_tagged_objects(
-            object_type.name, object_id, [tag.name for tag in tags_to_add]
+            object_type.name, object_id, [str(tag.name) for tag in tags_to_add]
         )

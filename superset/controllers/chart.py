@@ -166,7 +166,7 @@ def _render_chart_data_payload(  # noqa: C901
     is_guest: bool,
     form_data: dict[str, Any] | None = None,
     datasource: Any | None = None,
-) -> Response[bytes]:
+) -> Response[Any]:
     """Serialize ``ChartDataCommand`` output as
     ``{"result": [<query>, ...]}``.
 
@@ -589,7 +589,7 @@ _SAFE_MD_ATTRS: dict[str, set[str]] = {
 def _md_to_html(raw: str) -> str:
     """Convert a markdown string to sanitised HTML, matching the original
     ``superset.utils.core.markdown`` behaviour."""
-    import markdown as md  # type: ignore[import-untyped]
+    import markdown as md
     import nh3
 
     html = md.markdown(
@@ -1212,7 +1212,7 @@ class ChartController(Controller):
         state: State,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
-    ) -> Response[bytes]:
+    ) -> Response[Any]:
         """Get a computed screenshot from cache.
 
         The *digest* path parameter is the cache key written by the Celery
@@ -1296,7 +1296,7 @@ class ChartController(Controller):
         state: State,
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
-    ) -> Response[bytes]:
+    ) -> Response[Any]:
         """Compute or get already computed chart thumbnail from cache.
 
         If the chart's current digest differs from *digest* we redirect to

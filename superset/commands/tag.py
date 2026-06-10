@@ -41,7 +41,7 @@ async def _resolve_tagged_object(session: Any, object_type: str, object_id: int)
     if object_type == "dashboard":
         from superset.models.dashboard import Dashboard
 
-        model_cls = Dashboard
+        model_cls: type[Any] = Dashboard
     elif object_type == "chart":
         from superset.models.slice import Slice
 

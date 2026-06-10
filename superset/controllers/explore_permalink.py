@@ -301,8 +301,6 @@ class ExplorePermalinkController(Controller):
                 # ChartNotFoundError, which is NOT caught — it propagates as
                 # 404, exactly like the original command (ChartNotFoundError
                 # is absent from its except list, api.py:163-164 maps it 404).
-                raise SupersetException(
-                    message=getattr(ex, "message", str(ex)), status=500
-                ) from ex
+                raise SupersetException(message=getattr(ex, "message", str(ex))) from ex
             return payload
         return {"value": payload}

@@ -22,7 +22,10 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from redis.asyncio import Redis
 
 from litestar import get, Litestar
 from litestar.config.compression import CompressionConfig
@@ -1185,9 +1188,11 @@ def create_app(  # noqa: C901
         # nonce and stores it under CSP_NONCE_SCOPE_KEY in scope["state"].  The
         # template callable reads it back so spa.html / asset_bundle.html can emit
         # `nonce="<value>"` on inline/async <script> tags.
+        from collections.abc import Mapping
+
         from superset.middleware.security_headers import CSP_NONCE_SCOPE_KEY
 
-        def _csp_nonce(ctx: dict[str, Any]) -> str:
+        def _csp_nonce(ctx: Mapping[str, Any]) -> str:
             try:
                 request = ctx["request"]
                 scope_state = request.scope.get("state", {})
@@ -1230,7 +1235,7 @@ def create_app(  # noqa: C901
             state, "redis", None
         )
         return _aem_mod.AsyncEventManager(
-            redis=_event_redis,
+            redis=cast("Redis[Any]", _event_redis),
             stream_prefix=_aem_prefix,
             # Firehose key derived from the prefix (see startup-manager note).
             global_stream_key=f"{_aem_prefix}full",

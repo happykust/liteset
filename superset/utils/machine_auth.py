@@ -66,7 +66,7 @@ if TYPE_CHECKING:
     try:
         from playwright.sync_api import BrowserContext
     except ModuleNotFoundError:
-        BrowserContext = Any  # type: ignore[misc,assignment]
+        BrowserContext = Any
 
 
 # Default JWT lifetime when no settings are wired up (matches

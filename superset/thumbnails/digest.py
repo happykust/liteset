@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from typing import Any, TYPE_CHECKING
+from typing import Any, cast, TYPE_CHECKING
 
 from superset.tasks.exceptions import ExecutorNotFoundError
 from superset.tasks.types import ExecutorType
@@ -235,7 +235,7 @@ def get_dashboard_digest(dashboard: "Dashboard") -> str | None:
     from superset.utils.rls import _metadata_sync_session
 
     with _metadata_sync_session() as session:
-        datasources = _query_dashboard_datasources(session, dashboard.id)
+        datasources = _query_dashboard_datasources(session, cast("int", dashboard.id))
         unique_string = _adjust_string_with_rls(unique_string, datasources, executor)
 
     return md5_sha_from_str(unique_string)

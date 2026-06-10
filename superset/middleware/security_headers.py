@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from collections.abc import Mapping
 from typing import Any
 
 from litestar.middleware.base import ASGIMiddleware
@@ -87,17 +88,17 @@ def _build_csp_string(
         from collections import OrderedDict  # local import to avoid top-level cost
 
         policy_dict: OrderedDict[str, str] = OrderedDict()
-        for part in csp.split(";"):
-            parts = part.strip().split(" ")
-            policy_dict[parts[0]] = " ".join(parts[1:])
-        nonce_token = f"'nonce-{nonce}'"
+        for raw_part in csp.split(";"):
+            tokens = raw_part.strip().split(" ")
+            policy_dict[tokens[0]] = " ".join(tokens[1:])
+        str_nonce_token = f"'nonce-{nonce}'"
         nonce_directives_set: set[str] = set(nonce_in)
         result_parts: list[str] = []
         for directive, content in policy_dict.items():
-            part = f"{directive} {content}" if content else directive
+            result_part = f"{directive} {content}" if content else directive
             if directive in nonce_directives_set:
-                part += f" {nonce_token}"
-            result_parts.append(part)
+                result_part += f" {str_nonce_token}"
+            result_parts.append(result_part)
         return "; ".join(result_parts)
     nonce_directives: set[str] = set(nonce_in or [])
     nonce_token = f"'nonce-{nonce}'" if nonce else None
@@ -113,7 +114,7 @@ def _build_csp_string(
     return "; ".join(parts)
 
 
-def _resolve_is_https(scope: dict) -> bool:  # type: ignore[type-arg]
+def _resolve_is_https(scope: Mapping[str, Any]) -> bool:
     """Return True when the request was received over HTTPS.
 
     Mirrors talisman.py:396-400: checks ``request.is_secure`` OR

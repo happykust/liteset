@@ -70,7 +70,7 @@ class CreateSavedQueryCommand(AsyncBaseCommand["SavedQuery"]):
             # FK column (separate from AuditMixinNullable's created_by_fk)
             # that backs the ``user`` relationship, ``user_email`` property,
             # and implicit owner tags.
-            query.user_id = self._user_id
+            query.user_id = self._user_id  # type: ignore[assignment]
         self._dao.session.add(query)
         await self._dao.session.flush()
 

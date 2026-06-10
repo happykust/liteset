@@ -1642,8 +1642,8 @@ class DatabaseController(Controller):
                     schema=schema,
                     user=current_user,
                 )
-                table_names = [d.table for d in _allowed_tables]
-                view_names = [d.table for d in _allowed_views]
+                table_names = {d.table for d in _allowed_tables}
+                view_names = {d.table for d in _allowed_views}
 
             # Batch-fetch extra (certification info) from SqlaTable for
             # all discovered tables/views so the frontend gets it.

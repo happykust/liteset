@@ -64,7 +64,7 @@ from superset.utils.core import (
 from superset.utils.feature_flags import feature_flag_manager
 
 if TYPE_CHECKING:
-    from superset.connectors.sqla.models import SqlaTable
+    from superset.models.connectors import SqlaTable
     from superset.models.core import Database
     from superset.models.sql_lab import Query
 
@@ -910,17 +910,19 @@ def _collect_role_perm_rows(role_ids: list[int]) -> list[Any]:
 
     engine = _get_sync_engine()
     with Session(engine) as session:
-        return session.execute(
-            select(Permission.name, ViewMenu.name)
-            .select_from(ab_permission_view_role)
-            .join(
-                PermissionView,
-                PermissionView.id == ab_permission_view_role.c.permission_view_id,
-            )
-            .join(Permission, Permission.id == PermissionView.permission_id)
-            .join(ViewMenu, ViewMenu.id == PermissionView.view_menu_id)
-            .where(ab_permission_view_role.c.role_id.in_(role_ids))
-        ).all()
+        return list(
+            session.execute(
+                select(Permission.name, ViewMenu.name)
+                .select_from(ab_permission_view_role)
+                .join(
+                    PermissionView,
+                    PermissionView.id == ab_permission_view_role.c.permission_view_id,
+                )
+                .join(Permission, Permission.id == PermissionView.permission_id)
+                .join(ViewMenu, ViewMenu.id == PermissionView.view_menu_id)
+                .where(ab_permission_view_role.c.role_id.in_(role_ids))
+            ).all()
+        )
 
 
 def _classify_perm_rows(

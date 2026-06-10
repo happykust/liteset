@@ -34,7 +34,7 @@ from litestar import MediaType, Request, Response
 from superset.i18n import lazy_gettext as _
 
 if TYPE_CHECKING:
-    from superset.errors import SupersetError
+    from superset.errors import ErrorLevel, SupersetError
 
 logger = logging.getLogger(__name__)
 
@@ -1036,7 +1036,7 @@ class DatabaseTestConnectionUnexpectedError(SupersetErrorsException):
 # ======================================================================
 
 
-def _get_error_level_from_status(status_code: int) -> str:
+def _get_error_level_from_status(status_code: int) -> "ErrorLevel":
     """Map HTTP status code to SIP-40 error level.
 
     Ported 1:1 from

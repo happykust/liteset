@@ -470,6 +470,13 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
 
             if not table_exists or self._force_data:
                 try:
+                    if collision:
+                        # The collision branch skips ``_import_columns`` (which
+                        # refreshes ``columns``), so ``_get_dtype`` would trip a
+                        # sync lazy-load (MissingGreenlet) silently swallowed
+                        # below. Load the relationship first — upstream's sync
+                        # session lazy-loaded it on demand here.
+                        await self._dao.session.refresh(dataset, ["columns"])  # type: ignore[union-attr]
                     await self._load_data(data_uri, dataset)
                 except Exception:
                     logger.warning(

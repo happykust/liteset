@@ -52,6 +52,7 @@ from superset.typing import (
 
 logger = logging.getLogger(__name__)
 
+
 def _form_data_cache() -> Any:
     """The ``cache_manager.explore_form_data_cache`` slot.
 
@@ -190,8 +191,9 @@ class ExploreFormDataController(Controller):
             # which re-stores the value with a fresh full-TTL expires_on.
             _refresh = True
             try:
-                from superset.config import settings as _settings
+                from superset.config import SupersetSettings
 
+                _settings = SupersetSettings()  # type: ignore[call-arg]
                 _refresh = bool(
                     _settings.explore_form_data_cache_config.get(
                         "REFRESH_TIMEOUT_ON_RETRIEVAL", True

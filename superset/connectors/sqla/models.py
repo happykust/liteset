@@ -30,7 +30,7 @@ from sqlalchemy.ext.declarative import declarative_base
 _Base = declarative_base()
 
 
-class SqlaTable(_Base):  # type: ignore[misc,valid-type]
+class SqlaTable(_Base):
     """Minimal ORM model pointing at the ``tables`` table.
 
     Only the columns referenced by migrations are defined here.

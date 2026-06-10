@@ -101,13 +101,15 @@ class FireboltOld(Firebolt):
             return super()._parse_join(skip_join_token, parse_bracket)
 
         def _parse_unnest(self, with_alias: bool = True) -> exp.Unnest | None:
-            if not self._match(TokenType.UNNEST):
+            if not self._match(TokenType.UNNEST):  # type: ignore[no-untyped-call]
                 return None
 
             # parse expressions (col1 AS foo), instead of equalities as in the original
             # dialect
             expressions = self._parse_wrapped_csv(self._parse_expression)
-            offset = self._match_pair(TokenType.WITH, TokenType.ORDINALITY)
+            offset = self._match_pair(  # type: ignore[no-untyped-call]
+                TokenType.WITH, TokenType.ORDINALITY
+            )
 
             return self.expression(
                 exp.Unnest,

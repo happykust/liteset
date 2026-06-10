@@ -51,7 +51,7 @@ logger = logging.getLogger("alembic.env")
 Base = declarative_base()
 
 
-class Slice(Base):  # type: ignore
+class Slice(Base):
     __tablename__ = "slices"
 
     id = Column(Integer, primary_key=True)
@@ -164,7 +164,7 @@ class MigrateViz:
     @classmethod
     def upgrade_slice(cls, slc: Slice) -> None:
         try:
-            clz = cls(slc.params)
+            clz = cls(slc.params)  # type: ignore[arg-type]
             form_data_bak = copy.deepcopy(clz.data)
 
             clz._pre_action()

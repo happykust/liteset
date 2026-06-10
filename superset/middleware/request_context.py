@@ -140,7 +140,7 @@ class RequestContextMiddleware(ASGIMiddleware):
             await next_app(scope, receive, send)
             return
 
-        method = (scope.get("method") or "GET").upper()
+        method = str(scope.get("method") or "GET").upper()
 
         # ----------------------------------------------------------
         # Fast paths that DON'T parse the body.

@@ -97,8 +97,8 @@ def scheduler(self: Task) -> None:  # pylint: disable=unused-argument
         for active_schedule in active_schedules:
             for schedule in cron_schedule_window(
                 triggered_at,
-                active_schedule.crontab,
-                active_schedule.timezone,
+                str(active_schedule.crontab),
+                str(active_schedule.timezone),
                 window_size=settings.alert_reports_cron_window_size,
             ):
                 logger.info(

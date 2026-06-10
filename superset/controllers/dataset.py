@@ -1033,9 +1033,10 @@ class DatasetController(Controller):
                 selectinload(dashboard_dao.model_cls.slices),
             ],
         )
-        dataset_ = await dao.find_by_id_with_options(
-            pk, options=[selectinload(SqlaTable.slices)]
-        )
+        # ``_can_drill_dataset_via_dashboard_access`` only reads
+        # ``dataset.id`` — and ``SqlaTable`` has no ``slices`` relationship
+        # (the eager-load here used to raise ArgumentError -> 500).
+        dataset_ = await dao.find_by_id(pk)
         if not (dashboard and dataset_):
             raise ObjectNotFoundError("Dataset", pk)
         if not await self._can_drill_dataset_via_dashboard_access(
@@ -1197,11 +1198,15 @@ class DatasetController(Controller):
         embedded_branch = (
             feature_flag_manager.is_feature_enabled("EMBEDDED_SUPERSET")
             and security_manager.is_guest_user(current_user)
-            and await security_manager.has_guest_access(dashboard, user=current_user)
+            and await security_manager.has_guest_access(  # type: ignore[attr-defined]
+                dashboard, user=current_user
+            )
         )
 
         roles = getattr(dashboard, "roles", []) or []
-        user_roles = await security_manager.get_user_roles(current_user)
+        user_roles = await security_manager.get_user_roles(  # type: ignore[attr-defined]
+            current_user
+        )
         rbac_branch = bool(
             feature_flag_manager.is_feature_enabled("DASHBOARD_RBAC")
             and roles

@@ -55,7 +55,11 @@ def _require_log_views_enabled(
     """
     from litestar.exceptions import NotFoundException
 
-    from superset.config import settings
+    from superset.config import SupersetSettings
+
+    settings = getattr(connection.app.state, "settings", None)
+    if settings is None:  # pragma: no cover — state always set in the app
+        settings = SupersetSettings()  # type: ignore[call-arg]
 
     if not settings.fab_add_security_views or not settings.superset_log_view:
         raise NotFoundException(detail="Not found")

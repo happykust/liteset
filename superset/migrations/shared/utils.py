@@ -57,7 +57,7 @@ def paginated_update(
     """
     total = query.count()
     processed = 0
-    session: Session = inspect(query).session
+    session: Session = inspect(query).session  # type: ignore[union-attr]
     result = session.execute(query)
 
     if print_page_progress is None or print_page_progress is True:
@@ -101,6 +101,6 @@ def has_table(table_name: str) -> bool:
         from alembic import op
 
         insp = inspect(op.get_context().bind)
-        return bool(insp.has_table(table_name))
+        return bool(insp.has_table(table_name))  # type: ignore[union-attr]
     except Exception:  # noqa: BLE001
         return False

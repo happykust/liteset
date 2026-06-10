@@ -319,7 +319,7 @@ class SqlLabController(Controller):
             ignore_nan=True,
         )
         return Response(
-            content=payload_str,
+            content=payload_str,  # type: ignore[arg-type]
             status_code=200,
             media_type="application/json",
         )
@@ -426,7 +426,7 @@ class SqlLabController(Controller):
                 ignore_nan=True,
             )
         return Response(
-            content=payload_str,
+            content=payload_str,  # type: ignore[arg-type]
             status_code=status,
             media_type="application/json",
         )

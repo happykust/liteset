@@ -16,6 +16,8 @@
 # under the License.
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 from pandas import DataFrame, Series, to_numeric
 
@@ -47,7 +49,7 @@ def histogram(
         f"{bin_edges[i]} - {bin_edges[i + 1]}" for i in range(len(bin_edges) - 1)
     ]
 
-    def hist_values(series: Series) -> np.ndarray:
+    def hist_values(series: Series) -> np.typing.NDArray[Any]:
         result = np.histogram(series.dropna(), bins=bin_edges)[0]
         return result if not cumulative else np.cumsum(result)
 

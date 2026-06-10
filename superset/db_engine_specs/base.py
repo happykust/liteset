@@ -209,6 +209,9 @@ class ResultSetColumnType(TypedDict, total=False):
     column_name: str
     name: str
     type: Any
+    # 1:1 with upstream superset_typing.py:73-82
+    type_generic: Any
+    is_dttm: bool | None
     nullable: bool
     default: Any
     autoincrement: str

@@ -382,17 +382,17 @@ class DatasetDetailResult(ModelStruct):
     @classmethod
     def _resolve_owners(cls, obj: Any) -> list[UserRef]:
         owners = getattr(obj, "owners", None) or []
-        return [UserRef.from_model(u) for u in owners]  # type: ignore[misc]
+        return [UserRef.from_model(u) for u in owners]
 
     @classmethod
     def _resolve_changed_by(cls, obj: Any) -> UserRef | None:
         user = getattr(obj, "changed_by", None)
-        return UserRef.from_model(user) if user else None  # type: ignore[return-value]
+        return UserRef.from_model(user) if user else None
 
     @classmethod
     def _resolve_created_by(cls, obj: Any) -> UserRef | None:
         user = getattr(obj, "created_by", None)
-        return UserRef.from_model(user) if user else None  # type: ignore[return-value]
+        return UserRef.from_model(user) if user else None
 
     @classmethod
     def _resolve_datasource_name(cls, obj: Any) -> str:
@@ -429,7 +429,7 @@ class DatasetDetailResult(ModelStruct):
         uri = getattr(database, "sqlalchemy_uri", None) or ""
         if "://" in uri:
             backend = uri.split("://")[0].split("+")[0]
-        return DatabaseRef.from_model(database, backend=backend)  # type: ignore[return-value]
+        return DatabaseRef.from_model(database, backend=backend)
 
     @classmethod
     def _resolve_granularity_sqla(cls, obj: Any) -> list[str]:
@@ -529,7 +529,7 @@ class DatasetDetailResult(ModelStruct):
         """Build from ORM model with optional rendered_sql."""
         if rendered_sql is not None:
             overrides["rendered_sql"] = rendered_sql
-        return super().from_model(obj, **overrides)  # type: ignore[return-value]
+        return super().from_model(obj, **overrides)
 
 
 DatasetGetResponse = ApiResponse

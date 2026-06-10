@@ -67,7 +67,7 @@ class AsyncLogDAO(BaseAsyncDAO[Log]):
         distinct: bool = True,
         page: int = 0,
         page_size: int = 20,
-    ) -> list[Log]:
+    ) -> list[Any]:
         """Get recent activity logs for a user filtered by actions.
 
         When ``distinct`` is ``True`` (default), deduplicates by

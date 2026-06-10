@@ -129,7 +129,7 @@ class TaggedObject(Base, AuditMixinNullable):
     # (``object_type String(20) nullable=True``) and upstream
     # ``Column(Enum(ObjectType))``; the port model previously over-declared
     # ``nullable=False``, diverging from the actual DB.
-    object_type = Column(Enum(ObjectType, native_enum=False))
+    object_type: Column[Any] = Column(Enum(ObjectType, native_enum=False))
 
     # -- relationships --------------------------------------------------------
 

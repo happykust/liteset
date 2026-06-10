@@ -233,12 +233,14 @@ class DatasetInvalidError(CommandInvalidError):
         # self._exceptions; then overwrite with our typed list so that
         # append/extend/normalized_messages work on the correct collection.
         super().__init__(message=str(self.message))
-        self._exceptions: list[DatasetValidationError] = list(exceptions or [])
+        self._exceptions: list[DatasetValidationError] = list(  # type: ignore[assignment]
+            exceptions or []
+        )
 
-    def append(self, exception: DatasetValidationError) -> None:
+    def append(self, exception: DatasetValidationError) -> None:  # type: ignore[override]
         self._exceptions.append(exception)
 
-    def extend(self, exceptions: list[DatasetValidationError]) -> None:
+    def extend(self, exceptions: list[DatasetValidationError]) -> None:  # type: ignore[override]
         self._exceptions.extend(exceptions)
 
     def normalized_messages(self) -> dict[str, list[str]]:

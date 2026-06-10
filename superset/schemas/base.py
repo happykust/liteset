@@ -16,7 +16,7 @@
 # under the License.
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Self
 
 import msgspec
 
@@ -127,7 +127,7 @@ class ModelStruct(msgspec.Struct):
     """
 
     @classmethod
-    def from_model(cls, obj: Any, **overrides: Any) -> "ModelStruct":  # noqa: C901
+    def from_model(cls, obj: Any, **overrides: Any) -> Self:  # noqa: C901
         kwargs: dict[str, Any] = {}
         for field in msgspec.structs.fields(cls):
             name = field.name

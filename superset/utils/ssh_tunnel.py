@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import logging
 from io import StringIO
-from typing import Any, TYPE_CHECKING
+from typing import Any, cast, TYPE_CHECKING
 
 from superset.constants import PASSWORD_MASK
 
@@ -191,9 +191,10 @@ class SSHManager:
         if ssh_tunnel.password:
             params["ssh_password"] = ssh_tunnel.password
         elif ssh_tunnel.private_key:
-            private_key_file = StringIO(ssh_tunnel.private_key)
+            private_key_file = StringIO(cast("str", ssh_tunnel.private_key))
             private_key = RSAKey.from_private_key(
-                private_key_file, ssh_tunnel.private_key_password
+                private_key_file,
+                cast("str | None", ssh_tunnel.private_key_password),
             )
             params["ssh_pkey"] = private_key
 

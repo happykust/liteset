@@ -406,9 +406,7 @@ class AsyncSecurityManager:
             registration_role_name = getattr(
                 settings, "auth_user_registration_role", "Public"
             )
-            registration_role = await self.dao.get_role_by_name(
-                registration_role_name
-            )
+            registration_role = await self.dao.get_role_by_name(registration_role_name)
             user = await self._register_user(
                 # All we have is REMOTE_USER, so we set
                 # the other fields to blank.
@@ -1508,9 +1506,7 @@ class AsyncSecurityManager:
         from superset.models.slice import Slice
 
         stmt = (
-            select(Slice)
-            .where(Slice.id == slice_id)
-            .options(selectinload(Slice.table))
+            select(Slice).where(Slice.id == slice_id).options(selectinload(Slice.table))
         )
         result = await self.dao.session.execute(stmt)
         return result.scalars().one_or_none()
@@ -1543,9 +1539,7 @@ class AsyncSecurityManager:
 
         # Load the chart (eager ``table`` — ``slc.datasource`` reads it sync)
         stmt = (
-            select(Slice)
-            .where(Slice.id == chart_id)
-            .options(selectinload(Slice.table))
+            select(Slice).where(Slice.id == chart_id).options(selectinload(Slice.table))
         )
         result = await self.dao.session.execute(stmt)
         slc = result.scalars().one_or_none()
@@ -1924,7 +1918,7 @@ class AsyncSecurityManager:
             result = await self.dao.session.execute(stmt)
             accessible_schemas.update(
                 {
-                    row[0] or default_schema
+                    str(row[0] or default_schema)
                     for row in result
                     if (row[0] or default_schema)
                 }
@@ -2031,7 +2025,11 @@ class AsyncSecurityManager:
         )
         result = await self.dao.session.execute(stmt)
         user_datasources = {
-            DatasourceName(t.table_name, t.schema, t.catalog)
+            DatasourceName(
+                cast("str", t.table_name),
+                cast("str", t.schema),
+                cast("str | None", t.catalog),
+            )
             for t in result.scalars().all()
         }
 
@@ -2220,7 +2218,7 @@ class AsyncSecurityManager:
         guest_rls = self.get_guest_rls_filters_str(datasource, user=user)
         return guest_rls + rls_clauses_with_group_key
 
-    async def invalidate_user_cache(self, redis: Redis, user: Any) -> None:
+    async def invalidate_user_cache(self, redis: "Redis[Any]", user: Any) -> None:
         """Invalidate Redis auth cache for a user.
 
         Deletes all possible cache keys: by id, username, and email.
@@ -2574,7 +2572,7 @@ class AsyncSecurityManager:
             result = await self.dao.session.execute(stmt)
             accessible_catalogs.update(
                 {
-                    row[0] or default_catalog
+                    str(row[0] or default_catalog)
                     for row in result
                     if (row[0] or default_catalog)
                 }

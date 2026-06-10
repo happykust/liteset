@@ -70,7 +70,7 @@ def _resolve_secret_key(settings: Any) -> str:
     if secret is None:
         secret = getattr(settings, "secret_key", "")
     if hasattr(secret, "get_secret_value"):
-        secret = secret.get_secret_value()
+        secret = secret.get_secret_value()  # type: ignore[union-attr]
     return str(secret)
 
 

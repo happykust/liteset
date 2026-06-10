@@ -1281,6 +1281,11 @@ class SqlaTable(
         return [c.column_name for c in (self.columns or [])]
 
     @property
+    def columns_types(self) -> dict[str, str]:
+        """Map column name -> native type (1:1 with BaseDatasource)."""
+        return {c.column_name: c.type for c in (self.columns or [])}
+
+    @property
     def datasource_type(self) -> str:
         """Return the datasource type identifier."""
         return self.type

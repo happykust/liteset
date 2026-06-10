@@ -423,7 +423,7 @@ class DatabaseDetailResult(ModelStruct):
         if mask_uri is not None:
             uri = getattr(obj, "sqlalchemy_uri", "")
             overrides["sqlalchemy_uri"] = mask_uri(uri)
-        return super().from_model(obj, **overrides)  # type: ignore[return-value]
+        return super().from_model(obj, **overrides)
 
 
 DatabaseGetResponse = ApiResponse

@@ -26,7 +26,7 @@ import logging
 import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager, nullcontext
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Connection, Engine
@@ -440,7 +440,9 @@ def _resolve_engine_context_manager(
         if _engine_cm is None:
             try:
                 _engine_cm = getattr(
-                    _config.SupersetSettings(), "engine_context_manager", None
+                    _config.SupersetSettings(),  # type: ignore[call-arg]
+                    "engine_context_manager",
+                    None,
                 )
             except Exception:  # noqa: BLE001
                 _engine_cm = None
@@ -594,7 +596,7 @@ async def get_async_connection(
     uri = getattr(database, "sqlalchemy_uri_decrypted", None) or getattr(
         database, "sqlalchemy_uri", ""
     )
-    async_uri = _to_async_uri(uri)
+    async_uri = _to_async_uri(cast("str", uri))
 
     engine_spec = get_engine_spec_for_database(database)
     adjusted_uri, connect_args = engine_spec.adjust_engine_params(async_uri)

@@ -177,9 +177,7 @@ class CurrentUserController(Controller):
                 if rid
             ]
             orm_roles = (
-                await user_dao.get_roles_with_permissions(role_ids)
-                if role_ids
-                else []
+                await user_dao.get_roles_with_permissions(role_ids) if role_ids else []
             )
             roles = _build_roles_map(SimpleNamespace(roles=orm_roles, groups=[]))
         else:
@@ -295,7 +293,7 @@ class CurrentUserController(Controller):
                 except Exception as exc:
                     raise HTTPException(
                         status_code=400,
-                        detail={"password": [str(exc)]},
+                        detail={"password": [str(exc)]},  # type: ignore[arg-type]
                     ) from exc
 
             # Read FAB_PASSWORD_HASH_METHOD / FAB_PASSWORD_HASH_SALT_LENGTH from

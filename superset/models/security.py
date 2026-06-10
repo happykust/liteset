@@ -147,7 +147,7 @@ class Role(Base):
     def __repr__(self) -> str:
         # 1:1 FAB Role.__repr__ (flask_appbuilder/security/sqla/models.py:132)
         # — /related/ dropdown text relies on str(model).
-        return self.name
+        return str(self.name)
 
 
 class Group(Base):
@@ -175,7 +175,7 @@ class Permission(Base):
 
     def __repr__(self) -> str:
         # 1:1 FAB Permission.__repr__ (flask_appbuilder/security/sqla/models.py:47)
-        return self.name
+        return str(self.name)
 
 
 class ViewMenu(Base):
@@ -188,7 +188,7 @@ class ViewMenu(Base):
 
     def __repr__(self) -> str:
         # 1:1 FAB ViewMenu.__repr__ (flask_appbuilder/security/sqla/models.py:67)
-        return self.name
+        return str(self.name)
 
 
 class PermissionView(Base):

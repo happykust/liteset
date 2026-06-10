@@ -52,14 +52,18 @@ class SSHTunnel(AuditMixinNullable, ExtraJSONMixin, ImportExportMixin, Base):
 
     server_address = sa.Column(sa.Text)
     server_port = sa.Column(sa.Integer)
-    username = sa.Column(encrypted_field_factory.create(Text))
+    username: sa.Column[Any] = sa.Column(encrypted_field_factory.create(Text))
 
     # basic authentication
-    password = sa.Column(encrypted_field_factory.create(Text), nullable=True)
+    password: sa.Column[Any] = sa.Column(
+        encrypted_field_factory.create(Text), nullable=True
+    )
 
     # password protected pkey authentication
-    private_key = sa.Column(encrypted_field_factory.create(Text), nullable=True)
-    private_key_password = sa.Column(
+    private_key: sa.Column[Any] = sa.Column(
+        encrypted_field_factory.create(Text), nullable=True
+    )
+    private_key_password: sa.Column[Any] = sa.Column(
         encrypted_field_factory.create(Text), nullable=True
     )
 

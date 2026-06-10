@@ -25,7 +25,7 @@ import backoff
 def retry_call(  # pylint: disable=too-many-arguments
     func: Callable[..., Any],
     *args: Any,
-    strategy: Callable[..., Generator[int, None, None]] = backoff.constant,
+    strategy: Callable[..., Generator[float, None, None]] = backoff.constant,
     exception: type[Exception] = Exception,
     giveup_log_level: int = logging.WARNING,
     fargs: Optional[list[Any]] = None,

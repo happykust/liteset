@@ -70,7 +70,9 @@ class EstimateQueryCostCommand(AsyncBaseCommand[list[dict[str, Any]]]):
         self._catalog = catalog
         self._template_params = template_params or {}
         self._dao = dao
-        self._database: Any | None = None
+        # ``validate()`` raises when the database is missing, so
+        # post-validate access is non-None; typed Any.
+        self._database: Any = None
 
     async def validate(self) -> None:
         if not self._sql.strip():
