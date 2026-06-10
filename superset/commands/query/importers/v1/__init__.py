@@ -39,6 +39,9 @@ class ImportSavedQueriesCommand(AsyncImportModelsCommand):
     :class:`ImportSavedQueriesCommand` two-phase logic.
     """
 
+    # 1:1 with upstream metadata-type validation (``SavedQuery``).
+    _expected_type = "SavedQuery"
+
     def __init__(
         self,
         contents: io.BytesIO,

@@ -22,7 +22,6 @@ from __future__ import annotations
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
-from superset.exceptions import ObjectNotFoundError
 
 if TYPE_CHECKING:
     from superset.db.daos.dataset import AsyncDatasetDAO
@@ -58,10 +57,17 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         from superset.sql.parse import Table
 
         self._source = await self._dao.find_by_id(self._base_model_id)
-        if not self._source:
-            raise ObjectNotFoundError("Dataset", self._base_model_id)
 
         exceptions: list[DatasetValidationError] = []
+        if not self._source:
+            # 1:1 with upstream: a missing base dataset is ACCUMULATED into the
+            # validation error set (``exceptions.append(DatasetNotFoundError())``)
+            # → 422 ``DatasetInvalidError``, not an early 404.
+            exceptions.append(
+                DatasetValidationError(
+                    "Dataset does not exist", field_name="base_model_id"
+                )
+            )
         if not self._table_name:
             exceptions.append(
                 DatasetValidationError(
@@ -72,7 +78,7 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         # Only virtual datasets (with SQL) can be duplicated — 1:1 with
         # upstream ``self._base_model.kind != "virtual"`` →
         # ``DatasourceTypeInvalidError`` (field ``datasource_type``).
-        if not getattr(self._source, "sql", None):
+        if self._source and not getattr(self._source, "sql", None):
             exceptions.append(DatasourceTypeInvalidError())
 
         # Check that the new name doesn't already exist. Mirrors
@@ -93,7 +99,9 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         assert self._source is not None
         source_sql = getattr(self._source, "sql", None)
         if source_sql:
-            source_sql = source_sql.strip().rstrip(";")
+            # ``strip(";")`` (both ends), 1:1 with upstream
+            # ``self._base_model.sql.strip().strip(";")``.
+            source_sql = source_sql.strip().strip(";")
         new_dataset = SqlaTable(
             table_name=self._table_name,
             database_id=self._source.database_id,

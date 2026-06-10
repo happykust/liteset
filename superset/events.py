@@ -409,8 +409,21 @@ class EventLogger(ABC):
             # MUST NOT break the surrounding business logic (matches the
             # original ``except SQLAlchemyError`` swallow in
             # ``DBEventLogger.log``).
+            #
+            # IMPORTANT: implementations schedule the actual DB write as a
+            # fire-and-forget task (see ``AsyncDBEventLogger.log``); the
+            # original sync ``DBEventLogger.log`` always committed before
+            # returning, so the temporary loop must drain those tasks —
+            # ``asyncio.run`` CANCELS still-pending tasks on exit, which
+            # silently dropped every Celery/CLI audit record.
+            async def _run_and_drain() -> None:
+                await coro
+                drain = getattr(self, "drain_pending_logs", None)
+                if drain is not None:
+                    await drain()
+
             try:
-                asyncio.run(coro)
+                asyncio.run(_run_and_drain())
             except Exception:  # noqa: BLE001
                 logger.warning("Audit log dispatch failed", exc_info=True)
             return
@@ -795,6 +808,11 @@ class AsyncDBEventLogger(EventLogger):
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         self._session_factory = session_factory
+        # Strong references to in-flight ``_persist`` tasks: prevents the
+        # event loop from garbage-collecting fire-and-forget tasks
+        # mid-write, and lets ``drain_pending_logs`` block the sync
+        # (Celery/CLI) entrypoint until every row is committed.
+        self._pending_persists: set[asyncio.Task[None]] = set()
 
     # ------------------------------------------------------------------
     # public interface
@@ -842,7 +860,7 @@ class AsyncDBEventLogger(EventLogger):
         except RuntimeError:
             return
 
-        loop.create_task(
+        task = loop.create_task(
             self._persist(
                 action=action or "event",
                 user_id=user_id,
@@ -854,6 +872,21 @@ class AsyncDBEventLogger(EventLogger):
                 extra=extra,
             )
         )
+        self._pending_persists.add(task)
+        task.add_done_callback(self._pending_persists.discard)
+
+    async def drain_pending_logs(self) -> None:
+        """Await every in-flight ``_persist`` task.
+
+        Called by the sync ``log_with_context`` bridge before its
+        temporary ``asyncio.run`` loop closes — without this, the loop
+        teardown cancels the fire-and-forget persists and Celery/CLI
+        audit records never reach the ``Log`` table.
+        """
+        while self._pending_persists:
+            await asyncio.gather(
+                *list(self._pending_persists), return_exceptions=True
+            )
 
     # ------------------------------------------------------------------
     # private persistence
@@ -891,10 +924,15 @@ class AsyncDBEventLogger(EventLogger):
         # TIME ZONE, ``default=datetime.utcnow`` on the ORM class).
         dttm = datetime.now(tz=timezone.utc).replace(tzinfo=None)
 
+        # Use Superset's JSON serializer (datetime / NaN-aware), 1:1 with the
+        # original ``DBEventLogger`` — stdlib ``json.dumps`` raises on a
+        # datetime in the audit payload, silently dropping the JSON detail.
+        from superset.utils import json as superset_json
+
         rows: list[dict[str, Any]] = []
         for record in records:
             try:
-                json_string: str | None = json.dumps(record)
+                json_string: str | None = superset_json.dumps(record)
             except Exception:  # noqa: BLE001
                 json_string = None
             rows.append(

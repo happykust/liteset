@@ -34,6 +34,9 @@ if TYPE_CHECKING:
 
 
 class ImportDatabasesCommand(AsyncImportModelsCommand):
+    # 1:1 with upstream metadata-type validation (``Database``).
+    _expected_type = "Database"
+
     def __init__(
         self,
         contents: io.BytesIO,
@@ -78,7 +81,7 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
             # checks. The port previously validated only ``database_name``.
             uuid_str = config.get("uuid")
             existing = None
-            if uuid_str:
+            if uuid_str and self._dao is not None:
                 try:
                     existing = await self._dao.find_one_or_none(
                         uuid=_UUID(str(uuid_str))

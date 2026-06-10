@@ -32,6 +32,7 @@ from superset.exceptions import (
 )
 from superset.tags.core import sync_owner_tags_after_update
 from superset.tags.models import ObjectType
+from superset.utils.feature_flags import feature_flag_manager
 
 if TYPE_CHECKING:
     from superset.db.daos.chart import AsyncChartDAO
@@ -183,7 +184,7 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
             # directly without a second DAO round-trip.
             self._data["dashboards"] = dashboards
 
-    async def run(self) -> "Slice":
+    async def run(self) -> "Slice":  # noqa: C901
         from datetime import datetime
 
         assert self._chart is not None
@@ -242,13 +243,18 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
             self._chart.last_saved_at = datetime.now()
         await self._dao.session.flush()
 
-        # Sync implicit owner: tags (async port of ChartUpdater.after_update).
-        # Owners are already loaded from ``validate()``.
-        owner_ids = (
-            [o.id for o in self._chart.owners] if hasattr(self._chart, "owners") else []
-        )
-        await sync_owner_tags_after_update(
-            self._dao.session, "chart", self._chart.id, owner_ids
-        )
+        # Sync implicit owner: tags — 1:1 with ``ChartUpdater.after_update``
+        # which only fires when the TAGGING_SYSTEM feature flag is enabled
+        # (see ``superset_old/app.py:158``). Owners are already loaded from
+        # ``validate()``.
+        if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+            owner_ids = (
+                [o.id for o in self._chart.owners]
+                if hasattr(self._chart, "owners")
+                else []
+            )
+            await sync_owner_tags_after_update(
+                self._dao.session, "chart", self._chart.id, owner_ids
+            )
 
         return self._chart

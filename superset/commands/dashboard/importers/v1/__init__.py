@@ -64,6 +64,9 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
     - Owner management
     """
 
+    # 1:1 with upstream metadata-type validation (``Dashboard``).
+    _expected_type = "Dashboard"
+
     def __init__(
         self,
         contents: io.BytesIO,

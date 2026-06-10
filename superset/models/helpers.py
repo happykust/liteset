@@ -365,6 +365,64 @@ class ImportExportMixin(UUIDMixin):
                 ]
         return schema
 
+    @property
+    def params_dict(self) -> dict[Any, Any]:
+        """Parsed ``params`` JSON column as a dict.
+
+        1:1 with ``superset_old/models/helpers.py:459-461``
+        (``json_to_dict(self.params)``).  Dashboard/Slice override this
+        with model-specific behaviour; models like ``SqlaTable`` that only
+        have a plain ``params`` column inherit this default.
+        """
+        raw = getattr(self, "params", None)
+        if not raw:
+            return {}
+        try:
+            # Strip trailing commas before closing braces/brackets so legacy
+            # rows written by older tools parse — 1:1 with upstream
+            # ``json_to_dict`` (helpers.py:140-145).
+            val = re.sub(r",[ \t\r\n]+}", "}", raw)
+            val = re.sub(r",[ \t\r\n]+\]", "]", val)
+            return json.loads(val) or {}
+        except (TypeError, json.JSONDecodeError):
+            return {}
+
+    def override(self, obj: Any) -> None:
+        """Override the plain (``export_fields``) columns from ``obj``.
+
+        1:1 with ``superset_old/models/helpers.py:427-430``.
+        """
+        for field in obj.__class__.export_fields:
+            setattr(self, field, getattr(obj, field))
+
+    def copy(self) -> Any:
+        """Create a relationship-free copy of this model.
+
+        1:1 with ``superset_old/models/helpers.py:432-436`` — used by the
+        legacy V0 dashboard export to detach objects before serialising.
+        """
+        new_obj = self.__class__()
+        new_obj.override(self)
+        return new_obj
+
+    def alter_params(self, **kwargs: Any) -> None:
+        """Merge ``kwargs`` into the JSON ``params`` column.
+
+        1:1 with ``superset_old/models/helpers.py:438-441``.
+        """
+        params = self.params_dict
+        params.update(kwargs)
+        self.params = json.dumps(params)  # type: ignore[attr-defined]
+
+    def remove_params(self, param_to_remove: str) -> None:
+        """Drop a single key from the JSON ``params`` column.
+
+        1:1 with ``superset_old/models/helpers.py:443-446``.
+        """
+        params = self.params_dict
+        params.pop(param_to_remove, None)
+        self.params = json.dumps(params)  # type: ignore[attr-defined]
+
     def export_to_dict(
         self,
         recursive: bool = True,
@@ -2070,22 +2128,32 @@ class ExploreMixin:
                     db_engine_spec=db_engine_spec,
                 )
 
-                # Get ADVANCED_DATA_TYPES from config when needed
-                ADVANCED_DATA_TYPES: dict[str, Any] = {}  # noqa: N806
-                try:
-                    from superset.config import (
-                        ADVANCED_DATA_TYPES as _adt,  # noqa: N811
-                    )
-
-                    ADVANCED_DATA_TYPES = _adt  # noqa: N806
-                except ImportError:
-                    pass
-
-                if (
+                # Get ADVANCED_DATA_TYPES from config when needed — the
+                # registry lives on the Pydantic settings field
+                # ``advanced_data_types`` (1:1 with upstream
+                # ``app.config.get("ADVANCED_DATA_TYPES", {})``). Resolved
+                # LAZILY: constructing ``SupersetSettings()`` runs the full
+                # Pydantic validation chain (~10ms — os.environ scan,
+                # version_info.json read), far too costly to pay per filter
+                # on the hot query path; the registry is only needed when the
+                # column declares an advanced data type AND the flag is on.
+                uses_advanced_data_type = (
                     col_advanced_data_type != ""
                     and feature_flag_manager.is_feature_enabled(
                         "ENABLE_ADVANCED_DATA_TYPES"
                     )
+                )
+                ADVANCED_DATA_TYPES: dict[str, Any] = {}  # noqa: N806
+                if uses_advanced_data_type:
+                    from superset.config import SupersetSettings
+
+                    ADVANCED_DATA_TYPES = (  # noqa: N806
+                        SupersetSettings().advanced_data_types  # type: ignore[call-arg]
+                        or {}
+                    )
+
+                if (
+                    uses_advanced_data_type
                     and col_advanced_data_type in ADVANCED_DATA_TYPES
                 ):
                     values = eq if is_list_target else [eq]  # type: ignore[assignment]

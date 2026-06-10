@@ -412,9 +412,14 @@ async def test_duplicate_validates_table_name(mock_dao):
 
 
 async def test_duplicate_source_not_found(mock_dao):
+    # 1:1 with upstream: a missing base dataset accumulates into the
+    # validation error set (422 DatasetInvalidError), not an early 404.
+    from superset.commands.dataset.exceptions import DatasetInvalidError
+
     mock_dao.find_by_id = AsyncMock(return_value=None)
+    mock_dao.find_one_or_none = AsyncMock(return_value=None)
     cmd = DuplicateDatasetCommand(dao=mock_dao, base_model_id=999, table_name="dup")
-    with pytest.raises(ObjectNotFoundError):
+    with pytest.raises(DatasetInvalidError):
         await cmd.validate()
 
 
@@ -614,6 +619,50 @@ async def test_warm_up_success(mock_dao):
     assert result[0]["db_name"] == "mydb"
     assert result[0]["table_name"] == "mytable"
     assert result[0]["status"] == "success"
+
+
+async def test_warm_up_runs_chart_command_via_execute(mock_dao, monkeypatch):
+    """Regression: the per-chart command MUST go through execute().
+
+    ``WarmUpChartCacheCommand.validate()`` is the only place that loads
+    ``self._chart``; ``run()`` starts with ``assert self._chart is not None``,
+    so invoking ``run()`` directly (the old bug) crashes on every chart.
+    The stub mirrors that contract exactly.
+    """
+    from superset.commands.dataset import warm_up_cache as wuc_module
+
+    calls: list[int] = []
+
+    class StubChartCmd:
+        def __init__(self, dao, chart_id, dashboard_id=None, extra_filters=None):
+            self._chart_id = chart_id
+            self._chart = None
+
+        async def validate(self):
+            self._chart = object()
+
+        async def run(self):
+            assert self._chart is not None
+            calls.append(self._chart_id)
+            return {"chart_id": self._chart_id, "viz_status": "success"}
+
+        async def execute(self):
+            await self.validate()
+            return await self.run()
+
+    monkeypatch.setattr(wuc_module, "WarmUpChartCacheCommand", StubChartCmd)
+    monkeypatch.setattr(wuc_module, "AsyncChartDAO", lambda session: MagicMock())
+
+    cmd = WarmUpDatasetCacheCommand(dao=mock_dao, db_name="mydb", table_name="mytable")
+
+    async def fake_validate():
+        cmd._charts = [MagicMock(id=11), MagicMock(id=22)]
+
+    monkeypatch.setattr(cmd, "validate", fake_validate)
+
+    results = await cmd.run()
+    assert calls == [11, 22]
+    assert [r["chart_id"] for r in results] == [11, 22]
 
 
 # ---- DeleteDatasetColumnCommand ----

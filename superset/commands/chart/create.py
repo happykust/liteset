@@ -31,6 +31,7 @@ from superset.exceptions import (
     DatasourceNotFoundValidationError,
 )
 from superset.tags.core import add_implicit_tags_after_insert
+from superset.utils.feature_flags import feature_flag_manager
 
 if TYPE_CHECKING:
     from superset.db.daos.chart import AsyncChartDAO
@@ -144,10 +145,14 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
         self._dao.session.add(chart)
         await self._dao.session.flush()
 
-        # Add implicit type: and owner: tags (async port of ChartUpdater.after_insert)
-        owner_ids = resolved_owner_ids
-        await add_implicit_tags_after_insert(
-            self._dao.session, "chart", chart.id, owner_ids
-        )
+        # Add implicit type: and owner: tags — 1:1 with
+        # ``ChartUpdater.after_insert`` which only fires when the
+        # TAGGING_SYSTEM feature flag is enabled (listeners are only
+        # registered when the flag is on; see ``superset_old/app.py:158``).
+        if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+            owner_ids = resolved_owner_ids
+            await add_implicit_tags_after_insert(
+                self._dao.session, "chart", chart.id, owner_ids
+            )
 
         return chart

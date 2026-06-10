@@ -86,6 +86,9 @@ def _get_dtype(
 
 
 class ImportDatasetsCommand(AsyncImportModelsCommand):
+    # 1:1 with upstream metadata-type validation (``SqlaTable``).
+    _expected_type = "SqlaTable"
+
     def __init__(
         self,
         contents: io.BytesIO,
@@ -249,19 +252,27 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         from uuid import UUID as _UUID
 
         from sqlalchemy import select
-        from sqlalchemy.exc import MultipleResultsFound
 
         from superset.models.connectors import SqlaTable
         from superset.models.core import Database
 
         config = dict(content)  # shallow copy
 
+        from superset.utils.core import get_current_user
+
+        user = get_current_user()
+
         # --- Permission check ---
+        # ``AsyncSecurityManager.can_access`` takes the user explicitly
+        # (keyword-only) — upstream's Flask manager reads ``g.user`` inside
+        # ``can_access`` instead. No user in context → deny, like upstream.
         can_write = self._ignore_permissions
         if not can_write and self._security_manager is not None:
             if hasattr(self._security_manager, "can_access"):
-                can_write = await self._security_manager.can_access(
-                    "can_write", "Dataset"
+                can_write = user is not None and (
+                    await self._security_manager.can_access(
+                        "can_write", "Dataset", user=user
+                    )
                 )
             else:
                 can_write = True
@@ -276,9 +287,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
 
         # 1:1 port of import_dataset(): the importing user must own the
         # existing dataset (or be an admin) before they may overwrite it.
-        from superset.utils.core import get_current_user
-
-        user = get_current_user()
 
         if existing:
             if self._overwrite and can_write and user:
@@ -384,40 +392,66 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
             "schema_perm",
         }
 
+        collision = False
         if existing:
-            # Update existing dataset
-            for key in dataset_attrs:
-                if key in config:
-                    setattr(existing, key, config[key])
-            if uuid_str:
-                existing.uuid = _UUID(uuid_str)  # type: ignore[assignment]
+            # Historical two-row guard — 1:1 with upstream's
+            # ``except MultipleResultsFound`` fallback (utils.py:161-170):
+            # datasets were once imported without a schema (``db.NULL.tbl``)
+            # and later fixed to the default schema (``db.public.tbl``); a
+            # user-created row may already occupy the incoming name. If
+            # ANOTHER row (different id) holds the incoming (database_id,
+            # catalog, schema, table_name), applying the update would violate
+            # ``uq_tables_database_catalog_schema_table`` (IntegrityError →
+            # 500). Upstream returned the UUID-matched row unmodified — do
+            # the same: keep ``existing`` as-is and skip attrs/columns/
+            # metrics, but still flow into the data-loading step below.
+            conflict_id = (
+                (
+                    await self._dao.session.execute(
+                        select(SqlaTable.id).where(
+                            SqlaTable.database_id == config.get("database_id"),
+                            SqlaTable.catalog == config.get("catalog"),
+                            SqlaTable.schema == config.get("schema"),
+                            SqlaTable.table_name == config.get("table_name"),
+                            SqlaTable.id != existing.id,
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            collision = conflict_id is not None
+            if not collision:
+                # Update existing dataset
+                for key in dataset_attrs:
+                    if key in config:
+                        setattr(existing, key, config[key])
+                if uuid_str:
+                    existing.uuid = _UUID(uuid_str)  # type: ignore[assignment]
             dataset = existing
         else:
-            # Create new dataset
+            # Create new dataset. NOTE: upstream wrapped this in
+            # ``except MultipleResultsFound`` because it called
+            # ``SqlaTable.import_from_dict`` (an ORM dedup query that can raise
+            # it); the async port does its own UUID dedup above and constructs
+            # the model directly, which cannot raise MultipleResultsFound — so
+            # the handler is omitted rather than kept as dead code.
             filtered_attrs = {k: v for k, v in config.items() if k in dataset_attrs}
-            try:
-                dataset = SqlaTable(**filtered_attrs)
-            except MultipleResultsFound:
-                # Legacy edge case: dataset without schema was later fixed
-                # to have a default schema, causing conflicts.
-                if uuid_str:
-                    dataset = await self._dao.find_one_or_none(uuid=_UUID(uuid_str))
-                    if dataset:
-                        return
-                raise
+            dataset = SqlaTable(**filtered_attrs)
             if uuid_str:
                 dataset.uuid = _UUID(uuid_str)  # type: ignore[assignment]
             self._dao.session.add(dataset)
 
-        await self._dao.session.flush()
+        if not collision:
+            await self._dao.session.flush()
 
-        # --- Import columns ---
-        await self._import_columns(dataset, columns_config, sync=sync_columns)
+            # --- Import columns ---
+            await self._import_columns(dataset, columns_config, sync=sync_columns)
 
-        # --- Import metrics ---
-        await self._import_metrics(dataset, metrics_config, sync=sync_metrics)
+            # --- Import metrics ---
+            await self._import_metrics(dataset, metrics_config, sync=sync_metrics)
 
-        await self._dao.session.flush()
+            await self._dao.session.flush()
 
         # --- Load data from URI if needed ---
         # 1:1 port of import_dataset(): data is loaded when a ``data`` URI is
@@ -446,15 +480,22 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                     )
 
         # --- Owner management ---
-        # Add current user as owner if not already
-        if self._security_manager is not None and hasattr(
-            self._security_manager, "get_current_user"
-        ):
-            user = self._security_manager.get_current_user()
-            if user and hasattr(dataset, "owners"):
-                await self._dao.session.refresh(dataset, ["owners"])  # type: ignore[union-attr]
-                if user not in dataset.owners:
-                    dataset.owners.append(user)
+        # Add the importing user as owner — 1:1 with upstream utils.py:189
+        # ``if (user := get_user()) and user not in dataset.owners: ...``.
+        # Resolve via the request-scoped ContextVar (the async equivalent of
+        # Flask ``g.user``); the previous gate on
+        # ``hasattr(security_manager, "get_current_user")`` was ALWAYS False
+        # (AsyncSecurityManager has no such method), so the owner was never set.
+        from superset.utils.core import get_current_user as _get_current_user
+
+        owner = _get_current_user()
+        if owner is not None:
+            # Refresh ``owners`` FIRST — reading the relationship (even via
+            # ``hasattr``) before it's loaded triggers a sync lazy-load on the
+            # async session → MissingGreenlet. The dataset was flushed above.
+            await self._dao.session.refresh(dataset, ["owners"])  # type: ignore[union-attr]
+            if owner not in dataset.owners:
+                dataset.owners.append(owner)
 
     async def _import_columns(  # noqa: C901
         self,

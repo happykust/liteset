@@ -2232,6 +2232,7 @@ class DatabaseController(Controller):
         self,
         request: Request[Any, Any, Any],
         dao: DatabaseDAOProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
         # Normalize the legacy ``encrypted_extra`` key -> ``masked_encrypted_extra``
         # before validation (1:1 with the original ``rename_encrypted_extra``
@@ -2241,6 +2242,10 @@ class DatabaseController(Controller):
         )
         cmd = DatabaseTestConnectionCommand(
             dao=cast("AsyncDatabaseDAO", dao),
+            # The OAuth2-dance branches in the command are gated on a known
+            # user — upstream resolves it via g.user; pass the requester so
+            # OAuth2-enabled DBs get the redirect instead of a bare error.
+            user_id=getattr(current_user, "id", None),
             data={
                 "database_name": data.database_name,
                 "sqlalchemy_uri": data.sqlalchemy_uri,

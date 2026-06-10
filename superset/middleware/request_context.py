@@ -378,25 +378,25 @@ class RequestContextMiddleware(ASGIMiddleware):
         completed = False
         trailing_event: dict[str, Any] | None = None
 
+        oversized_more_body = False
         while True:
             event = await receive()
             event_type = event.get("type")
             if event_type == "http.request":
-                if not oversized:
-                    chunk = cast(bytes, event.get("body") or b"")
-                    if chunk:
-                        total += len(chunk)
-                        if total > _MAX_PARSED_BODY_BYTES:
-                            # Flip into oversized mode: drop everything
-                            # we've buffered so far so we don't keep
-                            # accumulating, and record that we've
-                            # already started emitting body chunks so
-                            # the replay must concatenate what we kept.
-                            oversized = True
-                            chunks.clear()
-                        else:
-                            chunks.append(chunk)
-                # else: oversized — stream the rest into /dev/null.
+                chunk = cast(bytes, event.get("body") or b"")
+                if chunk:
+                    total += len(chunk)
+                    chunks.append(chunk)
+                if total > _MAX_PARSED_BODY_BYTES:
+                    # Too large to PARSE for request context, but the handler
+                    # must still receive the FULL body.  Stop draining here,
+                    # keep what we've buffered, and let the replay emit those
+                    # bytes and then delegate the rest of the stream straight
+                    # to the original ``receive`` (so large non-multipart
+                    # uploads aren't truncated to an empty body).
+                    oversized = True
+                    oversized_more_body = bool(event.get("more_body"))
+                    break
                 if not event.get("more_body"):
                     completed = True
                     break
@@ -419,15 +419,16 @@ class RequestContextMiddleware(ASGIMiddleware):
         else:
             body = b"".join(chunks)
 
-        # Replay payload: the bytes we *did* capture before going into
-        # oversized / disconnect mode.  Empty when oversized — the
-        # downstream handler then gets the rest of the upload via the
-        # fallback receive directly.
-        replay_payload = b"" if oversized else b"".join(chunks)
+        # Replay payload: the bytes we captured.  In the oversized case we
+        # keep the buffered prefix and flag ``more_body`` so the replay
+        # streams it, then delegates the remaining real chunks to the
+        # original ``receive`` — the handler still sees the complete upload.
+        replay_payload = b"".join(chunks)
         replay = _ReplayReceive(
             body=replay_payload,
             fallback_receive=receive,
             trailing_event=trailing_event,
+            more_body=oversized_more_body,
         )
         return body, replay
 
@@ -534,22 +535,37 @@ class _ReplayReceive:
     from ``fallback_receive`` on subsequent calls.
     """
 
-    __slots__ = ("_body", "_trailing", "_fallback", "_state")
+    __slots__ = ("_body", "_trailing", "_fallback", "_state", "_more_body")
 
     def __init__(
         self,
         body: bytes,
         fallback_receive: Receive,
         trailing_event: dict[str, Any] | None = None,
+        more_body: bool = False,
     ) -> None:
         self._body = body
         self._trailing = trailing_event
         self._fallback = fallback_receive
+        # When ``more_body`` is set (oversized stream), the buffered prefix is
+        # emitted with ``more_body=True`` and every subsequent event is pulled
+        # straight from the original ``receive`` so the handler gets the rest
+        # of the upload verbatim.
+        self._more_body = more_body
         # 0 → emit body; 1 → emit trailing (if any); 2 → delegate.
         self._state = 0
 
     async def __call__(self) -> Any:
         if self._state == 0:
+            if self._more_body:
+                # Emit the buffered prefix, then delegate the remaining real
+                # chunks to the original receive.
+                self._state = 2
+                return {
+                    "type": "http.request",
+                    "body": self._body,
+                    "more_body": True,
+                }
             self._state = 1
             return {
                 "type": "http.request",

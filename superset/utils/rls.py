@@ -234,20 +234,25 @@ def _metadata_sync_session() -> Iterator[Session]:
 
 
 def _sync_resolve_user_role_ids(user: Any) -> list[int] | None:
-    """Sync mirror of ``AsyncSecurityManager._resolve_user_roles_for_rls``.
+    """Sync mirror of upstream ``get_rls_filters`` role resolution.
 
-    Returns the list of role ids to use for RLS filter selection:
+    Returns the list of role ids to use for RLS filter selection, 1:1 with
+    ``superset_old/security/manager.py:2588-2598`` + ``get_user_roles``:
 
+    * ``None`` user → ``None`` (caller skips RLS entirely — upstream's
+      ``if not (hasattr(g, "user") and g.user is not None): return []``).
+    * Anonymous user → ``[AUTH_ROLE_PUBLIC role id]`` when that setting is
+      configured, else ``[]``. An EMPTY list is meaningful: with no roles
+      the user matches no REGULAR filter and is exempt from no BASE filter,
+      so ALL BASE filters on the table apply — returning ``None`` here
+      (the old behaviour) silently disabled RLS for anonymous traffic.
     * Authenticated user → ids of their roles.
-    * Anonymous / missing user → ``[Public role id]`` if
-      ``AUTH_ROLE_PUBLIC`` resolves; otherwise ``None`` (caller returns
-      ``[]``, matching the original behaviour when no Public role is
-      configured).
     """
-    is_anonymous = (
-        user is None
-        or getattr(user, "is_anonymous", False)
-        or not getattr(user, "is_authenticated", True)
+    if user is None:
+        return None
+
+    is_anonymous = bool(getattr(user, "is_anonymous", False)) or not getattr(
+        user, "is_authenticated", True
     )
     if not is_anonymous:
         # ``user.roles`` is a lazy relationship. In the report/alert
@@ -277,10 +282,14 @@ def _sync_resolve_user_role_ids(user: Any) -> list[int] | None:
                 return [int(rid) for rid in rows]
 
     settings = _cached_settings()
-    public_role_name = settings.auth_role_public or "Public"
+    # 1:1 with upstream ``get_user_roles``: the public role is granted to
+    # anonymous users ONLY when AUTH_ROLE_PUBLIC is explicitly configured
+    # — no implicit "Public" fallback (that would exempt anonymous traffic
+    # from BASE filters the upstream still applies).
+    public_role_name = settings.auth_role_public
 
     if not public_role_name:
-        return None
+        return []
 
     # Resolve the role through the metadata sync session, mirroring
     # ``AsyncSecurityDAO.get_role_by_name``.
@@ -293,7 +302,10 @@ def _sync_resolve_user_role_ids(user: Any) -> list[int] | None:
             .one_or_none()
         )
         if role is None:
-            return None
+            # Configured role deleted from the DB: upstream would crash on
+            # ``[None][0].id``; degrade to "no roles" — the strictest
+            # outcome (all BASE filters apply, no REGULAR filters).
+            return []
         return [role.id]
 
 

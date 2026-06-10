@@ -23,7 +23,6 @@ to be installed (optional dependency).
 from __future__ import annotations
 
 import logging
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +43,33 @@ def get_user_avatar(email: str) -> str:
             "slack_sdk is not installed — cannot fetch avatars"
         ) from exc
 
-    token = os.environ.get("SLACK_API_TOKEN", "")
+    # Read the canonical ``slack_api_token`` setting (honours
+    # ``SLACK_API_TOKEN`` from superset_config.py AND a callable token),
+    # 1:1 with upstream ``get_slack_client`` reading ``app.config``. The raw
+    # ``os.environ`` lookup missed tokens set only in the config file.
+    from superset.config import SupersetSettings
+
+    settings = SupersetSettings()  # type: ignore[call-arg]
+    token = settings.slack_api_token or ""
     if callable(token):
         token = token()
     if not token:
         raise SlackClientError("SLACK_API_TOKEN is not configured")
 
-    client = WebClient(token=token)
+    # Configure proxy + rate-limit retry handler, 1:1 with upstream
+    # ``get_slack_client`` (which all Slack calls route through).
+    client = WebClient(token=token, proxy=settings.slack_proxy)
+    try:
+        from slack_sdk.http_retry.builtin_handlers import (
+            RateLimitErrorRetryHandler,
+        )
+
+        retry_count = settings.slack_api_rate_limit_retry_count
+        client.retry_handlers.append(
+            RateLimitErrorRetryHandler(max_retry_count=retry_count)
+        )
+    except ImportError:  # pragma: no cover — older slack_sdk
+        logger.debug("slack_sdk retry handlers unavailable; skipping")
 
     try:
         response = client.users_lookupByEmail(email=email)

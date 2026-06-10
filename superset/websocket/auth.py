@@ -95,9 +95,13 @@ async def authenticate_websocket(
     Returns:
         WebSocketAuthResult if authentication succeeds, None otherwise.
     """
-    headers = (
-        dict(socket.headers) if hasattr(socket.headers, "items") else socket.headers
-    )
+    # Lowercase keys when flattening: ``socket.headers`` is a case-insensitive
+    # ``Headers``/CIMultiDict, but ``dict(...)`` preserves the original casing
+    # (e.g. ``Cookie``), so a later ``headers.get("cookie")`` would miss it.
+    if hasattr(socket.headers, "items"):
+        headers = {str(k).lower(): v for k, v in socket.headers.items()}
+    else:
+        headers = socket.headers
 
     # 1. Try query parameter first
     token = socket.query_params.get("token")
@@ -108,7 +112,16 @@ async def authenticate_websocket(
 
     if token:
         try:
-            payload = pyjwt.decode(token, jwt_secret, algorithms=[jwt_algorithm])
+            # verify_sub=False: anonymous async-token cookies carry ``sub=None``
+            # (minted by AsyncTokenMiddleware, 1:1 with the original); pyjwt
+            # >= 2.10 otherwise raises ``InvalidSubjectError`` on a null sub,
+            # which would reject every anonymous GAQ WebSocket connection.
+            payload = pyjwt.decode(
+                token,
+                jwt_secret,
+                algorithms=[jwt_algorithm],
+                options={"verify_sub": False},
+            )
             # Anonymous async-token cookies are minted with ``sub=None`` (1:1
             # with the original ``async_query_manager.init_app`` which signs
             # ``{"channel": ..., "sub": get_user_id()}`` and ``get_user_id()``

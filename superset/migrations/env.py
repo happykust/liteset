@@ -33,6 +33,22 @@ from sqlalchemy import create_engine, pool
 
 logger = logging.getLogger("alembic.env")
 
+# Apply the logging configuration from alembic.ini, 1:1 with upstream
+# ``if not ALEMBIC_SKIP_LOG_CONFIG: fileConfig(config.config_file_name)``. The
+# settings read is guarded so migrations still run if config can't be resolved.
+try:  # pragma: no cover — best-effort logging setup
+    from logging.config import fileConfig
+
+    from superset.config import SupersetSettings
+
+    if (
+        not SupersetSettings().alembic_skip_log_config  # type: ignore[call-arg]
+        and context.config.config_file_name is not None
+    ):
+        fileConfig(context.config.config_file_name)
+except Exception:  # noqa: BLE001, S110 — logging setup must never block migrations
+    pass
+
 _ASYNC_TO_SYNC_DRIVERS = {
     "postgresql+asyncpg://": "postgresql+psycopg2://",
     "mysql+asyncmy://": "mysql+pymysql://",
@@ -89,6 +105,21 @@ def _get_target_metadata() -> Any:
     return target_metadata
 
 
+def _process_revision_directives(
+    migration_context: Any, revision: Any, directives: list[Any]
+) -> None:
+    """Skip generating an empty migration on ``--autogenerate``.
+
+    1:1 with upstream env.py — when the schema is unchanged, clear the
+    directives so Alembic doesn't write an empty revision file.
+    """
+    if getattr(context.config.cmd_opts, "autogenerate", False):
+        script = directives[0]
+        if script.upgrade_ops.is_empty():
+            directives[:] = []
+            logger.info("No changes in schema detected.")
+
+
 def run_migrations_offline() -> None:
     url = _get_sync_url()
     context.configure(
@@ -96,6 +127,7 @@ def run_migrations_offline() -> None:
         target_metadata=_get_target_metadata(),
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        process_revision_directives=_process_revision_directives,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -105,9 +137,20 @@ def run_migrations_online() -> None:
     url = _get_sync_url()
     connectable = create_engine(url, poolclass=pool.NullPool)
     with connectable.connect() as connection:
+        # 1:1 with upstream env.py: sqlite/mysql lack reliable transactional
+        # DDL, so run each migration in its own transaction to avoid a failed
+        # migration leaving a half-applied schema.
+        kwargs: dict[str, object] = {}
+        if connectable.name in ("sqlite", "mysql"):
+            kwargs = {
+                "transaction_per_migration": True,
+                "transactional_ddl": True,
+            }
         context.configure(
             connection=connection,
             target_metadata=_get_target_metadata(),
+            process_revision_directives=_process_revision_directives,
+            **kwargs,
         )
         with context.begin_transaction():
             context.run_migrations()

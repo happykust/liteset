@@ -169,3 +169,22 @@ def test_no_superset_config_uses_defaults(monkeypatch):
     monkeypatch.setenv("LITESET_SECRET_KEY", "fallback-secret-key")
     settings = SupersetSettings()
     assert settings.secret_key.get_secret_value() == "fallback-secret-key"
+
+
+def test_version_sha_respects_configured_length():
+    """``_resolve_version_info`` must honor VERSION_SHA_LENGTH, not [:8].
+
+    1:1 with upstream ``_try_json_readsha(VERSION_INFO_FILE,
+    VERSION_SHA_LENGTH)`` — the truncation length is configurable.
+    """
+    from unittest.mock import mock_open, patch
+
+    settings = SupersetSettings()
+    settings.version_sha = ""
+    settings.version_sha_length = 4
+    with patch(
+        "builtins.open",
+        mock_open(read_data='{"GIT_SHA": "abcdef1234567890", "version": "6.0.0"}'),
+    ):
+        settings._resolve_version_info()
+    assert settings.version_sha == "abcd"

@@ -31,6 +31,7 @@ working through the migration.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -48,24 +49,105 @@ def export_dashboards() -> str:
     logger.info("Starting export")
     session = get_sync_session()
     try:
-        dashboards = session.query(Dashboard)
-        dashboard_ids: set[int] = set()
-        for dashboard in dashboards:
-            dashboard_ids.add(dashboard.id)
-
-        # ``Dashboard.export_dashboards`` is a classmethod on the SQLA
-        # model; the original lives in the upstream model module.  When
-        # the new model doesn't ship that classmethod (the V0 export
-        # format is deprecated) we fall back to the upstream
-        # implementation defined in ``superset_old.models.dashboard``.
-        export_fn = getattr(Dashboard, "export_dashboards", None)
-        if not callable(export_fn):
-            raise NotImplementedError(  # pragma: no cover
-                "Dashboard.export_dashboards classmethod is not available — "
-                "the V0 dashboard export format is no longer supported on "
-                "this Superset build.  Use ``superset export-dashboards`` "
-                "(zip-based V1 export) instead."
-            )
-        return export_fn(dashboard_ids)
+        dashboard_ids = {dashboard.id for dashboard in session.query(Dashboard)}
+        return _export_dashboards(session, dashboard_ids)
     finally:
         session.close()
+
+
+def _export_dashboards(session: Any, dashboard_ids: set[int]) -> str:
+    """1:1 sync port of ``Dashboard.export_dashboards`` (V0 format).
+
+    Mirrors ``superset_old/models/dashboard.py::Dashboard.export_dashboards``;
+    kept as a module function (rather than a model classmethod) so the
+    async Dashboard model isn't burdened with a sync, deprecated export
+    path.  ``SqlaTable.get_eager_sqlatable_datasource`` is inlined as a
+    direct query since the async port doesn't ship that classmethod.
+    """
+    from sqlalchemy.orm import subqueryload
+
+    from superset.models.connectors import SqlaTable
+    from superset.models.dashboard import Dashboard
+    from superset.utils import json
+
+    copied_dashboards = []
+    datasource_ids = set()
+    for dashboard_id in dashboard_ids:
+        dashboard_id = int(dashboard_id)
+        dashboard = (
+            session.query(Dashboard)
+            .options(subqueryload(Dashboard.slices))
+            .filter_by(id=dashboard_id)
+            .first()
+        )
+        # remove ids and relations (like owners, created by, slices, ...)
+        copied_dashboard = dashboard.copy()
+        for slc in dashboard.slices:
+            datasource_ids.add((slc.datasource_id, slc.datasource_type))
+            copied_slc = slc.copy()
+            # save original id into json — needed to update the dashboard's
+            # json metadata on import
+            copied_slc.id = slc.id
+            copied_slc.alter_params(
+                remote_id=slc.id,
+                datasource_name=slc.datasource.datasource_name,
+                schema=slc.datasource.schema,
+                database_name=slc.datasource.database.name,
+            )
+            # set slices without creating ORM relations
+            slices = copied_dashboard.__dict__.setdefault("slices", [])
+            slices.append(copied_slc)
+
+        json_metadata = json.loads(dashboard.json_metadata or "{}")
+        native_filter_configuration = json_metadata.get(
+            "native_filter_configuration", []
+        )
+        for native_filter in native_filter_configuration:
+            for target in native_filter.get("targets", []):
+                id_ = target.get("datasetId")
+                if id_ is None:
+                    continue
+                datasource = (
+                    session.query(SqlaTable).filter_by(id=int(id_)).first()
+                )
+                if datasource is not None:
+                    datasource_ids.add((datasource.id, datasource.type))
+
+        copied_dashboard.alter_params(remote_id=dashboard_id)
+        copied_dashboards.append(copied_dashboard)
+
+    datasource_id_list = sorted(datasource_ids)
+
+    eager_datasources = []
+    for datasource_id, _ in datasource_id_list:
+        eager_datasource = (
+            session.query(SqlaTable)
+            .options(
+                subqueryload(SqlaTable.columns),
+                subqueryload(SqlaTable.metrics),
+            )
+            .filter_by(id=datasource_id)
+            .first()
+        )
+        if eager_datasource is None:
+            # A dashboard may reference a dataset id that no longer exists
+            # (dangling native-filter datasetId); skip it rather than crash on
+            # ``None.copy()``.
+            continue
+        copied_datasource = eager_datasource.copy()
+        copied_datasource.alter_params(
+            remote_id=eager_datasource.id,
+            database_name=eager_datasource.database.name,
+        )
+        eager_datasources.append(copied_datasource)
+
+    # ``default=None`` so simplejson uses ``DashboardEncoder.default`` (which
+    # serialises ORM objects via ``__dict__``) instead of the wrapper's
+    # ``json_iso_dttm_ser`` param-default — the latter wins when both ``cls``
+    # and ``default`` are passed and would raise on a Dashboard instance.
+    return json.dumps(
+        {"dashboards": copied_dashboards, "datasources": eager_datasources},
+        default=None,
+        cls=json.DashboardEncoder,
+        indent=4,
+    )

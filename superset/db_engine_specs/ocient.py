@@ -25,7 +25,9 @@ from typing import Any, Callable, NamedTuple, Optional
 from sqlalchemy.engine.reflection import Inspector
 
 with contextlib.suppress(ImportError, RuntimeError):  # pyocient may not be installed
-    pass
+    import geojson
+    import pyocient  # noqa: F401
+    from shapely import wkt
 
 from superset.constants import TimeGrain
 from superset.db_engine_specs.base import BaseEngineSpec
@@ -76,6 +78,95 @@ def _to_hex(data: bytes) -> str:
     return data.hex()
 
 
+def _wkt_to_geo_json(geo_as_wkt: str) -> Any:
+    """
+    Converts pyocient geometry objects to their geoJSON representation.
+
+    :param geo_as_wkt: the GIS object in WKT format
+    :returns: the geoJSON encoding of `geo`
+    """
+    # Need to try-catch here because these deps may not be installed
+    geo = wkt.loads(geo_as_wkt)
+    return geojson.Feature(geometry=geo, properties={})
+
+
+def _point_list_to_wkt(
+    points,  # type: list[pyocient._STPoint]
+) -> str:
+    """
+    Converts the list of pyocient._STPoint elements to a WKT LineString.
+
+    :param points: the list of pyocient._STPoint objects
+    :returns: WKT LineString
+    """
+    coords = [f"{p.long} {p.lat}" for p in points]
+    return f"LINESTRING({', '.join(coords)})"
+
+
+def _point_to_geo_json(
+    point,  # type: pyocient._STPoint
+) -> Any:
+    """
+    Converts the pyocient._STPolygon object to the geoJSON format
+
+    :param point: the pyocient._STPoint instance
+    :returns: the geoJSON encoding of this point
+    """
+    wkt_point = str(point)
+    return _wkt_to_geo_json(wkt_point)
+
+
+def _linestring_to_geo_json(
+    linestring,  # type: pyocient._STLinestring
+) -> Any:
+    """
+    Converts the pyocient._STLinestring object to a GIS format
+    compatible with the Superset visualization toolkit (powered
+    by Deck.gl).
+
+    :param linestring: the pyocient._STLinestring instance
+    :returns: the geoJSON of this linestring
+    """
+    if len(linestring.points) == 1:
+        # While technically an invalid linestring object, Ocient
+        # permits ST_LINESTRING containers to contain a single
+        # point. The flexibility allows the database to encode
+        # geometry collections as an array of the highest dimensional
+        # element in the collection (i.e. ST_LINESTRING[] or
+        # ST_POLYGON[]).
+        point = linestring.points[0]
+        return _point_to_geo_json(point)
+
+    wkt_linestring = str(linestring)
+    return _wkt_to_geo_json(wkt_linestring)
+
+
+def _polygon_to_geo_json(
+    polygon,  # type: pyocient._STPolygon
+) -> Any:
+    """
+    Converts the pyocient._STPolygon object to a GIS format
+    compatible with the Superset visualization toolkit (powered
+    by Deck.gl).
+
+    :param polygon: the pyocient._STPolygon instance
+    :returns: the geoJSON encoding of this polygon
+    """
+    if len(polygon.exterior) > 0 and len(polygon.holes) == 0:
+        if len(polygon.exterior) == 1:
+            # The exterior ring contains a single ST_POINT
+            point = polygon.exterior[0]
+            return _point_to_geo_json(point)
+        if polygon.exterior[0] != polygon.exterior[-1]:
+            # The exterior ring contains an open ST_LINESTRING
+            wkt_linestring = _point_list_to_wkt(polygon.exterior)
+            return _wkt_to_geo_json(wkt_linestring)
+    # else
+    # This is a valid ST_POLYGON
+    wkt_polygon = str(polygon)
+    return _wkt_to_geo_json(wkt_polygon)
+
+
 # Sanitization function for column values
 SanitizeFunc = Callable[[Any], Any]
 
@@ -94,8 +185,11 @@ try:
 
     _sanitized_ocient_type_codes: dict[int, SanitizeFunc] = {
         TypeCodes.BINARY: _to_hex,
+        TypeCodes.ST_POINT: _point_to_geo_json,
         TypeCodes.IP: str,
         TypeCodes.IPV4: str,
+        TypeCodes.ST_LINESTRING: _linestring_to_geo_json,
+        TypeCodes.ST_POLYGON: _polygon_to_geo_json,
     }
 except ImportError:
     _sanitized_ocient_type_codes = {}

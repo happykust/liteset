@@ -18,10 +18,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
-
 import msgspec
-from msgspec import Meta
 
 from superset.schemas.base import UserRef  # noqa: F401 — re-exported for compat
 
@@ -33,7 +30,10 @@ from superset.schemas.base import UserRef  # noqa: F401 — re-exported for comp
 class CssTemplatePostSchema(msgspec.Struct):
     """POST /api/v1/css_template/"""
 
-    template_name: Annotated[str, Meta(min_length=1)]
+    # No min-length: the original FAB schema (``field_for(CssTemplate,
+    # "template_name")``) only marks the field required, not non-empty — an
+    # empty ``template_name`` is accepted upstream, so don't reject it here.
+    template_name: str
     css: str
 
 

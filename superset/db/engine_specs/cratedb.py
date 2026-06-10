@@ -54,6 +54,13 @@ class AsyncCrateDbEngineSpec(AsyncPostgresEngineSpec):
         return "{col} * 1000"
 
     @classmethod
+    def epoch_ms_to_dttm(cls) -> str:
+        # CrateDB stores ms-epoch natively, so ms → dttm is identity. Without
+        # this override the base default emits ``({col}/1000) * 1000`` whose
+        # integer division truncates sub-second precision (1:1 with upstream).
+        return "{col}"
+
+    @classmethod
     def convert_dttm(
         cls,
         target_type: str,

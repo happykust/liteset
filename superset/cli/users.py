@@ -366,6 +366,18 @@ def load_test_users(password: str) -> None:  # noqa: C901  # complex business lo
     import anyio
 
     async def _load() -> None:  # noqa: C901  # complex business logic
+        # 1:1 with upstream ``superset_old/cli/test.py:42``: the whole body is
+        # gated on the TESTING flag so dev-only users (admin/general etc.) can't
+        # be seeded into a production deployment.
+        from superset.config import SupersetSettings
+
+        if not SupersetSettings().testing:  # type: ignore[call-arg]
+            click.secho(
+                "load-test-users only runs when TESTING is enabled.",
+                fg="yellow",
+            )
+            return
+
         session_factory, engine = _get_async_session_factory()
         async with session_factory() as session:
             from superset.models.security import (
@@ -449,9 +461,12 @@ def load_test_users(password: str) -> None:  # noqa: C901  # complex business lo
                     new_role.permissions.append(pv)
 
                 await session.flush()
+                # Count the permissions actually assigned, not ``seen_pv_ids``
+                # (which includes the skipped ``can csv on Superset`` PV for
+                # gamma_no_csv → an off-by-one in the message).
                 click.secho(
                     f"  Created role: {custom_role_name} "
-                    f"({len(seen_pv_ids)} permissions)",
+                    f"({len(new_role.permissions)} permissions)",
                     fg="green",
                 )
 

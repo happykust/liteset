@@ -108,11 +108,14 @@ async def _run_factory_reset(
             from sqlalchemy import select
             from sqlalchemy.orm import selectinload
 
-            from superset.models.user import User
+            from superset.models.security import User
+            from superset.security.dao import AsyncSecurityDAO
             from superset.security.manager import AsyncSecurityManager
             from superset.utils.password import check_password_hash
 
-            security_manager = AsyncSecurityManager(session=session)
+            security_manager = AsyncSecurityManager(
+                AsyncSecurityDAO(session), settings=settings
+            )
             stmt = (
                 select(User)
                 .options(selectinload(User.roles))

@@ -73,6 +73,7 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "GLOBAL_ASYNC_QUERIES": "global_async_queries",
     "STATIC_ASSETS_PREFIX": "static_assets_prefix",
     "DEBUG": "debug",
+    "TESTING": "testing",
     # Phase 4: query processing and SqlLab config
     "ROW_LIMIT": "row_limit",
     "SAMPLES_ROW_LIMIT": "samples_row_limit",
@@ -798,6 +799,10 @@ class SupersetSettings(BaseSettings):
     host: str = "0.0.0.0"  # noqa: S104
     port: int = 8088
     debug: bool = False
+    # Flask ``TESTING`` flag equivalent — gates dev-only helpers such as
+    # ``superset load-test-users`` (1:1 with upstream which wraps the body in
+    # ``if current_app.config["TESTING"]:``).
+    testing: bool = False
     static_assets_prefix: str = ""
     global_async_queries: bool = False
     cors_allow_origins: list[str] = []
@@ -1077,7 +1082,13 @@ class SupersetSettings(BaseSettings):
     global_async_queries_websocket_url: str = "ws://127.0.0.1:8088/ws/events"
 
     # ── SQL Validators ──
-    sql_validators_by_engine: dict[str, str] = {}
+    # 1:1 with ``superset_old/config.py::SQL_VALIDATORS_BY_ENGINE`` — ships
+    # the presto/postgres validators on by default so "Validate SQL" works
+    # out of the box for those engines.
+    sql_validators_by_engine: dict[str, str] = {  # noqa: RUF012
+        "presto": "PrestoDBSQLValidator",
+        "postgresql": "PostgreSQLValidator",
+    }
 
     # ── SMTP / Email ──
     smtp_host: str = "localhost"
@@ -1725,23 +1736,65 @@ class SupersetSettings(BaseSettings):
         return int(v)
 
     @model_validator(mode="after")
-    def _merge_feature_flags(self) -> SupersetSettings:
-        """Merge feature flags: defaults <- user config <- SUPERSET_FEATURE_* env vars.
+    def _resolve_version_info(self) -> SupersetSettings:
+        """Populate version_string / version_sha from static/version_info.json.
 
-        Mirrors the original Superset behaviour:
+        1:1 with upstream ``VERSION_STRING = _try_json_readversion(...)`` /
+        ``VERSION_SHA = _try_json_readsha(...)``. Only fills empty values so an
+        explicit config override still wins. The file is generated on install
+        (``{"GIT_SHA": ..., "version": ...}``).
+        """
+        if self.version_string and self.version_sha:
+            return self
+        import json as _json
+        import os as _os
+
+        path = _os.path.join(
+            _os.path.dirname(__file__), "static", "version_info.json"
+        )
+        try:
+            with open(path) as f:
+                data = _json.load(f)
+        except Exception:  # noqa: BLE001 — file absent in some test contexts
+            return self
+        if not self.version_string:
+            self.version_string = data.get("version") or ""
+        if not self.version_sha:
+            # Truncate to VERSION_SHA_LENGTH (1:1 with upstream
+            # ``_try_json_readsha(VERSION_INFO_FILE, VERSION_SHA_LENGTH)``).
+            self.version_sha = (data.get("GIT_SHA") or "")[: self.version_sha_length]
+        return self
+
+    @model_validator(mode="after")
+    def _merge_feature_flags(self) -> SupersetSettings:
+        """Merge feature flags: defaults <- SUPERSET_FEATURE_* env <- user config.
+
+        1:1 with upstream precedence — ``superset_config.py`` FEATURE_FLAGS win
+        OVER env vars:
         1. Start with _DEFAULT_FEATURE_FLAGS
-        2. Merge user-provided FEATURE_FLAGS (from superset_config.py)
-        3. Merge SUPERSET_FEATURE_* env vars (highest priority)
+        2. Merge SUPERSET_FEATURE_* env vars (upstream config.py:647 updates the
+           defaults dict with env)
+        3. Merge user FEATURE_FLAGS last (feature_flag_manager.init_app does
+           ``_feature_flags = DEFAULT_FEATURE_FLAGS`` then ``.update(FEATURE_FLAGS)``)
         """
         import re
 
         merged = _DEFAULT_FEATURE_FLAGS.copy()
-        merged.update(self.feature_flags)
-        # Apply SUPERSET_FEATURE_* env vars (matches original config.py:647-653)
+        # Apply SUPERSET_FEATURE_* env vars FIRST (onto defaults).
         for k, v in os.environ.items():
             if re.match(r"^SUPERSET_FEATURE_\w+", k):
                 flag_name = k[len("SUPERSET_FEATURE_") :]
-                merged[flag_name] = v.lower() in ("true", "1", "yes", "y", "on")
+                # parse_boolean_string semantics (incl. "t"), 1:1 with upstream.
+                merged[flag_name] = v.lower() in (
+                    "y",
+                    "yes",
+                    "true",
+                    "t",
+                    "on",
+                    "1",
+                )
+        # User FEATURE_FLAGS (superset_config.py) win over env — applied last.
+        merged.update(self.feature_flags)
         self.feature_flags = merged
         return self
 

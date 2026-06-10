@@ -187,6 +187,30 @@ class SingleStoreSpec(BasicParametersMixin, BaseEngineSpec):
             "BIT_OR",
             "BIT_XOR",
             "BM25",
+            "BSON_ARRAY_CONTAINS_BSON",
+            "BSON_ARRAY_PUSH",
+            "BSON_ARRAY_SLICE",
+            "BSON_BUILD_ARRAY",
+            "BSON_BUILD_OBJECT",
+            "BSON_COMPARE",
+            "BSON_EXTRACT_BIGINT",
+            "BSON_EXTRACT_BOOL",
+            "BSON_EXTRACT_BSON",
+            "BSON_EXTRACT_DATETIME",
+            "BSON_EXTRACT_DOUBLE",
+            "BSON_EXTRACT_STRING",
+            "BSON_GET_TYPE",
+            "BSON_INCLUDE_MASK",
+            "BSON_EXCLUDE_MASK",
+            "BSON_LENGTH",
+            "BSON_MATCH_ANY",
+            "BSON_MATCH_ANY_EXISTS",
+            "BSON_MERGE",
+            "BSON_NORMALIZE",
+            "BSON_NORMALIZE_ASC",
+            "BSON_NORMALIZE_DESC",
+            "BSON_NORMALIZE_NO_ARRAYBSON_SET_BSON",
+            "BSON_UNWIND",
             "CASE",
             "CEIL",
             "CHAR",
@@ -262,6 +286,7 @@ class SingleStoreSpec(BasicParametersMixin, BaseEngineSpec):
             "INET6_NTOA",
             "INITCAP",
             "INSTR",
+            "IS_BSON_NULL",
             "IS_UUID",
             "ISNULL",
             "ISNUMERIC",
@@ -466,6 +491,26 @@ class SingleStoreSpec(BasicParametersMixin, BaseEngineSpec):
         if schema:
             uri = uri.set(database=parse.quote(schema, safe=""))
 
+        # Identify the connector to the SingleStore server — 1:1 with upstream
+        # ``connect_args.setdefault("conn_attrs", {...})``. Guard the settings
+        # read so a config-resolution hiccup never blocks engine creation
+        # (upstream's ``app.config.get("VERSION_STRING", "dev")`` is total).
+        try:
+            from superset.config import SupersetSettings
+
+            version_string = (
+                SupersetSettings().version_string or "dev"  # type: ignore[call-arg]
+            )
+        except Exception:  # noqa: BLE001
+            version_string = "dev"
+        connect_args.setdefault(
+            "conn_attrs",
+            {
+                "_connector_name": "SingleStore Superset Database Engine",
+                "_connector_version": version_string,
+                "_product_version": version_string,
+            },
+        )
         return uri, connect_args
 
     @classmethod

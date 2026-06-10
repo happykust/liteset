@@ -224,34 +224,34 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
         # ------------------------------------------------------------------
         for file_name, config in configs.items():
             if file_name.startswith("queries/"):
-                db_uuid = config.get("database_uuid")
-                if db_uuid and db_uuid in database_ids:
-                    sq_cfg = dict(config)
-                    sq_cfg["db_id"] = database_ids[db_uuid]
-                    await import_saved_query(self.session, sq_cfg, overwrite=True)
+                # Direct index (KeyError → ImportFailedError) — 1:1 with upstream
+                # ``config["db_id"] = database_ids[config["database_uuid"]]``. A
+                # missing dependency must fail the import, not silently skip it.
+                sq_cfg = dict(config)
+                sq_cfg["db_id"] = database_ids[config["database_uuid"]]
+                await import_saved_query(self.session, sq_cfg, overwrite=True)
 
         # ------------------------------------------------------------------
         # 3. Datasets
         # ------------------------------------------------------------------
         for file_name, config in configs.items():
             if file_name.startswith("datasets/"):
-                db_uuid = config.get("database_uuid")
-                if db_uuid and db_uuid in database_ids:
-                    ds_cfg = dict(config)
-                    ds_cfg["database_id"] = database_ids[db_uuid]
-                    dataset = await _import_dataset(
-                        self.session,
-                        ds_cfg,
-                        overwrite=True,
-                        ignore_permissions=True,
-                        security_manager=self.security_manager,
-                        current_user=self.current_user,
-                    )
-                    dataset_info[str(dataset.uuid)] = {
-                        "datasource_id": dataset.id,
-                        "datasource_type": getattr(dataset, "datasource_type", "table"),
-                        "datasource_name": dataset.datasource_name,
-                    }
+                # Direct index (KeyError → ImportFailedError) — 1:1 with upstream.
+                ds_cfg = dict(config)
+                ds_cfg["database_id"] = database_ids[config["database_uuid"]]
+                dataset = await _import_dataset(
+                    self.session,
+                    ds_cfg,
+                    overwrite=True,
+                    ignore_permissions=True,
+                    security_manager=self.security_manager,
+                    current_user=self.current_user,
+                )
+                dataset_info[str(dataset.uuid)] = {
+                    "datasource_id": dataset.id,
+                    "datasource_type": getattr(dataset, "datasource_type", "table"),
+                    "datasource_name": dataset.datasource_name,
+                }
 
         # ------------------------------------------------------------------
         # 4. Charts
@@ -259,20 +259,20 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
         charts: list[Slice] = []
         for file_name, config in configs.items():
             if file_name.startswith("charts/"):
-                ds_uuid = config.get("dataset_uuid")
-                if ds_uuid and ds_uuid in dataset_info:
-                    cfg = update_chart_config_dataset(
-                        dict(config), dataset_info[ds_uuid]
-                    )
-                    chart = await _import_chart(
-                        self.session,
-                        cfg,
-                        overwrite=True,
-                        security_manager=self.security_manager,
-                        current_user=self.current_user,
-                    )
-                    charts.append(chart)
-                    chart_ids[str(chart.uuid)] = int(chart.id)
+                # Direct index (KeyError → ImportFailedError) — 1:1 with upstream
+                # ``dataset_info[config["dataset_uuid"]]``.
+                cfg = update_chart_config_dataset(
+                    dict(config), dataset_info[config["dataset_uuid"]]
+                )
+                chart = await _import_chart(
+                    self.session,
+                    cfg,
+                    overwrite=True,
+                    security_manager=self.security_manager,
+                    current_user=self.current_user,
+                )
+                charts.append(chart)
+                chart_ids[str(chart.uuid)] = int(chart.id)
 
         # ------------------------------------------------------------------
         # 5. Dashboards

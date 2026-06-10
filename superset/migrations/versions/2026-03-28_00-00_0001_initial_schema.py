@@ -93,6 +93,9 @@ def upgrade() -> None:
     )
 
     # -- ab_permission_view --------------------------------------------------
+    # UniqueConstraint + indexes mirror the FAB model
+    # (flask_appbuilder/security/sqla/models.py) so a fresh DB matches FAB's
+    # ``create_all`` schema 1:1.
     op.create_table(
         "ab_permission_view",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -108,7 +111,10 @@ def upgrade() -> None:
             sa.ForeignKey("ab_view_menu.id"),
             nullable=True,
         ),
+        sa.UniqueConstraint("permission_id", "view_menu_id"),
     )
+    op.create_index("idx_permission_id", "ab_permission_view", ["permission_id"])
+    op.create_index("idx_view_menu_id", "ab_permission_view", ["view_menu_id"])
 
     # -- ab_user_role --------------------------------------------------------
     op.create_table(
@@ -117,15 +123,16 @@ def upgrade() -> None:
         sa.Column(
             "user_id",
             sa.Integer(),
-            sa.ForeignKey("ab_user.id"),
+            sa.ForeignKey("ab_user.id", ondelete="CASCADE"),
             nullable=True,
         ),
         sa.Column(
             "role_id",
             sa.Integer(),
-            sa.ForeignKey("ab_role.id"),
+            sa.ForeignKey("ab_role.id", ondelete="CASCADE"),
             nullable=True,
         ),
+        sa.UniqueConstraint("user_id", "role_id"),
     )
 
     # -- ab_permission_view_role ---------------------------------------------
@@ -135,16 +142,22 @@ def upgrade() -> None:
         sa.Column(
             "permission_view_id",
             sa.Integer(),
-            sa.ForeignKey("ab_permission_view.id"),
+            sa.ForeignKey("ab_permission_view.id", ondelete="CASCADE"),
             nullable=True,
         ),
         sa.Column(
             "role_id",
             sa.Integer(),
-            sa.ForeignKey("ab_role.id"),
+            sa.ForeignKey("ab_role.id", ondelete="CASCADE"),
             nullable=True,
         ),
+        sa.UniqueConstraint("permission_view_id", "role_id"),
     )
+    op.create_index(
+        "idx_permission_view_id", "ab_permission_view_role", ["permission_view_id"]
+    )
+    # FAB canonical name (flask_appbuilder/security/sqla/models.py:94)
+    op.create_index("idx_role_id", "ab_permission_view_role", ["role_id"])
 
     # -- ab_group (FAB Groups) -----------------------------------------------
     op.create_table(
@@ -174,7 +187,11 @@ def upgrade() -> None:
             sa.Integer(),
             sa.ForeignKey("ab_group.id", ondelete="CASCADE"),
         ),
+        sa.UniqueConstraint("user_id", "group_id"),
     )
+    # FAB perf indexes (flask_appbuilder/security/sqla/models.py:252-253).
+    op.create_index("idx_user_id", "ab_user_group", ["user_id"])
+    op.create_index("idx_user_group_id", "ab_user_group", ["group_id"])
 
     # -- ab_group_role -------------------------------------------------------
     op.create_table(
@@ -190,7 +207,11 @@ def upgrade() -> None:
             sa.Integer(),
             sa.ForeignKey("ab_role.id", ondelete="CASCADE"),
         ),
+        sa.UniqueConstraint("group_id", "role_id"),
     )
+    # FAB perf indexes (flask_appbuilder/security/sqla/models.py:269-270).
+    op.create_index("idx_group_id", "ab_group_role", ["group_id"])
+    op.create_index("idx_group_role_id", "ab_group_role", ["role_id"])
 
     # -- keyvalue (legacy) ---------------------------------------------------
     op.create_table(
@@ -287,6 +308,9 @@ def upgrade() -> None:
         ),
         sa.Column("expires_on", sa.DateTime(), nullable=True),
     )
+    # 1:1 with upstream 6766938c6065 — the DAO filters on ``expires_on`` for
+    # validity checks and cleanup scans.
+    op.create_index("ix_key_value_expires_on", "key_value", ["expires_on"])
 
     # =====================================================================
     # Layer 1: Tables with FKs only to Layer 0
@@ -588,13 +612,13 @@ def upgrade() -> None:
             "user_id",
             sa.Integer(),
             sa.ForeignKey("ab_user.id"),
-            nullable=True,
+            nullable=False,
         ),
         sa.Column(
             "tag_id",
             sa.Integer(),
             sa.ForeignKey("tag.id"),
-            nullable=True,
+            nullable=False,
         ),
     )
 
@@ -832,7 +856,10 @@ def upgrade() -> None:
     op.create_table(
         "row_level_security_filters",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("name", sa.String(length=255), unique=True, nullable=True),
+        # NOT NULL — squash reflects the FINAL upstream state (migration
+        # f3afaf1f11f0 added the column then ``SET NOT NULL``); the ORM model
+        # declares ``nullable=False`` too.
+        sa.Column("name", sa.String(length=255), unique=True, nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("filter_type", sa.String(length=50), nullable=True),
         sa.Column("group_key", sa.String(length=255), nullable=True),
@@ -1224,6 +1251,12 @@ def upgrade() -> None:
         "report_schedule",
         ["active"],
     )
+    # 1:1 with upstream 3317e9248280 — distinguishes alerts vs reports.
+    op.create_index(
+        "ix_creation_method",
+        "report_schedule",
+        ["creation_method"],
+    )
 
     # -- report_schedule_user (association) ----------------------------------
     op.create_table(
@@ -1566,6 +1599,7 @@ def downgrade() -> None:
     op.drop_table("report_execution_log")
     op.drop_table("report_recipient")
     op.drop_table("report_schedule_user")
+    op.drop_index("ix_creation_method", table_name="report_schedule")
     op.drop_index("ix_report_schedule_active", table_name="report_schedule")
     op.drop_table("report_schedule")
     op.drop_table("user_attribute")

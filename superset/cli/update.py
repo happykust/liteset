@@ -43,61 +43,23 @@ import click
 )
 def set_database_uri(database_name: str, uri: str, skip_create: bool) -> None:
     """Update a database connection URI."""
-    import anyio
+    # 1:1 with ``superset_old/cli/update.py:51-53``: delegate to
+    # ``get_or_create_db`` so the URI goes through
+    # ``Database.set_sqlalchemy_uri()`` — the inline password is stripped
+    # into the *encrypted* ``password`` column and the stored
+    # ``sqlalchemy_uri`` keeps only ``PASSWORD_MASK``.  The previous raw
+    # ``UPDATE dbs SET sqlalchemy_uri = :uri`` wrote the plaintext
+    # password straight into the metadata DB.
+    import superset.utils.database as database_utils
+    from superset.db.session import get_sync_session, remove_sync_session
 
-    async def _set_uri() -> None:
-        from sqlalchemy import text
-
-        from superset.config import SupersetSettings
-        from superset.db.engine import create_db_engine, create_session_factory
-
-        settings = SupersetSettings()  # type: ignore[call-arg]
-        engine = create_db_engine(settings.sqlalchemy_database_uri)
-        session_factory = create_session_factory(engine)
-
-        async with session_factory() as session:
-            result = await session.execute(
-                text("SELECT id FROM dbs WHERE database_name = :name"),
-                {"name": database_name},
-            )
-            row = result.first()
-
-            if row is not None:
-                await session.execute(
-                    text(
-                        "UPDATE dbs SET sqlalchemy_uri = :uri"
-                        " WHERE database_name = :name"
-                    ),
-                    {"uri": uri, "name": database_name},
-                )
-                click.secho(
-                    f"Updated URI for database '{database_name}'.",
-                    fg="green",
-                )
-            elif not skip_create:
-                await session.execute(
-                    text(
-                        "INSERT INTO dbs (database_name, sqlalchemy_uri) "
-                        "VALUES (:name, :uri)"
-                    ),
-                    {"name": database_name, "uri": uri},
-                )
-                click.secho(
-                    f"Created database '{database_name}' with provided URI.",
-                    fg="green",
-                )
-            else:
-                click.secho(
-                    f"Database '{database_name}' not found and --skip-create is set.",
-                    fg="yellow",
-                )
-                await engine.dispose()
-                return
-
-            await session.commit()
-        await engine.dispose()
-
-    anyio.run(_set_uri)
+    try:
+        database_utils.get_or_create_db(database_name, uri, not skip_create)
+        # The original runs under the ``@transaction()`` decorator which
+        # commits on success; ``get_or_create_db`` itself only flushes.
+        get_sync_session().commit()
+    finally:
+        remove_sync_session()
 
 
 # ------------------------------------------------------------------
@@ -387,5 +349,16 @@ def re_encrypt_secrets(previous_secret_key: Optional[str] = None) -> None:
 
     click.echo("Re-encrypting metadata secrets with the new SECRET_KEY...")
     migrator = SecretsMigrator(previous_secret_key=previous_secret_key)
-    migrator.run()
+    try:
+        migrator.run()
+    except ValueError as exc:
+        # 1:1 with superset_old/cli/update.py:121-129 — a wrong previous
+        # key surfaces as a decryption ValueError; give the operator a
+        # hint instead of a raw traceback.
+        click.secho(
+            f"An error occurred, "
+            f"probably an invalid previous secret key was provided. Error:[{exc}]",
+            err=True,
+        )
+        sys.exit(1)
     click.secho("All encrypted columns have been re-encrypted.", fg="green")

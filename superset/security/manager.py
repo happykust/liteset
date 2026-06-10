@@ -33,6 +33,7 @@ from typing import Any, cast, TYPE_CHECKING
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import NoResultFound, SQLAlchemyError
+from sqlalchemy.orm import selectinload
 
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import SupersetSecurityException
@@ -200,6 +201,16 @@ class AsyncSecurityManager:
         self._guest_role_name = guest_role_name
         self._dashboard_rbac_enabled = dashboard_rbac_enabled
         self._embedded_superset_enabled = embedded_superset_enabled
+
+    @property
+    def user_model(self) -> type:
+        """FAB ``SecurityManager.user_model`` contract (delegates to the DAO)."""
+        return self.dao.user_model
+
+    @property
+    def role_model(self) -> type:
+        """FAB ``SecurityManager.role_model`` contract (delegates to the DAO)."""
+        return self.dao.role_model
 
     @staticmethod
     def get_exclude_users_from_lists() -> list[str]:
@@ -1210,15 +1221,21 @@ class AsyncSecurityManager:
             assert datasource
 
             # Check direct access first, then dashboard RBAC fallback
-            has_direct_access = (
-                await self._can_access_datasource_schema(datasource, user=user)
-                or await self.can_access(
-                    DATASOURCE_ACCESS,
-                    getattr(datasource, "perm", "") or "",
-                    user=user,
-                )
-                or self.is_owner(datasource, user)
+            has_direct_access = await self._can_access_datasource_schema(
+                datasource, user=user
+            ) or await self.can_access(
+                DATASOURCE_ACCESS,
+                getattr(datasource, "perm", "") or "",
+                user=user,
             )
+            if not has_direct_access:
+                # ``is_owner`` reads ``datasource.owners`` synchronously — load
+                # it first so a bare-fetched datasource doesn't trip a sync
+                # lazy-load (MissingGreenlet) on the async session. Mirrors
+                # ``can_access_datasource`` which preloads owners before
+                # ``is_owner``.
+                await self._ensure_relationship_loaded(datasource, "owners")
+                has_direct_access = self.is_owner(datasource, user)
 
             if not has_direct_access:
                 # Dashboard RBAC fallback: when user lacks direct datasource
@@ -1304,10 +1321,18 @@ class AsyncSecurityManager:
                     self.get_dashboard_access_error_object(dashboard)
                 )
 
+            if not self.is_admin(user):
+                # ``is_owner`` reads ``dashboard.owners`` synchronously — load
+                # it first so a bare-fetched dashboard (e.g. the welcome-page
+                # lookup in spa.py) doesn't trip a sync lazy-load
+                # (MissingGreenlet) on the async session. Mirrors Path 3.
+                await self._ensure_relationship_loaded(dashboard, "owners")
             if self.is_admin(user) or self.is_owner(dashboard, user):
                 return
 
             # DASHBOARD_RBAC logic
+            if self._dashboard_rbac_enabled:
+                await self._ensure_relationship_loaded(dashboard, "roles")
             if self._dashboard_rbac_enabled and getattr(dashboard, "roles", []):
                 if getattr(dashboard, "published", False) and {
                     role.id for role in getattr(dashboard, "roles", [])
@@ -1338,6 +1363,7 @@ class AsyncSecurityManager:
                 else:
                     # Async-safe fallback: iterate slices and check each slice's
                     # datasource (mirrors ``can_access_dashboard`` lines 1632-1644).
+                    await self._ensure_relationship_loaded(dashboard, "slices")
                     slices = getattr(dashboard, "slices", [])
                     if not slices:
                         return  # No slices -> no datasets -> accessible.
@@ -1453,18 +1479,39 @@ class AsyncSecurityManager:
 
         Mirrors the original ``self.session.query(Dashboard)
         .filter(Dashboard.id == dashboard_id).one_or_none()``.
+
+        Eager-loads the relationships the fallback then reads synchronously
+        (``roles``/``slices`` in ``raise_for_access``, ``owners``/``roles``/
+        ``slices`` in ``can_access_dashboard``) — a bare select would trip a
+        sync lazy-load → ``MissingGreenlet`` on the async session.
         """
         from superset.models.dashboard import Dashboard
 
-        stmt = select(Dashboard).where(Dashboard.id == dashboard_id)
+        stmt = (
+            select(Dashboard)
+            .where(Dashboard.id == dashboard_id)
+            .options(
+                selectinload(Dashboard.roles),
+                selectinload(Dashboard.owners),
+                selectinload(Dashboard.slices),
+            )
+        )
         result = await self.dao.session.execute(stmt)
         return result.scalars().one_or_none()
 
     async def _get_slice_by_id(self, slice_id: Any) -> Any | None:
-        """Load a Slice by ID for chart-in-dashboard validation."""
+        """Load a Slice by ID for chart-in-dashboard validation.
+
+        Eager-loads ``table`` because the caller reads ``slc.datasource``
+        (a sync proxy over the ``table`` relationship) right after.
+        """
         from superset.models.slice import Slice
 
-        stmt = select(Slice).where(Slice.id == slice_id)
+        stmt = (
+            select(Slice)
+            .where(Slice.id == slice_id)
+            .options(selectinload(Slice.table))
+        )
         result = await self.dao.session.execute(stmt)
         return result.scalars().one_or_none()
 
@@ -1494,8 +1541,12 @@ class AsyncSecurityManager:
         if not chart_id:
             return False
 
-        # Load the chart
-        stmt = select(Slice).where(Slice.id == chart_id)
+        # Load the chart (eager ``table`` — ``slc.datasource`` reads it sync)
+        stmt = (
+            select(Slice)
+            .where(Slice.id == chart_id)
+            .options(selectinload(Slice.table))
+        )
         result = await self.dao.session.execute(stmt)
         slc = result.scalars().one_or_none()
         if slc is None:
@@ -1682,9 +1733,14 @@ class AsyncSecurityManager:
         if self.is_guest_user(user):
             return await self.has_guest_access(dashboard, user=user)
 
+        # ``is_owner``/``roles`` are read synchronously — pre-load so a
+        # bare-fetched dashboard doesn't trip MissingGreenlet (no-op for
+        # callers that already eager-loaded).
+        await self._ensure_relationship_loaded(dashboard, "owners")
         if self.is_owner(dashboard, user):
             return True
 
+        await self._ensure_relationship_loaded(dashboard, "roles")
         dashboard_roles = getattr(dashboard, "roles", [])
         if self._dashboard_rbac_enabled and dashboard_roles:
             if not getattr(dashboard, "published", False):
@@ -1704,6 +1760,7 @@ class AsyncSecurityManager:
                     return True
             return False
         # Fallback: iterate slices
+        await self._ensure_relationship_loaded(dashboard, "slices")
         slices = getattr(dashboard, "slices", [])
         if not slices:
             return True
@@ -1996,20 +2053,24 @@ class AsyncSecurityManager:
           the metadata DB; otherwise ``None`` to signal "no roles, no
           filtering — return [] from ``get_rls_filters``".
         """
-        is_anonymous = (
-            user is None
-            or getattr(user, "is_anonymous", False)
-            or not getattr(user, "is_authenticated", True)
+        # ``g.user is None`` → skip RLS entirely (upstream returns [] before
+        # touching roles). Distinct from an *anonymous* user, which proceeds
+        # with an (often empty) role list so BASE filters still apply.
+        if user is None:
+            return None
+
+        is_anonymous = bool(getattr(user, "is_anonymous", False)) or not getattr(
+            user, "is_authenticated", True
         )
         if not is_anonymous:
             return list(getattr(user, "roles", []) or [])
 
         public_role_name = self._public_role_name
         if not public_role_name:
-            return None
+            return []
         public_role = await self.dao.get_role_by_name(public_role_name)
         if public_role is None:
-            return None
+            return []
         return [public_role]
 
     async def get_rls_filters(self, table: Any, *, user: Any) -> list[Any]:
@@ -2532,6 +2593,24 @@ class AsyncSecurityManager:
         short-circuit for admins — the original returns the Admin role's
         actual view-menu names, callers decide how to use them.
         """
+        # Anonymous user → use the Public role's view-menus, 1:1 with upstream
+        # ``if public_role := self.get_public_role(): ...``. The per-user query
+        # would key on ``user.id`` (0 for ``UnauthenticatedUser``) and return
+        # nothing, silently dropping Public-role schema/datasource access.
+        if getattr(user, "is_anonymous", False) or not getattr(user, "id", 0):
+            public_role_name = self._public_role_name
+            if not public_role_name:
+                return set()
+            public_role = await self.dao.get_role_by_name(public_role_name)
+            if public_role is None:
+                return set()
+            pvs = await self.dao.get_role_permissions(public_role.id)
+            return {
+                pv.view_menu.name
+                for pv in pvs
+                if getattr(pv.permission, "name", None) == permission_name
+            }
+
         user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
         return {
             view_name

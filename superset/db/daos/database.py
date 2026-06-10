@@ -28,19 +28,12 @@ from superset.models.core import Database
 from superset.models.dashboard import Dashboard, dashboard_slices
 from superset.models.slice import Slice
 from superset.models.sql_lab import TabState
-from superset.utils.json import dumps, loads, reveal_sensitive
 
 logger = logging.getLogger(__name__)
 
 
 class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
     model_cls = Database
-
-    # Default JSONPath pattern matching all top-level keys in encrypted_extra.
-    # This matches BaseEngineSpec.encrypted_extra_sensitive_fields from the
-    # original Superset, ensuring masked values are properly unmasked before
-    # persisting updates.
-    _encrypted_extra_sensitive_fields: set[str] = {"$.*"}  # noqa: RUF012
 
     async def update(
         self,
@@ -56,25 +49,15 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
 
         Ports the original ``DatabaseDAO.update`` logic.
         """
-        if "encrypted_extra" in attributes:
-            old_encrypted = item.encrypted_extra
-            new_encrypted = attributes["encrypted_extra"]
-
-            if old_encrypted is not None and new_encrypted is not None:
-                try:
-                    old_config = loads(old_encrypted)  # type: ignore[arg-type]
-                    new_config = loads(new_encrypted)
-                    new_config = reveal_sensitive(
-                        old_config,
-                        new_config,
-                        self._encrypted_extra_sensitive_fields,
-                    )
-                    attributes["encrypted_extra"] = dumps(new_config)
-                except (TypeError, ValueError):
-                    # If JSON parsing fails, pass through the new value as-is
-                    logger.warning(
-                        "Could not unmask encrypted_extra during database update"
-                    )
+        if item is not None and attributes and "encrypted_extra" in attributes:
+            # Delegate to the engine spec, 1:1 with upstream
+            # ``item.db_engine_spec.unmask_encrypted_extra(old, new)`` — each
+            # spec knows its own sensitive fields (e.g. BigQuery ``private_key``,
+            # GSheets credentials) instead of a blanket ``{"$.*"}`` reveal.
+            attributes["encrypted_extra"] = item.db_engine_spec.unmask_encrypted_extra(
+                item.encrypted_extra,
+                attributes["encrypted_extra"],
+            )
 
         return await super().update(item, attributes)
 
@@ -150,14 +133,17 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
             return {}
         import json
 
+        # Filter catalog/schema UNCONDITIONALLY (None → ``IS NULL``), 1:1 with
+        # upstream which filters ``SqlaTable.catalog == self._catalog_name`` /
+        # ``... .schema == self._schema_name`` regardless of None. Skipping the
+        # filter when None (the common single-catalog case) would match rows
+        # from other catalogs/schemas that share a table name.
         stmt = select(SqlaTable.table_name, SqlaTable.extra).where(
             SqlaTable.database_id == database_id,
             SqlaTable.table_name.in_(table_names),
+            SqlaTable.catalog == catalog,
+            SqlaTable.schema == schema,
         )
-        if catalog:
-            stmt = stmt.where(SqlaTable.catalog == catalog)
-        if schema:
-            stmt = stmt.where(SqlaTable.schema == schema)
         rows = (await self.session.execute(stmt)).all()
         result: dict[str, dict[str, Any]] = {}
         for tbl_name, extra_raw in rows:

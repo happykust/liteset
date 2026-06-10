@@ -202,10 +202,12 @@ class ProxyFixMiddleware(ASGIMiddleware):
             self.x_prefix,
         )
         if forwarded_prefix is not None:
-            # Strip trailing slash to avoid double-slash when
-            # concatenated with the path.
+            # REPLACE root_path with the forwarded prefix — 1:1 with Werkzeug
+            # ProxyFix (``environ["SCRIPT_NAME"] = x_forwarded_prefix``).
+            # Prepending instead would double-count the prefix in a sub-path
+            # deployment where the server already set ``root_path``.
             prefix = forwarded_prefix.rstrip("/")
             if prefix:
-                scope["root_path"] = prefix + scope.get("root_path", "")
+                scope["root_path"] = prefix
 
         await next_app(scope, receive, send)

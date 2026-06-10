@@ -88,5 +88,8 @@ class WarmUpDatasetCacheCommand(AsyncBaseCommand[list[dict[str, Any]]]):
                 dashboard_id=self._dashboard_id,
                 extra_filters=self._extra_filters,
             )
-            results.append(await cmd.run())
+            # execute() = validate() + run(): validate() is what loads
+            # self._chart on the chart command — calling run() directly
+            # would trip its ``assert self._chart is not None``.
+            results.append(await cmd.execute())
         return results

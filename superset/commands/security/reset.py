@@ -32,6 +32,7 @@ import logging
 from typing import Any, Optional
 
 from sqlalchemy import delete, select
+from sqlalchemy.orm import selectinload
 
 from superset.commands.base import AsyncBaseCommand
 from superset.exceptions import CommandInvalidError, ForbiddenError
@@ -109,8 +110,12 @@ class ResetSupersetCommand(AsyncBaseCommand[None]):
 
         logger.debug("Ignoring Users: %s", self._users_to_exclude)
         user_model = self._security_manager.user_model
-        users_stmt = select(user_model).where(
-            user_model.username.not_in(self._users_to_exclude)
+        # Eager-load roles: the loop below reads ``user.roles`` synchronously,
+        # which would MissingGreenlet on a freshly-queried user under asyncpg.
+        users_stmt = (
+            select(user_model)
+            .where(user_model.username.not_in(self._users_to_exclude))
+            .options(selectinload(user_model.roles))
         )
         users = (await self._session.execute(users_stmt)).scalars().all()
         for user in users:

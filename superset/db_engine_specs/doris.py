@@ -281,8 +281,21 @@ class DorisEngineSpec(MySQLEngineSpec):
 
     @classmethod
     def get_default_catalog(cls, database: Database) -> str:
+        # first check the URI to see if a default catalog is set
         if database.url_object.database and "." in database.url_object.database:
             return database.url_object.database.split(".")[0]
+
+        # if not, iterate over existing catalogs and find the current one —
+        # 1:1 with upstream (``SHOW CATALOGS`` → row where ``IsCurrent``).
+        try:
+            with database.get_sqla_engine() as engine:
+                for catalog in engine.execute("SHOW CATALOGS"):
+                    if catalog.IsCurrent:
+                        return catalog.CatalogName
+        except Exception:  # noqa: BLE001 — fall back if the probe query fails
+            logger.warning("Could not resolve current Doris catalog", exc_info=True)
+
+        # fallback to "internal"
         return DEFAULT_CATALOG
 
     @classmethod

@@ -910,3 +910,44 @@ async def test_create_database_dynamic_form_passes_masked_encrypted_extra(mock_d
 
     assert captured["encrypted_extra"] == creds
     assert cmd._data["sqlalchemy_uri"] == "bigquery://p1"
+
+
+async def test_test_connection_builds_uri_from_dynamic_form_parameters(mock_dao):
+    """Regression: dynamic_form requests carry ``parameters``, not a URI.
+
+    Upstream built the URI in the Marshmallow ``@pre_load``
+    (DatabaseParametersSchemaMixin.build_sqlalchemy_uri); without the
+    equivalent step every dynamic-form "Test connection" died with
+    "sqlalchemy_uri is required for connection test".
+    """
+    cmd = DatabaseTestConnectionCommand(
+        dao=mock_dao,
+        data={
+            "configuration_method": "dynamic_form",
+            "engine": "postgresql",
+            "parameters": {
+                "username": "scott",
+                "password": "tiger",
+                "host": "dbhost",
+                "port": 5432,
+                "database": "mydb",
+            },
+        },
+    )
+    await cmd.validate()
+    built = cmd._properties["sqlalchemy_uri"]
+    assert built.startswith("postgresql")
+    assert "dbhost" in built
+    assert "mydb" in built
+
+
+async def test_test_connection_dynamic_form_requires_engine(mock_dao):
+    cmd = DatabaseTestConnectionCommand(
+        dao=mock_dao,
+        data={
+            "configuration_method": "dynamic_form",
+            "parameters": {"host": "h", "database": "d"},
+        },
+    )
+    with pytest.raises(CommandInvalidError, match="engine must be specified"):
+        await cmd.validate()

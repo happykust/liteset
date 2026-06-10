@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import closing
 from typing import Any, TYPE_CHECKING
@@ -143,12 +144,73 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
         }
         self._uri = uri
 
+    def _build_uri_from_parameters(self) -> None:
+        """Build ``sqlalchemy_uri`` from individual parameters (dynamic_form).
+
+        Upstream this happens in the Marshmallow ``@pre_load``
+        ``DatabaseParametersSchemaMixin.build_sqlalchemy_uri`` hook
+        (superset_old/databases/schemas.py:304-363) which
+        ``DatabaseTestConnectionSchema`` inherits — so the command always
+        received a ready URI.  msgspec has no pre-load stage; do the same
+        transformation here (mirrors ``CreateDatabaseCommand.validate``).
+        """
+        parameters = self._properties.pop("parameters", {}) or {}
+        engine = (
+            self._properties.pop("engine", None)
+            or (
+                parameters.pop("engine", None) if isinstance(parameters, dict) else None
+            )
+            or self._properties.pop("backend", None)
+        )
+        driver = self._properties.pop("driver", None)
+
+        if (
+            self._properties.get("sqlalchemy_uri")
+            or self._properties.get("configuration_method") != "dynamic_form"
+        ):
+            return
+
+        if not engine:
+            raise CommandInvalidError(
+                "An engine must be specified when passing individual "
+                "parameters to a database."
+            )
+        from superset.db_engine_specs import get_engine_spec
+
+        spec_class = get_engine_spec(engine, driver)
+        if not hasattr(spec_class, "build_sqlalchemy_uri") or not hasattr(
+            spec_class, "parameters_schema"
+        ):
+            raise CommandInvalidError(
+                f'Engine spec "{engine}" does not support being '
+                "configured via individual parameters."
+            )
+
+        encrypted_extra_str = self._properties.get("masked_encrypted_extra") or "{}"
+        try:
+            encrypted_extra = json.loads(encrypted_extra_str)
+        except (ValueError, TypeError):
+            encrypted_extra = {}
+
+        try:
+            self._properties["sqlalchemy_uri"] = spec_class.build_sqlalchemy_uri(
+                parameters,
+                encrypted_extra,
+            )
+        except ValueError as ex:
+            # Engine specs (e.g. BigQuery) raise ValueError for missing /
+            # invalid credentials — upstream's @pre_load surfaced these as
+            # a Marshmallow ValidationError → 400/422, not a 500.
+            raise CommandInvalidError(str(ex)) from ex
+
     async def validate(self) -> None:
         from superset.commands.database.ssh_tunnel.exceptions import (
             SSHTunnelDatabasePortError,
             SSHTunnelingNotEnabledError,
         )
         from superset.utils.feature_flags import feature_flag_manager
+
+        self._build_uri_from_parameters()
 
         uri = self._properties.get("sqlalchemy_uri")
         if not uri:

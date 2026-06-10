@@ -294,7 +294,12 @@ class AsyncQueryWebSocket(Controller):
         ``"$"`` (only-new) otherwise.  After each delivered entry the cursor
         advances to that entry's id.
         """
-        redis = state.redis
+        # Read from the SAME client the GAQ writers use: Celery tasks publish
+        # via ``AsyncEventManager`` on ``state.event_redis`` (built from
+        # GLOBAL_ASYNC_QUERIES_CACHE_BACKEND), which can point at a different
+        # host/db than the general ``REDIS_URL`` client — reading
+        # ``state.redis`` here would XREAD a stream nobody writes to.
+        redis = getattr(state, "event_redis", None) or state.redis
         settings = state.settings
 
         # If no channel could be resolved (rare: session-cookie fallback with

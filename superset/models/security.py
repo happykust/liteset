@@ -100,6 +100,29 @@ class User(Base):
     roles = relationship("Role", secondary=ab_user_role, backref="user")
     groups = relationship("Group", secondary=ab_user_group, backref="users")
 
+    # FAB User auth-protocol properties
+    # (flask_appbuilder/security/sqla/models.py:218-231) — ported code reads
+    # ``user.is_active``/``is_authenticated``/``is_anonymous`` on ORM users;
+    # without these, ``getattr(user, "is_active", False)`` silently yields
+    # the default instead of the ``active`` column.
+    @property
+    def is_authenticated(self) -> bool:
+        return True
+
+    @property
+    def is_active(self) -> bool:
+        return bool(self.active)
+
+    @property
+    def is_anonymous(self) -> bool:
+        return False
+
+    def get_id(self) -> str:
+        return str(self.id)
+
+    def get_full_name(self) -> str:
+        return f"{self.first_name} {self.last_name}"
+
     def __str__(self) -> str:
         return f"{self.first_name} {self.last_name}"
 

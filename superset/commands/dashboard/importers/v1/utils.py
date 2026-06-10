@@ -281,7 +281,7 @@ async def _import_dashboard(  # noqa: C901
     Ported 1:1 from superset_old/commands/dashboard/importers/v1/utils.py.
     Handles UUID-based dedup, JSON serialization, and owner management.
     """
-    from sqlalchemy import select as sa_select
+    from sqlalchemy import or_ as sa_or, select as sa_select
 
     from superset.models.dashboard import Dashboard
 
@@ -289,10 +289,17 @@ async def _import_dashboard(  # noqa: C901
     if security_manager is not None:
         can_write = await security_manager.can_access("can_write", "Dashboard")
 
-    # UUID-based dedup
-    stmt = sa_select(Dashboard).where(Dashboard.uuid == _UUID(str(config["uuid"])))
+    # Dedup by all unique columns (uuid OR slug), 1:1 with upstream
+    # ``import_from_dict`` which filters on every unique constraint — a
+    # bundle carrying a NEW uuid but an EXISTING slug must update that row,
+    # not INSERT and trip the unique ``slug`` constraint (IntegrityError 500).
+    dedup_clauses = [Dashboard.uuid == _UUID(str(config["uuid"]))]
+    slug = config.get("slug")
+    if slug:
+        dedup_clauses.append(Dashboard.slug == slug)
+    stmt = sa_select(Dashboard).where(sa_or(*dedup_clauses))
     result = await session.execute(stmt)
-    existing = result.scalars().one_or_none()
+    existing = result.scalars().first()
 
     if existing:
         if overwrite and can_write and current_user:

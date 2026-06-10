@@ -148,9 +148,15 @@ class AsyncSecurityDAO:
         """Get all PermissionView entries for a role."""
         PV = self.permission_view_model  # noqa: N806
         Role = self.role_model  # noqa: N806
+        # Join through the *forward* ``Role.permissions`` relationship —
+        # the FAB-faithful ``PermissionView`` model only carries the
+        # singular ``role`` backref, so ``PV.roles`` does not exist
+        # (FAB's ``exist_permission_on_roles`` joins through the
+        # association table for the same reason).
         stmt = (
             select(PV)
-            .join(PV.roles)
+            .select_from(Role)
+            .join(Role.permissions)
             .where(Role.id == role_id)
             .options(
                 selectinload(PV.permission),
@@ -174,9 +180,10 @@ class AsyncSecurityDAO:
         Role = self.role_model  # noqa: N806
         stmt = (
             select(PV.id)
+            .select_from(Role)
+            .join(Role.permissions)
             .join(PV.permission)
             .join(PV.view_menu)
-            .join(PV.roles)
             .where(
                 P.name == permission_name,
                 VM.name == view_menu_name,

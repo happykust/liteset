@@ -92,17 +92,17 @@ async def test_delete_dataset_single_not_found(app):
 
 
 async def test_duplicate_dataset_not_found(app):
-    """POST /api/v1/dataset/duplicate returns 404 when base dataset not found.
+    """POST /api/v1/dataset/duplicate returns 422 when base dataset not found.
 
-    MockDAO.find_by_id returns None, so DuplicateDatasetCommand raises
-    ObjectNotFoundError -> 404.
+    1:1 with upstream: a missing base dataset is accumulated into the
+    validation error set (DatasetInvalidError -> 422), not an early 404.
     """
     async with AsyncTestClient(app=app) as client:
         resp = await client.post(
             "/api/v1/dataset/duplicate",
             json={"base_model_id": 999, "table_name": "duplicate_table"},
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 422
 
 
 async def test_unauthenticated_returns_401():

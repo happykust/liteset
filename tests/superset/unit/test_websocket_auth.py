@@ -112,6 +112,22 @@ async def test_authenticate_websocket_cookie_fallback():
     assert result.user_id == 42
 
 
+async def test_authenticate_websocket_anonymous_null_sub():
+    """Anonymous async-token cookies carry ``sub=None``.
+
+    Regression: pyjwt >= 2.10 raises ``InvalidSubjectError`` on a null sub
+    unless ``options={"verify_sub": False}`` is passed; without it every
+    anonymous GAQ WebSocket connection failed to authenticate.
+    """
+    secret = "test-secret-key-that-is-32-bytes!"
+    token = pyjwt.encode({"channel": "ch-anon", "sub": None}, secret, algorithm="HS256")
+    socket = _make_socket(query_params={"token": token})
+    result = await authenticate_websocket(socket, jwt_secret=secret)
+    assert result is not None
+    assert result.user_id == 0  # anonymous → id 0
+    assert result.channel == "ch-anon"
+
+
 # ---------------------------------------------------------------------------
 # New tests for Task 1: GAQ JWT secret + cookie name + session fallback fixes
 # ---------------------------------------------------------------------------

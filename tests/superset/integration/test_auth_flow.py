@@ -70,7 +70,9 @@ class FabRole(Base):
     permissions = relationship(
         "FabPermissionView",
         secondary=_ab_permission_view_role,
-        backref="roles",
+        # Mirror the production model: FAB's backref is the singular
+        # ``role`` (plural fakes masked a real AttributeError in the DAO).
+        backref="role",
     )
 
 

@@ -73,7 +73,11 @@ class FakeRole(Base):
     permissions = relationship(
         "FakePermissionView",
         secondary=ab_permission_view_role,
-        backref="roles",
+        # Mirror the production model exactly: FAB uses the singular
+        # ``role`` backref, so ``PermissionView.roles`` must NOT exist
+        # (a plural backref here once masked an AttributeError in the
+        # DAO's has_permission_view/get_role_permissions joins).
+        backref="role",
     )
 
 
@@ -398,3 +402,82 @@ async def test_user_not_in_group_gets_no_group_perms(group_session):
     assert len(groups) == 0
     perms = await dao.get_group_permissions(999)
     assert len(perms) == 0
+
+
+# --- Regression: production FAB models (not fakes) ---------------------
+#
+# The fakes above once declared ``backref="roles"`` (plural) on
+# ``FakeRole.permissions`` while the production ``PermissionView`` only
+# has the FAB-faithful singular ``role`` backref — masking an
+# ``AttributeError`` in the DAO's ``join(PV.roles)``. These tests run
+# the hot-path queries against the *real* superset.models.security
+# models so any drift between DAO joins and the production mapping
+# fails here, not in production.
+
+
+@pytest.fixture
+async def prod_models_session():
+    from superset.models import security as sec_models
+    from superset.models.helpers import Base as ProdBase
+
+    tables = [
+        ProdBase.metadata.tables[name]
+        for name in (
+            "ab_user",
+            "ab_role",
+            "ab_permission",
+            "ab_view_menu",
+            "ab_permission_view",
+            "ab_user_role",
+            "ab_permission_view_role",
+            "ab_group",
+            "ab_user_group",
+            "ab_group_role",
+        )
+    ]
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as conn:
+        await conn.run_sync(ProdBase.metadata.create_all, tables=tables)
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        perm = sec_models.Permission(name="can_read")
+        view = sec_models.ViewMenu(name="Chart")
+        session.add_all([perm, view])
+        await session.flush()
+        pv = sec_models.PermissionView(
+            permission_id=perm.id, view_menu_id=view.id
+        )
+        session.add(pv)
+        await session.flush()
+        role = sec_models.Role(name="Alpha")
+        role.permissions.append(pv)
+        empty_role = sec_models.Role(name="Gamma")
+        session.add_all([role, empty_role])
+        await session.commit()
+        yield session, role.id, empty_role.id
+    await engine.dispose()
+
+
+async def test_has_permission_view_with_production_models(prod_models_session):
+    session, role_id, empty_role_id = prod_models_session
+    dao = AsyncSecurityDAO(session)  # default models = production models
+    assert await dao.has_permission_view("can_read", "Chart", role_ids=[role_id])
+    assert not await dao.has_permission_view(
+        "can_read", "Chart", role_ids=[empty_role_id]
+    )
+    assert not await dao.has_permission_view(
+        "can_write", "Chart", role_ids=[role_id]
+    )
+
+
+async def test_get_role_permissions_with_production_models(prod_models_session):
+    session, role_id, empty_role_id = prod_models_session
+    dao = AsyncSecurityDAO(session)
+    perms = await dao.get_role_permissions(role_id)
+    assert [(p.permission.name, p.view_menu.name) for p in perms] == [
+        ("can_read", "Chart")
+    ]
+    assert await dao.get_role_permissions(empty_role_id) == []

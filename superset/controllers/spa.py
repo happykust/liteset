@@ -890,39 +890,44 @@ async def _render_welcome_dashboard(
     if not welcome_dashboard_id:
         return None
 
-    # Load the dashboard (mirrors Dashboard.get() in original).
+    # Load the dashboard (mirrors Dashboard.get() in original) and run the
+    # access check while the instance is still ATTACHED to its session:
+    # ``raise_for_access`` pre-loads lazy relationships (owners/roles/slices)
+    # through the instance's own async session, which is impossible on a
+    # detached object — a closed-session check used to crash for every
+    # non-admin and get swallowed into a 404 below.
     async with session_factory() as _dash_session:
         _welcome_dash = await AsyncDashboardDAO(_dash_session).get_by_id_or_slug(
             str(welcome_dashboard_id)
         )
 
-    if _welcome_dash is None:
-        # Mirrors original: abort(404) for authenticated user when not found.
-        return Response(content=b"Not Found", status_code=404)
+        if _welcome_dash is None:
+            # Mirrors original: abort(404) for authenticated user when not found.
+            return Response(content=b"Not Found", status_code=404)
 
-    # Access check (mirrors dashboard.raise_for_access() + can_dashboard perm check).
-    try:
-        async with session_factory() as _sec_session:
+        # Access check (mirrors dashboard.raise_for_access() + can_dashboard
+        # perm check).
+        try:
             from superset.dependencies import provide_security_manager
 
-            _sec_mgr = await provide_security_manager(_sec_session, state)
+            _sec_mgr = await provide_security_manager(_dash_session, state)
 
             # View-level permission check: 1:1 with @has_access on Superset.dashboard
             if not await _sec_mgr.has_access("can_dashboard", "Superset", user):
                 return Response(content=b"Not Found", status_code=404)
 
             await _sec_mgr.raise_for_access(dashboard=_welcome_dash, user=user)
-    except SupersetSecurityException:
-        # Mirrors original: abort(404) for authenticated user on access denial
-        # (superset_old/views/core.py:809-812).
-        return Response(content=b"Not Found", status_code=404)
-    except Exception:
-        _log.getLogger(__name__).debug(
-            "Access check failed for welcome dashboard %s",
-            welcome_dashboard_id,
-            exc_info=True,
-        )
-        return Response(content=b"Not Found", status_code=404)
+        except SupersetSecurityException:
+            # Mirrors original: abort(404) for authenticated user on access denial
+            # (superset_old/views/core.py:809-812).
+            return Response(content=b"Not Found", status_code=404)
+        except Exception:
+            _log.getLogger(__name__).debug(
+                "Access check failed for welcome dashboard %s",
+                welcome_dashboard_id,
+                exc_info=True,
+            )
+            return Response(content=b"Not Found", status_code=404)
 
     # Render the SPA shell at /superset/welcome/ with the dashboard title.
     # 1:1 with self.dashboard() return: title=dashboard.dashboard_title,

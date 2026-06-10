@@ -48,6 +48,10 @@ class ImportChartsCommand(AsyncImportModelsCommand):
     datasource cross-referencing via UUIDs, and owner management.
     """
 
+    # 1:1 with upstream ``validate_metadata_type(metadata, dao.model_cls.__name__)``
+    # — the manifest's ``type`` must match the exported resource type (``Slice``).
+    _expected_type = "Slice"
+
     def __init__(
         self,
         contents: io.BytesIO,

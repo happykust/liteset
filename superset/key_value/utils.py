@@ -29,6 +29,7 @@ from uuid import UUID, uuid3
 
 import hashids
 
+from superset.i18n import gettext as _
 from superset.key_value.exceptions import KeyValueParseKeyError
 from superset.key_value.types import Key, KeyValueFilter, KeyValueResource
 from superset.utils.json import dumps, json_int_dttm_ser
@@ -96,7 +97,7 @@ def decode_permalink_id(key: str, salt: str) -> int:
     ids = obj.decode(key)
     if len(ids) == 1:
         return ids[0]
-    raise KeyValueParseKeyError("Invalid permalink key")
+    raise KeyValueParseKeyError(_("Invalid permalink key"))
 
 
 def get_uuid_namespace(seed: str) -> UUID:

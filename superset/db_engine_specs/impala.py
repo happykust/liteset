@@ -18,10 +18,11 @@
 """Apache Impala engine spec -- sync/Flask-compatible.
 
 Ported 1:1 from ``superset_old/db_engine_specs/impala.py`` with Flask
-imports removed.  Only overridden methods and attributes are included.
+imports replaced:
 
-Heavy Flask-dependent methods (``handle_cursor``, ``execute``) are
-intentionally omitted.
+* ``db.session`` -> ``sqlalchemy.orm.object_session(query)`` (the same
+  substitution the Hive spec uses);
+* ``app.config["DB_POLL_INTERVAL_SECONDS"]`` -> ``SupersetSettings``.
 """
 
 from __future__ import annotations
@@ -62,6 +63,10 @@ class ImpalaEngineSpec(BaseEngineSpec):
         TimeGrain.YEAR: "TRUNC({col}, 'YYYY')",
     }
 
+    # Impala only exposes the cancel-query id after execute() begins, so
+    # execute_with_cursor must fetch it post-execute (upstream impala.py:61).
+    has_query_id_before_execute = False
+
     @classmethod
     def epoch_to_dttm(cls) -> str:
         return "from_unixtime({col})"
@@ -92,6 +97,80 @@ class ImpalaEngineSpec(BaseEngineSpec):
     @classmethod
     def has_implicit_cancel(cls) -> bool:
         return False
+
+    @classmethod
+    def execute(
+        cls,
+        cursor: Any,
+        query: str,
+        database: Any,
+        **kwargs: Any,
+    ) -> None:
+        try:
+            cursor.execute_async(query)
+        except Exception as ex:
+            raise cls.get_dbapi_mapped_exception(ex) from ex
+
+    @classmethod
+    def handle_cursor(cls, cursor: Any, query: Query) -> None:
+        """Stop query and updates progress information"""
+        # pylint: disable=import-outside-toplevel
+        import time
+
+        from sqlalchemy.orm import object_session
+
+        from superset.config import SupersetSettings
+        from superset.constants import QUERY_EARLY_CANCEL_KEY
+
+        query_id = query.id
+        unfinished_states = (
+            "INITIALIZED_STATE",
+            "RUNNING_STATE",
+        )
+
+        session = object_session(query)
+        try:
+            status = cursor.status()
+            while status in unfinished_states:
+                if session is not None:
+                    session.refresh(query)
+                    query = session.query(type(query)).filter_by(id=query_id).one()
+                # if query cancelation was requested prior to the handle_cursor
+                # call, but the query was still executed (stop_query sets the
+                # early-cancel extra) — stop query
+                if query.extra.get(QUERY_EARLY_CANCEL_KEY):
+                    cursor.cancel_operation()
+                    cursor.close_operation()
+                    cursor.close()
+                    break
+
+                #  updates progress info by log
+                try:
+                    log = cursor.get_log() or ""
+                except Exception:  # pylint: disable=broad-except  # noqa: BLE001
+                    logger.warning("Call to GetLog() failed")
+                    log = ""
+
+                if log:
+                    match = QUERY_PROGRESS_REGEX.match(log)
+                    if match:
+                        progress = int(match.groupdict()["query_progress"])
+                        logger.debug(
+                            "Query %s: Progress total: %s",
+                            str(query_id),
+                            str(progress),
+                        )
+                        if progress > query.progress and session is not None:
+                            query.progress = progress
+                            session.commit()
+                sleep_interval = SupersetSettings().db_poll_interval_seconds.get(
+                    cls.engine, 5
+                )
+                time.sleep(sleep_interval)
+                status = cursor.status()
+        except Exception:  # pylint: disable=broad-except  # noqa: BLE001
+            logger.debug("Call to status() failed ")
+            return
 
     @classmethod
     def get_cancel_query_id(cls, cursor: Any, query: Query) -> str | None:

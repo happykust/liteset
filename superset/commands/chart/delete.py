@@ -26,6 +26,7 @@ from superset.commands.base import AsyncBaseCommand
 from superset.commands.chart.exceptions import ChartDeleteFailedReportsExistError
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.tags.core import delete_tagged_objects
+from superset.utils.feature_flags import feature_flag_manager
 
 if TYPE_CHECKING:
     from superset.db.daos.chart import AsyncChartDAO
@@ -70,8 +71,11 @@ class DeleteChartCommand(AsyncBaseCommand[None]):
     async def run(self) -> None:
         assert self._chart is not None
         chart_id = self._chart.id
-        # Remove implicit tags before deleting (async port of ChartUpdater.after_delete)
-        await delete_tagged_objects(self._dao.session, "chart", chart_id)
+        # Remove implicit tags before deleting — 1:1 with
+        # ``ChartUpdater.after_delete`` which fires only when the
+        # TAGGING_SYSTEM feature flag is enabled (see ``superset_old/app.py:158``).
+        if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+            await delete_tagged_objects(self._dao.session, "chart", chart_id)
         await self._dao.delete([self._chart])
         await self._dao.session.flush()
 
@@ -126,7 +130,8 @@ class BulkDeleteChartsCommand(AsyncBaseCommand[None]):
         # The async session may not have the same sync event listeners, so both
         # single-delete and bulk-delete must call ``delete_tagged_objects``
         # explicitly — 1:1 parity with the single-delete path above.
-        for chart in self._charts:
-            await delete_tagged_objects(self._dao.session, "chart", chart.id)
+        if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+            for chart in self._charts:
+                await delete_tagged_objects(self._dao.session, "chart", chart.id)
         await self._dao.delete(self._charts)
         await self._dao.session.flush()

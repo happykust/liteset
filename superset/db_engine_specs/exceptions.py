@@ -38,4 +38,7 @@ class SupersetDBAPIOperationalError(SupersetDBAPIError):
 
 
 class SupersetDBAPIProgrammingError(SupersetDBAPIError):
-    status = 400
+    # ``status_code`` (not ``status``): the base ``status`` is a read-only
+    # property aliasing ``status_code``; setting ``status`` would shadow it
+    # with a plain int while ``status_code`` stayed 500 — splitting the two.
+    status_code = 400
