@@ -24,7 +24,7 @@ from datetime import datetime
 from typing import Any
 from urllib import parse as urllib_parse
 
-from litestar import Controller, get, post
+from litestar import Controller, get, post, Request
 from litestar.datastructures import State
 from litestar.di import Provide
 from litestar.response import Response
@@ -122,12 +122,13 @@ class SqlLabController(Controller):
                         # original behaviour was identical (the
                         # to_json() called below also swallows attribute
                         # errors via Marshmallow).
+                        logger.debug("Failed to read db key %s", key, exc_info=True)
                         continue
             if hasattr(db_row, "backend"):
                 try:
                     db_dict["backend"] = db_row.backend
                 except Exception:  # noqa: BLE001
-                    pass
+                    logger.debug("Failed to read db backend", exc_info=True)
             databases[int(db_row.id)] = db_dict
 
         # These are unnecessary if sqllab backend persistence is disabled.
@@ -270,8 +271,6 @@ class SqlLabController(Controller):
         self,
         rison_params: dict[str, Any] | list[Any] | None,
         dao: QueryDAOProtocol,
-        current_user: UserProtocol,
-        security_manager: Any,
     ) -> Response[dict[str, Any]]:
         # ``provide_rison_query`` accepts both dict and list rison roots
         # (e.g. favorite_status uses ``!(1,2,3)``); ``/results/`` is
@@ -287,29 +286,43 @@ class SqlLabController(Controller):
         try:
             result = await cmd.execute()
         except SupersetErrorException as ex:
+            import dataclasses
+
             await event_logger.alog_with_context("sqllab.results")
+            # 1:1 with superset_old/views/error_handling.py:137-140:
+            # @app.errorhandler(SupersetErrorException) calls
+            # json_error_response([ex.error], status=ex.status) which does
+            # dataclasses.asdict(error) — returning the full SIP-40 error dict.
+            # The frontend sqlLab.js:261 destructures { error_type, message, extra }
+            # from each item; plain strings would yield undefined for all fields.
+            error_dict = dataclasses.asdict(ex.error)
+            # ``message`` may be a LazyString (i18n) — Litestar's msgspec
+            # encoder cannot serialize it (SerializationException → generic
+            # 500); the original went through json.dumps which str()ed it.
+            error_dict["message"] = str(error_dict.get("message") or "")
             return Response(
-                content={"errors": [ex.error.message]},
+                content={"errors": [error_dict]},
                 status_code=getattr(ex, "status", 500),
                 media_type="application/json",
             )
 
-        # Permission gate — mirroring the original which called
-        # ``query.raise_for_access()`` after a successful results-backend
-        # decode. Skip when no security manager / user is bound (eg
-        # tests with mock DAOs).
-        if security_manager is not None and current_user is not None:
-            try:
-                query = await dao.find_one_or_none(results_key=key)
-                if query is not None:
-                    await security_manager.raise_for_access(
-                        user=current_user, query=query
-                    )
-            except SupersetErrorException:
-                raise
-
         await event_logger.alog_with_context("sqllab.results")
-        return Response(content=result, status_code=200)
+        # 1:1 with the original ``get_results``
+        # (superset_old/sqllab/api.py:345-350): use pessimistic serialization
+        # to handle NaN values (converting to null) and edge-case datetime
+        # types that the default serializer does not handle.
+        from superset.utils import json as superset_json
+
+        payload_str = superset_json.dumps(
+            result,
+            default=superset_json.pessimistic_json_iso_dttm_ser,
+            ignore_nan=True,
+        )
+        return Response(
+            content=payload_str,
+            status_code=200,
+            media_type="application/json",
+        )
 
     @post(
         "/execute/",
@@ -323,8 +336,15 @@ class SqlLabController(Controller):
         current_user: UserProtocol,
         security_manager: Any,
         state: State,
+        request: Request[Any, Any, Any],
     ) -> Response[dict[str, Any]]:
         settings = state.settings
+
+        # 1:1 with the original ``execute_sql_query``
+        # (superset_old/sqllab/api.py:402-404): extract user-agent for audit logs.
+        log_params: dict[str, Any] = {
+            "user_agent": request.headers.get("user-agent"),
+        }
 
         template_params: dict[str, Any] = {}
         if data.templateParams:
@@ -360,18 +380,53 @@ class SqlLabController(Controller):
             template_params=template_params,
             security_manager=security_manager,
             current_user=current_user,
+            log_params=log_params,
         )
         result = await cmd.execute()
         await event_logger.alog_with_context("sqllab.execute", user_id=current_user.id)
 
-        # Mirror original ``execute_sql_query``: 202 when async-queued,
-        # 200 otherwise. ``ExecuteSQLCommand`` returns ``status="running"``
-        # for the Celery branch.
-        status_str = (result or {}).get("status")
-        is_pending_or_running = status_str in {
+        # Mirror original ``sqllab/api.py:409-412``:
+        #   response_status = 202 if status == QUERY_IS_RUNNING else 200
+        # 202 is ONLY for a freshly-dispatched Celery job (``_run_async`` path
+        # in the command, status="running").  Re-submitted queries that already
+        # existed (QUERY_ALREADY_CREATED == 1 in the original) must return 200
+        # even when their DB status is "running" or "pending".
+        result_dict = result or {}
+        # Pop the sentinel set by the idempotency path — must not appear in
+        # the response body.
+        query_already_created = bool(result_dict.pop("query_already_created", False))
+        query_obj = result_dict.get("query", {})
+        query_state = query_obj.get("state")
+        is_async_dispatch = not query_already_created and query_state in {
             "running",
+            "pending",
             QueryStatus.RUNNING,
             QueryStatus.PENDING,
         }
-        status = 202 if is_pending_or_running else 200
-        return Response(content=result, status_code=status)
+        status = 202 if is_async_dispatch else 200
+        # 1:1 with ``ExecutionContextConvertor.serialize_payload``
+        # (superset_old/sqllab/execution_context_convertor.py:51-58):
+        # HAS_RESULTS (sync results) → pessimistic ISO serialization for
+        # numpy.float64 / pandas.Timestamp / Decimal / NaN (→ null);
+        # QUERY_IS_RUNNING / QUERY_ALREADY_CREATED → ``{"query": ...}`` body
+        # with ``json_int_dttm_ser`` (epoch-ms datetimes).
+        from superset.utils import json as superset_json
+
+        has_results = not is_async_dispatch and not query_already_created
+        if has_results:
+            payload_str = superset_json.dumps(
+                result_dict,
+                default=superset_json.pessimistic_json_iso_dttm_ser,
+                ignore_nan=True,
+            )
+        else:
+            payload_str = superset_json.dumps(
+                {"query": query_obj},
+                default=superset_json.json_int_dttm_ser,
+                ignore_nan=True,
+            )
+        return Response(
+            content=payload_str,
+            status_code=status,
+            media_type="application/json",
+        )

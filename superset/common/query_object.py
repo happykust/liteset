@@ -18,14 +18,20 @@
 
 from __future__ import annotations
 
+import collections
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 import msgspec.structs
+from jinja2.exceptions import TemplateError
 
-from superset.exceptions import QueryObjectValidationError
+from superset.exceptions import (
+    QueryClauseValidationException,
+    QueryObjectValidationError,
+)
+from superset.i18n import gettext as _
 from superset.utils.feature_flags import feature_flag_manager
 from superset.utils.sql import sanitize_clause
 
@@ -94,7 +100,10 @@ class AsyncQueryObject:
     series_columns: list[str] = field(default_factory=list)
     series_limit: int = 0
     series_limit_metric: Any | None = None
-    is_timeseries: bool = False
+    # ``None`` = not supplied → auto-detect in ``__post_init__``; an explicit
+    # ``False`` from the caller must STAY False, exactly like the original
+    # ``_set_is_timeseries`` (superset_old/common/query_object.py:180-185).
+    is_timeseries: bool | None = None
     result_type: str | None = None
     applied_time_extras: dict[str, str] = field(default_factory=dict)
     apply_fetch_values_predicate: bool = False
@@ -123,17 +132,95 @@ class AsyncQueryObject:
                     normalized.append(m)
             self.metrics = normalized
 
-        # P1-10: is_timeseries auto-detection
-        if not self.is_timeseries:
-            if "__timestamp" in (self.columns or []):
-                self.is_timeseries = True
+        # Filter out None entries from post_processing.
+        # 1:1 with ``superset_old/common/query_object.py:_set_post_processing``
+        # (line 203-204): the original silently drops null entries so that
+        # ``None.get("operation")`` cannot 500 in exec_post_processing.
+        self.post_processing = [p for p in self.post_processing if p]
 
-        # Resolve time_range → from_dttm/to_dttm when not explicitly provided.
+        # Capture the caller-supplied is_timeseries value *before* auto-detection
+        # so that series_columns population uses the same semantics as the original
+        # ``_init_series_columns(series_columns, metrics, is_timeseries)`` call
+        # (superset_old/common/query_object.py:155,206-217): the original passes
+        # the caller-supplied is_timeseries (bool|None) directly; when None is
+        # passed, ``elif is_timeseries and metrics`` is False and series_columns
+        # stays [].  Using the auto-detected self.is_timeseries here would cause
+        # spurious series breakdowns when is_timeseries was implicitly detected
+        # rather than explicitly set.
+        _explicit_is_timeseries = self.is_timeseries
+
+        # is_timeseries: 1:1 with ``_set_is_timeseries``
+        # (superset_old/common/query_object.py:180-185) —
+        # ``is_timeseries if is_timeseries is not None else DTTM_ALIAS in
+        # columns``: auto-detection runs ONLY when the caller did not supply
+        # the flag; an explicit False is preserved.
+        if self.is_timeseries is None:
+            self.is_timeseries = "__timestamp" in (self.columns or [])
+
+        # Auto-populate series_columns from columns when unset for a time-series
+        # chart with metrics.
+        # 1:1 with ``superset_old/common/query_object.py:_init_series_columns``
+        # (lines 206-217): if series_columns is empty but is_timeseries=True and
+        # metrics is non-empty, use columns as the series key so that time-series
+        # charts have the correct series breakdown without requiring callers to
+        # explicitly set series_columns.
+        # NOTE: Use ``_explicit_is_timeseries`` (the caller-supplied value) not
+        # ``self.is_timeseries`` (which may have been set by auto-detection above)
+        # to preserve the original semantics — see comment above.
+        if not self.series_columns and _explicit_is_timeseries and self.metrics:
+            self.series_columns = list(self.columns)
+
+        # Extract the effective time range for dttm resolution when not supplied
+        # at the top level.
+        # 1:1 with ``superset_old/common/query_object_factory.py:_process_time_range``
+        # (lines 127-152): uses a LOCAL variable only — self.time_range stays None
+        # when the caller passed None.  The original factory passes time_range=None
+        # to QueryObject.__init__ (line 86: ``time_range=time_range``, not
+        # ``processed_time_range``) so that _apply_filters() sees a falsy
+        # time_range and leaves every TEMPORAL_RANGE filter's val intact.
+        # Storing the extracted value in self.time_range would cause _apply_filters()
+        # to overwrite all TEMPORAL_RANGE filter vals (including unrelated ones) with
+        # the chosen val — silently wrong for charts with multiple temporal filters.
+        _extracted_time_range: str | None = None
+        if self.time_range is None:
+            from superset.constants import NO_TIME_RANGE
+
+            # 1:1 with _process_time_range (superset_old/common/
+            # query_object_factory.py:128-152): default NO_TIME_RANGE, and the
+            # matched filter's RAW val — a None/"" val is passed through
+            # as-is (get_since_until(None) then resolves to (None, ~today)),
+            # NOT coerced to NO_TIME_RANGE (which would yield (None, None)).
+            _extracted_time_range = NO_TIME_RANGE
+            temporal_flts = [
+                flt for flt in self.filters if flt.get("op") == "TEMPORAL_RANGE"
+            ]
+            if temporal_flts:
+                from superset.utils.column import get_x_axis_label
+
+                x_axis_label = get_x_axis_label(self.columns)
+                match_flt = [
+                    flt for flt in temporal_flts if flt.get("col") == x_axis_label
+                ]
+                if match_flt:
+                    _extracted_time_range = match_flt[0].get("val")
+                else:
+                    _extracted_time_range = temporal_flts[0].get("val")
+            # NOTE: self.time_range remains None so _apply_filters() is a no-op,
+            # preserving every filter's original val (matches original behavior).
+
+        # Resolve from_dttm/to_dttm when not explicitly provided.
         # Mirrors original superset_old/common/query_object_factory.py:74-81,
-        # which calls get_since_until_from_time_range() for every query.
-        # Without this, SQL is emitted without the WHERE time filter and
-        # charts (e.g. Treemap) aggregate across all years → wrong data.
-        if self.time_range and (self.from_dttm is None or self.to_dttm is None):
+        # which calls get_since_until_from_time_range(processed_time_range, …)
+        # and stores the result as from_dttm/to_dttm on the QueryObject.
+        # Uses _effective_time_range so that both explicit-time_range and
+        # filter-only cases resolve dttm correctly.
+        # ``is not None`` (not truthiness): a None/"" extracted val must reach
+        # get_since_until_from_time_range like the original, which calls it
+        # unconditionally (superset_old/common/query_object_factory.py:74-81).
+        _effective_time_range = (
+            self.time_range if self.time_range is not None else _extracted_time_range
+        )
+        if self.from_dttm is None or self.to_dttm is None:
             try:
                 # 1:1 with upstream factory: use
                 # ``get_since_until_from_time_range(time_range, time_shift, extras)``
@@ -144,7 +231,7 @@ class AsyncQueryObject:
                 from superset.utils.date import get_since_until_from_time_range
 
                 parsed_from, parsed_to = get_since_until_from_time_range(
-                    self.time_range,
+                    _effective_time_range,
                     self.time_shift,
                     self.extras,
                 )
@@ -209,9 +296,7 @@ class AsyncQueryObject:
             return
 
         temporal_columns = {
-            column["column_name"]
-            if isinstance(column, dict)
-            else column.column_name
+            column["column_name"] if isinstance(column, dict) else column.column_name
             for column in getattr(datasource, "columns", []) or []
             if (column["is_dttm"] if isinstance(column, dict) else column.is_dttm)
         }
@@ -251,9 +336,7 @@ class AsyncQueryObject:
         # If no temporal x-axis, pick the default temporal filter to remove.
         if not filter_to_remove:
             temporal_filters = [
-                flt["col"]
-                for flt in self.filters
-                if flt.get("op") == "TEMPORAL_RANGE"
+                flt["col"] for flt in self.filters if flt.get("op") == "TEMPORAL_RANGE"
             ]
             if len(temporal_filters) > 0:
                 if granularity in temporal_filters:
@@ -358,118 +441,149 @@ class AsyncQueryObject:
     # Validation
     # ------------------------------------------------------------------
 
-    def validate(self) -> None:
+    def validate(self, datasource: Any | None = None) -> None:
         """Run all sub-validators; raise *QueryObjectValidationError* on failure.
 
         Order matches Superset's QueryObject.validate().
+
+        Args:
+            datasource: The resolved ORM datasource model (e.g.
+                ``SqlaTable``).  When provided, ``_sanitize_filters`` uses its
+                ``database`` to render Jinja templates in ``extras.where`` /
+                ``extras.having`` and to select the correct SQL dialect for
+                clause sanitization -- matching the original
+                ``superset_old/common/query_object.py:_sanitize_filters``.
         """
         self._validate_there_are_no_missing_series()
-        self._validate_no_have_duplicate_labels()
+        self._validate_no_have_duplicate_labels(datasource=datasource)
         self._validate_time_offsets()
-        self._sanitize_filters()
+        self._sanitize_filters(datasource=datasource)
 
     def _sanitize_filters(self, datasource: Any | None = None) -> None:
         """Sanitize ``extras.where`` and ``extras.having``.
 
-        Every clause is validated through :func:`sanitize_clause` (sqlglot).
-        When a datasource with a database is available, the clause is first
-        rendered through the **sandboxed** Jinja processor
-        (``superset.jinja_context`` — never a bare ``jinja2.Environment``),
-        matching ``superset_old/common/query_object.py::_sanitize_filters``.
+        1:1 with ``superset_old/common/query_object.py::_sanitize_filters``:
+        when a datasource is available the clause is first rendered through
+        the sandboxed Jinja processor, then sanitized with the correct
+        engine dialect via :func:`sanitize_clause`.
         """
-        engine = "postgresql"
-        template_processor = None
-        database = getattr(datasource, "database", None) if datasource else None
-        if database is not None:
-            engine = getattr(database, "backend", None) or "postgresql"
-            # Lazy import like upstream: jinja_context pulls in models/security.
-            from superset.jinja_context import get_template_processor
+        # Lazy import like upstream: jinja_context pulls in models/security.
+        from superset.jinja_context import get_template_processor
 
-            template_processor = get_template_processor(database=database)
-        for clause_key in ("where", "having"):
-            clause = self.extras.get(clause_key, "")
-            if clause:
+        for param in ("where", "having"):
+            clause = self.extras.get(param)
+            if clause and datasource:
                 try:
-                    if template_processor is not None:
-                        clause = template_processor.process_template(
-                            clause, force=True
-                        )
-                    self.extras[clause_key] = sanitize_clause(clause, engine)
-                except QueryObjectValidationError:
-                    raise
-                except Exception as ex:
-                    raise QueryObjectValidationError(
-                        f"Unsafe SQL in extras.{clause_key}: {ex}"
-                    ) from ex
+                    database = datasource.database
+                    processor = get_template_processor(database=database)
+                    try:
+                        clause = processor.process_template(clause, force=True)
+                    except TemplateError as ex:
+                        raise QueryObjectValidationError(
+                            _(
+                                "Error in jinja expression in WHERE clause: %(msg)s",
+                                msg=ex.message,
+                            )
+                        ) from ex
+                    engine = database.db_engine_spec.engine
+                    sanitized_clause = sanitize_clause(clause, engine)
+                    if sanitized_clause != clause:
+                        self.extras[param] = sanitized_clause
+                except QueryClauseValidationException as ex:
+                    raise QueryObjectValidationError(ex.message) from ex
 
-    def _validate_no_have_duplicate_labels(self) -> None:
-        """Check that column / metric labels are unique."""
-        labels: list[str] = []
-        for col in self.columns:
-            if isinstance(col, dict):
-                label = (
-                    col.get("label")
-                    or col.get("sqlExpression")
-                    or col.get("sql_expression")
-                    or str(col)
+    def _validate_no_have_duplicate_labels(self, datasource: Any | None = None) -> None:
+        """Check that column / metric labels are unique.
+
+        1:1 with
+        ``superset_old/common/query_object.py:_validate_no_have_duplicate_labels``
+        (lines 294-304): uses ``get_metric_names`` (which applies the datasource
+        ``verbose_map`` to produce display labels) and ``get_column_names``, then
+        reports ALL duplicate labels in a single i18n error message.
+        """
+        from superset.utils.column import get_column_names, get_metric_names
+
+        # Retrieve datasource verbose_map if available — mirrors
+        # ``QueryObject.metric_names`` property which passes it to
+        # ``get_metric_names``.
+        verbose_map: dict[str, Any] | None = None
+        if datasource and hasattr(datasource, "verbose_map"):
+            verbose_map = datasource.verbose_map
+
+        all_labels = get_metric_names(
+            self.metrics or [], verbose_map
+        ) + get_column_names(self.columns)
+        if len(set(all_labels)) < len(all_labels):
+            dup_labels = [
+                item
+                for item, count in collections.Counter(all_labels).items()
+                if count > 1
+            ]
+            raise QueryObjectValidationError(
+                _(
+                    "Duplicate column/metric labels: %(labels)s. Please make "
+                    "sure all columns and metrics have a unique label.",
+                    labels=", ".join(f'"{x}"' for x in dup_labels),
                 )
-            else:
-                label = str(col)
-            labels.append(label)
-        for metric in self.metrics or []:
-            if isinstance(metric, dict):
-                label = metric.get("label") or str(metric)
-            else:
-                label = str(metric)
-            labels.append(label)
+            )
 
-        seen: set[str] = set()
-        for label in labels:
-            if label in seen:
-                raise QueryObjectValidationError(f"Duplicate label found: {label}")
-            seen.add(label)
+    @staticmethod
+    def _is_valid_date_range(date_range: str) -> bool:
+        """Return True if *date_range* is a valid YYYY-MM-DD:YYYY-MM-DD offset.
+
+        Mirrors ``superset_old/common/query_object.py:_is_valid_date_range``
+        (lines 323-335): split on ':', strip both sides, validate with strptime.
+        No surrounding-space requirement — '2021-01-01:2021-12-31' is valid.
+        """
+        try:
+            start_date, end_date = date_range.split(":")
+            datetime.strptime(start_date.strip(), "%Y-%m-%d")
+            datetime.strptime(end_date.strip(), "%Y-%m-%d")
+            return True
+        except ValueError:
+            return False
 
     def _validate_time_offsets(self) -> None:
-        """Validate that all *time_offsets* items are strings.
+        """Validate date-range style offsets against the feature flag.
 
-        Also checks the DATE_RANGE_TIMESHIFTS_ENABLED feature flag for
-        date-range style offsets.
+        Mirrors ``superset_old/common/query_object.py:_validate_time_offsets``
+        (lines 306-321): uses ``_is_valid_date_range`` (strptime-based) instead
+        of a simple substring check, and restores the original error message.
+        NO isinstance(str) pre-check — the original lets a non-string offset
+        crash with AttributeError inside ``.split(":")`` (→ 500), and adding a
+        400 here would change the observable status for that input.
         """
         for offset in self.time_offsets:
-            if not isinstance(offset, str):
-                raise QueryObjectValidationError(
-                    f"time_offsets must contain strings, got {type(offset).__name__}"
-                )
-            # A date range offset contains " : " as separator
-            # (e.g. "2021-01-01 : 2021-12-31")
-            if " : " in offset:
+            if self._is_valid_date_range(offset):
                 if not feature_flag_manager.is_feature_enabled(
                     "DATE_RANGE_TIMESHIFTS_ENABLED"
                 ):
                     raise QueryObjectValidationError(
-                        "Date range time shifts are not enabled"
+                        "Date range timeshifts are not enabled. "
+                        "Please contact your administrator to enable the "
+                        "DATE_RANGE_TIMESHIFTS_ENABLED feature flag."
                     )
 
     def _validate_there_are_no_missing_series(self) -> None:
-        """Check that every *series_columns* entry exists in *columns*."""
-        if not self.series_columns:
-            return
-        col_labels: set[str] = set()
-        for col in self.columns:
-            if isinstance(col, dict):
-                col_labels.add(
-                    col.get("label")
-                    or col.get("sqlExpression")
-                    or col.get("sql_expression")
-                    or str(col)
+        """Check that every *series_columns* entry exists in *columns*.
+
+        1:1 with ``superset_old/common/query_object.py:362-371``: uses list
+        membership (``col not in self.columns``) so that adhoc-column dicts in
+        series_columns are compared via ``__eq__`` rather than ``__hash__``.
+        Building a ``set[str]`` of labels and checking dict membership in that
+        set raises ``TypeError: unhashable type: 'dict'`` whenever
+        series_columns was auto-populated from self.columns (which can contain
+        adhoc column dicts), producing a spurious HTTP 500.
+        """
+        missing_series = [col for col in self.series_columns if col not in self.columns]
+        if missing_series:
+            raise QueryObjectValidationError(
+                _(
+                    "The following entries in `series_columns` are missing "
+                    "in `columns`: %(columns)s. ",
+                    columns=", ".join(f'"{x}"' for x in missing_series),
                 )
-            else:
-                col_labels.add(str(col))
-        for sc in self.series_columns:
-            if sc not in col_labels:
-                raise QueryObjectValidationError(
-                    f"series_columns entry '{sc}' not found in columns"
-                )
+            )
 
     @classmethod
     def from_request(cls, q: Any, datasource_ref: dict[str, Any]) -> AsyncQueryObject:

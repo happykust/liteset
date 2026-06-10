@@ -192,11 +192,7 @@ class AlertCommand:
             return None
         from superset.models.security import User
 
-        return (
-            self._session.query(User)
-            .filter(User.username == username)
-            .one_or_none()
-        )
+        return self._session.query(User).filter(User.username == username).one_or_none()
 
     def _execute_query(self) -> pd.DataFrame:
         """Execute the actual alert SQL query template.

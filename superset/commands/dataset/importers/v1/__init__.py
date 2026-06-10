@@ -30,6 +30,7 @@ from urllib import request as url_request
 import pandas as pd
 from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, String, Text
 
+from superset.commands.dataset.exceptions import DatasetForbiddenDataURI
 from superset.exceptions import CommandInvalidError
 from superset.importexport.import_base import AsyncImportModelsCommand
 
@@ -627,10 +628,7 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
 
         1:1 port of ``superset_old/commands/dataset/importers/v1/utils.py``
         ``validate_data_uri``: any allow-list regex matching the URI passes;
-        otherwise the original raised ``DatasetForbiddenDataURI``.  That
-        exception class isn't part of the async dataset exceptions module
-        yet, so we raise :class:`CommandInvalidError` with the original
-        message (HTTP 422) — the SSRF protection is what matters here.
+        otherwise the original raised ``DatasetForbiddenDataURI`` (HTTP 500).
         """
         try:
             from superset.config import SupersetSettings
@@ -651,7 +649,7 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                     "Invalid regular expression on DATASET_IMPORT_ALLOWED_DATA_URLS"
                 )
                 raise
-        raise CommandInvalidError("Data URI is not allowed.")
+        raise DatasetForbiddenDataURI()
 
     @staticmethod
     def _to_sync_uri(raw_uri: str) -> str:

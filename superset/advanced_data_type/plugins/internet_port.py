@@ -64,6 +64,7 @@ port_conversion_dict: dict[str, list[int]] = {
     "pdap": [344],
 }
 
+
 def port_translation_func(
     req: AdvancedDataTypeRequest,
 ) -> AdvancedDataTypeResponse:
@@ -99,11 +100,15 @@ def port_translation_func(
                 f"'{string_value}' does not appear to be a port name or number"
             )
             break
-    if resp["values"]:
-        resp["display_value"] = ", ".join(
-            ", ".join(str(v) for v in entry) if isinstance(entry, list) else str(entry)
-            for entry in resp["values"]
-        )
+        else:
+            resp["display_value"] = ", ".join(
+                map(  # noqa: C417
+                    lambda x: (
+                        f"{x['start']} - {x['end']}" if isinstance(x, dict) else str(x)
+                    ),
+                    resp["values"],
+                )
+            )
     return resp
 
 

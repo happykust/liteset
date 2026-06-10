@@ -22,6 +22,8 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+from celery.schedules import crontab
+from pandas._libs.parsers import STR_NA_VALUES
 from pydantic import field_validator, model_validator, SecretStr
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
@@ -30,6 +32,8 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from superset.advanced_data_type.plugins.internet_address import internet_address
+from superset.advanced_data_type.plugins.internet_port import internet_port
 from superset.tasks.types import ExecutorType
 
 # Minimum 16 characters for secret key (validated via field_validator below).
@@ -351,6 +355,10 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     # ── Celery ──
     "CELERY_BEAT_SCHEDULER_EXPIRES": "celery_beat_scheduler_expires",
     "CELERY_CONFIG": "celery_config",
+    # 1:1 with superset_old/tasks/celery_app.py:66 — when True, commit the
+    # scoped sync session in task_postrun.
+    "SQLALCHEMY_COMMIT_ON_TEARDOWN": "sqlalchemy_commit_on_teardown",
+    "CELERY_ALWAYS_EAGER": "celery_always_eager",
     # ── HTTP headers ──
     "DEFAULT_HTTP_HEADERS": "default_http_headers",
     "OVERRIDE_HTTP_HEADERS": "override_http_headers",
@@ -385,6 +393,8 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "FAB_ADD_SECURITY_PERMISSION_VIEWS_VIEW": "fab_add_security_permission_views_view",
     "FAB_PASSWORD_COMPLEXITY_ENABLED": "fab_password_complexity_enabled",
     "FAB_PASSWORD_COMPLEXITY_VALIDATOR": "fab_password_complexity_validator",
+    "FAB_PASSWORD_HASH_METHOD": "fab_password_hash_method",
+    "FAB_PASSWORD_HASH_SALT_LENGTH": "fab_password_hash_salt_length",
     # ── Troubleshooting / Permissions ──
     "TROUBLESHOOTING_LINK": "troubleshooting_link",
     "PERMISSION_INSTRUCTIONS_LINK": "permission_instructions_link",
@@ -629,26 +639,40 @@ class SupersetConfigSettingsSource(PydanticBaseSettingsSource):
         self._values: dict[str, Any] = self._load()
 
     @staticmethod
+    def _load_module_from_path(path: str) -> tuple[Any, str] | None:
+        """Load a config module from an explicit file path.
+
+        Returns ``(module, cache_key)`` on success, or ``None`` if the path
+        does not exist or cannot be loaded as a module spec.  Raises
+        ``ImportError`` if the module exists but its execution fails.
+        """
+        if not Path(path).exists():
+            return None
+        spec = importlib.util.spec_from_file_location("superset_config", path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:
+            raise ImportError(
+                f"Failed to load superset_config.py from {path}: {exc}"
+            ) from exc
+        return module, path
+
+    @staticmethod
     def _load() -> dict[str, Any]:
         path = os.environ.get("SUPERSET_CONFIG_PATH", "")
         if path:
             # 1) Explicit file path (useful when the app runs via pex and the
             #    config module is not on the PYTHONPATH).
-            if not Path(path).exists():
-                return {}
             cache_key = path
             if cache_key in _superset_config_cache:
                 return _superset_config_cache[cache_key]
-            spec = importlib.util.spec_from_file_location("superset_config", path)
-            if spec is None or spec.loader is None:
+            result = SupersetConfigSettingsSource._load_module_from_path(path)
+            if result is None:
                 return {}
-            module = importlib.util.module_from_spec(spec)
-            try:
-                spec.loader.exec_module(module)
-            except Exception as exc:
-                raise ImportError(
-                    f"Failed to load superset_config.py from {path}: {exc}"
-                ) from exc
+            module, cache_key = result
         elif importlib.util.find_spec("superset_config") is not None:
             # 2) ``superset_config`` importable on the PYTHONPATH.  This is the
             #    default mechanism for existing Superset installations (docker
@@ -659,7 +683,7 @@ class SupersetConfigSettingsSource(PydanticBaseSettingsSource):
             if cache_key in _superset_config_cache:
                 return _superset_config_cache[cache_key]
             try:
-                import superset_config as module  # type: ignore[import-not-found]
+                import superset_config as module
             except Exception as exc:
                 raise ImportError(
                     f"Found but failed to import local superset_config: {exc}"
@@ -718,6 +742,43 @@ class LegacyEnvSettingsSource(PydanticBaseSettingsSource):
         return self._values
 
 
+# ---------------------------------------------------------------------------
+# Default Celery configuration — mirrors superset_old/config.py ``CeleryConfig``.
+# Users may override by setting CELERY_CONFIG in superset_config.py.
+# ---------------------------------------------------------------------------
+_CELERY_BEAT_SCHEDULER_EXPIRES_SEC = 604800  # timedelta(weeks=1).total_seconds()
+
+
+class CeleryConfig:  # pylint: disable=too-few-public-methods
+    broker_url = "sqla+sqlite:///celerydb.sqlite"
+    imports = (
+        "superset.tasks.sql_lab",
+        "superset.tasks.scheduler",
+        "superset.tasks.thumbnails",
+        "superset.tasks.cache",
+        "superset.tasks.slack",
+    )
+    result_backend = "db+sqlite:///celery_results.sqlite"
+    worker_prefetch_multiplier = 1
+    task_acks_late = False
+    task_annotations = {
+        "sql_lab.get_sql_results": {
+            "rate_limit": "100/s",
+        },
+    }
+    beat_schedule = {
+        "reports.scheduler": {
+            "task": "reports.scheduler",
+            "schedule": crontab(minute="*", hour="*"),
+            "options": {"expires": _CELERY_BEAT_SCHEDULER_EXPIRES_SEC},
+        },
+        "reports.prune_log": {
+            "task": "reports.prune_log",
+            "schedule": crontab(minute=0, hour=0),
+        },
+    }
+
+
 class SupersetSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="LITESET_",
@@ -727,7 +788,13 @@ class SupersetSettings(BaseSettings):
 
     secret_key: SecretKeyStr
     sqlalchemy_database_uri: str
-    sqlalchemy_examples_uri: str = ""
+    # Default mirrors superset_old/config.py:1920-1922 — an unconfigured
+    # install gets a dedicated sqlite examples DB, NOT the metadata DB.
+    sqlalchemy_examples_uri: str = (
+        "sqlite:///"
+        + os.path.join(DATA_DIR, "examples.db")
+        + "?check_same_thread=false"
+    )
     host: str = "0.0.0.0"  # noqa: S104
     port: int = 8088
     debug: bool = False
@@ -739,8 +806,8 @@ class SupersetSettings(BaseSettings):
     # Query processing (used by AsyncQueryContextProcessor)
     row_limit: int = 50000
     samples_row_limit: int = 1000
-    cache_default_timeout: int = 300
-    csv_export: dict[str, Any] = {}
+    cache_default_timeout: int = 86400  # int(timedelta(days=1).total_seconds())
+    csv_export: dict[str, Any] = {"encoding": "utf-8-sig"}
     excel_export: dict[str, Any] = {}
     data_cache_config: dict[str, Any] = {}
     cache_config: dict[str, Any] = {}
@@ -772,7 +839,9 @@ class SupersetSettings(BaseSettings):
     # Auth role names
     auth_role_public: str = "Public"
     auth_role_admin: str = "Admin"
-    guest_role_name: str = "Public"  # matches Apache Superset 6.0.0 default; see audit 04-security-auth.md
+    guest_role_name: str = (
+        "Public"  # matches Apache Superset 6.0.0 default; see audit 04-security-auth.md
+    )
 
     # Security headers
     content_security_policy: str = (
@@ -798,9 +867,11 @@ class SupersetSettings(BaseSettings):
 
     # Embedded dashboards (guest tokens)
     embedded_superset: bool = False
-    guest_token_jwt_secret: str = ""
+    guest_token_jwt_secret: str = "test-guest-secret-change-me"  # noqa: S105
     guest_token_jwt_algo: str = "HS256"  # noqa: S105
-    guest_token_jwt_exp_seconds: int = 300  # matches Apache Superset 6.0.0 default; see audit 04-security-auth.md
+    guest_token_jwt_exp_seconds: int = (
+        300  # matches Apache Superset 6.0.0 default; see audit 04-security-auth.md
+    )
     guest_token_header_name: str = "X-GuestToken"  # noqa: S105
     guest_token_validator_hook: Any | None = None
 
@@ -957,6 +1028,10 @@ class SupersetSettings(BaseSettings):
         "zip",
     }
 
+    # ── Password Hashing ──
+    fab_password_hash_method: str = "scrypt"  # noqa: S105
+    fab_password_hash_salt_length: int = 16
+
     # ── HTML ──
     html_sanitization: bool = True
     html_sanitization_schema_extensions: dict[str, Any] = {}
@@ -1020,7 +1095,10 @@ class SupersetSettings(BaseSettings):
     slack_api_token: Any | None = None  # Can be str or Callable
 
     # ── Infrastructure ──
-    advanced_data_types: dict[str, Any] = {}
+    advanced_data_types: dict[str, Any] = {
+        "internet_address": internet_address,
+        "port": internet_port,
+    }
     max_ws_per_user: int = 5
 
     # ── Alert/Report notification dry run ──
@@ -1206,7 +1284,14 @@ class SupersetSettings(BaseSettings):
 
     # ── Celery ──
     celery_beat_scheduler_expires: int = 604800  # 1 week in seconds
-    celery_config: Any | None = None  # CeleryConfig class or None
+    celery_config: Any | None = CeleryConfig  # CeleryConfig class or None
+    # When True, commit the scoped sync session in task_postrun (mirrors
+    # original SQLALCHEMY_COMMIT_ON_TEARDOWN Flask config key).
+    sqlalchemy_commit_on_teardown: bool = False
+    # When True, skip session.remove() in task_postrun so the session stays
+    # alive after task completion (useful for Celery eager-mode test patterns).
+    # Mirrors original CELERY_ALWAYS_EAGER Flask config key.
+    celery_always_eager: bool = False
 
     # ── HTTP headers ──
     default_http_headers: dict[str, Any] = {}
@@ -1226,7 +1311,7 @@ class SupersetSettings(BaseSettings):
     csv_to_hive_upload_directory_func: Any | None = None  # Callable or None
     uploaded_csv_hive_namespace: str | None = None
     allowed_user_csv_schema_func: Any | None = None  # Callable or None
-    csv_default_na_names: list[str] = []
+    csv_default_na_names: list[str] = list(STR_NA_VALUES)
 
     # ── Jinja / Templates ──
     jinja_context_addons: dict[str, Any] = {}  # Callable values
@@ -1615,6 +1700,26 @@ class SupersetSettings(BaseSettings):
     @classmethod
     def coerce_session_max_age(cls, v: Any) -> int:
         """Accept timedelta (original Superset format) or int (seconds)."""
+        if hasattr(v, "total_seconds"):
+            return int(v.total_seconds())
+        return int(v)
+
+    @field_validator(
+        "celery_beat_scheduler_expires",
+        "test_database_connection_timeout",
+        "database_oauth2_timeout",
+        mode="before",
+    )
+    @classmethod
+    def coerce_timedelta_to_int(cls, v: Any) -> int:
+        """Accept timedelta (original Superset format) or int (seconds).
+
+        Upstream config.py defaults these to timedelta objects
+        (e.g. ``timedelta(weeks=1)``, ``timedelta(seconds=30)``).
+        Liteset stores them as ``int`` (total seconds).  This validator
+        ensures that user superset_config.py files using the upstream
+        timedelta type don't fail pydantic validation.
+        """
         if hasattr(v, "total_seconds"):
             return int(v.total_seconds())
         return int(v)

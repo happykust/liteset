@@ -30,10 +30,15 @@ Mirrors ``superset_old.row_level_security.api.RLSRestApi`` 1:1:
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any
 
+import msgspec
 from litestar import Controller, delete, get, post, put
 from litestar.di import Provide
+from litestar.response import Response
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import selectinload
 
 from superset.commands.security.create import CreateRLSRuleCommand
@@ -46,13 +51,20 @@ from superset.controllers.base import (
     get_related_payload,
 )
 from superset.events import event_logger
-from superset.exceptions import ObjectNotFoundError
+from superset.exceptions import (
+    DatasourceNotFoundValidationError,
+    ObjectNotFoundError,
+    RLSRuleNotFoundError,
+    RolesNotFoundValidationError,
+)
 from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_rls_dao
 from superset.schemas.rls import RLSPostSchema, RLSPutSchema
-from superset.typing import CRUDDAOProtocol
+from superset.typing import CRUDDAOProtocol, SecurityManagerProtocol, UserProtocol
 from superset.utils import filter_unset
+
+logger = logging.getLogger(__name__)
 
 
 def _msgspec_to_dict(obj: Any) -> dict[str, Any]:
@@ -273,7 +285,7 @@ class RLSController(Controller):
         self,
         dao: CRUDDAOProtocol,
         data: RLSPostSchema,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | Response[Any]:
         """Create a new Row Level Security filter.
 
         Body is validated against :class:`RLSPostSchema`. Returns
@@ -281,10 +293,41 @@ class RLSController(Controller):
         original Superset which returns the validated request payload
         (not the SQLAlchemy instance) under ``result``. See
         ``superset_old/row_level_security/api.py:202``.
+
+        Note: ``filter_unset`` strips optional fields that were absent
+        from the request body (``description``, ``group_key`` default to
+        ``msgspec.UNSET``), mirroring Marshmallow 3 ``Schema.load()``
+        which omits absent optional fields from the returned dict.
         """
-        payload = _msgspec_to_dict(data)
+        payload = filter_unset(_msgspec_to_dict(data))
         cmd = CreateRLSRuleCommand(dao=dao, data=payload)
-        item = await cmd.execute()
+        try:
+            item = await cmd.execute()
+        except RolesNotFoundValidationError as ex:
+            logger.error(
+                "Role not found while creating RLS rule %s: %s",
+                self.__class__.__name__,
+                str(ex),
+                exc_info=True,
+            )
+            return Response(content={"message": str(ex)}, status_code=422)
+        except DatasourceNotFoundValidationError as ex:
+            logger.error(
+                "Table not found while creating RLS rule %s: %s",
+                self.__class__.__name__,
+                str(ex),
+                exc_info=True,
+            )
+            return Response(content={"message": str(ex)}, status_code=422)
+        except SQLAlchemyError as ex:
+            detail = re.sub(r"^<class '[^']+'>:\s*", "", str(ex))
+            logger.error(
+                "Error creating RLS rule %s: %s",
+                self.__class__.__name__,
+                detail,
+                exc_info=True,
+            )
+            return Response(content={"message": detail}, status_code=422)
         item_id = getattr(item, "id", None)
         await event_logger.alog_with_context(
             "rls.create",
@@ -305,7 +348,7 @@ class RLSController(Controller):
         dao: CRUDDAOProtocol,
         pk: int,
         data: RLSPutSchema,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | Response[Any]:
         """Update an existing Row Level Security filter.
 
         All fields are optional (partial update); only the keys
@@ -314,9 +357,40 @@ class RLSController(Controller):
         returns the validated request payload (not the SQLAlchemy
         instance) under ``result``.
         """
-        payload = filter_unset(_msgspec_to_dict(data))
+        try:
+            payload = filter_unset(_msgspec_to_dict(data))
+        except msgspec.ValidationError as ex:
+            return Response(content={"message": str(ex)}, status_code=400)
         cmd = UpdateRLSRuleCommand(dao=dao, model_id=pk, data=payload)
-        await cmd.execute()
+        try:
+            await cmd.execute()
+        except RolesNotFoundValidationError as ex:
+            logger.error(
+                "Role not found while updating RLS rule %s: %s",
+                self.__class__.__name__,
+                str(ex),
+                exc_info=True,
+            )
+            return Response(content={"message": str(ex)}, status_code=422)
+        except DatasourceNotFoundValidationError as ex:
+            logger.error(
+                "Table not found while updating RLS rule %s: %s",
+                self.__class__.__name__,
+                str(ex),
+                exc_info=True,
+            )
+            return Response(content={"message": str(ex)}, status_code=422)
+        except RLSRuleNotFoundError:
+            return Response(content={"message": "Not found"}, status_code=404)
+        except SQLAlchemyError as ex:
+            detail = re.sub(r"^<class '[^']+'>:\s*", "", str(ex))
+            logger.error(
+                "Error updating RLS rule %s: %s",
+                self.__class__.__name__,
+                detail,
+                exc_info=True,
+            )
+            return Response(content={"message": detail}, status_code=422)
         await event_logger.alog_with_context("rls.update", object_ref=str(pk))
         return {"id": pk, "result": payload}
 
@@ -356,7 +430,12 @@ class RLSController(Controller):
         "/_info",
         guards=[require_permission("can_read", "Row Level Security")],
     )
-    async def info(self, dao: CRUDDAOProtocol) -> dict[str, Any]:
+    async def info(
+        self,
+        dao: CRUDDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
         """Get metadata information about this API resource.
 
         Returns the FAB-style ``permissions``, ``add_columns``,
@@ -369,6 +448,9 @@ class RLSController(Controller):
             dao=dao,
             model_name="RowLevelSecurityFilter",
             permissions=["can_read", "can_write"],
+            security_manager=security_manager,
+            current_user=current_user,
+            class_permission_name="Row Level Security",
         )
 
     @get(

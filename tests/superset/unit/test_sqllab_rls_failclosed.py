@@ -35,7 +35,7 @@ import pytest
 from superset.tasks import sql_lab as sql_lab_task
 
 
-class _BoomRLS(Exception):
+class _BoomRLS(Exception):  # noqa: N818
     """Sentinel raised by the mocked ``apply_rls``."""
 
 
@@ -67,8 +67,12 @@ def test_apply_rls_failure_propagates_and_blocks_execution() -> None:
     with (
         mock.patch.object(sql_lab_task, "_get_session", return_value=session),
         mock.patch.object(sql_lab_task, "_get_query", return_value=query),
-        mock.patch.object(sql_lab_task, "_resolve_results_backend", return_value=(None, False)),
-        mock.patch.object(sql_lab_task, "_resolve_disallowed_functions", return_value=set()),
+        mock.patch.object(
+            sql_lab_task, "_resolve_results_backend", return_value=(None, False)
+        ),
+        mock.patch.object(
+            sql_lab_task, "_resolve_disallowed_functions", return_value=set()
+        ),
         # Feature flag ON so the RLS block is exercised.
         mock.patch.object(
             sql_lab_task,

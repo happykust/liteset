@@ -163,7 +163,7 @@ async def _legacy_import_dashboards_async(
     from superset.utils.core import override_user
 
     try:
-        from superset.commands.dashboard.importers.v0 import (  # type: ignore[import-not-found]
+        from superset.commands.dashboard.importers.v0 import (
             ImportDashboardsCommand,
         )
     except ImportError:
@@ -241,7 +241,7 @@ async def _legacy_import_dashboards_async(
 def legacy_import_datasources(path: str, sync: str, recursive: bool) -> None:
     """Import datasources from YAML (deprecated V0 format)."""
     try:
-        from superset.commands.dataset.importers.v0 import (  # type: ignore[import-not-found]
+        from superset.commands.dataset.importers.v0 import (
             ImportDatasetsCommand,
         )
     except ImportError:

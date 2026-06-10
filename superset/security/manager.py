@@ -66,13 +66,11 @@ _DATABASE_PERM_RE = re.compile(r"^\[.+\]\.\(id:(?P<id>\d+)\)$")
 
 
 def _freeze_value(value: Any) -> str:
-    """Deterministic JSON serialization for comparing column/metric sets."""
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except (json.JSONDecodeError, ValueError):
-            pass
-    return json.dumps(value, sort_keys=True, default=str)
+    """Deterministic JSON serialization for comparing column/metric sets.
+
+    1:1 with ``freeze_value`` in ``superset_old/security/manager.py:182``.
+    """
+    return json.dumps(value, sort_keys=True)
 
 
 def query_context_modified(query_context: Any) -> bool:
@@ -154,6 +152,7 @@ def build_async_security_manager(
     ) or feature_flags.get("EMBEDDED_SUPERSET", False)
     return AsyncSecurityManager(
         dao=AsyncSecurityDAO(session),
+        settings=settings,
         admin_role_name=settings.auth_role_admin,
         public_role_name=settings.auth_role_public,
         guest_role_name=settings.guest_role_name,
@@ -184,6 +183,7 @@ class AsyncSecurityManager:
         self,
         dao: AsyncSecurityDAO,
         *,
+        settings: Any = None,
         admin_role_name: str = "Admin",
         public_role_name: str = "Public",
         guest_role_name: str = "Guest",
@@ -191,6 +191,10 @@ class AsyncSecurityManager:
         embedded_superset_enabled: bool = False,
     ) -> None:
         self.dao = dao
+        # Store settings reference so that config-derived values are read
+        # at call time (mirrors original get_conf() semantics) rather than
+        # being snapshotted at construction time.
+        self._settings = settings
         self._admin_role_name = admin_role_name
         self._public_role_name = public_role_name
         self._guest_role_name = guest_role_name
@@ -365,6 +369,50 @@ class AsyncSecurityManager:
                 logger.info("LDAP self-registration failed for '%s'", username)
                 return None
             logger.debug("New LDAP user registered: %s", username)
+
+        if user is None:
+            return None
+
+        await self._update_user_auth_stat(user, success=True)
+        return user
+
+    async def auth_user_remote_user(
+        self,
+        username: str,
+        *,
+        settings: Any,
+    ) -> Any | None:
+        """Authenticate a user resolved from the ``REMOTE_USER`` variable.
+
+        1:1 port of
+        :pymeth:`flask_appbuilder.security.manager.BaseSecurityManager.auth_user_remote_user`
+        (flask_appbuilder/security/manager.py:1407-1435).
+        """
+        user = await self.dao.get_user_by_username(username)
+
+        # User does not exist, create one if auto user registration.
+        if user is None and getattr(settings, "auth_user_registration", False):
+            registration_role_name = getattr(
+                settings, "auth_user_registration_role", "Public"
+            )
+            registration_role = await self.dao.get_role_by_name(
+                registration_role_name
+            )
+            user = await self._register_user(
+                # All we have is REMOTE_USER, so we set
+                # the other fields to blank.
+                username=username,
+                first_name=username,
+                last_name="-",
+                email=username + "@email.notfound",
+                roles=[registration_role] if registration_role else None,
+            )
+
+        # If user does not exist on the DB and not auto user registration,
+        # or user is inactive, go away.
+        elif user is None or not getattr(user, "active", True):
+            logger.info("Login Failed for user: %s", username)
+            return None
 
         if user is None:
             return None
@@ -1060,55 +1108,25 @@ class AsyncSecurityManager:
                 # Extract all referenced tables from the SQL via Jinja
                 # rendering + SQLGlot parsing.
                 # Mirrors original lines 2336-2355.
+                # IMPORTANT: no try/except -- if parsing fails, the exception
+                # propagates out of raise_for_access (fail-CLOSED), matching
+                # the original's behaviour.  Silently swallowing the error
+                # would leave ``tables`` empty and skip all table-level
+                # permission checks.
                 default_schema = self._get_default_schema_for_query(
                     database, query, template_params
                 )
-                try:
-                    from superset.sql.parse import process_jinja_sql
+                from superset.sql.parse import process_jinja_sql
 
-                    jinja_result = process_jinja_sql(
+                tables = {
+                    table_.qualify(
+                        catalog=getattr(query, "catalog", None) or default_catalog,
+                        schema=default_schema,
+                    )
+                    for table_ in process_jinja_sql(
                         query.sql, database, template_params
-                    )
-                    tables = {
-                        table_.qualify(
-                            catalog=getattr(query, "catalog", None) or default_catalog,
-                            schema=default_schema,
-                        )
-                        for table_ in jinja_result.tables
-                    }
-                except Exception:  # noqa: BLE001
-                    # If Jinja/SQLGlot parsing fails, fall back to
-                    # direct SQL parsing without Jinja rendering.
-                    logger.warning(
-                        "Failed to process Jinja SQL, falling back to direct parsing",
-                        exc_info=True,
-                    )
-                    try:
-                        from superset.sql.parse import SQLScript
-
-                        engine = (
-                            database.db_engine_spec.engine
-                            if hasattr(database, "db_engine_spec")
-                            else "base"
-                        )
-                        parsed = SQLScript(query.sql, engine=engine)
-                        tables = set()
-                        for stmt in parsed.statements:
-                            tables |= {
-                                t.qualify(
-                                    catalog=(
-                                        getattr(query, "catalog", None)
-                                        or default_catalog
-                                    ),
-                                    schema=default_schema,
-                                )
-                                for t in stmt.tables
-                            }
-                    except Exception:  # noqa: BLE001
-                        logger.warning(
-                            "Failed to parse SQL for table extraction",
-                            exc_info=True,
-                        )
+                    ).tables
+                }
 
             elif table:
                 # Make sure table has the default catalog, if not specified.
@@ -1297,13 +1315,42 @@ class AsyncSecurityManager:
                     return
 
             # REGULAR RBAC logic
+            # User can only access the dashboard in case:
+            #    It doesn't have any datasets; OR
+            #    They have access to at least one dataset used.
+            # Mirrors original lines 2519-2523 ``not dashboard.datasources or any(
+            # can_access_datasource(...) for ... in dashboard.datasources)``.
             else:
+                # ``Dashboard.datasources`` returns ``None`` (not an empty set)
+                # when the instance is bound to an ``AsyncSession`` — synchronous
+                # I/O on the sync proxy would raise ``MissingGreenlet``. We must
+                # NOT treat ``None`` as "no datasources -> grant"; that bypasses
+                # authorization. Distinguish ``None`` (async: derive & check via
+                # the same async-safe slice iteration ``can_access_dashboard``
+                # uses) from an empty set (genuinely zero datasources -> grant).
                 datasources = getattr(dashboard, "datasources", None)
-                if not datasources:
-                    return
-                for ds in datasources:
-                    if await self.can_access_datasource(ds, user=user):
-                        return
+                if datasources is not None:
+                    if not datasources:
+                        return  # Dashboard with zero datasets is accessible.
+                    for ds in datasources:
+                        if await self.can_access_datasource(ds, user=user):
+                            return
+                else:
+                    # Async-safe fallback: iterate slices and check each slice's
+                    # datasource (mirrors ``can_access_dashboard`` lines 1632-1644).
+                    slices = getattr(dashboard, "slices", [])
+                    if not slices:
+                        return  # No slices -> no datasets -> accessible.
+                    for slc in slices:
+                        # ``Slice.datasource`` proxies the ``table`` relationship;
+                        # pre-load it so the sync access read doesn't trip a
+                        # MissingGreenlet on an un-eager-loaded dashboard.
+                        await self._ensure_relationship_loaded(slc, "table")
+                        datasource = getattr(slc, "datasource", None)
+                        if datasource and await self.can_access_datasource(
+                            datasource, user=user
+                        ):
+                            return
 
             raise SupersetSecurityException(
                 self.get_dashboard_access_error_object(dashboard)
@@ -1726,9 +1773,7 @@ class AsyncSecurityManager:
         try:
             await session.refresh(resource, attribute_names=[attr])
         except Exception:  # noqa: BLE001 — best-effort; sync read falls back
-            logger.debug(
-                "Could not pre-load %s for access check", attr, exc_info=True
-            )
+            logger.debug("Could not pre-load %s for access check", attr, exc_info=True)
 
     async def get_schemas_accessible_by_user(
         self,
@@ -1736,27 +1781,100 @@ class AsyncSecurityManager:
         schemas: list[str],
         *,
         catalog: str | None = None,
+        hierarchical: bool = True,
         user: Any,
     ) -> list[str]:
-        """Filter schemas to only those accessible by the user."""
-        if self.is_admin(user):
-            return schemas
+        """Filter schemas to only those accessible by the user.
 
-        if await self.can_access_database(database, user=user):
-            return schemas
+        Mirrors original ``get_schemas_accessible_by_user``
+        (superset_old/security/manager.py:895-964).
 
+        If no catalog is specified, the default catalog is used.
+
+        :param database: The SQL database
+        :param schemas: Candidate schemas
+        :param catalog: An optional database catalog
+        :param hierarchical: Whether to check using hierarchical permission logic
+        :param user: The current user
+        :returns: The list of accessible database schemas
+        """
+        from superset.models.connectors import SqlaTable
+
+        default_catalog = (
+            database.get_default_catalog()
+            if hasattr(database, "get_default_catalog")
+            else None
+        )
+        catalog = catalog or default_catalog
+
+        # Hierarchical shortcut: database-level or catalog-level access
+        # grants access to all schemas within.  The admin check is folded
+        # into can_access_database / can_access_catalog, so it is only
+        # applied when hierarchical=True — matching the original
+        # superset_old/security/manager.py:920-924 behaviour.
+        if hierarchical:
+            if await self.can_access_database(database, user=user):
+                return schemas
+            if catalog and await self.can_access_catalog(database, catalog, user=user):
+                return schemas
+
+        # schema_access — parse 2-part and 3-part perm strings
+        accessible_schemas: set[str] = set()
         db_name = getattr(database, "database_name", "")
         user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
 
-        accessible = []
-        for schema in schemas:
-            if catalog:
-                schema_perm = f"[{db_name}].[{catalog}].[{schema}]"
-            else:
-                schema_perm = f"[{db_name}].[{schema}]"
-            if (SCHEMA_ACCESS, schema_perm) in user_perms:
-                accessible.append(schema)
-        return accessible
+        schema_access_perms = {
+            view_name
+            for perm_name, view_name in user_perms
+            if perm_name == SCHEMA_ACCESS
+        }
+        default_schema = (
+            database.get_default_schema(default_catalog)
+            if hasattr(database, "get_default_schema")
+            else None
+        )
+
+        for perm in schema_access_perms:
+            parts = [part[1:-1] for part in perm.split(".")]
+
+            if parts[0] != db_name:
+                continue
+
+            # [database].[schema] matches when no catalog is specified, or when
+            # the user specifies the default catalog
+            if len(parts) == 2 and (catalog is None or catalog == default_catalog):
+                accessible_schemas.add(parts[1])
+
+            # [database].[catalog].[schema] matches when the catalog is equal to
+            # the requested catalog or, when no catalog specified, it's equal to
+            # the default catalog.
+            elif len(parts) == 3 and parts[1] == catalog:
+                accessible_schemas.add(parts[2])
+
+        # datasource_access — infer schema access from accessible datasources
+        datasource_access_perms = {
+            view_name
+            for perm_name, view_name in user_perms
+            if perm_name == DATASOURCE_ACCESS
+        }
+        if datasource_access_perms:
+            stmt = (
+                select(SqlaTable.schema)
+                .where(SqlaTable.database_id == database.id)
+                .where(SqlaTable.perm.in_(datasource_access_perms))
+                .distinct()
+            )
+            result = await self.dao.session.execute(stmt)
+            accessible_schemas.update(
+                {
+                    row[0] or default_schema
+                    for row in result
+                    if (row[0] or default_schema)
+                }
+            )
+
+        schemas_set = set(schemas)
+        return [s for s in schemas if s in (schemas_set & accessible_schemas)]
 
     async def get_datasources_accessible_by_user(self, *, user: Any) -> list[str]:
         """Get datasource perm strings the user can access.
@@ -2065,11 +2183,20 @@ class AsyncSecurityManager:
         return f"[{database_name}].(id:{database_id})"
 
     @staticmethod
-    def get_schema_perm(database: Any, schema: str, catalog: str | None = None) -> str:
+    def get_schema_perm(
+        database: Any,
+        schema: str | None = None,
+        catalog: str | None = None,
+    ) -> str | None:
         """Format schema permission string.
 
-        Returns ``[db].[catalog].[schema]`` or ``[db].[schema]``.
+        Returns ``None`` when ``schema`` is ``None`` (1:1 with original
+        ``superset_old/security/manager.py:431``), otherwise
+        ``[db].[catalog].[schema]`` or ``[db].[schema]``.
         """
+        if schema is None:
+            return None
+
         # 1:1 with the original: ``raise_for_access`` passes the Database
         # OBJECT here, so ``str(database)`` resolves to
         # ``Database.__repr__`` → ``name`` (``verbose_name or database_name``),
@@ -2088,8 +2215,17 @@ class AsyncSecurityManager:
         return f"[{database_name}].[{dataset_name}](id:{dataset_id})"
 
     @staticmethod
-    def get_catalog_perm(database_name: str, catalog: str) -> str:
-        """Format catalog permission string: [db_name].[catalog]."""
+    def get_catalog_perm(
+        database_name: str,
+        catalog: str | None = None,
+    ) -> str | None:
+        """Format catalog permission string: [db_name].[catalog].
+
+        Returns ``None`` when ``catalog`` is ``None`` (1:1 with original
+        ``superset_old/security/manager.py:414``).
+        """
+        if catalog is None:
+            return None
         return f"[{database_name}].[{catalog}]"
 
     # --- Permission / view-menu / permission-view CRUD helpers ---
@@ -2196,9 +2332,7 @@ class AsyncSecurityManager:
 
         if not (permission_name and view_menu_name):
             return None
-        existing = await self.find_permission_view_menu(
-            permission_name, view_menu_name
-        )
+        existing = await self.find_permission_view_menu(permission_name, view_menu_name)
         if existing is not None:
             return existing
         vm = await self.add_view_menu(view_menu_name)
@@ -2308,27 +2442,96 @@ class AsyncSecurityManager:
         database: Any,
         catalogs: list[str],
         *,
+        hierarchical: bool = True,
         user: Any,
     ) -> list[str]:
-        """Filter catalogs to only those accessible by the user."""
-        if self.is_admin(user):
+        """Filter catalogs to only those accessible by the user.
+
+        Mirrors original ``get_catalogs_accessible_by_user``
+        (superset_old/security/manager.py:966-1024).
+
+        :param database: The SQL database
+        :param catalogs: Candidate catalogs
+        :param hierarchical: Whether to check using hierarchical permission logic
+        :param user: The current user
+        :returns: The list of accessible database catalogs
+        """
+        from superset.models.connectors import SqlaTable
+
+        if hierarchical and await self.can_access_database(database, user=user):
             return catalogs
-        if await self.can_access_database(database, user=user):
-            return catalogs
+
+        # catalog_access
+        accessible_catalogs: set[str] = set()
         db_name = getattr(database, "database_name", "")
+        default_catalog = (
+            database.get_default_catalog()
+            if hasattr(database, "get_default_catalog")
+            else None
+        )
         user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
-        return [
-            catalog
-            for catalog in catalogs
-            if (CATALOG_ACCESS, f"[{db_name}].[{catalog}]") in user_perms
-        ]
+
+        catalog_access_perms = {
+            view_name
+            for perm_name, view_name in user_perms
+            if perm_name == CATALOG_ACCESS
+        }
+        for perm in catalog_access_perms:
+            parts = [part[1:-1] for part in perm.split(".")]
+            if parts[0] == db_name and len(parts) >= 2:
+                accessible_catalogs.add(parts[1])
+
+        # schema_access — infer catalog from schema perm strings
+        schema_access_perms = {
+            view_name
+            for perm_name, view_name in user_perms
+            if perm_name == SCHEMA_ACCESS
+        }
+        for perm in schema_access_perms:
+            parts = [part[1:-1] for part in perm.split(".")]
+
+            if parts[0] != db_name:
+                continue
+            if len(parts) == 2 and default_catalog:
+                accessible_catalogs.add(default_catalog)
+            elif len(parts) == 3:
+                accessible_catalogs.add(parts[1])
+
+        # datasource_access — infer catalog from accessible datasources
+        datasource_access_perms = {
+            view_name
+            for perm_name, view_name in user_perms
+            if perm_name == DATASOURCE_ACCESS
+        }
+        if datasource_access_perms:
+            stmt = (
+                select(SqlaTable.catalog)
+                .where(SqlaTable.database_id == database.id)
+                .where(SqlaTable.perm.in_(datasource_access_perms))
+                .distinct()
+            )
+            result = await self.dao.session.execute(stmt)
+            accessible_catalogs.update(
+                {
+                    row[0] or default_catalog
+                    for row in result
+                    if (row[0] or default_catalog)
+                }
+            )
+
+        catalogs_set = set(catalogs)
+        return [c for c in catalogs if c in (catalogs_set & accessible_catalogs)]
 
     async def user_view_menu_names(
         self, permission_name: str, *, user: Any
     ) -> set[str]:
-        """Get all view_menu names a user has for a given permission."""
-        if self.is_admin(user):
-            return set()
+        """Get all view_menu names a user has for a given permission.
+
+        1:1 with ``superset_old/security/manager.py:841``: queries
+        view-menu names for the user's roles (and groups). Does NOT
+        short-circuit for admins — the original returns the Admin role's
+        actual view-menu names, callers decide how to use them.
+        """
         user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
         return {
             view_name
@@ -2348,10 +2551,17 @@ class AsyncSecurityManager:
             "database or `all_datasource_access` permission"
         )
 
-    @staticmethod
-    def get_datasource_access_link(datasource: Any) -> str | None:
-        """Return the link for the denied datasource."""
-        return None
+    def get_datasource_access_link(self, datasource: Any) -> str | None:
+        """Return the link for the denied datasource.
+
+        Reads ``PERMISSION_INSTRUCTIONS_LINK`` (``permission_instructions_link``
+        in settings) at call time — mirrors the original
+        ``SupersetSecurityManager.get_datasource_access_link`` which calls
+        ``get_conf().get("PERMISSION_INSTRUCTIONS_LINK")`` on every invocation
+        rather than caching the value at construction time.
+        """
+        link = getattr(self._settings, "permission_instructions_link", "") or ""
+        return link or None
 
     def get_datasource_access_error_object(
         self,
@@ -2399,10 +2609,15 @@ class AsyncSecurityManager:
             "            `all_database_access` or `all_datasource_access` permission"
         )
 
-    @staticmethod
-    def get_table_access_link(tables: set[Any]) -> str | None:
-        """Return the access link for the denied SQL tables."""
-        return None
+    def get_table_access_link(self, tables: set[Any]) -> str | None:
+        """Return the access link for the denied SQL tables.
+
+        Reads ``PERMISSION_INSTRUCTIONS_LINK`` at call time — mirrors the
+        original ``get_table_access_link`` which calls
+        ``get_conf().get("PERMISSION_INSTRUCTIONS_LINK")`` dynamically.
+        """
+        link = getattr(self._settings, "permission_instructions_link", "") or ""
+        return link or None
 
     def get_table_access_error_object(
         self,
@@ -2615,6 +2830,7 @@ class AsyncSecurityManager:
             user=user,
             resources=resources,
             rls=rls,
+            algorithm=algorithm,
             exp_seconds=exp_seconds,
             audience=audience,
         )

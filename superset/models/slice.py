@@ -102,6 +102,10 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
     is_managed_externally = Column(Boolean, nullable=False, default=False)
     external_url = Column(Text, nullable=True)
 
+    def __repr__(self) -> str:
+        # 1:1 superset_old/models/slice.py:140 — /related/ dropdown text.
+        return self.slice_name or str(self.id)
+
     # -- relationships --------------------------------------------------------
 
     last_saved_by = relationship(
@@ -116,7 +120,8 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
     table = relationship(
         "SqlaTable",
         foreign_keys=[datasource_id],
-        primaryjoin="Slice.datasource_id == SqlaTable.id",
+        primaryjoin="and_(Slice.datasource_id == SqlaTable.id, "
+        "Slice.datasource_type == 'table')",
         viewonly=True,
     )
     tags = relationship(
@@ -199,22 +204,29 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
         return parsed if isinstance(parsed, dict) else {}
 
     @property
+    def description_markeddown(self) -> str:
+        from superset.utils.core import markdown
+
+        return markdown(self.description)
+
+    @property
     def data(self) -> dict[str, Any]:
         """Data used to render slice in templates.
 
         Matches the original Slice.data property.
         """
+        changed_on_humanized = self.changed_on_delta_humanized or ""
         return {
             "cache_timeout": self.cache_timeout,
             "changed_on": (self.changed_on.isoformat() if self.changed_on else ""),
-            "changed_on_humanized": getattr(self, "changed_on_delta_humanized", ""),
+            "changed_on_humanized": changed_on_humanized,
             "datasource": self.datasource_name,
             "description": self.description,
-            "description_markeddown": self.description or "",
+            "description_markeddown": self.description_markeddown,
             "edit_url": self.edit_url,
             "form_data": self.form_data,
             "query_context": self.query_context,
-            "modified": (self.changed_on.isoformat() if self.changed_on else ""),
+            "modified": f'<span class="no-wrap">{changed_on_humanized}</span>',
             "owners": [owner.id for owner in (self.owners or [])],
             "slice_id": self.id,
             "slice_name": self.slice_name,
@@ -252,8 +264,28 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
 
     @property
     def datasource_url(self) -> str | None:
+        """Return the datasource explore URL.
+
+        1:1 with superset_old/models/slice.py:180-185 @renders('datasource_url'):
+        delegates to self.table.explore_url which respects SqlaTable.default_endpoint
+        (superset_old/connectors/sqla/models.py:301-304), then falls back to the
+        standard /explore/ URL.  For non-table datasources falls back to
+        self.datasource.explore_url.
+        """
         if self.table:
+            # Mirror SqlaTable.explore_url: prefer default_endpoint when set.
+            if getattr(self.table, "default_endpoint", None):
+                return self.table.default_endpoint
             return f"/explore/?datasource_type=table&datasource_id={self.datasource_id}"
+        datasource = self.datasource
+        if datasource is not None:
+            if getattr(datasource, "default_endpoint", None):
+                return datasource.default_endpoint
+            ds_type = getattr(datasource, "type", "table")
+            return (
+                f"/explore/?datasource_type={ds_type}"
+                f"&datasource_id={self.datasource_id}"
+            )
         return None
 
     @property

@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 
@@ -52,6 +52,9 @@ def mock_user():
     type(user).id = PropertyMock(return_value=1)
     type(user).username = PropertyMock(return_value="testuser")
     type(user).is_authenticated = PropertyMock(return_value=True)
+    # MagicMock auto-attrs are truthy; an unset ``is_guest`` would route
+    # get_my_roles into the guest branch.
+    user.is_guest = False
     user.first_name = "Test"
     user.last_name = "User"
     user.email = "test@example.com"
@@ -72,14 +75,17 @@ async def test_get_me(mock_user: MagicMock) -> None:
 
 
 async def test_get_me_excludes_id_and_roles(mock_user: MagicMock) -> None:
-    # ``get_me`` mirrors the original ``UserResponseSchema`` which intentionally
-    # omits ``id`` and ``roles`` (roles are served from ``/me/roles/``).
+    # ``get_me`` mirrors ``UserResponseSchema``
+    # (superset_old/views/users/schemas.py:30-38).
+    # That schema includes ``id`` but does NOT include ``roles``
+    # (roles are served from ``/me/roles/``).
     role = MagicMock()
     role.id = 1
     role.name = "Admin"
     mock_user.roles = [role]
     result = await _get_me(None, current_user=mock_user)
-    assert "id" not in result["result"]
+    assert "id" in result["result"]
+    assert result["result"]["id"] == 1
     assert "roles" not in result["result"]
 
 
@@ -111,15 +117,18 @@ async def test_get_my_roles(mock_user: MagicMock) -> None:
     pvm.view_menu.name = "Dashboard"
     role.permissions = [pvm]
     mock_user.roles = [role]
-    result = await _get_my_roles(None, current_user=mock_user)
+    result = await _get_my_roles(None, current_user=mock_user, user_dao=MagicMock())
     assert "Admin" in result["result"]["roles"]
     assert result["result"]["roles"]["Admin"] == [("can_read", "Dashboard")]
-    assert result["result"]["permissions"] == {"can_read": ["Dashboard"]}
+    # ``permissions`` mirrors get_permissions() (superset_old/views/utils.py:143-151):
+    # only ``datasource_access`` and ``database_access`` entries are included.
+    # "can_read" is neither, so permissions is empty.
+    assert result["result"]["permissions"] == {}
     assert result["result"]["username"] == "testuser"
 
 
 async def test_get_my_roles_empty(mock_user: MagicMock) -> None:
-    result = await _get_my_roles(None, current_user=mock_user)
+    result = await _get_my_roles(None, current_user=mock_user, user_dao=MagicMock())
     assert result["result"]["roles"] == {}
     assert result["result"]["permissions"] == {}
 
@@ -175,9 +184,7 @@ async def test_update_me_empty(mock_user: MagicMock) -> None:
     data = CurrentUserUpdateRequest()
     user_dao = AsyncMock()
     with pytest.raises(HTTPException) as exc_info:
-        await _update_me(
-            None, data=data, current_user=mock_user, user_dao=user_dao
-        )
+        await _update_me(None, data=data, current_user=mock_user, user_dao=user_dao)
     assert exc_info.value.status_code == 400
 
 
@@ -246,7 +253,9 @@ def test_update_request_omitted_names_ok() -> None:
     """Omitting first_name / last_name entirely is fine (None default)."""
     import msgspec
 
-    req = msgspec.json.decode(b'{"password":"somepassword"}', type=CurrentUserUpdateRequest)
+    req = msgspec.json.decode(
+        b'{"password":"somepassword"}', type=CurrentUserUpdateRequest
+    )
     assert req.first_name is None
     assert req.last_name is None
 
@@ -278,7 +287,11 @@ async def test_update_me_password_complexity_disabled(mock_user: MagicMock) -> N
 
 
 async def test_update_me_weak_password_complexity_enabled(mock_user: MagicMock) -> None:
-    """Weak password raises 422 when complexity is enabled."""
+    """Weak password raises 400 when complexity is enabled.
+
+    Mirrors original Superset: ``UserRestApi`` password-complexity failures
+    surface as HTTP 400 (not 422).
+    """
     from litestar.exceptions import HTTPException
 
     data = CurrentUserUpdateRequest(password="weak")
@@ -293,14 +306,14 @@ async def test_update_me_weak_password_complexity_enabled(mock_user: MagicMock) 
         return_value=settings_mock,
     ):
         with pytest.raises(HTTPException) as exc_info:
-            await _update_me(
-                None, data=data, current_user=mock_user, user_dao=user_dao
-            )
-    assert exc_info.value.status_code == 422
+            await _update_me(None, data=data, current_user=mock_user, user_dao=user_dao)
+    assert exc_info.value.status_code == 400
     assert "password" in exc_info.value.detail
 
 
-async def test_update_me_strong_password_complexity_enabled(mock_user: MagicMock) -> None:
+async def test_update_me_strong_password_complexity_enabled(
+    mock_user: MagicMock,
+) -> None:
     """A password satisfying all FAB rules passes when complexity is enabled."""
     # Satisfies: ≥2 uppercase, ≥1 special, ≥2 digits, ≥3 lowercase, ≥10 chars
     strong_pw = "ABcde12!fg"
@@ -348,8 +361,11 @@ async def test_update_me_omitted_password_complexity_not_checked(
     assert result["result"]["first_name"] == "Alice"
 
 
-async def test_update_me_custom_complexity_validator_fires(mock_user: MagicMock) -> None:
-    """A custom FAB_PASSWORD_COMPLEXITY_VALIDATOR is called and its exception propagates."""
+async def test_update_me_custom_complexity_validator_fires(
+    mock_user: MagicMock,
+) -> None:
+    """A custom FAB_PASSWORD_COMPLEXITY_VALIDATOR is called and its exception
+    propagates."""
     from litestar.exceptions import HTTPException
 
     def bad_validator(pw: str) -> None:  # noqa: ARG001
@@ -367,10 +383,8 @@ async def test_update_me_custom_complexity_validator_fires(mock_user: MagicMock)
         return_value=settings_mock,
     ):
         with pytest.raises(HTTPException) as exc_info:
-            await _update_me(
-                None, data=data, current_user=mock_user, user_dao=user_dao
-            )
-    assert exc_info.value.status_code == 422
+            await _update_me(None, data=data, current_user=mock_user, user_dao=user_dao)
+    assert exc_info.value.status_code == 400
     assert "custom rule failed" in str(exc_info.value.detail)
 
 

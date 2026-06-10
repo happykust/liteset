@@ -360,7 +360,7 @@ class EvalDateDiffFunc:
                 return _dttm_to.eval().year - _dttm_from.eval().year
             if _unit == "day":
                 return (_dttm_to.eval() - _dttm_from.eval()).days
-        raise ValueError("Unable to calculate such a date delta")
+        raise ValueError(_("Unable to calculate such a date delta"))
 
 
 class EvalDateTruncFunc:
@@ -437,7 +437,9 @@ class EvalHolidayFunc:
         searched_result = holiday_lookup.get_named(holiday, lookup="istartswith")
         if len(searched_result) > 0:
             return dttm_from_timetuple(searched_result[0].timetuple())
-        raise ValueError(f"Unable to find such a holiday: [{holiday}]")
+        raise ValueError(
+            _("Unable to find such a holiday: [%(holiday)s]", holiday=holiday)
+        )
 
 
 @lru_cache(maxsize=LRU_CACHE_MAX_SIZE)
@@ -801,7 +803,7 @@ def get_since_until(  # noqa: C901
             _since, _until = map(datetime_eval, since_and_until_exprs)
 
     if _since and _until and _since > _until:
-        raise ValueError("From date cannot be larger than to date")
+        raise ValueError(_("From date cannot be larger than to date"))
 
     return _since, _until
 

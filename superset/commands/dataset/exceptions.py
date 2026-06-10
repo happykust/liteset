@@ -28,6 +28,7 @@ from typing import Any, TYPE_CHECKING
 from superset.exceptions import (
     CommandException,
     CommandInvalidError,
+    ImportFailedError,
     ObjectNotFoundError,
 )
 from superset.i18n import gettext as _
@@ -228,8 +229,11 @@ class DatasetInvalidError(CommandInvalidError):
         self,
         exceptions: list[DatasetValidationError] | None = None,
     ) -> None:
-        self._exceptions: list[DatasetValidationError] = list(exceptions or [])
+        # Call super first so CommandInvalidError.__init__ initialises
+        # self._exceptions; then overwrite with our typed list so that
+        # append/extend/normalized_messages work on the correct collection.
         super().__init__(message=str(self.message))
+        self._exceptions: list[DatasetValidationError] = list(exceptions or [])
 
     def append(self, exception: DatasetValidationError) -> None:
         self._exceptions.append(exception)
@@ -272,9 +276,12 @@ class DatasetRefreshFailedError(CommandInvalidError):
     message = _("Dataset could not be updated.")
 
 
-def dataset_invalid_error_handler(
-    request: Any, exc: DatasetInvalidError
-) -> Any:
+class DatasetForbiddenDataURI(ImportFailedError):  # noqa: N818
+    # 1:1 with original. Returns 500 when Data URI is forbidden.
+    message = _("Data URI is not allowed.")
+
+
+def dataset_invalid_error_handler(request: Any, exc: DatasetInvalidError) -> Any:
     """Litestar handler for :class:`DatasetInvalidError`.
 
     Emits the per-field 422 body 1:1 with upstream FAB
@@ -303,6 +310,7 @@ __all__ = (
     "DatasetCreateFailedError",
     "DatasetDataAccessIsNotAllowed",
     "DatasetExistsValidationError",
+    "DatasetForbiddenDataURI",
     "DatasetInvalidError",
     "DatasetMetricsDuplicateValidationError",
     "DatasetMetricsExistsValidationError",

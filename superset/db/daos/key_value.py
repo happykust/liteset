@@ -23,6 +23,7 @@ from uuid import UUID
 from sqlalchemy import delete, or_, select
 
 from superset.db.base_dao import BaseAsyncDAO
+from superset.key_value.exceptions import KeyValueCodecDecodeException
 from superset.models.key_value import KeyValueEntry
 
 # Matches original superset.key_value.types.Key
@@ -37,14 +38,16 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         resource: str,
         entry_id: int,
     ) -> KeyValueEntry | None:
-        """Get a non-expired key-value entry by resource and integer ID."""
+        """Get a key-value entry by resource and integer ID.
+
+        Matches original KeyValueDAO.get_entry at
+        superset_old/daos/key_value.py:42-47 -- no expiry filtering.
+        Callers that need to exclude expired entries must check
+        ``is_expired()`` (or ``expires_on``) themselves.
+        """
         stmt = select(KeyValueEntry).where(
             KeyValueEntry.resource == resource,
             KeyValueEntry.id == entry_id,
-            or_(
-                KeyValueEntry.expires_on.is_(None),
-                KeyValueEntry.expires_on > datetime.now(),
-            ),
         )
         result = await self.session.execute(stmt)
         return result.scalars().one_or_none()
@@ -89,11 +92,13 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         resource: str,
         key: Key,
     ) -> KeyValueEntry | None:
-        """Retrieve a non-expired entry by resource + key (int or UUID).
+        """Retrieve an entry by resource + key (int or UUID).
 
         Matches original KeyValueDAO.get_entry at
         superset_old/daos/key_value.py:42-47 via get_filter() at
-        superset_old/key_value/utils.py:44-53.
+        superset_old/key_value/utils.py:44-53 -- no expiry filtering.
+        Callers that need to exclude expired entries (e.g. get_value)
+        must check expiry themselves after retrieval.
         """
         if isinstance(key, UUID):
             filter_col = KeyValueEntry.uuid == key
@@ -102,10 +107,6 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         stmt = select(KeyValueEntry).where(
             KeyValueEntry.resource == resource,
             filter_col,
-            or_(
-                KeyValueEntry.expires_on.is_(None),
-                KeyValueEntry.expires_on > datetime.now(),
-            ),
         )
         result = await self.session.execute(stmt)
         return result.scalars().one_or_none()
@@ -120,16 +121,28 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         Matches original KeyValueDAO.get_value at
         superset_old/daos/key_value.py:50-60 using a JSON codec
         (our permalinks always store JSON-encoded payloads).
+
+        The expiry check is done here (not in get_entry_by_key)
+        to match the original's is_expired() guard at line 57-58.
         """
         entry = await self.get_entry_by_key(resource, key)
         if entry is None:
             return None
+        # Expiry check -- equivalent to the original get_value (line 57-58):
+        #   if not entry or entry.is_expired(): return None
+        # The original model's ``is_expired()`` is exactly
+        #   self.expires_on is not None and self.expires_on <= datetime.now()
+        # (superset_old/key_value/models.py:44-45). The liteset KeyValueEntry
+        # model does not expose ``is_expired()``, so we inline the identical
+        # comparison here rather than calling a method that does not exist.
+        if entry.expires_on is not None and entry.expires_on <= datetime.now():
+            return None
         import json as _json
 
         try:
-            return _json.loads(entry.value.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            return None
+            return _json.loads(entry.value)
+        except TypeError as ex:
+            raise KeyValueCodecDecodeException(str(ex)) from ex
 
     async def upsert_entry(
         self,
@@ -240,15 +253,14 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         key_uuid = self._coerce_uuid(key)
         if key_uuid is None:
             raise ValueError(f"Invalid UUID key: {key!r}")
+        # No expiry filter -- must find expired entries too so we can
+        # update them in place (matching original upsert_entry which
+        # calls get_entry without expiry filtering).
         stmt = (
             select(KeyValueEntry)
             .where(
                 KeyValueEntry.resource == resource,
                 KeyValueEntry.uuid == key_uuid,
-                or_(
-                    KeyValueEntry.expires_on.is_(None),
-                    KeyValueEntry.expires_on > datetime.now(),
-                ),
             )
             .with_for_update()
         )

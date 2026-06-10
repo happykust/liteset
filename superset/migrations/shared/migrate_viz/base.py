@@ -45,6 +45,7 @@ def _default_time_filter() -> Any:
     except Exception:  # noqa: BLE001
         return None
 
+
 logger = logging.getLogger("alembic.env")
 
 Base = declarative_base()

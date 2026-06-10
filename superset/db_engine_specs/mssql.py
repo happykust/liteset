@@ -57,6 +57,13 @@ class GUID(TypeDecorator):
     def python_type(self) -> type[uuid.UUID]:
         return uuid.UUID
 
+    @classmethod
+    def _compiler_dispatch(cls, _visitor: Any, **_kw: Any) -> str:
+        """Compile to CHAR(36) — 1:1 with the original GUID
+        (superset_old/models/sql_types/mssql_sql_types.py:43-45); without
+        this override the type compiles to bare CHAR (= CHAR(1))."""
+        return "CHAR(36)"
+
     def process_bind_param(self, value: str, dialect: Any) -> str | None:
         if value is None:
             return None
@@ -209,6 +216,13 @@ class MssqlEngineSpec(BaseEngineSpec):
         return f"{cls.engine} error: {cls._extract_error_message(ex)}"
 
 
+class AzureSynapseSpec(MssqlEngineSpec):
+    engine = "mssql"
+    engine_name = "Azure Synapse"
+    default_driver = "pyodbc"
+
+
 __all__ = [
     "MssqlEngineSpec",
+    "AzureSynapseSpec",
 ]

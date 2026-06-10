@@ -74,6 +74,10 @@ def _configure_permalink_dao(dao, *, existing_entry=None, get_value=None):
     dao.session.flush = AsyncMock()
     salt_entry = MagicMock()
     salt_entry.value = json.dumps("permalink-salt-for-tests").encode("utf-8")
+    # 'app' salt entries never expire; configure ``expires_on`` so the
+    # DAO's expiry guard (``entry.expires_on <= datetime.now()``) does not
+    # blow up on an unconfigured MagicMock attribute.
+    salt_entry.expires_on = None
     res = MagicMock()
     res.scalars.return_value.one_or_none.return_value = salt_entry
     dao.session.execute = AsyncMock(return_value=res)
@@ -104,6 +108,81 @@ async def test_create_filter_state(mock_kv_dao, mock_dashboard_dao):
     stored = json.loads(mock_kv_dao.set_value.call_args.kwargs["value"])
     assert stored["owner"] == 1
     assert stored["value"] == '{"key": "val"}'
+
+
+async def test_create_filter_state_with_tab_id_generates_deterministic_key(
+    mock_kv_dao, mock_dashboard_dao
+):
+    """A truthy tab_id produces the same deterministic uuid5 key on every call.
+
+    Mirrors the original's contextual-key cache logic
+    (superset_old/commands/dashboard/filter_state/create.py:35-37):
+    when ``tab_id`` is truthy and the contextual cache already holds a key,
+    the same key is returned.  In liteset uuid5 replaces session+cache as the
+    deterministic function.
+    """
+    mock_kv_dao.get_value = AsyncMock(return_value=None)  # no existing state
+
+    cmd1 = CreateFilterStateCommand(
+        dao=mock_kv_dao,
+        dashboard_id=1,
+        value="state1",
+        user_id=42,
+        tab_id="7",
+        dashboard_dao=mock_dashboard_dao,
+    )
+    cmd2 = CreateFilterStateCommand(
+        dao=mock_kv_dao,
+        dashboard_id=1,
+        value="state2",
+        user_id=42,
+        tab_id="7",
+        dashboard_dao=mock_dashboard_dao,
+    )
+    key1 = await cmd1.execute()
+    key2 = await cmd2.execute()
+    # Same user + dashboard + tab_id must produce the same deterministic key.
+    assert key1 == key2
+
+
+async def test_create_filter_state_falsy_tab_id_generates_random_key(
+    mock_kv_dao, mock_dashboard_dao
+):
+    """Falsy tab_id (None or empty string) always produces a fresh random key.
+
+    Original (superset_old/commands/dashboard/filter_state/create.py:37):
+    ``if not key or not tab_id: key = random_key()``
+    Falsy tab_id — including the empty string sent via ``?tab_id=`` — must
+    trigger the random branch, not the deterministic uuid5 branch.  The
+    liteset UPDATE command already uses ``if self._tab_id:`` (truthy check);
+    this test enforces the same contract for CREATE.
+    """
+    mock_kv_dao.get_value = AsyncMock(return_value=None)
+
+    for falsy_tab_id in (None, ""):
+        cmd1 = CreateFilterStateCommand(
+            dao=mock_kv_dao,
+            dashboard_id=1,
+            value="v",
+            user_id=1,
+            tab_id=falsy_tab_id,
+            dashboard_dao=mock_dashboard_dao,
+        )
+        cmd2 = CreateFilterStateCommand(
+            dao=mock_kv_dao,
+            dashboard_id=1,
+            value="v",
+            user_id=1,
+            tab_id=falsy_tab_id,
+            dashboard_dao=mock_dashboard_dao,
+        )
+        key1 = await cmd1.execute()
+        key2 = await cmd2.execute()
+        # Two calls with the same falsy tab_id must yield DIFFERENT random keys.
+        assert key1 != key2, (
+            f"tab_id={falsy_tab_id!r}: expected two distinct random keys, "
+            f"got {key1!r} twice"
+        )
 
 
 async def test_get_filter_state(mock_kv_dao, mock_dashboard_dao):
@@ -144,10 +223,27 @@ async def test_update_filter_state(mock_kv_dao, mock_dashboard_dao):
         dashboard_dao=mock_dashboard_dao,
     )
     result = await cmd.execute()
-    assert result == "test-key"
+    # 1:1 with upstream UpdateFilterStateCommand: an owned entry is updated
+    # and a FRESH (rotated) key is returned, NOT the input key. With no
+    # ``tab_id`` the original generates ``random_key()`` (here ``uuid4``).
+    assert isinstance(result, str)
+    assert len(result) > 0
+    assert result != "test-key"
+    # The rotated entry was persisted with the updated value.
+    mock_kv_dao.set_value.assert_awaited_once()
+    stored = json.loads(mock_kv_dao.set_value.call_args.kwargs["value"])
+    assert stored["owner"] == 1
+    assert stored["value"] == "updated"
 
 
 async def test_update_filter_state_not_found(mock_kv_dao, mock_dashboard_dao):
+    """Missing entry is a no-op returning the original key (HTTP 200).
+
+    Mirrors original Superset
+    (``superset_old/commands/dashboard/filter_state/update.py``): the command
+    only writes / rotates the key when an entry exists. An absent entry returns
+    the original key unchanged — it does NOT raise 404.
+    """
     mock_kv_dao.get_value = AsyncMock(return_value=None)
     cmd = UpdateFilterStateCommand(
         dao=mock_kv_dao,
@@ -157,15 +253,19 @@ async def test_update_filter_state_not_found(mock_kv_dao, mock_dashboard_dao):
         user_id=1,
         dashboard_dao=mock_dashboard_dao,
     )
-    with pytest.raises(ObjectNotFoundError):
-        await cmd.validate()
+    await cmd.validate()
+    result = await cmd.run()
+    assert result == "missing"
+    mock_kv_dao.set_value.assert_not_awaited()
 
 
 async def test_update_filter_state_wrong_owner(mock_kv_dao, mock_dashboard_dao):
     """Non-owner is rejected with ``TemporaryCacheAccessDeniedError``.
 
     Production raises the temporary-cache variant (1:1 with upstream) which
-    IS-A ``ForbiddenError``.
+    IS-A ``ForbiddenError``. The owner check lives in ``run`` (the original's
+    ``update``), after ``validate`` clears dashboard-level access — so no write
+    is performed for a non-owner.
     """
     mock_kv_dao.get_value = AsyncMock(
         return_value=json.dumps({"owner": 99, "value": "old"})
@@ -178,8 +278,10 @@ async def test_update_filter_state_wrong_owner(mock_kv_dao, mock_dashboard_dao):
         user_id=1,
         dashboard_dao=mock_dashboard_dao,
     )
+    await cmd.validate()
     with pytest.raises(TemporaryCacheAccessDeniedError):
-        await cmd.validate()
+        await cmd.run()
+    mock_kv_dao.set_value.assert_not_awaited()
 
 
 async def test_delete_filter_state(mock_kv_dao, mock_dashboard_dao):

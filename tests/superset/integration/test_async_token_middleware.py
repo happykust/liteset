@@ -28,7 +28,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import jwt as pyjwt
-from litestar import Litestar, get
+from litestar import get, Litestar
 from litestar.datastructures import State
 from litestar.testing import AsyncTestClient
 
@@ -239,6 +239,7 @@ async def test_no_redis_needed_for_channel_minting():
         assert token, "cookie must be minted even with redis=None"
         payload = pyjwt.decode(token, JWT_SECRET, algorithms=["HS256"])
         import uuid
+
         channel = payload["channel"]
         # Must be a valid UUID string
         uuid.UUID(channel)  # raises ValueError if not a valid UUID

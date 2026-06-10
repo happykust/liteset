@@ -41,9 +41,9 @@ from __future__ import annotations
 
 from superset.cache.manager import CacheManager
 from superset.extensions.ssh import (
+    ssh_manager_factory,
     SSHManager,
     SSHManagerFactory,
-    ssh_manager_factory,
 )
 from superset.stats_logger import StatsLoggerManager
 from superset.utils.encrypt import EncryptedFieldFactory

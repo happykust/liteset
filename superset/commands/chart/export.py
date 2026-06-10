@@ -29,12 +29,13 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 import yaml  # type: ignore[import-untyped]
-from superset.utils.file import secure_filename
 
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.importexport.export_base import AsyncExportModelsCommand
 from superset.models.tags import TagType
 from superset.utils.feature_flags import feature_flag_manager
+from superset.utils.file import get_filename, secure_filename
+from superset.utils.ssh_tunnel import mask_password_info
 
 if TYPE_CHECKING:
     from superset.db.daos.chart import AsyncChartDAO
@@ -59,9 +60,23 @@ class ExportChartsCommand(AsyncExportModelsCommand):
 
     _resource_type = "Slice"
 
-    def __init__(self, model_ids: list[int], dao: AsyncChartDAO | None = None) -> None:
-        super().__init__(model_ids)
+    def __init__(
+        self,
+        model_ids: list[int],
+        dao: AsyncChartDAO | None = None,
+        security_manager: Any = None,
+        user: Any = None,
+        export_related: bool = True,
+    ) -> None:
+        super().__init__(model_ids, security_manager=security_manager, user=user)
         self._dao = dao
+        self._export_related = export_related
+
+    async def validate(self) -> None:
+        from superset.db.filters import chart_access_filters
+        from superset.models.slice import Slice
+
+        await self._validate_access(self._dao, Slice, chart_access_filters, "Chart")
 
     @staticmethod
     def _file_name(model: Any) -> str:
@@ -123,6 +138,7 @@ class ExportChartsCommand(AsyncExportModelsCommand):
                 selectinload(Slice.table).selectinload(SqlaTable.database),
                 selectinload(Slice.table).selectinload(SqlaTable.metrics),
                 selectinload(Slice.table).selectinload(SqlaTable.columns),
+                selectinload(Slice.tags),
             )
         )
         result = await self._dao.session.execute(stmt)
@@ -162,9 +178,11 @@ class ExportChartsCommand(AsyncExportModelsCommand):
             )
 
             db_slug = (
-                secure_filename(ds.database.database_name) if ds.database else "unknown"
-            ) or "unknown"
-            ds_slug = secure_filename(ds.table_name or "") or "unnamed"
+                get_filename(ds.database.database_name, ds.database.id, skip_id=True)
+                if ds.database
+                else "unknown"
+            )
+            ds_slug = get_filename(ds.table_name or "", ds.id)
             files.append(
                 (
                     f"datasets/{db_slug}/{ds_slug}.yaml",
@@ -184,10 +202,33 @@ class ExportChartsCommand(AsyncExportModelsCommand):
                 replacements = {"allow_file_upload": "allow_csv_upload"}
                 db_payload = {replacements.get(k, k): v for k, v in db_payload.items()}
                 if db_payload.get("extra"):
+                    import json
+
                     try:
-                        db_payload["extra"] = _json.loads(db_payload["extra"])
-                    except (TypeError, _json.JSONDecodeError):
-                        pass
+                        db_payload["extra"] = json.loads(db_payload["extra"])
+                    except json.JSONDecodeError:
+                        logger.info(
+                            "Unable to decode `extra` field: %s", db_payload["extra"]
+                        )
+
+                # SSH tunnel — 1:1 with superset_old/commands/dataset/export.py:114-121
+                # and superset_old/commands/database/export.py:91-98.
+                try:
+                    from superset.db.daos.database import AsyncSSHTunnelDAO
+
+                    ssh_dao = AsyncSSHTunnelDAO(self._dao.session)
+                    ssh_tunnel = await ssh_dao.get_by_database_id(db.id)
+                    if ssh_tunnel:
+                        ssh_payload = ssh_tunnel.export_to_dict(
+                            recursive=False,
+                            include_parent_ref=False,
+                            include_defaults=True,
+                            export_uuids=False,
+                        )
+                        db_payload["ssh_tunnel"] = mask_password_info(ssh_payload)
+                except ImportError:
+                    pass
+
                 db_payload["version"] = EXPORT_VERSION
                 files.append(
                     (
@@ -195,5 +236,32 @@ class ExportChartsCommand(AsyncExportModelsCommand):
                         yaml.safe_dump(db_payload, sort_keys=False),
                     )
                 )
+
+        # Emit a separate ``tags.yaml`` entry when the TAGGING_SYSTEM feature
+        # flag is enabled — 1:1 with the original
+        # ``superset_old/commands/chart/export.py:107-113`` which calls
+        # ``ExportTagsCommand().export(chart_ids=[chart_id])``.
+        # The original ``ExportTagsCommand._file_content`` filters chart tags
+        # by excluding those whose name contains ``type:`` or ``owner:``
+        # (the implicit system tags), and exports ``tag_name`` + ``description``.
+        # When export_related=False (e.g. during a full-assets dump via
+        # AsyncFullAssetManager), the tags.yaml yield is skipped — matching
+        # superset_old/commands/chart/export.py:106-113 which guards this block
+        # with ``export_related``.
+        if self._export_related and feature_flag_manager.is_feature_enabled(
+            "TAGGING_SYSTEM"
+        ):
+            chart_tags_list = [
+                {"tag_name": tag.name, "description": tag.description}
+                for tag in (getattr(chart, "tags", []) or [])
+                if "type:" not in tag.name and "owner:" not in tag.name
+            ]
+            tags_payload: dict[str, Any] = {"tags": chart_tags_list}
+            files.append(
+                (
+                    "tags.yaml",
+                    yaml.safe_dump(tags_payload, sort_keys=False),
+                )
+            )
 
         return files

@@ -365,13 +365,20 @@ async def test_cache_hit_returns_cached_data(mock_settings, mock_security_manage
 
 
 async def test_get_viz_annotation_data_handles_missing_method(processor):
-    """If chart model has no get_query_context(), raise clear ValueError."""
+    """If chart model has no get_query_context(), raise QueryObjectValidationError.
+
+    1:1 with superset_old/common/query_context_processor.py:1204-1212:
+    when ``chart.get_query_context()`` is absent/falsy a
+    ``QueryObjectValidationError`` is raised (not ValueError).
+    """
+    from superset.exceptions import QueryObjectValidationError
+
     mock_chart = MagicMock(spec=[])  # spec=[] means no attributes
     mock_chart.id = 42
     processor._chart_dao = AsyncMock()
     processor._chart_dao.find_by_id = AsyncMock(return_value=mock_chart)
 
-    with pytest.raises(ValueError, match="does not support get_query_context"):
+    with pytest.raises(QueryObjectValidationError, match="query context.*not found"):
         await processor.get_viz_annotation_data(
             {"name": "test_layer", "value": 42},
             force=False,
@@ -387,7 +394,9 @@ async def test_get_data_xlsx_format():
 
 
 async def test_viz_annotation_recursion_depth(mock_settings, mock_security_manager):
-    """get_viz_annotation_data raises at max depth."""
+    """get_viz_annotation_data raises QueryObjectValidationError at max depth."""
+    from superset.exceptions import QueryObjectValidationError
+
     ds = MagicMock()
     ds.uid = "table__1"
     proc = AsyncQueryContextProcessor(
@@ -396,7 +405,7 @@ async def test_viz_annotation_recursion_depth(mock_settings, mock_security_manag
         security_manager=mock_security_manager,
         chart_dao=AsyncMock(),
     )
-    with pytest.raises(ValueError, match="recursion depth"):
+    with pytest.raises(QueryObjectValidationError, match="recursion depth"):
         await proc.get_viz_annotation_data(
             {"value": 1, "name": "test"}, force=False, _depth=2
         )
@@ -499,20 +508,43 @@ def test_query_object_to_dict_uses_filter_key():
 
 
 def test_validate_sanitizes_where_clause():
-    """validate() delegates extras.where to sanitize_clause."""
+    """validate() sanitizes extras.where via sanitize_clause(clause, engine).
+
+    1:1 with ``superset_old/common/query_object.py::_sanitize_filters``:
+    sanitization runs only when both the clause and the datasource are present,
+    ``sanitize_clause`` receives the engine dialect, and a
+    ``QueryClauseValidationException`` becomes a ``QueryObjectValidationError``.
+    """
     from superset.common.query_object import QueryObjectValidationError
+    from superset.exceptions import QueryClauseValidationException
 
     qo = AsyncQueryObject(
         datasource={"type": "table", "id": 1},
         extras={"where": "1=1"},
     )
+    datasource = MagicMock()
+    datasource.database.db_engine_spec.engine = "postgresql"
+    seen: dict[str, str] = {}
 
-    def fake_sanitize(clause: str) -> str:
-        raise Exception("Unsafe clause detected")
+    def fake_sanitize(clause: str, engine: str) -> str:
+        seen["clause"] = clause
+        seen["engine"] = engine
+        raise QueryClauseValidationException("Unsafe clause detected")
 
-    with patch("superset.common.query_object.sanitize_clause", fake_sanitize):
-        with pytest.raises(QueryObjectValidationError, match="Unsafe SQL"):
-            qo.validate()
+    template_processor = MagicMock()
+    template_processor.process_template.side_effect = lambda clause, **kw: clause
+
+    with (
+        patch("superset.common.query_object.sanitize_clause", fake_sanitize),
+        patch(
+            "superset.jinja_context.get_template_processor",
+            return_value=template_processor,
+        ),
+    ):
+        with pytest.raises(QueryObjectValidationError, match="Unsafe clause detected"):
+            qo.validate(datasource=datasource)
+
+    assert seen == {"clause": "1=1", "engine": "postgresql"}
 
 
 def test_validate_rejects_duplicate_labels():
@@ -523,7 +555,9 @@ def test_validate_rejects_duplicate_labels():
         datasource={"type": "table", "id": 1},
         columns=["revenue", "revenue"],
     )
-    with pytest.raises(QueryObjectValidationError, match="Duplicate label.*revenue"):
+    with pytest.raises(
+        QueryObjectValidationError, match="Duplicate column/metric labels.*revenue"
+    ):
         qo.validate()
 
 
@@ -654,8 +688,9 @@ async def test_get_cache_key_offset_distinct(processor):
     assert k_1y == k_1y_again  # same offset → stable key
 
 
-async def test_offset_cache_roundtrip(mock_settings, mock_security_manager,
-                                      mock_datasource, mock_user):
+async def test_offset_cache_roundtrip(
+    mock_settings, mock_security_manager, mock_datasource, mock_user
+):
     """The per-offset payload ({df, query}) survives the pickle store/retrieve
     via the cache manager."""
 
@@ -680,7 +715,8 @@ async def test_offset_cache_roundtrip(mock_settings, mock_security_manager,
     payload = {"df": df, "query": "SELECT ... -- 1 year ago"}
     await proc._cache_set("off-key", payload, 300)
     out = await proc._cache_get("off-key")
-    assert isinstance(out, dict) and "df" in out
+    assert isinstance(out, dict)
+    assert "df" in out
     assert out["query"] == payload["query"]
     pd.testing.assert_frame_equal(out["df"], df)
 
@@ -719,9 +755,7 @@ async def test_get_data_xlsx_applies_column_types_and_verbose_map():
 # ---------------------------------------------------------------------------
 
 
-async def test_get_query_only_includes_language(
-    mock_settings, mock_security_manager
-):
+async def test_get_query_only_includes_language(mock_settings, mock_security_manager):
     """``result_type=query`` payload carries the datasource dialect language."""
     ds = MagicMock()
     ds.query_language = "sql"
@@ -746,9 +780,7 @@ async def test_get_query_only_validation_error_in_payload(
 
     ds = MagicMock()
     ds.query_language = "sql"
-    ds._build_sql = MagicMock(
-        side_effect=QueryObjectValidationError("Empty query?")
-    )
+    ds._build_sql = MagicMock(side_effect=QueryObjectValidationError("Empty query?"))
     proc = AsyncQueryContextProcessor(
         datasource=ds,
         settings=mock_settings,

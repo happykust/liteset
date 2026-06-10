@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy import Column, DateTime, Float, Integer, String
@@ -27,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
 from superset.db.base_dao import BaseAsyncDAO
+from superset.db.daos.query import AsyncQueryDAO
 
 
 class Base(DeclarativeBase):
@@ -61,15 +63,14 @@ class FakeQueryDAO(BaseAsyncDAO[FakeQuery]):
     model_cls = FakeQuery
 
     async def save_metadata(self, query: FakeQuery, payload: dict) -> None:
-        columns = payload.get("columns", [])
-        processed = []
+        # 1:1 with superset_old/daos/query.py:
+        # default {}, unconditional overwrite, keep name key
+        columns = payload.get("columns", {})
         for col in columns:
-            processed_col = dict(col)
-            if "name" in processed_col and "column_name" not in processed_col:
-                processed_col["column_name"] = processed_col.pop("name")
-            processed.append(processed_col)
-        query.set_extra_json_key("columns", processed)
+            if "name" in col:
+                col["column_name"] = col.get("name")
         self.session.add(query)
+        query.set_extra_json_key("columns", columns)
 
     async def get_queries_changed_after(
         self, user_id: int, last_updated_ms: float
@@ -230,5 +231,67 @@ async def test_save_metadata(async_session: AsyncSession) -> None:
 
     data = json.loads(q.extra_json)
     assert len(data["columns"]) == 2
+    # 1:1 with original: column_name is set from name
     assert data["columns"][0]["column_name"] == "id"
+    # 1:1 with original: 'name' key is kept, not removed
+    assert data["columns"][0]["name"] == "id"
     assert data["columns"][1]["column_name"] == "already_named"
+
+
+# ---------------------------------------------------------------------------
+# Direct tests for AsyncQueryDAO.save_metadata (via FakeQuery + mock session)
+# ---------------------------------------------------------------------------
+
+
+async def test_async_dao_save_metadata_name_preserved() -> None:
+    """1:1 with original: col with only 'name' stores BOTH 'name' AND 'column_name'."""
+    mock_session = MagicMock()
+    dao = AsyncQueryDAO(mock_session)
+    q = FakeQuery()
+    q.extra_json = "{}"
+
+    await dao.save_metadata(q, {"columns": [{"name": "my_col", "type": "TEXT"}]})
+
+    data = json.loads(q.extra_json)
+    assert data["columns"][0]["column_name"] == "my_col"
+    # original keeps 'name' key — must not be popped
+    assert data["columns"][0]["name"] == "my_col"
+
+
+async def test_async_dao_save_metadata_overwrites_column_name() -> None:
+    """1:1 with original: 'column_name' is overwritten when 'name' is present.
+
+    superset_old unconditionally: col["column_name"] = col.get("name")
+    """
+    mock_session = MagicMock()
+    dao = AsyncQueryDAO(mock_session)
+    q = FakeQuery()
+    q.extra_json = "{}"
+
+    await dao.save_metadata(
+        q,
+        {
+            "columns": [
+                {"name": "new_name", "column_name": "old_name", "type": "TEXT"},
+            ]
+        },
+    )
+
+    data = json.loads(q.extra_json)
+    # column_name unconditionally overwritten with name
+    assert data["columns"][0]["column_name"] == "new_name"
+    assert data["columns"][0]["name"] == "new_name"
+
+
+async def test_async_dao_save_metadata_no_columns_default_dict() -> None:
+    """1:1 with original: absent 'columns' key stores {} not []."""
+    mock_session = MagicMock()
+    dao = AsyncQueryDAO(mock_session)
+    q = FakeQuery()
+    q.extra_json = "{}"
+
+    await dao.save_metadata(q, {})  # no 'columns' key in payload
+
+    data = json.loads(q.extra_json)
+    # original defaults to {} (empty dict), not []
+    assert data["columns"] == {}

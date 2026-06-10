@@ -40,6 +40,7 @@ from typing import Any, Optional
 import sqlalchemy as sa
 from celery.exceptions import SoftTimeLimitExceeded
 
+import superset.events as _superset_events
 from superset.tasks.celery_app import celery_app
 from superset.utils.dates import now_as_float
 
@@ -202,7 +203,9 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
                 if user is not None:
                     set_current_user(user)
             except Exception:  # noqa: BLE001
-                logger.debug("Could not bind current user for async task", exc_info=True)
+                logger.debug(
+                    "Could not bind current user for async task", exc_info=True
+                )
 
         logger.info("Query %s: Set query to 'running'", str(query_id))
         from superset.common.query_status import QueryStatus
@@ -299,11 +302,14 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
         from superset.constants import QUERY_CANCEL_KEY
         from superset.utils.core import QuerySource
 
-        with database.get_sqla_engine(
-            catalog=query.catalog,
-            schema=query.schema,
-            source=QuerySource.SQL_LAB,
-        ) as engine, _check_for_oauth2(database):
+        with (
+            database.get_sqla_engine(
+                catalog=query.catalog,
+                schema=query.schema,
+                source=QuerySource.SQL_LAB,
+            ) as engine,
+            _check_for_oauth2(database),
+        ):
             with closing(engine.raw_connection()) as conn:
                 # pre-session queries are used to set the selected
                 # catalog/schema — 1:1 with ``Database.get_raw_connection``
@@ -363,13 +369,14 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
                             session, ex, query, payload, prefix_message
                         )
 
+                # Commit the connection so CTA queries will create the table
+                # and any DML.  1:1 with the original
+                # (superset_old/sql_lab.py:510-511): conn.commit() is UNGUARDED
+                # -- a commit failure must propagate to handle_query_error which
+                # marks the query as FAILED.  Swallowing the error would report
+                # SUCCESS for a mutation that was never committed.
                 if parsed_script.has_mutation() or query.select_as_cta:
-                    try:
-                        conn.commit()
-                    except Exception:  # noqa: BLE001
-                        logger.warning(
-                            "Could not commit mutating SQL block", exc_info=True
-                        )
+                    conn.commit()
 
         # ------------------------------------------------------------------
         # Success, updating the query entry in database
@@ -414,6 +421,8 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
         # Persist to results backend (msgpack + zlib + payload size guard)
         # ------------------------------------------------------------------
         if store_results and results_backend:
+            # key assignment and logger.info happen BEFORE the timing context,
+            # 1:1 with the original (superset_old/sql_lab.py:544-553).
             key = str(uuid.uuid4())
             payload["query"]["resultsKey"] = key
             logger.info(
@@ -422,80 +431,98 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
                 key,
             )
 
-            serialized_payload = _serialize_payload(
-                payload, bool(results_backend_use_msgpack)
-            )
+            from superset.extensions import stats_logger_manager
+            from superset.utils.log import stats_timing
 
-            sql_lab_payload_max_mb = _resolve_sqllab_payload_max_mb()
-            if sql_lab_payload_max_mb:
-                serialized_payload_size = sys.getsizeof(serialized_payload)
-                max_bytes = sql_lab_payload_max_mb * BYTES_IN_MB
-                if serialized_payload_size > max_bytes:
-                    from superset.errors import (
-                        ErrorLevel,
-                        SupersetError,
-                        SupersetErrorType,
-                    )
-                    from superset.exceptions import SupersetErrorException
-
-                    raise SupersetErrorException(
-                        SupersetError(
-                            message=(
-                                f"Result size ("
-                                f"{serialized_payload_size / BYTES_IN_MB:.2f} MB"
-                                f") exceeds the allowed limit of "
-                                f"{sql_lab_payload_max_mb} MB."
-                            ),
-                            error_type=SupersetErrorType.RESULT_TOO_LARGE_ERROR,
-                            level=ErrorLevel.ERROR,
-                        )
+            stats_logger = stats_logger_manager.instance
+            with stats_timing("sqllab.query.results_backend_write", stats_logger):
+                with stats_timing(
+                    "sqllab.query.results_backend_write_serialization", stats_logger
+                ):
+                    serialized_payload = _serialize_payload(
+                        payload, bool(results_backend_use_msgpack)
                     )
 
-            cache_timeout = getattr(database, "cache_timeout", None)
-            if cache_timeout is None:
-                cache_timeout = _resolve_cache_default_timeout()
+                    sql_lab_payload_max_mb = _resolve_sqllab_payload_max_mb()
+                    if sql_lab_payload_max_mb:
+                        serialized_payload_size = sys.getsizeof(serialized_payload)
+                        max_bytes = sql_lab_payload_max_mb * BYTES_IN_MB
+                        if serialized_payload_size > max_bytes:
+                            logger.info("Result size exceeds the allowed limit.")
+                            size_mb = serialized_payload_size / BYTES_IN_MB
+                            from superset.errors import (
+                                ErrorLevel,
+                                SupersetError,
+                                SupersetErrorType,
+                            )
+                            from superset.exceptions import SupersetErrorException
 
-            from superset.utils.core import zlib_compress
+                            raise SupersetErrorException(
+                                SupersetError(
+                                    message=(
+                                        f"Result size ("
+                                        f"{size_mb:.2f} MB"
+                                        f") exceeds the allowed limit of "
+                                        f"{sql_lab_payload_max_mb} MB."
+                                    ),
+                                    error_type=SupersetErrorType.RESULT_TOO_LARGE_ERROR,
+                                    level=ErrorLevel.ERROR,
+                                )
+                            )
 
-            compressed = zlib_compress(serialized_payload)
+                cache_timeout = getattr(database, "cache_timeout", None)
+                if cache_timeout is None:
+                    cache_timeout = _resolve_cache_default_timeout()
 
-            write_success = results_backend.set(key, compressed, cache_timeout)
-            if not write_success:
-                logger.error(
-                    "Query %s: Failed to store results in backend, key: %s",
-                    str(query_id),
-                    key,
+                from superset.utils.core import zlib_compress
+
+                compressed = zlib_compress(serialized_payload)
+                logger.debug(
+                    "*** serialized payload size: %i", sys.getsizeof(serialized_payload)
                 )
-                stats_logger_manager.incr("sqllab.results_backend.write_failure")
-                query.results_key = None
-                if not return_results:
-                    query.status = QueryStatus.FAILED
-                    query.error_message = (
-                        "Failed to store query results in the results backend. "
-                        "Please try again or contact your administrator."
-                    )
-                    session.commit()
-                    from superset.errors import (
-                        ErrorLevel,
-                        SupersetError,
-                        SupersetErrorType,
-                    )
-                    from superset.exceptions import SupersetErrorException
-
-                    raise SupersetErrorException(
-                        SupersetError(
-                            message="Failed to store query results. Please try again.",
-                            error_type=SupersetErrorType.RESULTS_BACKEND_ERROR,
-                            level=ErrorLevel.ERROR,
-                        )
-                    )
-            else:
-                query.results_key = key
-                logger.info(
-                    "Query %s: Successfully stored results in backend, key: %s",
-                    str(query_id),
-                    key,
+                logger.debug(
+                    "*** compressed payload size: %i", sys.getsizeof(compressed)
                 )
+
+                write_success = results_backend.set(key, compressed, cache_timeout)
+                if not write_success:
+                    logger.error(
+                        "Query %s: Failed to store results in backend, key: %s",
+                        str(query_id),
+                        key,
+                    )
+                    stats_logger_manager.incr("sqllab.results_backend.write_failure")
+                    query.results_key = None
+                    if not return_results:
+                        query.status = QueryStatus.FAILED
+                        query.error_message = (
+                            "Failed to store query results in the results backend. "
+                            "Please try again or contact your administrator."
+                        )
+                        session.commit()
+                        from superset.errors import (
+                            ErrorLevel,
+                            SupersetError,
+                            SupersetErrorType,
+                        )
+                        from superset.exceptions import SupersetErrorException
+
+                        raise SupersetErrorException(
+                            SupersetError(
+                                message=(
+                                    "Failed to store query results. Please try again."
+                                ),
+                                error_type=SupersetErrorType.RESULTS_BACKEND_ERROR,
+                                level=ErrorLevel.ERROR,
+                            )
+                        )
+                else:
+                    query.results_key = key
+                    logger.info(
+                        "Query %s: Successfully stored results in backend, key: %s",
+                        str(query_id),
+                        key,
+                    )
 
         if query.status != QueryStatus.FAILED:
             query.status = QueryStatus.SUCCESS
@@ -524,6 +551,40 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
                         "expanded_columns": expanded_columns,
                     }
                 )
+
+            # 1:1 with the original (superset_old/sql_lab.py:649-665):
+            # check SQLLAB_PAYLOAD_MAX_MB for the return_results path
+            # AFTER the store_results block, raising RESULT_TOO_LARGE_ERROR
+            # if the serialized payload exceeds the configured limit.
+            sql_lab_payload_max_mb = _resolve_sqllab_payload_max_mb()
+            if sql_lab_payload_max_mb:
+                serialized_payload = _serialize_payload(
+                    payload, bool(results_backend_use_msgpack)
+                )
+                serialized_payload_size = sys.getsizeof(serialized_payload)
+                max_bytes = sql_lab_payload_max_mb * BYTES_IN_MB
+                if serialized_payload_size > max_bytes:
+                    logger.info("Result size exceeds the allowed limit.")
+                    from superset.errors import (
+                        ErrorLevel,
+                        SupersetError,
+                        SupersetErrorType,
+                    )
+                    from superset.exceptions import SupersetErrorException
+
+                    raise SupersetErrorException(
+                        SupersetError(
+                            message=(
+                                f"Result size ("
+                                f"{serialized_payload_size / BYTES_IN_MB:.2f} MB"
+                                f") exceeds the allowed limit of "
+                                f"{sql_lab_payload_max_mb} MB."
+                            ),
+                            error_type=SupersetErrorType.RESULT_TOO_LARGE_ERROR,
+                            level=ErrorLevel.ERROR,
+                        )
+                    )
+
             return payload
 
         return None
@@ -725,10 +786,11 @@ def _apply_limit(
     if query.limit:
         spec = getattr(query.database, "db_engine_spec", None)
         limit_method = getattr(spec, "limit_method", LimitMethod.FORCE_LIMIT)
-        try:
-            statement.set_limit_value(query.limit + 1, limit_method)
-        except Exception:  # noqa: BLE001
-            logger.warning("Could not push LIMIT into SQL", exc_info=True)
+        # 1:1 with the original (superset_old/sql_lab.py:239-244): no
+        # exception handling — if set_limit_value fails (e.g. parse
+        # error), the exception propagates and the query fails rather
+        # than proceeding without a limit clause.
+        statement.set_limit_value(query.limit + 1, limit_method)
 
 
 def _get_cancel_query_id(db_engine_spec: Any, cursor: Any, query: Any) -> str | None:
@@ -778,6 +840,66 @@ def _check_for_oauth2(database: Any) -> Any:
         raise
 
 
+def _run_cursor_execute(
+    cursor: Any,
+    query: Any,
+    db_engine_spec: Any,
+) -> None:
+    """Dispatch the actual cursor execution, mirroring the engine-spec dispatch
+    in ``superset_old/sql_lab.py::execute_query``."""
+    if hasattr(db_engine_spec, "execute_with_cursor"):
+        db_engine_spec.execute_with_cursor(cursor, query.executed_sql, query)
+    elif hasattr(db_engine_spec, "execute"):
+        db_engine_spec.execute(cursor, query.executed_sql, query.database)
+    else:
+        cursor.execute(query.executed_sql)
+
+
+def _fetch_query_data(
+    cursor: Any,
+    query: Any,
+    db_engine_spec: Any,
+) -> list[Any]:
+    """Fetch rows from ``cursor`` and apply the LIMIT+1 overflow-detection trick.
+
+    Mirrors the fetch block inside ``superset_old/sql_lab.py::execute_query``.
+    Updates ``query.limiting_factor`` in-place and returns the (possibly
+    trimmed) row list.
+    """
+    from superset.models.sql_lab import LimitingFactor
+
+    # Apply LIMIT+1 fetch trick to detect overflow.
+    increased_limit = None if query.limit is None else query.limit + 1
+    fetch_fn = getattr(db_engine_spec, "fetch_data", None)
+    if callable(fetch_fn):
+        data = fetch_fn(cursor, increased_limit)
+    elif increased_limit is None:
+        data = cursor.fetchall()
+    else:
+        data = cursor.fetchmany(increased_limit)
+
+    if query.limit is None or len(data) <= query.limit:
+        query.limiting_factor = LimitingFactor.NOT_LIMITED
+    else:
+        # return 1 row less than increased_query
+        data = data[:-1]
+    return data
+
+
+def _wrap_result_set(
+    data: list[Any],
+    cursor_description: Any,
+    db_engine_spec: Any,
+) -> Any:
+    """Wrap raw rows into a SupersetResultSet (or the fallback shim)."""
+    try:
+        from superset.result_set import SupersetResultSet
+
+        return SupersetResultSet(data, cursor_description, db_engine_spec)
+    except Exception:  # noqa: BLE001
+        return _LiteSetResultSet(data, cursor_description)
+
+
 def _execute_query(
     session: Any,
     query: Any,
@@ -825,32 +947,17 @@ def _execute_query(
         # ``db.session.commit()`` at the top of ``execute_query``.
         session.commit()
 
-        with stats_timing("sqllab.query.time_executing_query", stats_logger):
-            if hasattr(db_engine_spec, "execute_with_cursor"):
-                db_engine_spec.execute_with_cursor(cursor, query.executed_sql, query)
-            elif hasattr(db_engine_spec, "execute"):
-                db_engine_spec.execute(cursor, query.executed_sql, query.database)
-            else:
-                cursor.execute(query.executed_sql)
+        with _superset_events.event_logger.log_context(
+            action="execute_sql",
+            database=query.database,
+            object_ref=__name__,
+        ):
+            with stats_timing("sqllab.query.time_executing_query", stats_logger):
+                _run_cursor_execute(cursor, query, db_engine_spec)
 
-        with stats_timing("sqllab.query.time_fetching_results", stats_logger):
-            # Apply LIMIT+1 fetch trick to detect overflow.
-            increased_limit = None if query.limit is None else query.limit + 1
-            fetch_fn = getattr(db_engine_spec, "fetch_data", None)
-            if callable(fetch_fn):
-                data = fetch_fn(cursor, increased_limit)
-            elif increased_limit is None:
-                data = cursor.fetchall()
-            else:
-                data = cursor.fetchmany(increased_limit)
+            with stats_timing("sqllab.query.time_fetching_results", stats_logger):
+                data = _fetch_query_data(cursor, query, db_engine_spec)
 
-            from superset.models.sql_lab import LimitingFactor
-
-            if query.limit is None or len(data) <= query.limit:
-                query.limiting_factor = LimitingFactor.NOT_LIMITED
-            else:
-                # return 1 row less than increased_query
-                data = data[:-1]
     except SoftTimeLimitExceeded as ex:
         from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
         from superset.exceptions import SupersetErrorException
@@ -892,12 +999,7 @@ def _execute_query(
     cursor_description = cursor.description
 
     # Wrap into the original SupersetResultSet when available.
-    try:
-        from superset.result_set import SupersetResultSet
-
-        return SupersetResultSet(data, cursor_description, db_engine_spec)
-    except Exception:  # noqa: BLE001
-        return _LiteSetResultSet(data, cursor_description)
+    return _wrap_result_set(data, cursor_description, db_engine_spec)
 
 
 # ---------------------------------------------------------------------------
@@ -921,9 +1023,7 @@ class _LiteSetResultSet:
                 str(col[0]) if not isinstance(col[0], str) else col[0]
                 for col in cursor_description
             ]
-        self._df = pd.DataFrame(
-            data=[tuple(row) for row in data], columns=column_names
-        )
+        self._df = pd.DataFrame(data=[tuple(row) for row in data], columns=column_names)
         self._columns = [
             {"name": c, "column_name": c, "type": None, "is_dttm": False}
             for c in column_names

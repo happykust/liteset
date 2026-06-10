@@ -87,6 +87,12 @@ class UpdateSavedQueryCommand(AsyncBaseCommand["SavedQuery"]):
                 setattr(self._query, key, value)
         if self._user_id is not None:
             self._query.changed_by_fk = self._user_id
+            # 1:1 with original pre_update at
+            # superset_old/queries/saved_queries/api.py:196-197 which calls
+            # ``self.pre_add(item)`` → ``item.user = g.user``.  This sets the
+            # dedicated ``user_id`` FK column (separate from
+            # AuditMixinNullable's changed_by_fk) on every update.
+            self._query.user_id = self._user_id
         await self._dao.session.flush()
 
         # Sync implicit owner: tags (async port of QueryUpdater.after_update)

@@ -127,7 +127,9 @@ async def test_get_list(controller, mock_dao):
     mock_dao.find_all.assert_awaited_once()
     call_kwargs = mock_dao.find_all.call_args.kwargs
     assert call_kwargs["page"] == 0
-    assert call_kwargs["page_size"] == 25
+    # ``LogRestApi.page_size = 20`` (superset_old/views/log/api.py:76) — the
+    # list default is 20, not FAB's generic 25.
+    assert call_kwargs["page_size"] == 20
     mock_dao.count.assert_awaited_once()
 
 
@@ -150,7 +152,7 @@ async def test_get_single(controller, mock_dao):
     item = MagicMock()
     item.id = 1
     item.action = "explore"
-    mock_dao.find_by_id.return_value = item
+    mock_dao.find_all.return_value = [item]
 
     result = await _get_single(controller, pk=1, dao=mock_dao)
 
@@ -159,11 +161,11 @@ async def test_get_single(controller, mock_dao):
     assert result["id"] == 1
     assert result["result"]["id"] == 1
     assert result["result"]["action"] == "explore"
-    mock_dao.find_by_id.assert_awaited_once_with(1)
+    mock_dao.find_all.assert_awaited_once()
 
 
 async def test_get_single_not_found(controller, mock_dao):
-    mock_dao.find_by_id.return_value = None
+    mock_dao.find_all.return_value = []
 
     with pytest.raises(ObjectNotFoundError):
         await _get_single(controller, pk=999, dao=mock_dao)
@@ -189,14 +191,25 @@ async def test_recent_activity(controller, mock_dao, mock_user):
     assert len(result["result"]) == 1
     assert result["result"][0]["action"] == "mount_explorer"
     assert result["result"][0]["item_type"] == "slice"
-    assert result["result"][0]["item_url"] == "/explore/?slice_id=5"
+    # Matches Slice.build_explore_url in superset_old/models/slice.py:309-316:
+    # f"{base_url}/?slice_id={id_}&form_data={params}" — form_data IS included.
+    import json
+    from urllib import parse as _parse
+
+    expected_form_data = _parse.quote(json.dumps({"slice_id": 5}))
+    assert (
+        result["result"][0]["item_url"]
+        == f"/explore/?slice_id=5&form_data={expected_form_data}"
+    )
     assert "time_delta_humanized" in result["result"][0]
     mock_dao.get_recent_activity.assert_awaited_once_with(
         user_id=1,
         actions=["mount_explorer", "mount_dashboard"],
         distinct=True,
         page=0,
-        page_size=25,
+        # Original ``LogRestApi.page_size = 20`` (superset_old/views/log/api.py:76)
+        # is the default for recent_activity when no page_size arg is supplied.
+        page_size=20,
     )
 
 
@@ -222,3 +235,26 @@ async def test_recent_activity_with_params(controller, mock_dao, mock_user):
 
 async def test_controller_path():
     assert LogController.path == "/api/v1/log"
+
+
+async def test_get_single_eager_loads_user_relationship(controller, mock_dao):
+    """``get_single`` must eager-load ``Log.user``.
+
+    With asyncpg, accessing an unloaded relationship raises ``MissingGreenlet``
+    (not AttributeError), so without ``selectinload(Log.user)`` every
+    GET /api/v1/log/{pk} with a non-NULL user_id 500s. ``get_list`` already
+    eager-loads; this pins the same contract for the single-item path.
+    """
+    item = MagicMock()
+    item.id = 1
+    mock_dao.find_all.return_value = [item]
+
+    await _get_single(controller, pk=1, dao=mock_dao)
+
+    call_kwargs = mock_dao.find_all.call_args.kwargs
+    options = call_kwargs.get("options") or []
+    assert options, "get_single must pass eager-load options to find_all"
+    # The loader option must target the Log.user relationship.
+    assert any("user" in str(opt.path) for opt in options), (
+        f"selectinload(Log.user) expected in options, got: {options}"
+    )

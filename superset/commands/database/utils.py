@@ -95,9 +95,7 @@ def _validate_extra(value: str | None) -> None:
     try:
         extra_ = json.loads(value)
     except json.JSONDecodeError as ex:
-        raise CommandInvalidError(
-            f"Field cannot be decoded by JSON. {ex}"
-        ) from ex
+        raise CommandInvalidError(f"Field cannot be decoded by JSON. {ex}") from ex
 
     # ``extra`` must be a JSON object. Upstream's ``extra_validator`` calls
     # ``extra_.get("metadata_params", …)`` unguarded, so a valid-but-non-object
@@ -162,8 +160,7 @@ def _validate_field_lengths(
         sqlalchemy_uri_min <= len(sqlalchemy_uri) <= SQLALCHEMY_URI_MAX_LEN
     ):
         raise CommandInvalidError(
-            f"Length must be between {sqlalchemy_uri_min} and "
-            f"{SQLALCHEMY_URI_MAX_LEN}."
+            f"Length must be between {sqlalchemy_uri_min} and {SQLALCHEMY_URI_MAX_LEN}."
         )
 
 
@@ -245,9 +242,9 @@ async def add_permissions(
         # long time. If the database does not support cross-catalog queries
         # (like Postgres), and the multi-catalog feature is not enabled, then we
         # only need to add permissions to the default catalog.
-        if getattr(
-            db_engine_spec, "supports_cross_catalog_queries", False
-        ) or getattr(database, "allow_multi_catalog", False):
+        if getattr(db_engine_spec, "supports_cross_catalog_queries", False) or getattr(
+            database, "allow_multi_catalog", False
+        ):
 
             def _fetch_catalogs() -> set[str | None]:
                 with database.get_inspector(ssh_tunnel=ssh_tunnel) as inspector:

@@ -64,7 +64,7 @@ def test_port_translation_func_valid_port_number() -> None:
     expected: AdvancedDataTypeResponse = {
         "values": [[80]],
         "error_message": "",
-        "display_value": "80",
+        "display_value": "[80]",
         "valid_filter_operators": EXPECTED_OPERATORS,
     }
     assert port.translate_type(req) == expected
@@ -79,7 +79,7 @@ def test_port_translation_func_valid_port_name() -> None:
     expected: AdvancedDataTypeResponse = {
         "values": [[443]],
         "error_message": "",
-        "display_value": "443",
+        "display_value": "[443]",
         "valid_filter_operators": EXPECTED_OPERATORS,
     }
     assert port.translate_type(req) == expected

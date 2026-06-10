@@ -51,7 +51,7 @@ class DashboardEncoder(simplejson.JSONEncoder):
         super().__init__(*args, **kwargs)
         self.sort_keys = True
 
-    def default(self, o: Any) -> Union[dict[Any, Any], str]:  # type: ignore
+    def default(self, o: Any) -> Union[dict[Any, Any], str]:
         if isinstance(o, uuid.UUID):
             return str(o)
         try:

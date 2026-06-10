@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import cast
 
 from superset.commands.distributed_lock.base import BaseDistributedLockCommand
@@ -31,14 +32,22 @@ logger = logging.getLogger(__name__)
 class GetDistributedLock(BaseDistributedLockCommand):
     """Return the decoded LockValue for ``self.key`` or ``None``.
 
-    Mirrors the sync original; the underlying ``get_entry_by_key`` already
-    filters out expired rows so no second ``is_expired()`` check is needed.
+    Mirrors the sync original: superset_old/commands/distributed_lock/get.py:42
+    checks ``if not entry or entry.is_expired(): return None`` after calling
+    ``KeyValueDAO.get_entry()`` which has no SQL expiry filter.  The async DAO's
+    ``get_entry_by_key`` likewise performs no expiry filtering, so we must inline
+    the same ``is_expired()`` check here.
     """
 
     async def run(self) -> LockValue | None:
         dao = AsyncKeyValueDAO(self.session)
         entry = await dao.get_entry_by_key(self.resource, self.key)
         if entry is None:
+            return None
+        # Mirror superset_old/commands/distributed_lock/get.py:42:
+        #   if not entry or entry.is_expired(): return None
+        # KeyValueEntry.is_expired() == (expires_on is not None and expires_on <= now())
+        if entry.expires_on is not None and entry.expires_on <= datetime.now():
             return None
         raw = cast("bytes | str", entry.value)
         if isinstance(raw, str):

@@ -24,10 +24,10 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 import yaml  # type: ignore[import-untyped]
-from superset.utils.file import secure_filename
 
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.importexport.export_base import AsyncExportModelsCommand
+from superset.utils.file import get_filename
 from superset.utils.ssh_tunnel import mask_password_info
 
 if TYPE_CHECKING:
@@ -46,12 +46,13 @@ def _parse_extra(extra_payload: str) -> dict[str, Any]:
         logger.info("Unable to decode `extra` field: %s", extra_payload)
         return {}
 
+    # Fix for DBs saved with an invalid ``schemas_allowed_for_csv_upload``.
+    # Note: if the stored value is a string that is not valid JSON, json.loads
+    # raises JSONDecodeError — intentionally NOT caught here, matching the
+    # original superset_old/commands/database/export.py:46-49 behaviour.
     schemas_allowed = extra.get("schemas_allowed_for_csv_upload")
     if isinstance(schemas_allowed, str):
-        try:
-            extra["schemas_allowed_for_csv_upload"] = json.loads(schemas_allowed)
-        except (json.JSONDecodeError, TypeError):
-            pass
+        extra["schemas_allowed_for_csv_upload"] = json.loads(schemas_allowed)
     return extra
 
 
@@ -73,13 +74,29 @@ class ExportDatabasesCommand(AsyncExportModelsCommand):
         self,
         model_ids: list[int],
         dao: AsyncDatabaseDAO | None = None,
+        security_manager: Any = None,
+        user: Any = None,
+        export_related: bool = True,
     ) -> None:
-        super().__init__(model_ids)
+        super().__init__(
+            model_ids,
+            security_manager=security_manager,
+            user=user,
+            export_related=export_related,
+        )
         self._dao = dao
+
+    async def validate(self) -> None:
+        from superset.db.filters import database_access_filters
+        from superset.models.core import Database
+
+        await self._validate_access(
+            self._dao, Database, database_access_filters, "Database"
+        )
 
     @staticmethod
     def _file_name(model: Any) -> str:
-        slug = secure_filename(model.database_name or "") or "unnamed"
+        slug = get_filename(model.database_name, model.id, skip_id=True)
         return f"databases/{slug}.yaml"
 
     @staticmethod
@@ -128,41 +145,39 @@ class ExportDatabasesCommand(AsyncExportModelsCommand):
         ]
 
         # Related datasets — recursive export with UUID-keyed parent ref.
-        datasets = await self._dao.get_datasets(model_id)
-        db_slug = secure_filename(database.database_name or "") or "unnamed"
-        for dataset in datasets:
-            ds_payload = dataset.export_to_dict(
-                recursive=True,
-                include_parent_ref=False,
-                include_defaults=True,
-                export_uuids=True,
-            )
-            # Decode JSON string fields for readable YAML.
-            for key in ("params", "template_params", "extra"):
-                if ds_payload.get(key):
-                    try:
-                        ds_payload[key] = json.loads(ds_payload[key])
-                    except (TypeError, json.JSONDecodeError):
-                        pass
-            for nested in ("metrics", "columns"):
-                for attrs in ds_payload.get(nested, []) or []:
-                    if isinstance(attrs.get("extra"), str):
-                        try:
-                            attrs["extra"] = json.loads(attrs["extra"])
-                        except (TypeError, json.JSONDecodeError):
-                            pass
-            ds_payload["version"] = EXPORT_VERSION
-            ds_payload["database_uuid"] = (
-                str(database.uuid) if getattr(database, "uuid", None) else None
-            )
-            ds_slug = (
-                secure_filename(getattr(dataset, "table_name", "") or "") or "unnamed"
-            )
-            files.append(
-                (
-                    f"datasets/{db_slug}/{ds_slug}.yaml",
-                    yaml.safe_dump(ds_payload, sort_keys=False),
+        # Guard on self._export_related matches the original
+        # superset_old/commands/database/export.py:114 ``if export_related:``
+        # block; the full-bundle export manager (importexport/manager.py:266)
+        # instantiates this command with export_related=False to suppress
+        # dataset emission when ExportDatasetsCommand already produces them.
+        if self._export_related:
+            datasets = await self._dao.get_datasets(model_id)
+            db_slug = get_filename(database.database_name, database.id, skip_id=True)
+            for dataset in datasets:
+                ds_payload = dataset.export_to_dict(
+                    recursive=True,
+                    include_parent_ref=False,
+                    include_defaults=True,
+                    export_uuids=True,
                 )
-            )
+                # 1:1 with original superset_old/commands/database/export.py:122-129:
+                # only stamp version and database_uuid; do NOT decode JSON string
+                # fields (params/template_params/extra).  JSON decoding of those
+                # fields is the responsibility of ExportDatasetsCommand._file_content,
+                # not of the database exporter's inline dataset path.
+                ds_payload["version"] = EXPORT_VERSION
+                # 1:1 with the original ``str(model.database.uuid)`` — a NULL
+                # uuid serialises as the STRING "None", not YAML null (the
+                # importer's uuid-string lookup then misses identically).
+                ds_payload["database_uuid"] = str(getattr(database, "uuid", None))
+                ds_slug = get_filename(
+                    getattr(dataset, "table_name", ""), dataset.id, skip_id=True
+                )
+                files.append(
+                    (
+                        f"datasets/{db_slug}/{ds_slug}.yaml",
+                        yaml.safe_dump(ds_payload, sort_keys=False),
+                    )
+                )
 
         return files

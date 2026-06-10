@@ -16,7 +16,8 @@
 # under the License.
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -53,6 +54,28 @@ def mock_report():
     report.dashboard_id = None
     report.database_id = None
     return report
+
+
+@pytest.fixture
+def mock_security_manager():
+    sm = MagicMock()
+    current_user = MagicMock()
+    current_user.id = 1
+    sm.find_user_by_id = AsyncMock(
+        side_effect=lambda uid: current_user if uid == 1 else None
+    )
+    sm.is_admin = MagicMock(return_value=True)
+    sm.raise_for_ownership = AsyncMock()
+    return sm
+
+
+@pytest.fixture(autouse=True)
+def patch_build_async_security_manager(mock_security_manager):
+    with patch(
+        "superset.security.manager.build_async_security_manager",
+        return_value=mock_security_manager,
+    ):
+        yield
 
 
 # --- CreateReportScheduleCommand ---
@@ -105,8 +128,11 @@ async def test_create_report_validates_uniqueness(mock_dao):
         data={"name": "Existing", "type": "Report", "crontab": "0 * * * *"},
         user_id=1,
     )
-    with pytest.raises(CommandInvalidError, match="already exists"):
+    from superset.commands.report_exceptions import ReportScheduleInvalidError
+
+    with pytest.raises(ReportScheduleInvalidError) as exc_info:
         await cmd.validate()
+    assert "already exists" in str(exc_info.value.normalized_messages())
 
 
 async def test_create_report_success(mock_dao, mock_report):
@@ -162,7 +188,13 @@ async def test_create_report_rejects_database_reference(mock_dao):
 
 
 async def test_create_report_without_database_allowed(mock_dao):
-    """A REPORT-type payload with no database reference is fine."""
+    """A REPORT-type payload with no database reference is fine.
+
+    The schema omits an absent ``database`` from the loaded dict (UNSET →
+    filter_unset), so the command sees NO key — 1:1 with Marshmallow
+    ``fields.Integer(required=False)``. The rule itself is key-presence
+    based (``"database" in data``, superset_old/reports/schemas.py:272).
+    """
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
     mock_dao.validate_unique_creation_method = AsyncMock(return_value=True)
     cmd = CreateReportScheduleCommand(
@@ -172,13 +204,38 @@ async def test_create_report_without_database_allowed(mock_dao):
             "type": "Report",
             "crontab": "0 * * * *",
             "chart": 1,
-            "database": None,
         },
         user_id=1,
     )
     # Must not raise on the database-reference rule (chart is set so the
     # chart/dashboard rule passes too).
     await cmd.validate()
+
+
+async def test_create_report_with_database_key_rejected(mock_dao):
+    """A REPORT-type payload CONTAINING a database key is rejected.
+
+    1:1 with ``validate_report_references`` (superset_old/reports/
+    schemas.py:265-275): key presence, not value truthiness.
+    """
+    from superset.commands.report_exceptions import ReportScheduleInvalidError
+
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
+    mock_dao.validate_unique_creation_method = AsyncMock(return_value=True)
+    cmd = CreateReportScheduleCommand(
+        dao=mock_dao,
+        data={
+            "name": "Test Report",
+            "type": "Report",
+            "crontab": "0 * * * *",
+            "chart": 1,
+            "database": 7,
+        },
+        user_id=1,
+    )
+    with pytest.raises(ReportScheduleInvalidError) as exc_info:
+        await cmd.validate()
+    assert "database" in exc_info.value.normalized_messages()
 
 
 async def test_create_report_rejects_custom_width_below_min(mock_dao):
@@ -288,8 +345,13 @@ async def test_create_report_run_strips_none_report_format(mock_dao, mock_report
 
     # Verify that the dict passed to dao.create does NOT contain report_format=None
     call_kwargs = mock_dao.create.call_args
-    passed_data: dict = call_kwargs[0][0] if call_kwargs[0] else call_kwargs[1].get("data", {})
-    assert passed_data.get("report_format") is not None or "report_format" not in passed_data
+    passed_data: dict = (
+        call_kwargs[0][0] if call_kwargs[0] else call_kwargs[1].get("data", {})
+    )
+    assert (
+        passed_data.get("report_format") is not None
+        or "report_format" not in passed_data
+    )
 
 
 async def test_update_report_rejects_custom_width_out_of_range(mock_dao, mock_report):
@@ -331,8 +393,11 @@ async def test_update_report_validates_uniqueness(mock_dao, mock_report):
     cmd = UpdateReportScheduleCommand(
         dao=mock_dao, pk=1, data={"name": "Duplicate Name"}
     )
-    with pytest.raises(CommandInvalidError, match="already exists"):
+    from superset.commands.report_exceptions import ReportScheduleInvalidError
+
+    with pytest.raises(ReportScheduleInvalidError) as exc_info:
         await cmd.validate()
+    assert "already exists" in str(exc_info.value.normalized_messages())
 
 
 async def test_update_report_success(mock_dao, mock_report):
@@ -394,3 +459,357 @@ async def test_bulk_delete_success(mock_dao, mock_report):
     await cmd.run()
     mock_dao.delete.assert_awaited_once_with([mock_report, report2])
     mock_dao.session.flush.assert_awaited_once()
+
+
+async def test_bulk_delete_db_error_raises_delete_failed_error(mock_dao, mock_report):
+    """A SQLAlchemy error during bulk-delete must surface as
+    ReportScheduleDeleteFailedError, not a raw SQLAlchemyError.
+
+    1:1 with superset_old/reports/api.py:505-521:
+    ``DeleteReportScheduleCommand`` is decorated with
+    ``@transaction(on_error=…, reraise=ReportScheduleDeleteFailedError)``
+    so DB failures are wrapped before the API handler catches them as HTTP 422.
+    The liteset BulkDeleteReportScheduleCommand.run() must mirror that
+    behaviour — if it propagated raw SQLAlchemyError the global handler
+    would return 500 instead of 422.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from superset.commands.report_exceptions import ReportScheduleDeleteFailedError
+
+    mock_dao.find_by_ids = AsyncMock(return_value=[mock_report])
+    mock_dao.delete = AsyncMock(side_effect=SQLAlchemyError("connection lost"))
+    cmd = BulkDeleteReportScheduleCommand(dao=mock_dao, ids=[1])
+    await cmd.validate()
+    with pytest.raises(ReportScheduleDeleteFailedError):
+        await cmd.run()
+
+
+# --- Owner validation error shape (regression for 1:1 parity) ---
+
+
+async def test_create_report_invalid_owner_produces_field_keyed_error(mock_dao):
+    """Invalid owner IDs on POST must raise ReportScheduleInvalidError with
+    normalized_messages() == {"owners": ["Owners are invalid"]}.
+
+    1:1 with create.py:125-131: owner errors are collected into
+    ReportScheduleInvalidError (field-keyed dict message) rather than
+    escaping as a flat-string OwnersNotFoundValidationError.
+    """
+    from superset.commands.report_exceptions import ReportScheduleInvalidError
+
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
+    mock_dao.validate_unique_creation_method = AsyncMock(return_value=True)
+
+    current_user = MagicMock()
+    current_user.id = 1
+
+    sm = MagicMock()
+    # current_user_id=1 → valid; any other id (e.g. 999) → None → OwnersNotFound
+    sm.find_user_by_id = AsyncMock(
+        side_effect=lambda uid: current_user if uid == 1 else None
+    )
+    sm.is_admin = MagicMock(return_value=True)
+
+    cmd = CreateReportScheduleCommand(
+        dao=mock_dao,
+        data={
+            "name": "Test Report",
+            "type": "Report",
+            "crontab": "0 * * * *",
+            "chart": 1,
+            "owners": [999],  # invalid owner id
+        },
+        user_id=1,
+        security_manager=sm,
+    )
+    with pytest.raises(ReportScheduleInvalidError) as exc_info:
+        await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert messages == {"owners": ["Owners are invalid"]}
+
+
+async def test_update_report_invalid_owner_produces_field_keyed_error(
+    mock_dao, mock_report
+):
+    """Invalid owner IDs on PUT must raise ReportScheduleInvalidError with
+    normalized_messages() == {"owners": ["Owners are invalid"]}.
+
+    1:1 with update.py:130-139: owner errors are collected into
+    ReportScheduleInvalidError (field-keyed dict message) rather than
+    escaping as a flat-string OwnersNotFoundValidationError.
+    """
+    from superset.commands.report_exceptions import ReportScheduleInvalidError
+
+    mock_dao.find_by_id = AsyncMock(return_value=mock_report)
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
+    mock_report.owners = []  # ensure list(self._report.owners) works
+
+    current_user = MagicMock()
+    current_user.id = 1
+
+    sm = MagicMock()
+    sm.find_user_by_id = AsyncMock(
+        side_effect=lambda uid: current_user if uid == 1 else None
+    )
+    sm.is_admin = MagicMock(return_value=True)
+    sm.raise_for_ownership = AsyncMock()  # ownership check passes
+
+    cmd = UpdateReportScheduleCommand(
+        dao=mock_dao,
+        pk=1,
+        data={"owners": [999]},  # invalid owner id
+        user_id=1,
+        security_manager=sm,
+    )
+    with pytest.raises(ReportScheduleInvalidError) as exc_info:
+        await cmd.validate()
+    messages = exc_info.value.normalized_messages()
+    assert messages == {"owners": ["Owners are invalid"]}
+
+
+# ---------------------------------------------------------------------------
+# Slack cache helpers — _slack_cache_get / _slack_cache_set
+#
+# Regression: the original implementation used asyncio.get_event_loop() +
+# loop.run_until_complete() / asyncio.run() which both raise RuntimeError
+# when called from a sync function running on the async event loop thread.
+# The fix uses cache_manager.sync_cache (synchronous Redis/null/memory
+# backend), mirroring the original Flask @cache_util.memoized_func decorator.
+# ---------------------------------------------------------------------------
+
+
+def _make_sync_cache_mock(get_return: object = None) -> MagicMock:
+    """Return a mock that behaves like SyncCacheProtocol."""
+    m = MagicMock()
+    m.get = MagicMock(return_value=get_return)
+    m.set = MagicMock(return_value=None)
+    return m
+
+
+def _make_cm_mock(sync_cache_mock: MagicMock) -> MagicMock:
+    cm = MagicMock()
+    cm.sync_cache = sync_cache_mock
+    return cm
+
+
+# --- _slack_cache_get ---
+
+
+def test_slack_cache_get_returns_list_from_sync_cache():
+    """cache hit → list returned directly without any asyncio gymnastics."""
+    from superset.controllers.report import _slack_cache_get
+
+    channels = [{"id": "C1", "name": "general"}]
+    sync_cache = _make_sync_cache_mock(get_return=channels)
+    cm = _make_cm_mock(sync_cache)
+
+    with patch("superset.extensions.cache_manager", cm):
+        result = _slack_cache_get()
+
+    assert result == channels
+    sync_cache.get.assert_called_once_with("slack_conversations_list")
+
+
+def test_slack_cache_get_returns_none_on_cache_miss():
+    """cache miss (None) → None returned."""
+    from superset.controllers.report import _slack_cache_get
+
+    sync_cache = _make_sync_cache_mock(get_return=None)
+    cm = _make_cm_mock(sync_cache)
+
+    with patch("superset.extensions.cache_manager", cm):
+        result = _slack_cache_get()
+
+    assert result is None
+
+
+def test_slack_cache_get_handles_json_string_payload():
+    """Legacy JSON-string payload (bytes written before schema migration) is decoded."""
+    from superset.controllers.report import _slack_cache_get
+
+    channels = [{"id": "C2", "name": "random"}]
+    sync_cache = _make_sync_cache_mock(get_return=json.dumps(channels))
+    cm = _make_cm_mock(sync_cache)
+
+    with patch("superset.extensions.cache_manager", cm):
+        result = _slack_cache_get()
+
+    assert result == channels
+
+
+def test_slack_cache_get_handles_bytes_payload():
+    """Legacy bytes payload is decoded and JSON-parsed."""
+    from superset.controllers.report import _slack_cache_get
+
+    channels = [{"id": "C3", "name": "ops"}]
+    sync_cache = _make_sync_cache_mock(get_return=json.dumps(channels).encode())
+    cm = _make_cm_mock(sync_cache)
+
+    with patch("superset.extensions.cache_manager", cm):
+        result = _slack_cache_get()
+
+    assert result == channels
+
+
+def test_slack_cache_get_swallows_exception():
+    """Any exception from sync_cache.get is swallowed and None returned."""
+    from superset.controllers.report import _slack_cache_get
+
+    sync_cache = MagicMock()
+    sync_cache.get = MagicMock(side_effect=RuntimeError("redis down"))
+    cm = _make_cm_mock(sync_cache)
+
+    with patch("superset.extensions.cache_manager", cm):
+        result = _slack_cache_get()
+
+    assert result is None
+
+
+def test_slack_cache_get_does_not_use_asyncio_run():
+    """_slack_cache_get must never call asyncio.run() or loop.run_until_complete().
+
+    This is the core regression guard: the old broken code tried to run async
+    cache ops from a sync function on the event loop thread, causing RuntimeError
+    that silently disabled caching.  The fix uses sync_cache so asyncio is not
+    involved at all.
+    """
+    import asyncio
+
+    from superset.controllers.report import _slack_cache_get
+
+    channels = [{"id": "C4", "name": "alerts"}]
+    sync_cache = _make_sync_cache_mock(get_return=channels)
+    cm = _make_cm_mock(sync_cache)
+
+    def _fail_if_called(*args: object, **kwargs: object) -> object:
+        raise AssertionError(
+            "_slack_cache_get must not call asyncio.run() — "
+            "it runs on the event-loop thread"
+        )
+
+    with patch("superset.extensions.cache_manager", cm):
+        with patch.object(asyncio, "run", side_effect=_fail_if_called):
+            result = _slack_cache_get()
+
+    assert result == channels
+
+
+# --- _slack_cache_set ---
+
+
+def test_slack_cache_set_calls_sync_cache_set():
+    """cache write uses sync_cache.set with the correct key, value and TTL."""
+    from superset.controllers.report import _slack_cache_set
+
+    channels = [{"id": "C5", "name": "devops"}]
+    ttl = 1800
+    sync_cache = _make_sync_cache_mock()
+    cm = _make_cm_mock(sync_cache)
+
+    with patch("superset.extensions.cache_manager", cm):
+        _slack_cache_set(channels, ttl)
+
+    sync_cache.set.assert_called_once_with(
+        "slack_conversations_list", channels, ttl=ttl
+    )
+
+
+def test_slack_cache_set_swallows_exception():
+    """Any exception from sync_cache.set is swallowed — never propagated."""
+    from superset.controllers.report import _slack_cache_set
+
+    sync_cache = MagicMock()
+    sync_cache.set = MagicMock(side_effect=RuntimeError("redis down"))
+    cm = _make_cm_mock(sync_cache)
+
+    # Must not raise
+    with patch("superset.extensions.cache_manager", cm):
+        _slack_cache_set([{"id": "C6", "name": "test"}], 600)
+
+
+def test_slack_cache_set_does_not_use_asyncio_run():
+    """_slack_cache_set must never call asyncio.run()."""
+    import asyncio
+
+    from superset.controllers.report import _slack_cache_set
+
+    sync_cache = _make_sync_cache_mock()
+    cm = _make_cm_mock(sync_cache)
+
+    def _fail_if_called(*args: object, **kwargs: object) -> object:
+        raise AssertionError(
+            "_slack_cache_set must not call asyncio.run() — "
+            "it runs on the event-loop thread"
+        )
+
+    with patch("superset.extensions.cache_manager", cm):
+        with patch.object(asyncio, "run", side_effect=_fail_if_called):
+            _slack_cache_set([{"id": "C7", "name": "infra"}], 900)
+
+    sync_cache.set.assert_called_once()
+
+
+# --- _get_slack_channels integration ---
+
+
+def test_get_slack_channels_uses_cache_hit_and_skips_api():
+    """On a cache hit _get_slack_channels must NOT call the Slack API."""
+    from superset.controllers.report import _get_slack_channels
+
+    cached = [{"id": "C8", "name": "cached-channel", "is_private": False}]
+    sync_cache = _make_sync_cache_mock(get_return=cached)
+    cm = _make_cm_mock(sync_cache)
+
+    with (
+        patch("superset.extensions.cache_manager", cm),
+        patch("superset.controllers.report._slack_fetch_all_channels") as mock_fetch,
+        patch("slack_sdk.WebClient", MagicMock()),
+        patch(
+            "superset.config.SupersetSettings",
+            return_value=MagicMock(
+                slack_api_token="xoxb-test",
+                slack_proxy=None,
+                slack_api_rate_limit_retry_count=2,
+                slack_cache_timeout=1800,
+            ),
+        ),
+    ):
+        result = _get_slack_channels()
+
+    mock_fetch.assert_not_called()
+    assert result == cached
+
+
+def test_get_slack_channels_stores_result_in_cache_on_miss():
+    """On a cache miss, the Slack API result must be written to sync_cache."""
+    from superset.controllers.report import _get_slack_channels
+
+    fetched = [{"id": "C9", "name": "fresh", "is_private": False}]
+    sync_cache = _make_sync_cache_mock(get_return=None)  # cache miss
+    cm = _make_cm_mock(sync_cache)
+
+    mock_settings = MagicMock()
+    mock_settings.slack_api_token = "xoxb-test"
+    mock_settings.slack_proxy = None
+    mock_settings.slack_api_rate_limit_retry_count = 2
+    mock_settings.slack_cache_timeout = 1800
+
+    with (
+        patch("superset.extensions.cache_manager", cm),
+        patch(
+            "superset.controllers.report._slack_fetch_all_channels",
+            return_value=fetched,
+        ),
+        patch("slack_sdk.WebClient", MagicMock()),
+        patch(
+            "superset.config.SupersetSettings",
+            return_value=mock_settings,
+        ),
+    ):
+        result = _get_slack_channels()
+
+    assert result == fetched
+    sync_cache.set.assert_called_once_with(
+        "slack_conversations_list", fetched, ttl=1800
+    )

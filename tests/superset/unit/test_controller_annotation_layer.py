@@ -73,6 +73,73 @@ async def test_get_single_includes_result_id(mock_dao, mock_layer):
     assert resp["result"]["name"] == "Test Layer"
 
 
+async def test_get_single_result_excludes_timestamps(mock_dao, mock_layer):
+    """Upstream show_columns = ["id", "name", "descr"] — created_on and
+    changed_on must NOT appear in the single-item result dict."""
+    from superset.controllers.annotation_layer import AnnotationLayerController
+
+    mock_dao.find_by_id = AsyncMock(return_value=mock_layer)
+    handler = AnnotationLayerController.get_single
+    fn = handler.fn if hasattr(handler, "fn") else handler
+
+    resp = await fn(AnnotationLayerController(owner=MagicMock()), pk=1, dao=mock_dao)
+
+    assert set(resp["result"].keys()) == {"id", "name", "descr"}
+    assert "created_on" not in resp["result"]
+    assert "changed_on" not in resp["result"]
+
+
+async def test_update_result_excludes_timestamps(mock_dao, mock_layer):
+    """Upstream PUT returns result=item (the submitted schema dict).
+    created_on and changed_on must NOT appear in the PUT result dict."""
+    from superset.controllers.annotation_layer import AnnotationLayerController
+    from superset.schemas.annotation import AnnotationLayerPutSchema
+
+    mock_dao.find_by_id = AsyncMock(return_value=mock_layer)
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
+    mock_dao.update = AsyncMock(return_value=mock_layer)
+
+    data = AnnotationLayerPutSchema(name="Updated", descr="new desc")
+    handler = AnnotationLayerController.update
+    fn = handler.fn if hasattr(handler, "fn") else handler
+
+    resp = await fn(
+        AnnotationLayerController(owner=MagicMock()), pk=1, data=data, dao=mock_dao
+    )
+
+    assert resp["id"] == 1
+    assert "created_on" not in resp["result"]
+    assert "changed_on" not in resp["result"]
+    assert resp["result"]["name"] == "Updated"
+    assert resp["result"]["descr"] == "new desc"
+
+
+async def test_update_result_includes_layer_key(mock_dao, mock_layer):
+    """Upstream PUT adds ``item["layer"] = pk`` to the result dict before returning
+    (superset_old/annotation_layers/api.py:278).  The liteset controller must echo
+    ``layer`` in the result so that the response contract is 1:1 with the original."""
+    from superset.controllers.annotation_layer import AnnotationLayerController
+    from superset.schemas.annotation import AnnotationLayerPutSchema
+
+    mock_dao.find_by_id = AsyncMock(return_value=mock_layer)
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
+    mock_dao.update = AsyncMock(return_value=mock_layer)
+
+    data = AnnotationLayerPutSchema(name="Updated", descr="new desc")
+    handler = AnnotationLayerController.update
+    fn = handler.fn if hasattr(handler, "fn") else handler
+
+    resp = await fn(
+        AnnotationLayerController(owner=MagicMock()), pk=5, data=data, dao=mock_dao
+    )
+
+    # result must carry the layer key echoing the path param pk
+    assert resp["result"]["layer"] == 5
+    # submitted fields also present
+    assert resp["result"]["name"] == "Updated"
+    assert resp["result"]["descr"] == "new desc"
+
+
 # ---------------------------------------------------------------------------
 # CreateAnnotationLayerCommand
 # ---------------------------------------------------------------------------

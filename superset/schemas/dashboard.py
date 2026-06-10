@@ -62,17 +62,13 @@ def _validate_json_string(
     if value == "" or value == b"":
         if allow_empty:
             return
-        raise msgspec.ValidationError(
-            f"{field_name} cannot be empty"
-        )
+        raise msgspec.ValidationError(f"{field_name} cannot be empty")
     import json as _json
 
     try:
         _json.loads(value)
     except (ValueError, TypeError) as ex:
-        raise msgspec.ValidationError(
-            f"{field_name} is not valid JSON: {ex}"
-        ) from ex
+        raise msgspec.ValidationError(f"{field_name} is not valid JSON: {ex}") from ex
 
 
 def _validate_json_object(field_name: str, value: Any) -> None:
@@ -98,9 +94,7 @@ def _validate_json_object(field_name: str, value: Any) -> None:
     except (ValueError, TypeError):
         return  # parse errors are reported by _validate_json_string
     if not isinstance(parsed, dict):
-        raise msgspec.ValidationError(
-            f"{field_name} must be a JSON object"
-        )
+        raise msgspec.ValidationError(f"{field_name} must be a JSON object")
 
 
 def _normalize_id_list(
@@ -220,6 +214,18 @@ class DashboardColorsUpdateSchema(msgspec.Struct):
     label_colors: dict[str, str] = {}
     color_scheme_domain: list[str] = []
 
+    def __post_init__(self) -> None:
+        # 1:1 with ``SharedLabelsColorsField._deserialize``
+        # (superset_old/dashboards/schemas.py:130-135): when the value is a
+        # dict (backward-compat format), coerce to an empty list so downstream
+        # consumers always see a list.  When it's a list with non-string items
+        # raise a ValidationError.
+        if isinstance(self.shared_label_colors, dict):
+            self.shared_label_colors = []
+        elif isinstance(self.shared_label_colors, list):
+            if not all(isinstance(item, str) for item in self.shared_label_colors):
+                raise msgspec.ValidationError("shared_label_colors: Not a valid list")
+
 
 class DashboardScreenshotSchema(msgspec.Struct, rename="camel"):
     """POST /api/v1/dashboard/<pk>/cache_dashboard_screenshot/"""
@@ -250,10 +256,13 @@ class FilterStateSchema(msgspec.Struct):
     validate_json``). The temporary-cache store doesn't enforce JSON at
     the DB layer, but the frontend loads the value with ``JSON.parse``
     on retrieval — a malformed payload poisons the dashboard URL.
+
+    Note: ``tab_id`` is NOT part of the body schema — the original reads
+    it from the query string (``request.args.get("tab_id")``). See the
+    controller for the Litestar ``Parameter(query="tab_id")`` binding.
     """
 
     value: str
-    tab_id: int | None = None
 
     def __post_init__(self) -> None:
         _validate_json_string("value", self.value, allow_empty=False)
@@ -289,6 +298,15 @@ class DashboardJSONMetadata(msgspec.Struct):
     import_time: int | None = None
     remote_id: int | None = None
     native_filter_migration: dict[str, Any] = {}
+
+    def __post_init__(self) -> None:
+        # 1:1 with ``SharedLabelsColorsField._deserialize``
+        # (superset_old/dashboards/schemas.py:130-135): when the value is a
+        # dict (backward-compat format), coerce to an empty list so downstream
+        # consumers always see a list.  When it's a list with non-string items
+        # raise a ValidationError.
+        if isinstance(self.shared_label_colors, dict):
+            self.shared_label_colors = []
 
 
 # ---------------------------------------------------------------------------

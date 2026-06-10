@@ -338,7 +338,9 @@ class MotherDuckEngineSpec(DuckDBEngineSpec):
             )
 
         return str(
-            URL.create(drivername=DuckDBEngineSpec.engine, database=database, query=query)
+            URL.create(
+                drivername=DuckDBEngineSpec.engine, database=database, query=query
+            )
         )
 
     @classmethod

@@ -25,7 +25,6 @@ Two controllers live here:
 
 from __future__ import annotations
 
-import json
 from typing import Any
 from urllib.parse import urlparse
 
@@ -36,8 +35,9 @@ from litestar.di import Provide
 from litestar.response import Response, Template
 
 from superset.exceptions import SupersetNotFoundError
-from superset.guards.rbac import require_permission
+from superset.guards.rbac import require_feature_flag, require_permission
 from superset.providers import provide_embedded_dao
+from superset.utils import json as json_utils
 
 
 def _same_origin(url1: str | None, url2: str | None) -> bool:
@@ -52,8 +52,12 @@ def _same_origin(url1: str | None, url2: str | None) -> bool:
     try:
         p1 = urlparse(url1)
         p2 = urlparse(url2)
-        # netloc includes port when it is non-standard (e.g. "example.com:8080")
-        return (p1.scheme, p1.netloc) == (p2.scheme, p2.netloc)
+        # Mirror flask_wtf.csrf.same_origin exactly: use .hostname (auto-lowercased)
+        # and .port (int or None) separately so that uppercase hostnames in headers
+        # are treated case-insensitively, matching the original contract.
+        return (
+            p1.scheme == p2.scheme and p1.hostname == p2.hostname and p1.port == p2.port
+        )
     except Exception:  # noqa: BLE001
         return False
 
@@ -61,63 +65,10 @@ def _same_origin(url1: str | None, url2: str | None) -> bool:
 class EmbeddedDashboardController(Controller):
     path = "/api/v1/embedded_dashboard"
     tags = ["Embedded Dashboard"]
+    guards = [require_feature_flag("EMBEDDED_SUPERSET")]
     dependencies = {
         "embedded_dao": Provide(provide_embedded_dao, sync_to_thread=False),
     }
-
-    @get(
-        "/",
-        guards=[require_permission("can_read", "EmbeddedDashboard")],
-    )
-    async def get_list(
-        self,
-        state: State,
-        embedded_dao: Any,
-    ) -> dict[str, Any]:
-        """GET /api/v1/embedded_dashboard/ — list embedded dashboards.
-
-        1:1 with the original ``EmbeddedDashboardRestApi`` which inherits
-        ``BaseSupersetModelRestApi`` and auto-generates a GET ``/`` list.
-        """
-        from superset.controllers.base import (
-            build_rison_query_params,
-            serialize_list_response,
-        )
-        from superset.models.embedded_dashboard import EmbeddedDashboard
-
-        # Gate on the EMBEDDED_SUPERSET feature flag like the single-GET path
-        # (mirrors the original's ``@before_request ensure_embedded_enabled``).
-        feature_flags = getattr(state.settings, "feature_flags", {})
-        if not feature_flags.get("EMBEDDED_SUPERSET", False):
-            raise SupersetNotFoundError("Embedded dashboards are not enabled")
-
-        rison_filters, order_by, page, page_size = build_rison_query_params(
-            EmbeddedDashboard,
-            None,
-        )
-        items = await embedded_dao.find_all(
-            filters=rison_filters or None,
-            page=page,
-            page_size=page_size,
-            order_by=order_by,
-        )
-        total = await embedded_dao.count(filters=rison_filters or None)
-        # Match the original auto-list columns (no explicit ``list_columns``
-        # override, so FAB defaults to the model surface).
-        return serialize_list_response(
-            items,
-            total,
-            [
-                "uuid",
-                "dashboard_id",
-                "allow_domain_list",
-                "changed_on_delta_humanized",
-                "changed_by.first_name",
-                "changed_by.id",
-                "changed_by.last_name",
-            ],
-            list_title="List Embedded Dashboard",
-        )
 
     @get(
         "/{uuid:str}",
@@ -130,26 +81,45 @@ class EmbeddedDashboardController(Controller):
         embedded_dao: Any,
     ) -> dict[str, Any]:
         """GET /api/v1/embedded_dashboard/{uuid} — get embedded dashboard config."""
-        # Check EMBEDDED_SUPERSET feature flag
-        feature_flags = getattr(state.settings, "feature_flags", {})
-        if not feature_flags.get("EMBEDDED_SUPERSET", False):
-            raise SupersetNotFoundError("Embedded dashboards are not enabled")
 
         embedded = await embedded_dao.find_by_uuid(uuid)
         if embedded is None:
             raise SupersetNotFoundError("Embedded dashboard not found")
 
-        # allow_domain_list is stored as comma-separated string in the DB
+        # allow_domain_list is stored as comma-separated string in the DB.
+        # 1:1 with ``EmbeddedDashboard.allowed_domains`` (superset_old/models/
+        # embedded_dashboard.py:54-60): plain ``split(",")`` with NO
+        # empty-token filtering — ``'a,,b'`` yields ``['a', '', 'b']``.
         raw_domains = getattr(embedded, "allow_domain_list", None)
         allowed_domains: list[str] = []
         if raw_domains:
-            allowed_domains = [d for d in raw_domains.split(",") if d]
+            allowed_domains = raw_domains.split(",")
+
+        # Build changed_by nested dict matching the original UserSchema
+        # (id, username, first_name, last_name).
+        changed_by_data: dict[str, Any] | None = None
+        changed_by = getattr(embedded, "changed_by", None)
+        if changed_by is not None:
+            changed_by_data = {
+                "id": changed_by.id,
+                "username": getattr(changed_by, "username", None),
+                "first_name": getattr(changed_by, "first_name", None),
+                "last_name": getattr(changed_by, "last_name", None),
+            }
+
+        # changed_on as ISO datetime string (matches Marshmallow DateTime field)
+        changed_on = getattr(embedded, "changed_on", None)
+        changed_on_str: str | None = None
+        if changed_on is not None:
+            changed_on_str = changed_on.isoformat()
 
         return {
             "result": {
                 "uuid": str(embedded.uuid),
-                "dashboard_id": embedded.dashboard_id,
+                "dashboard_id": str(embedded.dashboard_id),
                 "allowed_domains": allowed_domains,
+                "changed_on": changed_on_str,
+                "changed_by": changed_by_data,
             },
         }
 
@@ -172,6 +142,7 @@ class EmbeddedSSRController(Controller):
 
     path = "/embedded"
     tags = ["Embedded"]
+    guards = [require_feature_flag("EMBEDDED_SUPERSET")]
     dependencies = {
         "embedded_dao": Provide(provide_embedded_dao, sync_to_thread=False),
     }
@@ -188,20 +159,12 @@ class EmbeddedSSRController(Controller):
         request: Request[Any, Any, Any],
         state: State,
         embedded_dao: Any,
-    ) -> Any:
+    ) -> Template | Response[Any]:
         """GET /embedded/{uuid} — serve the embedded dashboard SPA shell.
 
         1:1 port of ``superset_old/embedded/view.py:EmbeddedView.embedded``.
         """
         settings = getattr(state, "settings", None)
-        feature_flags = getattr(settings, "feature_flags", {}) or {}
-
-        if not feature_flags.get("EMBEDDED_SUPERSET", False):
-            return Response(
-                content=b"Not found",
-                status_code=404,
-                media_type="text/plain",
-            )
 
         embedded = await embedded_dao.find_by_uuid(uuid)
         if embedded is None:
@@ -216,9 +179,7 @@ class EmbeddedSSRController(Controller):
         # 1:1 with the original ``not embedded.allowed_domains`` short-circuit.
         allowed_domains: list[str] = getattr(embedded, "allowed_domains", []) or []
         if allowed_domains:
-            referrer = request.headers.get("Referer") or request.headers.get(
-                "Referrer"
-            )
+            referrer = request.headers.get("Referer") or request.headers.get("Referrer")
             is_referrer_allowed = any(
                 _same_origin(referrer, domain) for domain in allowed_domains
             )
@@ -264,7 +225,10 @@ class EmbeddedSSRController(Controller):
         return Template(
             template_name="spa.html",
             context={
-                "bootstrap_data": json.dumps(bootstrap_data),
+                "bootstrap_data": json_utils.dumps(
+                    bootstrap_data,
+                    default=json_utils.pessimistic_json_iso_dttm_ser,
+                ),
                 "entry": "embedded",
                 "title": "Superset",
                 "assets_prefix": assets_prefix,

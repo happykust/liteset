@@ -25,6 +25,7 @@ import pytest
 from superset.commands.theme import (
     CreateThemeCommand,
     DeleteThemeCommand,
+    ImportThemesCommand,
     SetSystemDefaultCommand,
     UnsetSystemDefaultCommand,
     UpdateThemeCommand,
@@ -184,8 +185,12 @@ async def test_set_default_unsets_previous(mock_dao, mock_theme):
     cmd = SetSystemDefaultCommand(dao=mock_dao, pk=1)
     result = await cmd.execute()
 
+    # The command issues a bulk SA UPDATE (1:1 with superset_old/commands/theme/
+    # set_system_theme.py:44-48) instead of mutating the ORM object in Python.
+    # Verify the new default is set on the in-memory model and that the session
+    # executed the bulk clear query.
     assert result.is_system_default is True
-    assert old_default.is_system_default is False
+    mock_dao.session.execute.assert_awaited()
 
 
 async def test_set_default_no_previous(mock_dao, mock_theme):
@@ -223,7 +228,10 @@ async def test_unset_default_success(mock_dao):
     cmd = UnsetSystemDefaultCommand(dao=mock_dao)
     await cmd.execute()
 
-    assert current_default.is_system_default is False
+    # Command issues a bulk SA UPDATE (1:1 with superset_old/commands/theme/
+    # set_system_theme.py:99-103) — the in-memory MagicMock attribute is NOT
+    # mutated by the DB-level UPDATE; verify session executed the clear query.
+    mock_dao.session.execute.assert_awaited()
     mock_dao.session.flush.assert_awaited_once()
 
 
@@ -234,6 +242,130 @@ async def test_unset_default_no_current(mock_dao):
     cmd = UnsetSystemDefaultCommand(dao=mock_dao)
     await cmd.execute()
     # No error raised, flush still called (no-op scenario)
+
+
+# ---------------------------------------------------------------------------
+# ImportThemesCommand — per-config schema validation (finding fix)
+# Original: ImportV1ThemeSchema requires theme_name, json_data, uuid, version
+# as required=True (superset_old/themes/schemas.py:28-32).  Missing/invalid
+# fields must raise CommandInvalidError (HTTP 422), not silently insert bad rows
+# or crash with HTTP 500 in BinaryUUID.process_bind_param.
+# ---------------------------------------------------------------------------
+
+_VALID_UUID = "12345678-1234-5678-1234-567812345678"
+_VALID_CONFIG = {
+    "theme_name": "My Theme",
+    "json_data": "{}",
+    "uuid": _VALID_UUID,
+    "version": "1.0.0",
+}
+
+
+@pytest.fixture
+def import_dao():
+    dao = AsyncMock()
+    dao.session = AsyncMock()
+    dao.session.flush = AsyncMock()
+    dao.find_by_uuid = AsyncMock(return_value=None)
+    dao.create = AsyncMock()
+    dao.update = AsyncMock()
+    return dao
+
+
+async def test_import_missing_uuid_raises_422(import_dao):
+    """Missing uuid must raise CommandInvalidError (HTTP 422), not produce a
+    random-UUID row — 1:1 with ImportV1ThemeSchema uuid=required."""
+    config = {k: v for k, v in _VALID_CONFIG.items() if k != "uuid"}
+    cmd = ImportThemesCommand(dao=import_dao, contents={"themes/t.yaml": config})
+    with pytest.raises(CommandInvalidError, match="uuid"):
+        await cmd.validate()
+
+
+async def test_import_invalid_uuid_raises_422(import_dao):
+    """An invalid UUID string must raise CommandInvalidError (HTTP 422)
+    instead of reaching BinaryUUID.process_bind_param → ValueError → 500."""
+    config = {**_VALID_CONFIG, "uuid": "not-a-uuid"}
+    cmd = ImportThemesCommand(dao=import_dao, contents={"themes/t.yaml": config})
+    with pytest.raises(CommandInvalidError, match="uuid"):
+        await cmd.validate()
+
+
+async def test_import_missing_theme_name_raises_422(import_dao):
+    """Missing theme_name must raise CommandInvalidError (HTTP 422), not
+    silently create a NULL-named theme — 1:1 with ImportV1ThemeSchema."""
+    config = {k: v for k, v in _VALID_CONFIG.items() if k != "theme_name"}
+    cmd = ImportThemesCommand(dao=import_dao, contents={"themes/t.yaml": config})
+    with pytest.raises(CommandInvalidError, match="theme_name"):
+        await cmd.validate()
+
+
+async def test_import_missing_version_raises_422(import_dao):
+    """Missing version must raise CommandInvalidError (HTTP 422) — 1:1 with
+    ImportV1ThemeSchema version=required."""
+    config = {k: v for k, v in _VALID_CONFIG.items() if k != "version"}
+    cmd = ImportThemesCommand(dao=import_dao, contents={"themes/t.yaml": config})
+    with pytest.raises(CommandInvalidError, match="version"):
+        await cmd.validate()
+
+
+async def test_import_missing_json_data_raises_422(import_dao):
+    """Missing json_data must raise CommandInvalidError (HTTP 422) — 1:1
+    with ImportV1ThemeSchema json_data=required."""
+    config = {k: v for k, v in _VALID_CONFIG.items() if k != "json_data"}
+    cmd = ImportThemesCommand(dao=import_dao, contents={"themes/t.yaml": config})
+    with pytest.raises(CommandInvalidError, match="json_data"):
+        await cmd.validate()
+
+
+async def test_import_valid_config_passes_validate(import_dao):
+    """A fully valid config must pass validate() without raising."""
+    cmd = ImportThemesCommand(
+        dao=import_dao, contents={"themes/t.yaml": dict(_VALID_CONFIG)}
+    )
+    await cmd.validate()  # must not raise
+    # overwrite check: find_by_uuid called once to check existing
+    import_dao.find_by_uuid.assert_awaited_once()
+
+
+async def test_import_overwrite_false_raises_for_existing_uuid(import_dao):
+    """When overwrite=False and a theme with the given UUID already exists,
+    validate() must raise CommandInvalidError — 1:1 with original
+    _prevent_overwrite_existing_model()."""
+    existing_theme = MagicMock()
+    import_dao.find_by_uuid.return_value = existing_theme
+    cmd = ImportThemesCommand(
+        dao=import_dao,
+        contents={"themes/t.yaml": dict(_VALID_CONFIG)},
+        overwrite=False,
+    )
+    with pytest.raises(CommandInvalidError, match="already exists"):
+        await cmd.validate()
+
+
+async def test_import_overwrite_true_skips_exists_check(import_dao):
+    """When overwrite=True, validate() must NOT raise even if the UUID exists."""
+    existing_theme = MagicMock()
+    import_dao.find_by_uuid.return_value = existing_theme
+    cmd = ImportThemesCommand(
+        dao=import_dao,
+        contents={"themes/t.yaml": dict(_VALID_CONFIG)},
+        overwrite=True,
+    )
+    await cmd.validate()  # must not raise
+    # No uuid existence check happens when overwrite=True
+    import_dao.find_by_uuid.assert_not_awaited()
+
+
+async def test_import_non_theme_files_are_skipped(import_dao):
+    """Files not under 'themes/' prefix must be silently ignored — metadata.yaml
+    etc. are not theme configs."""
+    contents = {
+        "metadata.yaml": {"version": "1.0.0", "type": "Theme"},
+        # bad config but under a different prefix — must not trigger 422
+        "charts/bad.yaml": {"no_uuid": True},
+    }
+    cmd = ImportThemesCommand(dao=import_dao, contents=contents)
+    await cmd.validate()  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -253,3 +385,83 @@ def test_controller_has_dependencies():
 
     assert "dao" in ThemeController.dependencies
     assert "rison_params" in ThemeController.dependencies
+
+
+# ---------------------------------------------------------------------------
+# related() handler — EXTRA_RELATED_QUERY_FILTERS["user"] scoping
+# Original: base_related_field_filters maps ONLY "changed_by" →
+# BaseFilterRelatedUsers (superset_old/themes/api.py:150-152).
+# "created_by" has no entry, so EXTRA_RELATED_QUERY_FILTERS["user"] must NOT
+# be passed as query_hook for created_by.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "column_name,hook_should_be_passed",
+    [
+        ("changed_by", True),  # base_related_field_filters maps this → hook applied
+        ("created_by", False),  # no entry in base_related_field_filters → no hook
+    ],
+)
+async def test_related_extra_query_filter_scoped_to_changed_by(
+    column_name, hook_should_be_passed
+):
+    """EXTRA_RELATED_QUERY_FILTERS["user"] hook must only be forwarded to
+    get_related_payload for changed_by, never for created_by.
+
+    1:1 with superset_old/themes/api.py::base_related_field_filters which only
+    registers BaseFilterRelatedUsers (the filter that calls
+    EXTRA_RELATED_QUERY_FILTERS["user"]) for changed_by; created_by has no
+    entry (superset_old/themes/api.py lines 150-152).
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from superset.controllers.theme import ThemeController
+
+    user_hook = MagicMock(side_effect=lambda q: q)
+
+    # Build a fake State that exposes settings with the hook configured.
+    settings_mock = MagicMock()
+    settings_mock.extra_related_query_filters = {"user": user_hook}
+    settings_mock.exclude_users_from_lists = None
+    state_mock = MagicMock()
+    state_mock.settings = settings_mock
+
+    dao_mock = AsyncMock()
+    security_manager_mock = MagicMock()
+    security_manager_mock.get_exclude_users_from_lists = MagicMock(return_value=[])
+
+    captured: dict = {}
+
+    async def fake_get_related_payload(**kwargs):  # type: ignore[misc]
+        captured.update(kwargs)
+        return {"count": 0, "result": []}
+
+    controller = ThemeController.__new__(ThemeController)
+    # ThemeController.related is a Litestar HTTPRouteHandler; access the
+    # underlying coroutine via .fn to call it directly in unit tests.
+    related_fn = ThemeController.related.fn
+
+    with patch(
+        "superset.controllers.theme.get_related_payload",
+        side_effect=fake_get_related_payload,
+    ):
+        await related_fn(
+            controller,
+            column_name=column_name,
+            dao=dao_mock,
+            rison_params=None,
+            state=state_mock,
+            security_manager=security_manager_mock,
+        )
+
+    if hook_should_be_passed:
+        assert captured.get("query_hook") is user_hook, (
+            f"Expected query_hook to be the user_extra_filter for {column_name!r}"
+        )
+    else:
+        assert captured.get("query_hook") is None, (
+            f"query_hook must be None for {column_name!r} — "
+            'EXTRA_RELATED_QUERY_FILTERS["user"] is not registered for created_by '
+            "in the original (superset_old/themes/api.py:150-152)"
+        )

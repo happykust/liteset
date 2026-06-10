@@ -83,11 +83,12 @@ def _make_settings(**overrides: object) -> MagicMock:
     return MagicMock(**defaults)
 
 
-def _make_mock_connection(user: object) -> MagicMock:
+def _make_mock_connection(user: object, auth_role_admin: str = "Admin") -> MagicMock:
     from litestar.connection import ASGIConnection
 
     conn = MagicMock(spec=ASGIConnection)
     conn.user = user
+    conn.app.state.settings.auth_role_admin = auth_role_admin
     return conn
 
 
@@ -133,11 +134,22 @@ class TestRequireAuthenticationWithPublicRole:
         conn = _make_mock_connection(user)
         require_authentication(conn, MagicMock())
 
-    def test_allows_anonymous_with_public_permissions(self) -> None:
+    def test_rejects_anonymous_with_public_permissions(self) -> None:
+        """require_authentication must reject anonymous users even when the
+        Public role carries some permissions.
+
+        The original FAB @protect() / @has_access_api only allow anonymous
+        access when the Public role has the *specific* endpoint permission
+        (is_item_public(permission_str, class_permission_name)).
+        require_authentication has no endpoint-specific parameter and
+        therefore must deny all anonymous callers — endpoints that need
+        Public-role anonymous access must use require_permission(action,
+        resource) instead, which performs the correct per-endpoint check.
+        """
         user = UnauthenticatedUser(permissions={("can_read", "Dashboard")})
         conn = _make_mock_connection(user)
-        # Should not raise
-        require_authentication(conn, MagicMock())
+        with pytest.raises(NotAuthorizedException, match="Not authenticated"):
+            require_authentication(conn, MagicMock())
 
     def test_rejects_anonymous_without_permissions(self) -> None:
         user = UnauthenticatedUser()

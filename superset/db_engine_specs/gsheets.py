@@ -34,6 +34,7 @@ from superset.utils import json
 
 if TYPE_CHECKING:
     from requests import Session
+
     from superset.models.core import Database
     from superset.sql.parse import Table
 
@@ -89,9 +90,7 @@ class _SecurityManagerProxy:  # pylint: disable=too-few-public-methods
 
         session = get_sync_session()
         try:
-            return (
-                session.query(User).filter(User.username == username).one_or_none()
-            )
+            return session.query(User).filter(User.username == username).one_or_none()
         finally:
             session.close()
 
@@ -298,6 +297,7 @@ class GSheetsEngineSpec(ShillelaghEngineSpec):
         dependency in the port).
         """
         from superset.utils.core import get_current_user
+
         errors: list[SupersetError] = []
 
         # backwards compatible just incase people are send data

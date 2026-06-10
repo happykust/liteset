@@ -79,7 +79,9 @@ __ = _gettext
 _RESULT_FORMAT_JSON = "json"
 _RESULT_FORMAT_CSV = "csv"
 _RESULT_FORMAT_XLSX = "xlsx"
-_RESULT_FORMATS = frozenset({_RESULT_FORMAT_JSON, _RESULT_FORMAT_CSV, _RESULT_FORMAT_XLSX})
+_RESULT_FORMATS = frozenset(
+    {_RESULT_FORMAT_JSON, _RESULT_FORMAT_CSV, _RESULT_FORMAT_XLSX}
+)
 
 
 def get_column_key(label: tuple[str, ...], metrics: list[str]) -> tuple[Any, ...]:

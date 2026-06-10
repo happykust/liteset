@@ -121,7 +121,9 @@ class QueryPruneCommand:
             session.commit()
 
             # Log the number of deleted records every 1% increase in progress
-            percentage_complete = (total_deleted / total_rows) * 100 if total_rows else 100
+            percentage_complete = (
+                (total_deleted / total_rows) * 100 if total_rows else 100
+            )
             if percentage_complete >= next_logging_threshold:
                 logger.info(
                     "Deleted %s rows from the query table older than %s days "

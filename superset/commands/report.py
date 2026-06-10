@@ -29,19 +29,23 @@ from superset.commands.report_exceptions import (
     DashboardNotSavedValidationError,
     DatabaseNotFoundValidationError,
     ReportScheduleAlertRequiredDatabaseValidationError,
+    ReportScheduleCreateFailedError,
     ReportScheduleCreationMethodUniquenessValidationError,
+    ReportScheduleDeleteFailedError,
     ReportScheduleEitherChartOrDashboardError,
     ReportScheduleForbiddenError,
     ReportScheduleFrequencyNotAllowed,
     ReportScheduleInvalidError,
     ReportScheduleNameUniquenessValidationError,
     ReportScheduleOnlyChartOrDashboardError,
+    ReportScheduleUpdateFailedError,
     ReportScheduleValidationError,
 )
 from superset.commands.utils import compute_owner_list, populate_owner_list
 from superset.exceptions import (
     CommandInvalidError,
     ObjectNotFoundError,
+    OwnersNotFoundValidationError,
     SupersetSecurityException,
 )
 from superset.utils import json
@@ -251,6 +255,7 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         self._data = data
         self._user_id = user_id
         self._security_manager = security_manager
+        self._owners: list[Any] | None = None
 
     async def validate(self) -> None:  # noqa: C901
         """Validate report schedule properties.
@@ -300,10 +305,9 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         # validate_report_references`` (superset_old/reports/schemas.py:265-275)
         # which raises ``{"database": ["Database reference is not allowed on a
         # report"]}`` for ``type == REPORT`` payloads containing a ``database``.
-        if (
-            report_type == ReportScheduleType.REPORT.value
-            and self._data.get("database") is not None
-        ):
+        # KEY presence (``"database" in data``), not value truthiness — the
+        # original rejects an explicit ``"database": null`` on a REPORT too.
+        if report_type == ReportScheduleType.REPORT.value and "database" in self._data:
             exceptions.append(
                 ReportScheduleValidationError(
                     "Database reference is not allowed on a report",
@@ -315,9 +319,7 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         if report_type == ReportScheduleType.ALERT.value:
             database_id = self._data.get("database")
             if database_id is None:
-                exceptions.append(
-                    ReportScheduleAlertRequiredDatabaseValidationError()
-                )
+                exceptions.append(ReportScheduleAlertRequiredDatabaseValidationError())
             elif database := await AsyncDatabaseDAO(self._dao.session).find_by_id(
                 database_id
             ):
@@ -368,10 +370,33 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             if not (min_width <= custom_width <= max_width):
                 exceptions.append(
                     ReportScheduleValidationError(
-                        f"Screenshot width must be between {min_width}px and {max_width}px",
+                        f"Screenshot width must be between {min_width}px"
+                        f" and {max_width}px",
                         field_name="custom_width",
                     )
                 )
+
+        # Validate/populate owners -- 1:1 with create.py:125-131: catch the
+        # OwnersNotFoundValidationError and fold it into the exceptions list so
+        # the response message is the field-keyed dict rather than a flat string.
+        sm = self._security_manager
+        if sm is None:
+            from superset.security.manager import build_async_security_manager
+
+            sm = build_async_security_manager(self._dao.session, _get_settings())
+
+        owner_ids_raw: list[int] | None = self._data.get("owners")
+        try:
+            self._owners = await populate_owner_list(
+                sm,
+                self._user_id,
+                owner_ids_raw,
+                default_to_user=True,
+            )
+        except OwnersNotFoundValidationError:
+            exceptions.append(
+                ReportScheduleValidationError("Owners are invalid", field_name="owners")
+            )
 
         if exceptions:
             raise ReportScheduleInvalidError(exceptions=exceptions)
@@ -396,35 +421,28 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         if "database" in create_data:
             create_data["database_id"] = _resolve_fk(create_data.pop("database"))
 
-        # Resolve owners separately so we can assign the M2M after insert.
-        # Mirrors ``superset_old/commands/report/create.py`` which calls
-        # ``populate_owners(owner_ids)`` (default_to_user=True) so the current
-        # user becomes the owner when none are supplied.
-        owner_ids = create_data.pop("owners", None)
+        # Owners were resolved (and validated) in validate(); use the cached
+        # result rather than calling populate_owner_list again.  The list is
+        # baked into ``create_data`` BEFORE the DAO creates the model so the
+        # DAO's ``setattr(item, "owners", [...])`` runs on a TRANSIENT instance
+        # (no session attached → no lazy-load attempt).  This prevents the
+        # MissingGreenlet crash described in [[sa-lazy-load-on-transient-asyncpg]].
+        create_data.pop("owners", None)  # strip raw ids from payload copy
 
         if self._user_id is not None:
             create_data["created_by_fk"] = self._user_id
             create_data["changed_by_fk"] = self._user_id
 
-        # Resolve owners BEFORE the model is added to the session, then
-        # bake them into ``create_data`` so the DAO's ``setattr(item,
-        # "owners", [...])`` runs on a TRANSIENT instance (no session
-        # attached → no lazy-load attempt). Without this, the post-create
-        # ``report.owners = owners`` assignment triggers SA's diff-load
-        # against asyncpg and crashes with ``MissingGreenlet``. Same
-        # pattern as [[sa-lazy-load-on-transient-asyncpg]] —
-        # relationship assignment on pending/persistent instances must
-        # be avoided under asyncpg.
-        if self._security_manager is not None:
-            create_data["owners"] = await populate_owner_list(
-                self._security_manager,
-                self._user_id,
-                owner_ids,
-                default_to_user=True,
-            )
+        if self._owners is not None:
+            create_data["owners"] = self._owners
 
-        report = await self._dao.create(create_data)
-        await self._dao.session.flush()
+        from sqlalchemy.exc import SQLAlchemyError
+
+        try:
+            report = await self._dao.create(create_data)
+            await self._dao.session.flush()
+        except SQLAlchemyError as ex:
+            raise ReportScheduleCreateFailedError(str(ex)) from ex
         return report
 
 
@@ -443,6 +461,7 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         self._user_id = user_id
         self._security_manager = security_manager
         self._report: Any | None = None
+        self._owners: list[Any] | None = None
 
     async def validate(self) -> None:  # noqa: C901
         """Validate report schedule update.
@@ -500,9 +519,7 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         # Validate if DB exists (for alerts). 1:1 with update.py:102-105 which
         # assigns the resolved (possibly ``None``) database back to properties.
         if report_type == ReportScheduleType.ALERT.value and database_id:
-            database = await AsyncDatabaseDAO(self._dao.session).find_by_id(
-                database_id
-            )
+            database = await AsyncDatabaseDAO(self._dao.session).find_by_id(database_id)
             if not database:
                 exceptions.append(DatabaseNotFoundValidationError())
             self._data["database"] = database
@@ -512,9 +529,7 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             _validate_report_frequency(crontab, report_type, exceptions)
 
         # Validate chart or dashboard relations
-        await _validate_chart_dashboard(
-            self._dao, self._data, exceptions, update=True
-        )
+        await _validate_chart_dashboard(self._dao, self._data, exceptions, update=True)
 
         # ``validator_config_json`` arrives as a dict from the PUT schema; the
         # model column stores a JSON string (1:1 with update.py:119-122).
@@ -537,20 +552,42 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             if not (min_width <= custom_width <= max_width):
                 exceptions.append(
                     ReportScheduleValidationError(
-                        f"Screenshot width must be between {min_width}px and {max_width}px",
+                        f"Screenshot width must be between {min_width}px"
+                        f" and {max_width}px",
                         field_name="custom_width",
                     )
                 )
 
         # Check ownership — non-owners (and non-admins) get a 403, 1:1 with
         # ``superset_old/commands/report/update.py:124-128``.
-        if self._security_manager is not None:
-            try:
-                await self._security_manager.raise_for_ownership(
-                    self._report, self._user_id
-                )
-            except SupersetSecurityException as ex:
-                raise ReportScheduleForbiddenError() from ex
+        sm = self._security_manager
+        if sm is None:
+            from superset.security.manager import build_async_security_manager
+
+            sm = build_async_security_manager(self._dao.session, _get_settings())
+
+        try:
+            await sm.raise_for_ownership(self._report, self._user_id)
+        except SupersetSecurityException as ex:
+            raise ReportScheduleForbiddenError() from ex
+
+        # Validate/compute owners -- 1:1 with update.py:130-139: catch the
+        # OwnersNotFoundValidationError and fold it into the exceptions list so
+        # the response message is the field-keyed dict rather than a flat string.
+        owner_ids_raw: list[int] | None = self._data.get("owners")
+        # Eagerly load current owners (asyncpg cannot lazy-load relationships).
+        await self._dao.session.refresh(self._report, ["owners"])
+        try:
+            self._owners = await compute_owner_list(
+                sm,
+                self._user_id,
+                list(self._report.owners),
+                owner_ids_raw,
+            )
+        except OwnersNotFoundValidationError:
+            exceptions.append(
+                ReportScheduleValidationError("Owners are invalid", field_name="owners")
+            )
 
         if exceptions:
             raise ReportScheduleInvalidError(exceptions=exceptions)
@@ -566,29 +603,26 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         if "database" in update_data:
             update_data["database_id"] = _resolve_fk(update_data.pop("database"))
 
-        # Resolve owners separately. Mirrors
-        # ``superset_old/commands/report/update.py`` which calls
-        # ``compute_owners(model.owners, owner_ids)`` — preserving the existing
-        # owners when none are supplied in the payload.
-        owners_in_payload = "owners" in update_data
-        owner_ids = update_data.pop("owners", None)
+        # Owners were resolved (and validated) in validate(); strip the raw ids
+        # from the update payload so the DAO does not attempt to set them, then
+        # assign the already-resolved list to the model after the DAO update.
+        # Mirrors ``superset_old/commands/report/update.py`` compute_owners flow.
+        update_data.pop("owners", None)
 
         if self._user_id is not None:
             update_data["changed_by_fk"] = self._user_id
 
-        report = await self._dao.update(self._report, update_data)
+        from sqlalchemy.exc import SQLAlchemyError
 
-        if self._security_manager is not None:
-            await self._dao.session.refresh(report, ["owners"])
-            owners = await compute_owner_list(
-                self._security_manager,
-                self._user_id,
-                list(report.owners),
-                owner_ids if owners_in_payload else None,
-            )
-            report.owners = owners
+        try:
+            report = await self._dao.update(self._report, update_data)
 
-        await self._dao.session.flush()
+            if self._owners is not None:
+                report.owners = self._owners
+
+            await self._dao.session.flush()
+        except SQLAlchemyError as ex:
+            raise ReportScheduleUpdateFailedError(str(ex)) from ex
         return report
 
 
@@ -623,8 +657,13 @@ class DeleteReportScheduleCommand(AsyncBaseCommand[None]):
 
     async def run(self) -> None:
         assert self._report is not None
-        await self._dao.delete([self._report])
-        await self._dao.session.flush()
+        from sqlalchemy.exc import SQLAlchemyError
+
+        try:
+            await self._dao.delete([self._report])
+            await self._dao.session.flush()
+        except SQLAlchemyError as ex:
+            raise ReportScheduleDeleteFailedError(str(ex)) from ex
 
 
 class BulkDeleteReportScheduleCommand(AsyncBaseCommand[None]):
@@ -662,5 +701,15 @@ class BulkDeleteReportScheduleCommand(AsyncBaseCommand[None]):
                     raise ReportScheduleForbiddenError() from ex
 
     async def run(self) -> None:
-        await self._dao.delete(self._reports)
-        await self._dao.session.flush()
+        # Mirror ``DeleteReportScheduleCommand.run()``'s
+        # ``@transaction(on_error=…, reraise=ReportScheduleDeleteFailedError)``
+        # behaviour — wrap DB errors as ReportScheduleDeleteFailedError so the
+        # controller can map them to HTTP 422 (1:1 with
+        # superset_old/reports/api.py:505-521).
+        from sqlalchemy.exc import SQLAlchemyError
+
+        try:
+            await self._dao.delete(self._reports)
+            await self._dao.session.flush()
+        except SQLAlchemyError as ex:
+            raise ReportScheduleDeleteFailedError(str(ex)) from ex

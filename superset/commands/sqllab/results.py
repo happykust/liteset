@@ -30,7 +30,9 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
-from superset.commands.sqllab._shared import apply_display_max_row_configuration_if_require
+from superset.commands.sqllab._shared import (
+    apply_display_max_row_configuration_if_require,
+)
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import (
     CommandInvalidError,
@@ -69,7 +71,7 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
         if not self._key:
             raise CommandInvalidError("key is required")
 
-    async def run(self) -> dict[str, Any]:
+    async def run(self) -> dict[str, Any]:  # noqa: C901
         # ------------------------------------------------------------------
         # 1. Resolve the Query row by ``results_key`` — fast path,
         # avoids a needless cache hit when the query was never stored.
@@ -98,9 +100,7 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
                         cached["data"] = cached["data"][: self._rows]
                     return cached
             except Exception:  # noqa: BLE001
-                logger.warning(
-                    "Cache get failed for key %s", self._key, exc_info=True
-                )
+                logger.warning("Cache get failed for key %s", self._key, exc_info=True)
 
         # ------------------------------------------------------------------
         # 3. No results backend configured — match original 5xx surface.
@@ -158,9 +158,14 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
         from superset.utils.core import zlib_decompress
 
         payload = zlib_decompress(blob, decode=not use_msgpack)
+        from superset.exceptions import SerializationError
+
         try:
             obj = _deserialize_results_payload(payload, query, use_msgpack)
-        except Exception as ex:  # noqa: BLE001
+        except SerializationError as ex:
+            # 1:1 with superset_old/commands/sql_lab/results.py:135 — ONLY
+            # SerializationError maps to 404; any other deserialization
+            # failure propagates as HTTP 500.
             raise SupersetErrorException(
                 SupersetError(
                     message=(
@@ -221,7 +226,9 @@ def _deserialize_results_payload(
             reader = pa.BufferReader(ds_payload["data"])
             pa_table = pa.ipc.open_stream(reader).read_all()
         except pa.ArrowSerializationError as ex:
-            raise RuntimeError("Unable to deserialize Arrow IPC table") from ex
+            from superset.exceptions import SerializationError
+
+            raise SerializationError("Unable to deserialize table") from ex
 
         df = pa_table.to_pandas(integer_object_nulls=True)
         try:

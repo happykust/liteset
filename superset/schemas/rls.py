@@ -51,6 +51,13 @@ class RLSPostSchema(msgspec.Struct):
     which only sets ``required=True, allow_none=False``). An empty
     string is a valid clause. ``description`` and ``group_key`` accept
     ``null`` (``allow_none=True`` in the original).
+
+    Optional fields (``description``, ``group_key``) default to
+    ``msgspec.UNSET`` so that absent keys are distinguishable from
+    explicitly-null ones.  This mirrors Marshmallow 3 ``Schema.load()``
+    which omits absent optional fields from the returned dict — the
+    original Superset ``POST /api/v1/rowlevelsecurity/`` returns only the
+    keys that were actually present in the request body under ``result``.
     """
 
     name: Annotated[str, Meta(min_length=1, max_length=255)]
@@ -58,8 +65,8 @@ class RLSPostSchema(msgspec.Struct):
     clause: str
     tables: Annotated[list[int], Meta(min_length=1)]
     roles: list[int]
-    description: str | None = None
-    group_key: str | None = None
+    description: str | None | msgspec.UnsetType = msgspec.UNSET
+    group_key: str | None | msgspec.UnsetType = msgspec.UNSET
 
 
 class RLSPutSchema(msgspec.Struct):

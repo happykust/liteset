@@ -75,9 +75,15 @@ def _resolve_secret_key(settings: Any) -> str:
 
 
 def _decode_existing_cookie(
-    raw: bytes | None, secret_key: str
+    raw: bytes | None,
+    secret_key: str,
+    cookie_name: str = "async-token",
 ) -> dict[str, Any] | None:
-    """Decode the incoming ``async-token`` cookie if present.
+    """Decode the named async-token cookie if present.
+
+    Uses *cookie_name* (from ``GLOBAL_ASYNC_QUERIES_JWT_COOKIE_NAME``) to look
+    up the cookie, mirroring ``AsyncQueryManager.register_request_handlers``
+    which reads via ``self._jwt_cookie_name`` (not a hardcoded string).
 
     Returns the decoded payload dict, or ``None`` if the cookie is
     missing / malformed / signed with a different key.
@@ -90,11 +96,7 @@ def _decode_existing_cookie(
         cookie.load(cookie_header)
     except Exception:  # noqa: BLE001
         return None
-    morsel = None
-    for name in ("async-token",):
-        morsel = cookie.get(name)
-        if morsel:
-            break
+    morsel = cookie.get(cookie_name)
     if morsel is None:
         return None
     try:
@@ -181,6 +183,57 @@ class AsyncTokenMiddleware(ASGIMiddleware):
         await next_app(scope, receive, send_with_async_token)
 
     @staticmethod
+    def _resolve_cookie_config(
+        scope: Scope,
+    ) -> tuple[str, bool, str | None, str | None, str] | None:
+        """Extract cookie config from app state.
+
+        Returns ``(cookie_name, secure, samesite, domain, secret_key)`` or
+        ``None`` if the app / settings are unavailable or no secret key is set.
+        """
+        app = scope.get("app")
+        if app is None:
+            return None
+        app_state = getattr(app, "state", None)
+        if app_state is None:
+            return None
+        settings = getattr(app_state, "settings", None)
+        if settings is None:
+            return None
+
+        secret_key = _resolve_secret_key(settings)
+        if not secret_key:
+            return None
+
+        cookie_name = getattr(
+            settings, "global_async_queries_jwt_cookie_name", "async-token"
+        )
+        secure = bool(
+            getattr(settings, "global_async_queries_jwt_cookie_secure", False)
+        )
+        samesite = getattr(settings, "global_async_queries_jwt_cookie_samesite", None)
+        domain = getattr(settings, "global_async_queries_jwt_cookie_domain", None)
+        return cookie_name, secure, samesite, domain, secret_key
+
+    @staticmethod
+    def _needs_token_refresh(
+        existing: dict[str, Any] | None,
+        user_id: int,
+    ) -> bool:
+        """Return ``True`` when the existing JWT should be replaced.
+
+        Mirrors the four-condition reset logic from the original
+        ``register_request_handlers``: refresh when the cookie is absent or
+        when the ``sub`` claim no longer matches the current user.
+        """
+        if existing is None:
+            return True
+        sub_claim = existing.get("sub")
+        # The original cast user_id via ``str(user_id) if user_id else None``
+        expected_sub = str(user_id) if user_id else None
+        return sub_claim != expected_sub
+
+    @staticmethod
     async def _build_cookie_header(scope: Scope) -> bytes | None:
         """Decide whether to emit a ``Set-Cookie`` header for this response.
 
@@ -194,7 +247,7 @@ class AsyncTokenMiddleware(ASGIMiddleware):
         # session claimed an ``async_user_id``.
         user = scope.get("user")
         is_authed = bool(getattr(user, "is_authenticated", False))
-        user_id: int | None = getattr(user, "id", None) if is_authed else None
+        user_id: int = getattr(user, "id", None) if is_authed else None  # type: ignore[assignment]
         if not is_authed or not user_id:
             # Mirror the original "anonymous channel" behaviour: the
             # original still set a cookie with ``sub=None`` when no
@@ -202,31 +255,10 @@ class AsyncTokenMiddleware(ASGIMiddleware):
             # events for the duration of the anonymous session.
             user_id = 0
 
-        app = scope.get("app")
-        if app is None:
+        cookie_config = AsyncTokenMiddleware._resolve_cookie_config(scope)
+        if cookie_config is None:
             return None
-        app_state = getattr(app, "state", None)
-        if app_state is None:
-            return None
-        settings = getattr(app_state, "settings", None)
-        if settings is None:
-            return None
-
-        cookie_name = getattr(
-            settings, "global_async_queries_jwt_cookie_name", "async-token"
-        )
-        secure = bool(
-            getattr(settings, "global_async_queries_jwt_cookie_secure", False)
-        )
-        samesite = getattr(
-            settings, "global_async_queries_jwt_cookie_samesite", None
-        )
-        domain = getattr(
-            settings, "global_async_queries_jwt_cookie_domain", None
-        )
-        secret_key = _resolve_secret_key(settings)
-        if not secret_key:
-            return None
+        cookie_name, secure, samesite, domain, secret_key = cookie_config
 
         # Find the existing async-token cookie, if any.
         raw_cookie: bytes | None = None
@@ -234,18 +266,14 @@ class AsyncTokenMiddleware(ASGIMiddleware):
             if name == b"cookie":
                 raw_cookie = value
                 break
-        existing = _decode_existing_cookie(raw_cookie, secret_key)
+        # Pass cookie_name so we look up the configured name, not a hardcoded
+        # "async-token" string — mirrors the original ``request.cookies.get(
+        # self._jwt_cookie_name)`` call in register_request_handlers.
+        existing = _decode_existing_cookie(
+            raw_cookie, secret_key, cookie_name=cookie_name
+        )
 
-        # Decide whether we need to mint a fresh token.
-        needs_refresh = existing is None
-        if existing is not None:
-            sub_claim = existing.get("sub")
-            # The original cast user_id via ``str(user_id) if user_id else None``
-            expected_sub = str(user_id) if user_id else None
-            if sub_claim != expected_sub:
-                needs_refresh = True
-
-        if not needs_refresh:
+        if not AsyncTokenMiddleware._needs_token_refresh(existing, user_id):
             return None
 
         # Mint a fresh per-browser channel id (1:1 with the original Flask

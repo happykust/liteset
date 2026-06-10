@@ -112,4 +112,3 @@ class ChartDataCommand(AsyncBaseCommand[dict[str, Any]]):
         if cache_query_context and "cache_key" in payload:
             return_value["cache_key"] = payload["cache_key"]
         return return_value
-

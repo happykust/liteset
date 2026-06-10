@@ -254,9 +254,7 @@ async def test_async_branch_submits_with_cookie_channel(
     with (
         _patch_jsctrl_off(),
         _patch_datasource(datasource),
-        patch(
-            "superset.tasks.async_queries.load_explore_json_into_cache"
-        ) as mock_task,
+        patch("superset.tasks.async_queries.load_explore_json_into_cache") as mock_task,
         patch("superset.viz.get_viz") as mock_get_viz,
     ):
         # Cache-first miss: get_payload returns None so the submit path runs.
@@ -319,9 +317,7 @@ async def test_async_branch_cache_hit_returns_payload(
     with (
         _patch_jsctrl_off(),
         _patch_datasource(datasource),
-        patch(
-            "superset.tasks.async_queries.load_explore_json_into_cache"
-        ) as mock_task,
+        patch("superset.tasks.async_queries.load_explore_json_into_cache") as mock_task,
         patch("superset.viz.get_viz") as mock_get_viz,
     ):
         viz_obj = MagicMock()
@@ -362,9 +358,7 @@ async def test_async_branch_missing_cookie_401(
     with (
         _patch_jsctrl_off(),
         _patch_datasource(datasource),
-        patch(
-            "superset.tasks.async_queries.load_explore_json_into_cache"
-        ) as mock_task,
+        patch("superset.tasks.async_queries.load_explore_json_into_cache") as mock_task,
         patch("superset.viz.get_viz") as mock_get_viz,
     ):
         viz_obj = MagicMock()
@@ -404,9 +398,7 @@ async def test_async_branch_wrong_secret_401(
     with (
         _patch_jsctrl_off(),
         _patch_datasource(datasource),
-        patch(
-            "superset.tasks.async_queries.load_explore_json_into_cache"
-        ) as mock_task,
+        patch("superset.tasks.async_queries.load_explore_json_into_cache") as mock_task,
         patch("superset.viz.get_viz") as mock_get_viz,
     ):
         viz_obj = MagicMock()

@@ -131,8 +131,9 @@ def init_worker_db_engine(**kwargs: Any) -> None:
     except Exception:  # noqa: BLE001
         logger.exception("Failed to configure worker feature-flag / stats managers")
 
+    worker_engine = None
     try:
-        create_worker_engine(settings.sqlalchemy_database_uri)
+        worker_engine = create_worker_engine(settings.sqlalchemy_database_uri)
         logger.info("Worker async DB engine initialized (NullPool)")
     except Exception:  # noqa: BLE001
         # Deliberately do not crash the worker: non-DB tasks (pure cache / HTTP)
@@ -140,15 +141,74 @@ def init_worker_db_engine(**kwargs: Any) -> None:
         # via get_engine() rather than crash-looping the whole worker process.
         logger.exception("Failed to initialize worker async DB engine")
 
+    # Configure the event logger so that audit ``Log`` rows are written for
+    # Celery tasks (e.g. ``execute_sql`` in sql_lab).  Mirrors the original
+    # Flask app's ``init_app()`` path, which configures ``DBEventLogger``
+    # before any task runs.  Without this, ``superset.events.event_logger``
+    # stays as the no-op ``_StructuredLoggerLogger`` and no ``Log`` rows are
+    # written for async SQL-Lab executions.
+    if worker_engine is not None:
+        try:
+            from superset.db.session import create_session_factory  # noqa: WPS433
+            from superset.events import configure_event_logger  # noqa: WPS433
+
+            worker_session_factory = create_session_factory(worker_engine)
+            configure_event_logger(session_factory=worker_session_factory)
+            logger.info("Worker event logger configured (AsyncDBEventLogger)")
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to configure worker event logger")
+
 
 @task_postrun.connect
-def teardown(**kwargs: Any) -> None:
-    """Clean up after each task execution.
+def teardown(  # pylint: disable=unused-argument
+    retval: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> None:
+    """After each Celery task teardown the SQLAlchemy session.
 
-    Session cleanup in superset happens at the DAO layer via
-    ``async_sessionmaker`` scoped sessions, so this is intentionally
-    a no-op placeholder for future use.
+    1:1 with ``superset_old/tasks/celery_app.py`` @task_postrun handler:
+    - Conditionally commits the session when SQLALCHEMY_COMMIT_ON_TEARDOWN
+      is set and the task did not raise.
+    - Conditionally removes the session when CELERY_ALWAYS_EAGER is not set.
+
+    :param retval: The return value of the task
+    :see: https://docs.celeryq.dev/en/stable/userguide/signals.html#task-postrun
+    :see: https://gist.github.com/twolfson/a1b329e9353f9b575131
     """
+    try:
+        from superset.config import SupersetSettings  # noqa: WPS433
+
+        settings = SupersetSettings()  # type: ignore[call-arg]
+    except Exception:  # noqa: BLE001
+        # Settings failure must NOT skip session cleanup — the original ran
+        # ``db.session.remove()`` unconditionally (CELERY_ALWAYS_EAGER
+        # defaults falsy). Leaking the thread-local Session would pin a pool
+        # connection for the worker thread's lifetime.
+        settings = None
+
+    # 1:1 with original: commit on teardown when configured and task succeeded
+    if settings is not None and settings.sqlalchemy_commit_on_teardown:
+        if not isinstance(retval, Exception):
+            try:
+                from superset.db.session import get_sync_session  # noqa: WPS433
+
+                get_sync_session().commit()  # pylint: disable=consider-using-transaction
+            except Exception:  # noqa: BLE001
+                logger.debug("task_postrun commit failed", exc_info=True)
+
+    # 1:1 with original: remove session when not in eager mode
+    # (when settings could not be loaded, behave like the default — not eager).
+    if settings is None or not settings.celery_always_eager:
+        try:
+            from superset.db.session import remove_sync_session  # noqa: WPS433
+
+            # Mirrors Flask-SQLAlchemy's ``db.session.remove()``: deregisters
+            # the thread-local Session from the scoped_session registry and
+            # releases its connection back to the pool.
+            remove_sync_session()
+        except Exception:  # noqa: BLE001
+            logger.debug("task_postrun session.remove failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

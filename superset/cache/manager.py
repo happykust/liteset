@@ -77,9 +77,7 @@ class AsyncCacheProtocol(Protocol):
 
     async def get(self, key: str) -> Any: ...
 
-    async def set(
-        self, key: str, value: Any, ttl: int | None = None
-    ) -> None: ...
+    async def set(self, key: str, value: Any, ttl: int | None = None) -> None: ...
 
     async def delete(self, key: str) -> None: ...
 
@@ -148,9 +146,7 @@ class SimpleAsyncCacheManager:
       preserve that semantic.
     """
 
-    def __init__(
-        self, default_ttl: int = 300, threshold: int = 500
-    ) -> None:
+    def __init__(self, default_ttl: int = 300, threshold: int = 500) -> None:
         self._default_ttl = default_ttl
         self._threshold = threshold
         # Stored as ``{key: (expiry_ts | None, value)}``.
@@ -182,9 +178,7 @@ class SimpleAsyncCacheManager:
                 return None
             return entry[1]
 
-    async def set(
-        self, key: str, value: Any, ttl: int | None = None
-    ) -> None:
+    async def set(self, key: str, value: Any, ttl: int | None = None) -> None:
         async with self._lock:
             ttl_val = ttl if ttl is not None else self._default_ttl
             expiry = time.time() + ttl_val if ttl_val else None
@@ -260,9 +254,7 @@ class SyncCacheProtocol(Protocol):
 
     def get(self, key: str) -> Any: ...
 
-    def set(
-        self, key: str, value: Any, ttl: int | None = None
-    ) -> None: ...
+    def set(self, key: str, value: Any, ttl: int | None = None) -> None: ...
 
     def delete(self, key: str) -> None: ...
 
@@ -307,9 +299,7 @@ class SimpleSyncCacheManager:
     as ``flask_caching.backends.SimpleCache``.
     """
 
-    def __init__(
-        self, default_ttl: int = 300, threshold: int = 500
-    ) -> None:
+    def __init__(self, default_ttl: int = 300, threshold: int = 500) -> None:
         self._default_ttl = default_ttl
         self._threshold = threshold
         self._store: dict[str, tuple[float | None, Any]] = {}
@@ -338,9 +328,7 @@ class SimpleSyncCacheManager:
                 return None
             return entry[1]
 
-    def set(
-        self, key: str, value: Any, ttl: int | None = None
-    ) -> None:
+    def set(self, key: str, value: Any, ttl: int | None = None) -> None:
         with self._lock:
             ttl_val = ttl if ttl is not None else self._default_ttl
             expiry = time.time() + ttl_val if ttl_val else None
@@ -399,9 +387,7 @@ class SyncRedisCacheAdapter:
         try:
             raw = self._redis.get(self._full_key(key))
         except Exception:  # noqa: BLE001
-            logger.warning(
-                "Sync cache get failed for key=%s", key, exc_info=True
-            )
+            logger.warning("Sync cache get failed for key=%s", key, exc_info=True)
             return None
         if raw is None:
             return None
@@ -419,41 +405,31 @@ class SyncRedisCacheAdapter:
                 return raw
         return raw
 
-    def set(
-        self, key: str, value: Any, ttl: int | None = None
-    ) -> None:
+    def set(self, key: str, value: Any, ttl: int | None = None) -> None:
         try:
             payload = _json.dumps(value)
         except (TypeError, ValueError):
-            logger.warning(
-                "Sync cache encode failed for key=%s", key, exc_info=True
-            )
+            logger.warning("Sync cache encode failed for key=%s", key, exc_info=True)
             return None
         ex = ttl if ttl is not None else self._default_ttl
         try:
             self._redis.set(self._full_key(key), payload, ex=ex)
         except Exception:  # noqa: BLE001
-            logger.warning(
-                "Sync cache set failed for key=%s", key, exc_info=True
-            )
+            logger.warning("Sync cache set failed for key=%s", key, exc_info=True)
         return None
 
     def delete(self, key: str) -> None:
         try:
             self._redis.delete(self._full_key(key))
         except Exception:  # noqa: BLE001
-            logger.warning(
-                "Sync cache delete failed for key=%s", key, exc_info=True
-            )
+            logger.warning("Sync cache delete failed for key=%s", key, exc_info=True)
         return None
 
     def has(self, key: str) -> bool:
         try:
             return bool(self._redis.exists(self._full_key(key)))
         except Exception:  # noqa: BLE001
-            logger.warning(
-                "Sync cache has failed for key=%s", key, exc_info=True
-            )
+            logger.warning("Sync cache has failed for key=%s", key, exc_info=True)
             return False
 
     def close(self) -> None:
@@ -640,6 +616,48 @@ def _build_sync_redis_from_config(
     return default_sync_redis
 
 
+def _coerce_threshold(raw: Any) -> int:
+    """Coerce a Flask-Caching ``CACHE_THRESHOLD`` value to a finite int.
+
+    ``math.inf`` / ``None`` / non-positive values all map to the
+    practical maximum so the FIFO eviction loop effectively never fires.
+    Shared by the sync and async slot builders.
+    """
+    if raw == float("inf") or raw is None:
+        return 2**31 - 1
+    value = int(raw)
+    return value if value > 0 else 2**31 - 1
+
+
+def _build_sync_metastore_cache(
+    cfg: dict[str, Any],
+    fallback_default_ttl: int,
+) -> SyncCacheProtocol:
+    """Build a :class:`MetastoreSyncCacheManager` from a config dict.
+
+    Extracted from :func:`_build_sync_cache_for_slot` to reduce complexity.
+    """
+    seed = cfg.get("CACHE_KEY_PREFIX", "") or ""
+    try:
+        from superset.key_value.utils import get_uuid_namespace
+
+        namespace = get_uuid_namespace(seed)
+    except Exception:  # noqa: BLE001
+        namespace = uuid3(UUID("ee0e7df5-4ce8-4d0a-9b69-3018ea8c2e0c"), seed)
+    codec = cfg.get("CODEC")
+    if codec is None or not (hasattr(codec, "encode") and hasattr(codec, "decode")):
+        from superset.key_value.manager import JsonCodec
+
+        codec = JsonCodec()
+    refresh = bool(cfg.get("REFRESH_TIMEOUT_ON_RETRIEVAL", False))
+    return MetastoreSyncCacheManager(
+        namespace=namespace,
+        codec=codec,
+        default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)),
+        refresh_timeout_on_retrieval=refresh,
+    )
+
+
 def _build_sync_cache_for_slot(
     cfg: dict[str, Any] | None,
     default_sync_redis: Any | None,
@@ -668,66 +686,29 @@ def _build_sync_cache_for_slot(
     cache_type = cfg.get("CACHE_TYPE")
     if cache_type in _NULL_CACHE_TYPES:
         return NullSyncCacheManager(
-            default_ttl=int(
-                cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)
-            )
+            default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl))
         )
 
     if cache_type in _REDIS_CACHE_TYPES:
         client = _build_sync_redis_from_config(cfg, default_sync_redis)
         if client is None:
             return NullSyncCacheManager(
-                default_ttl=int(
-                    cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)
-                )
+                default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl))
             )
         return SyncRedisCacheAdapter(
             client,
-            default_ttl=int(
-                cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)
-            ),
+            default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)),
             key_prefix=key_prefix,
         )
 
     if cache_type in _SIMPLE_CACHE_TYPES:
-        raw_threshold = cfg.get("CACHE_THRESHOLD", 500)
-        if raw_threshold == float("inf") or raw_threshold is None:
-            threshold = 2**31 - 1
-        else:
-            threshold = int(raw_threshold)
-            if threshold <= 0:
-                threshold = 2**31 - 1
         return SimpleSyncCacheManager(
-            default_ttl=int(
-                cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)
-            ),
-            threshold=threshold,
+            default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)),
+            threshold=_coerce_threshold(cfg.get("CACHE_THRESHOLD", 500)),
         )
 
     if cache_type in _METASTORE_CACHE_TYPES:
-        seed = cfg.get("CACHE_KEY_PREFIX", "") or ""
-        try:
-            from superset.key_value.utils import get_uuid_namespace
-
-            namespace = get_uuid_namespace(seed)
-        except Exception:  # noqa: BLE001
-            namespace = uuid3(UUID("ee0e7df5-4ce8-4d0a-9b69-3018ea8c2e0c"), seed)
-        codec = cfg.get("CODEC")
-        if codec is None or not (
-            hasattr(codec, "encode") and hasattr(codec, "decode")
-        ):
-            from superset.key_value.manager import JsonCodec
-
-            codec = JsonCodec()
-        refresh = bool(cfg.get("REFRESH_TIMEOUT_ON_RETRIEVAL", False))
-        return MetastoreSyncCacheManager(
-            namespace=namespace,
-            codec=codec,
-            default_ttl=int(
-                cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)
-            ),
-            refresh_timeout_on_retrieval=refresh,
-        )
+        return _build_sync_metastore_cache(cfg, fallback_default_ttl)
 
     logger.warning(
         "Unsupported CACHE_TYPE %r in sync cache slot config; falling "
@@ -758,9 +739,7 @@ class AsyncCacheManager:
             logger.warning("Cache get failed for key=%s", key, exc_info=True)
             return None
 
-    async def set(
-        self, key: str, value: Any, ttl: int | None = None
-    ) -> None:
+    async def set(self, key: str, value: Any, ttl: int | None = None) -> None:
         ex = ttl if ttl is not None else self._default_ttl
         try:
             await self._redis.set(key, value, ex=ex)
@@ -799,9 +778,7 @@ class AsyncCacheManager:
         acquired = False
         try:
             acquired = bool(
-                await self._redis.set(
-                    lock_key, b"1", nx=True, ex=_LOCK_TTL_SECONDS
-                )
+                await self._redis.set(lock_key, b"1", nx=True, ex=_LOCK_TTL_SECONDS)
             )
         except Exception:
             logger.warning("Lock acquire failed for key=%s", key, exc_info=True)
@@ -931,11 +908,17 @@ class MetastoreAsyncCacheManager:
             entry = await dao.get_entry_by_key(self._RESOURCE, key_uuid)
             if entry is None:
                 return None
+            # Expiry check -- get_entry_by_key does not filter by expiry
+            # (matching original get_entry).  The original get_value does
+            # ``if not entry or entry.is_expired(): return None``.
+            if entry.expires_on is not None and entry.expires_on <= datetime.now():
+                return None
             try:
                 value = self._codec.decode(entry.value)
             except Exception:  # noqa: BLE001
                 logger.warning(
-                    "Metastore cache: failed to decode entry for key %r", key,
+                    "Metastore cache: failed to decode entry for key %r",
+                    key,
                     exc_info=True,
                 )
                 return None
@@ -956,7 +939,7 @@ class MetastoreAsyncCacheManager:
             dao = AsyncKeyValueDAO(session)
             existing = await dao.get_entry_by_key(self._RESOURCE, key_uuid)
             if existing is not None:
-                existing.value = encoded  # type: ignore[assignment]
+                existing.value = encoded
                 existing.expires_on = self._expiry(ttl)  # type: ignore[assignment]
             else:
                 await dao.create_entry(
@@ -1159,9 +1142,7 @@ def _build_metastore_cache_from_config(
     # ``JsonKeyValueCodec`` for both filter_state and explore_form_data,
     # which is the safe choice for untrusted payloads.
     codec = cfg.get("CODEC")
-    if codec is None or not (
-        hasattr(codec, "encode") and hasattr(codec, "decode")
-    ):
+    if codec is None or not (hasattr(codec, "encode") and hasattr(codec, "decode")):
         from superset.key_value.manager import JsonCodec
 
         codec = JsonCodec()
@@ -1174,6 +1155,33 @@ def _build_metastore_cache_from_config(
         default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)),
         refresh_timeout_on_retrieval=refresh,
     )
+
+
+def _wrap_if_explore(
+    inner: AsyncCacheProtocol, is_explore_form_data: bool
+) -> AsyncCacheProtocol:
+    """Wrap *inner* in :class:`ExploreFormDataCache` when requested."""
+    return ExploreFormDataCache(inner) if is_explore_form_data else inner
+
+
+def _build_async_redis_slot(
+    cfg: dict[str, Any],
+    default_redis: Any | None,
+    fallback_default_ttl: int,
+    is_explore_form_data: bool,
+) -> AsyncCacheProtocol:
+    """Build a Redis async cache slot, falling back to Null on missing client."""
+    client = _build_async_redis_from_config(cfg, default_redis)
+    if client is None:
+        inner: AsyncCacheProtocol = NullAsyncCacheManager(
+            default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl))
+        )
+    else:
+        inner = AsyncCacheManager(
+            client,
+            default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)),
+        )
+    return _wrap_if_explore(inner, is_explore_form_data)
 
 
 def _build_cache_for_slot(
@@ -1196,20 +1204,15 @@ def _build_cache_for_slot(
     * Any other type → :class:`NullAsyncCacheManager` with a warning,
       so an unsupported config never crashes startup.
     """
-
-    def _null_or_default() -> AsyncCacheProtocol:
-        # Slot was not configured at all (cfg is None) — keep the
-        # historical behaviour: fall back to the global default Redis
-        # client when one is available, otherwise NullAsyncCacheManager.
+    # Slot not configured — fall back to the global default Redis client
+    # when one is available, otherwise NullAsyncCacheManager.
+    if cfg is None or not cfg:
         ttl = fallback_default_ttl
         if default_redis is None:
-            inner: AsyncCacheProtocol = NullAsyncCacheManager(default_ttl=ttl)
+            default_inner: AsyncCacheProtocol = NullAsyncCacheManager(default_ttl=ttl)
         else:
-            inner = AsyncCacheManager(default_redis, default_ttl=ttl)
-        return ExploreFormDataCache(inner) if is_explore_form_data else inner
-
-    if cfg is None or not cfg:
-        return _null_or_default()
+            default_inner = AsyncCacheManager(default_redis, default_ttl=ttl)
+        return _wrap_if_explore(default_inner, is_explore_form_data)
 
     cache_type = cfg.get("CACHE_TYPE")
     inner: AsyncCacheProtocol
@@ -1217,43 +1220,22 @@ def _build_cache_for_slot(
         inner = NullAsyncCacheManager(
             default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl))
         )
-        return ExploreFormDataCache(inner) if is_explore_form_data else inner
+        return _wrap_if_explore(inner, is_explore_form_data)
 
     if cache_type in _REDIS_CACHE_TYPES:
-        client = _build_async_redis_from_config(cfg, default_redis)
-        if client is None:
-            inner = NullAsyncCacheManager(
-                default_ttl=int(
-                    cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)
-                )
-            )
-        else:
-            inner = AsyncCacheManager(
-                client,
-                default_ttl=int(
-                    cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)
-                ),
-            )
-        return ExploreFormDataCache(inner) if is_explore_form_data else inner
+        return _build_async_redis_slot(
+            cfg, default_redis, fallback_default_ttl, is_explore_form_data
+        )
 
     if cache_type in _SIMPLE_CACHE_TYPES:
-        raw_threshold = cfg.get("CACHE_THRESHOLD", 500)
         # ``math.inf`` is legitimate in Flask-Caching's SimpleCache and is
         # used by the Liteset test config — coerce to a large finite int
         # so the FIFO eviction loop never triggers in practice.
-        if raw_threshold == float("inf") or raw_threshold is None:
-            threshold = 2**31 - 1
-        else:
-            threshold = int(raw_threshold)
-            if threshold <= 0:
-                threshold = 2**31 - 1
         inner = SimpleAsyncCacheManager(
-            default_ttl=int(
-                cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)
-            ),
-            threshold=threshold,
+            default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl)),
+            threshold=_coerce_threshold(cfg.get("CACHE_THRESHOLD", 500)),
         )
-        return ExploreFormDataCache(inner) if is_explore_form_data else inner
+        return _wrap_if_explore(inner, is_explore_form_data)
 
     if cache_type in _METASTORE_CACHE_TYPES:
         inner = _build_metastore_cache_from_config(
@@ -1261,7 +1243,7 @@ def _build_cache_for_slot(
             session_factory=session_factory,
             fallback_default_ttl=fallback_default_ttl,
         )
-        return ExploreFormDataCache(inner) if is_explore_form_data else inner
+        return _wrap_if_explore(inner, is_explore_form_data)
 
     logger.warning(
         "Unsupported CACHE_TYPE %r in cache slot config; falling back to "
@@ -1271,7 +1253,7 @@ def _build_cache_for_slot(
     inner = NullAsyncCacheManager(
         default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl))
     )
-    return ExploreFormDataCache(inner) if is_explore_form_data else inner
+    return _wrap_if_explore(inner, is_explore_form_data)
 
 
 def _build_cache(
@@ -1339,12 +1321,8 @@ class CacheManager:
         self._sync_cache: SyncCacheProtocol = NullSyncCacheManager()
         self._sync_data_cache: SyncCacheProtocol = NullSyncCacheManager()
         self._sync_thumbnail_cache: SyncCacheProtocol = NullSyncCacheManager()
-        self._sync_filter_state_cache: SyncCacheProtocol = (
-            NullSyncCacheManager()
-        )
-        self._sync_explore_form_data_cache: SyncCacheProtocol = (
-            NullSyncCacheManager()
-        )
+        self._sync_filter_state_cache: SyncCacheProtocol = NullSyncCacheManager()
+        self._sync_explore_form_data_cache: SyncCacheProtocol = NullSyncCacheManager()
         # Process-wide sync Redis client; built lazily in ``init_app``
         # from ``settings.redis_url``.  Owned by this manager so
         # :meth:`close` can drop it cleanly on shutdown.
@@ -1613,9 +1591,7 @@ class CacheManager:
             try:
                 self._default_sync_redis.close()
             except Exception:  # noqa: BLE001
-                logger.warning(
-                    "Default sync Redis close failed", exc_info=True
-                )
+                logger.warning("Default sync Redis close failed", exc_info=True)
             self._default_sync_redis = None
 
 

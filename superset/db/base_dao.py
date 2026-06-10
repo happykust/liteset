@@ -20,6 +20,7 @@ from collections.abc import Sequence
 from typing import Any, Generic, TypeVar
 
 from sqlalchemy import CursorResult, delete as sa_delete, func, inspect, select
+from sqlalchemy.exc import StatementError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -52,7 +53,15 @@ class BaseAsyncDAO(Generic[T]):
             return col
 
     async def find_by_id(self, model_id: int | str) -> T | None:
-        return await self.session.get(self.model_cls, model_id)
+        try:
+            return await self.session.get(self.model_cls, model_id)
+        except StatementError:
+            # 1:1 with superset_old/daos/base.py: malformed IDs (e.g. a
+            # string where an int is expected) trigger a StatementError
+            # during bind-param processing.  Return None so callers raise
+            # their usual ObjectNotFoundError → 404 instead of letting
+            # the global statement_error_handler return 400.
+            return None
 
     async def find_by_ids(self, model_ids: Sequence[int | str]) -> list[T]:
         pk_col = self._get_pk_column()
@@ -67,8 +76,15 @@ class BaseAsyncDAO(Generic[T]):
         page_size: int = 0,
         order_by: list[Any] | None = None,
         options: list[Any] | None = None,
+        joins: list[Any] | None = None,
     ) -> list[T]:
         stmt = select(self.model_cls)
+        if joins:
+            for j in joins:
+                if isinstance(j, tuple):
+                    stmt = stmt.outerjoin(*j)
+                else:
+                    stmt = stmt.outerjoin(j)
         if options:
             stmt = stmt.options(*options)
         if filters:

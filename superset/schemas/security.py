@@ -85,6 +85,7 @@ class UsersSearchResponse(msgspec.Struct):
 
     result: list[UserResponse] = []
     count: int = 0
+    ids: list[int] = []
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +123,7 @@ class GroupsSearchResponse(msgspec.Struct):
 
     result: list[GroupResponse] = []
     count: int = 0
+    ids: list[int] = []
 
 
 # ---------------------------------------------------------------------------

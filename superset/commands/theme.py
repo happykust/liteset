@@ -35,6 +35,15 @@ logger = logging.getLogger(__name__)
 _THEME_MODES = {"default", "dark", "system", "compact"}
 
 
+def _is_valid_algorithm(alg: Any) -> bool:
+    """Return True if ``alg`` is a valid ThemeMode value or list of ThemeMode values."""
+    if isinstance(alg, str):
+        return alg in _THEME_MODES
+    if isinstance(alg, list):
+        return all(isinstance(a, str) and a in _THEME_MODES for a in alg)
+    return False
+
+
 def _is_valid_theme(theme: Any) -> bool:
     """Validate a parsed theme ``json_data`` dict — 1:1 with
     ``superset_old/themes/utils.py::is_valid_theme``. An empty dict is valid;
@@ -53,18 +62,8 @@ def _is_valid_theme(theme: Any) -> bool:
         ):
             if field in theme and not isinstance(theme[field], expected_type):
                 return False
-        if "algorithm" in theme:
-            alg = theme["algorithm"]
-            if isinstance(alg, str):
-                if alg not in _THEME_MODES:
-                    return False
-            elif isinstance(alg, list):
-                if not all(
-                    isinstance(a, str) and a in _THEME_MODES for a in alg
-                ):
-                    return False
-            else:
-                return False
+        if "algorithm" in theme and not _is_valid_algorithm(theme["algorithm"]):
+            return False
         return True
     except Exception:  # noqa: BLE001
         return False
@@ -102,7 +101,9 @@ async def _validate_theme_deletable(theme: Any) -> None:
         )
 
 
-async def _dissociate_dashboards_from_themes(session: Any, theme_ids: list[int]) -> None:
+async def _dissociate_dashboards_from_themes(
+    session: Any, theme_ids: list[int]
+) -> None:
     """NULL out ``Dashboard.theme_id`` for the given themes before deleting them
     — 1:1 with upstream ``_dissociate_dashboards``. Without this, deleting a
     theme referenced by a dashboard violates the ``dashboards.theme_id`` FK
@@ -118,6 +119,7 @@ async def _dissociate_dashboards_from_themes(session: Any, theme_ids: list[int])
         .where(Dashboard.theme_id.in_(theme_ids))
         .values(theme_id=None)
     )
+
 
 if TYPE_CHECKING:
     from superset.db.daos.theme import AsyncThemeDAO
@@ -231,11 +233,19 @@ class SetSystemDefaultCommand(AsyncBaseCommand[Any]):
             raise ObjectNotFoundError("Theme", self._pk)
 
     async def run(self) -> Any:
-        # Unset previous system default
-        current_default = await self._dao.find_system_default()
-        if current_default and current_default.id != self._pk:
-            current_default.is_system_default = False
+        from sqlalchemy import update as _sa_update
 
+        from superset.models.core import Theme
+
+        # Clear ALL existing system defaults in a single bulk query — 1:1
+        # with superset_old/commands/theme/set_system_theme.py:44-48.
+        await self._dao.session.execute(
+            _sa_update(Theme)
+            .where(Theme.is_system_default.is_(True))
+            .values(is_system_default=False)
+        )
+
+        # Set the new system default
         self._model.is_system_default = True
         await self._dao.session.flush()
         return self._model
@@ -254,10 +264,18 @@ class UnsetSystemDefaultCommand(AsyncBaseCommand[None]):
         pass
 
     async def run(self) -> None:
-        current_default = await self._dao.find_system_default()
-        if current_default:
-            current_default.is_system_default = False
-            await self._dao.session.flush()
+        from sqlalchemy import update as _sa_update
+
+        from superset.models.core import Theme
+
+        # Clear ALL system default themes in a single bulk query — 1:1
+        # with superset_old/commands/theme/set_system_theme.py:99-103.
+        await self._dao.session.execute(
+            _sa_update(Theme)
+            .where(Theme.is_system_default.is_(True))
+            .values(is_system_default=False)
+        )
+        await self._dao.session.flush()
 
 
 class BulkDeleteThemeCommand(AsyncBaseCommand[int]):
@@ -312,9 +330,19 @@ class SetSystemDarkCommand(AsyncBaseCommand[Any]):
             raise ObjectNotFoundError("Theme", self._pk)
 
     async def run(self) -> Any:
-        current_dark = await self._dao.find_system_dark()
-        if current_dark and current_dark.id != self._pk:
-            current_dark.is_system_dark = False
+        from sqlalchemy import update as _sa_update
+
+        from superset.models.core import Theme
+
+        # Clear ALL existing system dark themes in a single bulk query — 1:1
+        # with superset_old/commands/theme/set_system_theme.py:75-79.
+        await self._dao.session.execute(
+            _sa_update(Theme)
+            .where(Theme.is_system_dark.is_(True))
+            .values(is_system_dark=False)
+        )
+
+        # Set the new system dark theme
         self._model.is_system_dark = True
         await self._dao.session.flush()
         return self._model
@@ -333,10 +361,49 @@ class UnsetSystemDarkCommand(AsyncBaseCommand[None]):
         pass
 
     async def run(self) -> None:
-        current_dark = await self._dao.find_system_dark()
-        if current_dark:
-            current_dark.is_system_dark = False
-            await self._dao.session.flush()
+        from sqlalchemy import update as _sa_update
+
+        from superset.models.core import Theme
+
+        # Clear ALL system dark themes in a single bulk query — 1:1
+        # with superset_old/commands/theme/set_system_theme.py:116-120.
+        await self._dao.session.execute(
+            _sa_update(Theme)
+            .where(Theme.is_system_dark.is_(True))
+            .values(is_system_dark=False)
+        )
+        await self._dao.session.flush()
+
+
+def _validate_import_config(file_name: str, config: Any) -> list[str]:
+    """Validate a single theme import config against ImportV1ThemeSchema rules.
+
+    Returns a list of human-readable error strings (empty → valid).
+    1:1 with ``ImportV1ThemeSchema`` (superset_old/themes/schemas.py:28-32):
+    ``theme_name``, ``json_data``, ``uuid``, and ``version`` are all
+    ``required=True``; ``uuid`` must also be a valid UUID-format string.
+    """
+    import uuid as _uuid_mod
+
+    errors: list[str] = []
+    # ``fields.String(required=True)`` accepts an EMPTY string — only a
+    # missing key / explicit null is an error (superset_old/themes/schemas.py:
+    # 29,32). ``uuid: ""`` is rejected anyway by the UUID-format check below
+    # (``fields.UUID`` semantics).
+    for field in ("theme_name", "uuid", "version"):
+        if config.get(field) is None:
+            errors.append(f"{file_name}: missing required field '{field}'")
+    if config.get("json_data") is None:
+        errors.append(f"{file_name}: missing required field 'json_data'")
+    uuid_str = config.get("uuid")
+    # ``is not None`` (not truthiness): an empty-string uuid must hit the
+    # format check and fail like ``fields.UUID`` would.
+    if uuid_str is not None and not errors:
+        try:
+            _uuid_mod.UUID(str(uuid_str))
+        except (ValueError, AttributeError):
+            errors.append(f"{file_name}: 'uuid' is not a valid UUID")
+    return errors
 
 
 class ExportThemesCommand(AsyncBaseCommand[list[tuple[str, str]]]):
@@ -345,27 +412,27 @@ class ExportThemesCommand(AsyncBaseCommand[list[tuple[str, str]]]):
     Ported from superset_old/commands/theme/export.py.
     """
 
-    def __init__(
-        self, dao: AsyncThemeDAO, model_ids: list[int] | None = None
-    ) -> None:
+    def __init__(self, dao: AsyncThemeDAO, model_ids: list[int] | None = None) -> None:
         self._dao = dao
         self._model_ids = model_ids
+        self._models: list[Any] = []
 
     async def validate(self) -> None:
-        pass
+        # 1:1 with superset_old/commands/export/models.py:75-78:
+        # ``if len(self._models) != len(self.model_ids): raise self.not_found()``
+        if self._model_ids:
+            self._models = await self._dao.find_by_ids(self._model_ids)
+            if len(self._models) != len(self._model_ids):
+                raise ObjectNotFoundError("Theme", str(self._model_ids))
 
     async def run(self) -> list[tuple[str, str]]:
         import yaml
 
         from superset.utils.file import get_filename
 
-        # Export only the requested ids (1:1 upstream) — the port previously
-        # dumped ALL themes regardless of the ``q`` ids.
-        themes = (
-            await self._dao.find_by_ids(self._model_ids)
-            if self._model_ids
-            else await self._dao.find_all()
-        )
+        # Use models pre-loaded during validate(); fall back to find_all()
+        # when no specific IDs were requested.
+        themes = self._models if self._models else await self._dao.find_all()
         result: list[tuple[str, str]] = []
         for theme in themes:
             file_name = get_filename(theme.theme_name, theme.id, skip_id=True)
@@ -383,7 +450,10 @@ class ExportThemesCommand(AsyncBaseCommand[list[tuple[str, str]]]):
                     json_data = _json.loads(payload["json_data"])
                     payload["json_data"] = json_data
                 except (TypeError, ValueError):
-                    pass
+                    logger.info(
+                        "Unable to decode `json_data` field: %s",
+                        payload["json_data"],
+                    )
             payload["version"] = "1.0.0"
             file_content = yaml.safe_dump(payload, sort_keys=False)
             result.append((f"themes/{file_name}.yaml", file_content))
@@ -409,8 +479,53 @@ class ImportThemesCommand(AsyncBaseCommand[int]):
         self._current_user = current_user
 
     async def validate(self) -> None:
-        if not self._contents:
-            raise CommandInvalidError("No theme contents provided")
+        # NB: empty ``contents`` is NOT an error — the original base
+        # ImportModelsCommand.validate() only checks metadata.yaml (done by
+        # the controller here) and load_configs() of themes/*.yaml; a bundle
+        # with a valid metadata.yaml and zero theme files imports as a no-op
+        # and returns HTTP 200 (superset_old/commands/importers/v1/__init__.py
+        # :82-104). The completely-empty-ZIP 4xx is raised at the controller
+        # level, mirroring superset_old/themes/api.py:545-547.
+
+        # Per-config schema validation — 1:1 with ImportV1ThemeSchema applied
+        # by load_configs() in the original ImportModelsCommand.validate()
+        # (superset_old/commands/importers/v1/utils.py:199 + themes/schemas.py:28-32).
+        # The original schema declares theme_name, json_data, uuid, and version
+        # all as required=True.  A missing or invalid-format field → HTTP 422;
+        # the liteset port previously skipped this entirely, causing:
+        #   - missing uuid   → random UUID generated, overwrite-detection broken
+        #   - missing theme_name → NULL row instead of 422
+        #   - missing version   → silently ignored instead of 422
+        #   - invalid UUID str  → BinaryUUID.process_bind_param crash → 500
+        all_errors: list[str] = []
+        for file_name, config in self._contents.items():
+            if file_name.startswith("themes/") and isinstance(config, dict):
+                all_errors.extend(_validate_import_config(file_name, config))
+        if all_errors:
+            raise CommandInvalidError("; ".join(all_errors))
+
+        # Overwrite protection runs after schema validation — 1:1 with
+        # _prevent_overwrite_existing_model() ordering in the original
+        # (which executes AFTER load_configs() guarantees valid UUIDs).
+        if not self._overwrite:
+            # 1:1 with _prevent_overwrite_existing_model (superset_old/
+            # commands/importers/v1/__init__.py:135-155): collect a conflict
+            # per colliding file and report them ALL in one combined error,
+            # not just the first.
+            conflicts: list[str] = []
+            for file_name, config in self._contents.items():
+                if not file_name.startswith("themes/"):
+                    continue
+                if not isinstance(config, dict):
+                    continue
+                uuid_val = config.get("uuid")
+                if uuid_val and await self._dao.find_by_uuid(uuid_val):
+                    conflicts.append(
+                        f"{file_name}: Theme already exists and "
+                        "`overwrite=true` was not passed"
+                    )
+            if conflicts:
+                raise CommandInvalidError("; ".join(conflicts))
 
     async def run(self) -> int:
         import json as _json
@@ -427,10 +542,12 @@ class ImportThemesCommand(AsyncBaseCommand[int]):
                 config["json_data"] = _json.dumps(config["json_data"])
 
             # Structurally validate the imported theme — 1:1 with upstream's
-            # ImportV1ThemeSchema (which runs is_valid_theme). The port
-            # previously imported any YAML without validating the structure.
+            # ImportV1ThemeSchema (which runs is_valid_theme). An empty
+            # string is NOT exempt: upstream's validator does
+            # ``json.loads("")`` → JSONDecodeError → "Invalid JSON
+            # configuration" (superset_old/themes/schemas.py:34-46).
             raw_json = config.get("json_data")
-            if raw_json not in (None, ""):
+            if raw_json is not None:
                 _validate_theme_json_data(raw_json)
 
             uuid_val = config.get("uuid")

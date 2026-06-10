@@ -160,10 +160,13 @@ class TestSearchRolesLogic:
 
         mock_role_dao.search.assert_awaited_once_with(
             name_filter=None,
+            user_ids_filter=None,
+            permission_ids_filter=None,
+            group_ids_filter=None,
             order_column="id",
             order_direction="asc",
             page=0,
-            page_size=25,
+            page_size=10,
         )
 
     @pytest.mark.asyncio
@@ -199,6 +202,9 @@ class TestSearchRolesLogic:
 
         mock_role_dao.search.assert_awaited_once_with(
             name_filter="Admin",
+            user_ids_filter=None,
+            permission_ids_filter=None,
+            group_ids_filter=None,
             order_column="id",
             order_direction="asc",
             page=0,
@@ -218,6 +224,9 @@ class TestSearchRolesLogic:
 
         mock_role_dao.search.assert_awaited_once_with(
             name_filter=None,
+            user_ids_filter=None,
+            permission_ids_filter=None,
+            group_ids_filter=None,
             order_column="id",
             order_direction="asc",
             page=2,
@@ -237,32 +246,33 @@ class TestSearchRolesLogic:
 
         mock_role_dao.search.assert_awaited_once_with(
             name_filter=None,
+            user_ids_filter=None,
+            permission_ids_filter=None,
+            group_ids_filter=None,
             order_column="name",
             order_direction="desc",
             page=0,
-            page_size=25,
+            page_size=10,
         )
 
     @pytest.mark.asyncio
     async def test_search_roles_invalid_order_column_defaults_to_id(
         self, mock_role_dao: AsyncMock
     ) -> None:
-        """Invalid order_column falls back to 'id'."""
+        """Invalid order_column raises 400 (1:1 with original
+        security/api.py:289-292)."""
+        from litestar.exceptions import HTTPException
+
         fn = self._call_search_roles()
         rison = {"order_column": "evil_column"}
-        await fn(
-            MagicMock(),
-            role_dao=mock_role_dao,
-            rison_params=rison,
-        )
-
-        mock_role_dao.search.assert_awaited_once_with(
-            name_filter=None,
-            order_column="id",
-            order_direction="asc",
-            page=0,
-            page_size=25,
-        )
+        with pytest.raises(HTTPException) as exc_info:
+            await fn(
+                MagicMock(),
+                role_dao=mock_role_dao,
+                rison_params=rison,
+            )
+        assert exc_info.value.status_code == 400
+        mock_role_dao.search.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_search_roles_multiple_results(
@@ -305,3 +315,102 @@ class TestSearchRolesLogic:
         assert result["count"] == 1
         assert result["result"][0]["user_ids"] == []
         assert result["result"][0]["permission_ids"] == []
+
+
+# ---------------------------------------------------------------------------
+# RoleController.get_list — pagination default (original: page_size=10)
+# ---------------------------------------------------------------------------
+
+
+class TestRoleControllerGetList:
+    """Test RoleController.get_list — focuses on page_size default of 10.
+
+    Original: superset_old/security/api.py:298
+        page_size = args.get("page_size", 10)
+    """
+
+    @staticmethod
+    def _get_list_fn() -> Any:
+        """Return the unwrapped get_list handler."""
+        from superset.controllers.role import RoleController
+
+        return RoleController.get_list.fn
+
+    @pytest.mark.asyncio
+    async def test_get_list_default_page_size_is_10(self) -> None:
+        """When no page_size is given, the DAO must receive page_size=10
+        (original security/api.py:298 default), not 25 (generic default).
+        """
+        role = MagicMock()
+        role.id = 1
+        role.name = "Admin"
+        role.user = []
+        role.permissions = []
+        # groups attribute may not exist on the mock
+        role.groups = []
+        dao = AsyncMock()
+        dao.search = AsyncMock(return_value=([role], 1))
+
+        fn = self._get_list_fn()
+        await fn(
+            MagicMock(),  # self (controller instance)
+            role_dao=dao,
+            rison_params=None,
+        )
+
+        dao.search.assert_awaited_once_with(
+            name_filter=None,
+            user_ids_filter=None,
+            permission_ids_filter=None,
+            group_ids_filter=None,
+            order_column="id",
+            order_direction="asc",
+            page=0,
+            page_size=10,  # must be 10, not 25
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_list_explicit_page_size_respected(self) -> None:
+        """Caller-supplied page_size overrides the default."""
+        role = MagicMock()
+        role.id = 2
+        role.name = "Gamma"
+        role.user = []
+        role.permissions = []
+        role.groups = []
+        dao = AsyncMock()
+        dao.search = AsyncMock(return_value=([role], 1))
+
+        fn = self._get_list_fn()
+        await fn(
+            MagicMock(),
+            role_dao=dao,
+            rison_params={"page": 1, "page_size": 50},
+        )
+
+        dao.search.assert_awaited_once_with(
+            name_filter=None,
+            user_ids_filter=None,
+            permission_ids_filter=None,
+            group_ids_filter=None,
+            order_column="id",
+            order_direction="asc",
+            page=1,
+            page_size=50,
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_list_invalid_order_column_raises_400(self) -> None:
+        """Invalid order_column raises HTTP 400 (mirrors original)."""
+        from litestar.exceptions import HTTPException
+
+        dao = AsyncMock()
+        fn = self._get_list_fn()
+        with pytest.raises(HTTPException) as exc_info:
+            await fn(
+                MagicMock(),
+                role_dao=dao,
+                rison_params={"order_column": "evil"},
+            )
+        assert exc_info.value.status_code == 400
+        dao.search.assert_not_awaited()

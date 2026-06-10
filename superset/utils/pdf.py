@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 from io import BytesIO
 
+from superset.commands.report_exceptions import ReportSchedulePdfFailedError
+
 logger = logging.getLogger(__name__)
 try:
     from PIL import Image
@@ -42,6 +44,8 @@ def build_pdf_from_screenshots(snapshots: list[bytes]) -> bytes:
         images[0].save(new_pdf, "PDF", save_all=True, append_images=images[1:])
         new_pdf.seek(0)
     except Exception as ex:
-        raise RuntimeError(f"Failed converting screenshots to pdf {ex!s}") from ex
+        raise ReportSchedulePdfFailedError(
+            f"Failed converting screenshots to pdf {ex!s}"
+        ) from ex
 
     return new_pdf.read()

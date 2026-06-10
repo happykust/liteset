@@ -36,6 +36,17 @@ def _spec(name: str) -> Any:
     return get_engine_spec(name, "")
 
 
+@pytest.fixture(autouse=True)
+def _stub_trino_uri_validation(monkeypatch: Any) -> None:
+    """``get_sync_engine`` validates the URI via
+    ``db_engine_spec.validate_database_uri`` (1:1 with the original), which
+    calls ``url.get_driver_name()`` and would load the trino dialect — not
+    installed in the test env.  Stub it so these impersonation tests exercise
+    only the impersonation path, not real dialect loading.
+    """
+    monkeypatch.setattr(_spec("trino"), "validate_database_uri", lambda *a, **k: None)
+
+
 def test_base_impersonate_user_sets_url_username() -> None:
     spec = _spec("postgresql")
     url = make_url("postgresql://svc@localhost:5432/db")
@@ -96,7 +107,7 @@ def test_get_sync_engine_applies_impersonation(monkeypatch: Any) -> None:
         impersonate_user = True
         db_engine_spec = _spec("trino")
 
-        def get_extra(self) -> dict[str, Any]:
+        def get_extra(self, source: Any = None) -> dict[str, Any]:
             return {}
 
         def get_effective_user(self, url: Any) -> str | None:
@@ -139,7 +150,7 @@ def test_get_sync_engine_no_impersonation_when_disabled(monkeypatch: Any) -> Non
         impersonate_user = False
         db_engine_spec = _spec("trino")
 
-        def get_extra(self) -> dict[str, Any]:
+        def get_extra(self, source: Any = None) -> dict[str, Any]:
             return {}
 
         def get_effective_user(self, url: Any) -> str | None:
@@ -184,7 +195,7 @@ def test_get_sync_engine_preserves_password_when_impersonating(
         impersonate_user = True
         db_engine_spec = _spec("trino")
 
-        def get_extra(self) -> dict[str, Any]:
+        def get_extra(self, source: Any = None) -> dict[str, Any]:
             return {}
 
         def get_effective_user(self, url: Any) -> str | None:
@@ -232,7 +243,7 @@ def test_impersonate_with_email_prefix(monkeypatch: Any) -> None:
         impersonate_user = True
         db_engine_spec = _spec("trino")
 
-        def get_extra(self) -> dict[str, Any]:
+        def get_extra(self, source: Any = None) -> dict[str, Any]:
             return {}
 
         def get_effective_user(self, url: Any) -> str | None:
@@ -516,13 +527,15 @@ def test_sync_oauth2_token_refresh_revoked_returns_none() -> None:
 # --- Sync distributed lock -----------------------------------------------------
 
 
-def _lock_session_cm(existing_on_acquire, existing_on_release=MagicMock()):
+def _lock_session_cm(existing_on_acquire, existing_on_release=None):
     """Build a sync-session context manager for the lock.
 
     ``session.query(...).filter(...).one_or_none()`` is called twice: once on
     acquire (contention check) and once on release (fetch-to-delete). Return
     the two values in sequence.
     """
+    if existing_on_release is None:
+        existing_on_release = MagicMock()
     sess = MagicMock()
     one_or_none = sess.query.return_value.filter.return_value.one_or_none
     one_or_none.side_effect = [existing_on_acquire, existing_on_release]

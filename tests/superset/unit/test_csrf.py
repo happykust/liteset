@@ -25,8 +25,14 @@ round-trip validity, session binding, tamper rejection, and expiry.
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
+import pytest
+
 from superset.middleware.csrf import (
     create_csrf_middleware,
+    CSRFMiddleware,
     generate_csrf_token,
     validate_csrf_token,
 )
@@ -83,5 +89,134 @@ def test_create_csrf_middleware_returns_definition() -> None:
     # not a CSRFConfig object.
     from litestar.middleware import DefineMiddleware
 
-    definition = create_csrf_middleware(secret=_SECRET, exclude_paths=["/api/v1/health"])
+    definition = create_csrf_middleware(
+        secret=_SECRET,
+        exclude_paths=["/api/v1/health"],
+    )
     assert isinstance(definition, DefineMiddleware)
+
+
+# ---------------------------------------------------------------------------
+# CSRFMiddleware.__call__ response-dispatch tests
+# ---------------------------------------------------------------------------
+# The original Flask handler (superset_old/views/error_handling.py:147-155):
+#   - request.is_json (werkzeug always lowercases MIME) → 400 JSON error
+#   - otherwise → 302 redirect to /login
+# These tests verify the liteset port mirrors that behaviour exactly,
+# including for mixed-case Content-Type values that RFC 7231 §3.1.1.1 allows.
+# ---------------------------------------------------------------------------
+
+
+async def _call_middleware(
+    content_type: str,
+    method: str = "POST",
+    path: str = "/api/v1/chart/",
+    inject_valid_token: bool = False,
+) -> dict[str, Any]:
+    """Drive CSRFMiddleware with a fake ASGI scope and return response info."""
+
+    async def dummy_app(scope: Any, receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b""}
+
+    captured: list[dict[str, Any]] = []
+
+    async def send_capture(msg: dict[str, Any]) -> None:
+        captured.append(msg)
+
+    headers: list[tuple[bytes, bytes]] = [
+        (b"content-type", content_type.encode()),
+    ]
+    if inject_valid_token:
+        token = generate_csrf_token(_SECRET)
+        headers.append((b"x-csrftoken", token.encode()))
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "method": method,
+        "path": path,
+        "query_string": b"",
+        "headers": headers,
+    }
+
+    middleware = CSRFMiddleware(dummy_app, secret=_SECRET)
+    await middleware(scope, receive, send_capture)  # type: ignore[arg-type]
+
+    start = next(m for m in captured if m["type"] == "http.response.start")
+    body_parts = [m["body"] for m in captured if m["type"] == "http.response.body"]
+    body = b"".join(body_parts)
+    return {
+        "status": start["status"],
+        "headers": dict(start.get("headers", [])),
+        "body": body,
+    }
+
+
+@pytest.mark.asyncio
+async def test_csrf_missing_token_json_lowercase_ct_returns_400() -> None:
+    """Lowercase application/json Content-Type with no token → 400 (not 302).
+
+    Mirrors: superset_old/views/error_handling.py:152 request.is_json →
+    show_http_exception(400).
+    """
+    result = await _call_middleware("application/json")
+    assert result["status"] == 400
+    payload = json.loads(result["body"])
+    assert payload["errors"][0]["error_type"] == "GENERIC_BACKEND_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_csrf_missing_token_uppercase_ct_returns_400() -> None:
+    """Mixed-case APPLICATION/JSON Content-Type with no token → 400 (not 302).
+
+    RFC 7231 §3.1.1.1: MIME types are case-insensitive.
+    Werkzeug normalises via .lower() so request.is_json returns True.
+    The liteset port must also normalise to preserve the same behaviour.
+    """
+    result = await _call_middleware("APPLICATION/JSON")
+    assert result["status"] == 400
+    payload = json.loads(result["body"])
+    assert payload["errors"][0]["error_type"] == "GENERIC_BACKEND_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_csrf_missing_token_mixed_case_ct_with_charset_returns_400() -> None:
+    """Application/JSON; charset=utf-8 (mixed-case + params) → 400."""
+    result = await _call_middleware("Application/JSON; charset=utf-8")
+    assert result["status"] == 400
+
+
+@pytest.mark.asyncio
+async def test_csrf_missing_token_json_plus_suffix_returns_400() -> None:
+    """application/vnd.api+json Content-Type with no token → 400."""
+    result = await _call_middleware("application/vnd.api+json")
+    assert result["status"] == 400
+
+
+@pytest.mark.asyncio
+async def test_csrf_missing_token_non_json_returns_302() -> None:
+    """text/html Content-Type with no token → 302 redirect to login.
+
+    Mirrors: superset_old/views/error_handling.py:154 redirect_to_login().
+    """
+    result = await _call_middleware("text/html")
+    assert result["status"] == 302
+    location = result["headers"].get(b"location", b"").decode()
+    assert location.startswith("/login")
+
+
+@pytest.mark.asyncio
+async def test_csrf_missing_token_form_urlencoded_returns_302() -> None:
+    """application/x-www-form-urlencoded (browser form) → 302 redirect."""
+    result = await _call_middleware("application/x-www-form-urlencoded")
+    assert result["status"] == 302
+
+
+@pytest.mark.asyncio
+async def test_csrf_valid_token_passes_through() -> None:
+    """A valid CSRF token in the X-CSRFToken header → 200 pass-through."""
+    result = await _call_middleware("application/json", inject_valid_token=True)
+    assert result["status"] == 200

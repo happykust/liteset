@@ -242,27 +242,73 @@ class CSRFMiddleware(MiddlewareProtocol):
             self.max_age,
             session_id=session_id,
         ):
-            # Return 403 with JSON error
-            import json
+            import json as _json
 
-            body = json.dumps(
+            logger.warning("Refresh CSRF token error")
+
+            # Mirror the original Flask handler:
+            # - JSON requests → 400 JSON error (CSRFError inherits BadRequest)
+            # - non-JSON requests → 302 redirect to login
+            content_type_header = headers.get(b"content-type", b"").decode(
+                "utf-8", errors="ignore"
+            )
+            mt = content_type_header.split(";")[0].strip().lower()
+            is_json = mt == "application/json" or (
+                mt.startswith("application/") and mt.endswith("+json")
+            )
+
+            if not is_json:
+                # Non-JSON (browser form) → redirect to login
+                # Mirrors original redirect_to_login()
+                qs = scope.get("query_string", b"")
+                path = scope.get("path", "/")
+                next_url = path + (
+                    ("?" + qs.decode("utf-8", errors="ignore")) if qs else ""
+                )
+                import urllib.parse as _parse
+
+                redirect_target = "/login?next=" + _parse.quote(next_url, safe="")
+                location = redirect_target.encode("utf-8")
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 302,
+                        "headers": [
+                            (b"location", location),
+                            (b"content-length", b"0"),
+                        ],
+                    }
+                )
+                await send({"type": "http.response.body", "body": b""})
+                return
+
+            # JSON request → 400 with GENERIC_BACKEND_ERROR (mirrors show_http_exception
+            # which uses ex.code=400 since CSRFError inherits werkzeug BadRequest)
+            body = _json.dumps(
                 {
                     "errors": [
                         {
-                            "message": ("CSRF token verification failed"),
-                            "error_type": "CSRF_ERROR",
+                            "message": "CSRF token verification failed",
+                            "error_type": "GENERIC_BACKEND_ERROR",
                             "level": "error",
-                            "extra": {},
+                            "extra": {
+                                "issue_codes": [
+                                    {
+                                        "code": 1011,
+                                        "message": "Issue 1011 - Superset encountered"
+                                        " an unexpected error.",
+                                    }
+                                ]
+                            },
                         }
                     ],
-                    "message": ("CSRF token verification failed"),
                 }
             ).encode()
 
             await send(
                 {
                     "type": "http.response.start",
-                    "status": 403,
+                    "status": 400,
                     "headers": [
                         (b"content-type", b"application/json"),
                         (

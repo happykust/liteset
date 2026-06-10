@@ -29,6 +29,7 @@ from typing import Any
 from superset.exceptions import (
     CommandException,
     CommandInvalidError,
+    CreateFailedError,
     ForbiddenError,
     SupersetErrorsException,
 )
@@ -37,6 +38,40 @@ from superset.exceptions import (
 class ReportScheduleNotFoundError(CommandException):
     status_code = 404
     message = "Report Schedule not found."
+
+
+class ReportScheduleCreateFailedError(CreateFailedError):
+    """Raised when report schedule creation fails at the DB/transaction level.
+
+    1:1 with
+    ``superset_old/commands/report/exceptions.py::ReportScheduleCreateFailedError``.
+    The original wraps the create command's run() with
+    @transaction(on_error=partial(on_error, reraise=ReportScheduleCreateFailedError))
+    so any SQLAlchemy error during create is re-raised as this type and
+    the API catches it for a 422 response.
+    """
+
+    message = "Report Schedule could not be created."
+
+
+class ReportScheduleUpdateFailedError(CreateFailedError):
+    """Raised when report schedule update fails at the DB/transaction level.
+
+    1:1 with
+    ``superset_old/commands/report/exceptions.py::ReportScheduleUpdateFailedError``.
+    """
+
+    message = "Report Schedule could not be updated."
+
+
+class ReportScheduleDeleteFailedError(CommandException):
+    """Raised when report schedule deletion fails at the DB/transaction level.
+
+    1:1 with
+    ``superset_old/commands/report/exceptions.py::ReportScheduleDeleteFailedError``.
+    """
+
+    message = "Report Schedule delete failed."
 
 
 class ReportScheduleForbiddenError(ForbiddenError):
@@ -85,6 +120,10 @@ class ReportScheduleScreenshotFailedError(CommandException):
 class ReportScheduleScreenshotTimeout(CommandException):
     status_code = 408
     message = "A timeout occurred while taking a screenshot."
+
+
+class ReportSchedulePdfFailedError(CommandException):
+    message = "Report Schedule execution failed when generating a pdf."
 
 
 class ReportScheduleCsvFailedError(CommandException):
@@ -203,9 +242,7 @@ class ChartNotFoundValidationError(ReportScheduleValidationError):
         super().__init__("Chart does not exist", field_name="chart")
 
 
-class ReportScheduleAlertRequiredDatabaseValidationError(
-    ReportScheduleValidationError
-):
+class ReportScheduleAlertRequiredDatabaseValidationError(ReportScheduleValidationError):
     """Alert is missing the required database field."""
 
     def __init__(self) -> None:
@@ -291,15 +328,14 @@ class ReportScheduleInvalidError(CommandInvalidError):
     """
 
     status_code = 422
+    message = "Report Schedule parameters are invalid."
 
     def __init__(
         self, exceptions: list[ReportScheduleValidationError] | None = None
     ) -> None:
-        self._invalid_exceptions: list[ReportScheduleValidationError] = (
-            exceptions or []
-        )
+        self._invalid_exceptions: list[ReportScheduleValidationError] = exceptions or []
         super().__init__(
-            message=self.normalized_messages(),
+            message=self.message,
             exceptions=list(self._invalid_exceptions),
         )
 

@@ -105,6 +105,64 @@ def test_command_exception_with_nested():
     assert exc.exceptions == [inner]
 
 
+def test_command_invalid_append_normalized_messages():
+    """append() must update normalized_messages() — uses self._exceptions.
+
+    Mirrors original CommandInvalidError behaviour in
+    superset_old/commands/exceptions.py:67-79.
+    """
+
+    class _FakeValidationError(Exception):
+        def normalized_messages(self) -> dict:
+            return {"field": ["bad value"]}
+
+    exc = CommandInvalidError("validation failed")
+    exc.append(_FakeValidationError())
+    msgs = exc.normalized_messages()
+    assert msgs == {"field": ["bad value"]}
+
+
+def test_command_invalid_extend_normalized_messages():
+    """extend() must update normalized_messages() for multiple exceptions.
+
+    Mirrors original CommandInvalidError.extend() in
+    superset_old/commands/exceptions.py:70-71.
+    """
+
+    class _FakeValidationError(Exception):
+        def __init__(self, field: str) -> None:
+            self._field = field
+
+        def normalized_messages(self) -> dict:
+            return {self._field: ["invalid"]}
+
+    exc = CommandInvalidError("multi-field validation failed")
+    exc.extend([_FakeValidationError("name"), _FakeValidationError("type")])
+    msgs = exc.normalized_messages()
+    assert msgs == {"name": ["invalid"], "type": ["invalid"]}
+
+
+def test_command_invalid_get_list_classnames():
+    """get_list_classnames() returns deduplicated sorted class names.
+
+    Mirrors original CommandInvalidError.get_list_classnames() in
+    superset_old/commands/exceptions.py:73-74.
+    """
+
+    class _ErrAError(Exception):
+        pass
+
+    class _ErrBError(Exception):
+        pass
+
+    exc = CommandInvalidError("bad")
+    exc.append(_ErrAError())
+    exc.append(_ErrBError())
+    exc.append(_ErrAError())  # duplicate — should be deduplicated
+    classnames = exc.get_list_classnames()
+    assert classnames == sorted({"_ErrAError", "_ErrBError"})
+
+
 def test_create_update_delete_failed():
     assert CreateFailedError().status_code == 500
     assert UpdateFailedError().status_code == 500

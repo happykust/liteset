@@ -206,7 +206,11 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
                 setattr(item, rel_key, new_value)
 
         if "columns" in attributes:
-            await self.update_columns(item, attributes.pop("columns"))
+            await self.update_columns(
+                item,
+                attributes.pop("columns"),
+                override_columns=bool(attributes.get("override_columns")),
+            )
             force_update = True
 
         if "metrics" in attributes:
@@ -235,29 +239,68 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         except ValueError:
             return False
 
-    async def update_columns(
-        self,
-        model: SqlaTable,
-        property_columns: list[dict[str, Any]],
-    ) -> None:
-        """Update dataset columns: insert new, update existing, delete removed."""
-        # 1:1 with upstream ``DatasetDAO.update_columns``
-        # (``superset_old/daos/dataset.py:222-232``): every supplied
-        # ``python_date_format`` is validated up front, before any persist,
-        # raising ``ValueError`` on the first invalid format.
+    @staticmethod
+    def _validate_date_formats(property_columns: list[dict[str, Any]]) -> None:
+        """Validate ``python_date_format`` for every column up-front.
+
+        1:1 with ``superset_old/daos/dataset.py:222-232``: raises
+        ``ValueError`` on the first invalid format before any persist.
+        """
         for column in property_columns:
             if (
                 "python_date_format" in column
                 and column["python_date_format"] is not None
             ):
-                if not self.validate_python_date_format(
+                if not AsyncDatasetDAO.validate_python_date_format(
                     column["python_date_format"]
                 ):
                     raise ValueError(
                         "python_date_format is an invalid date/timestamp format."
                     )
 
+    async def _apply_columns_override(
+        self,
+        model: SqlaTable,
+        property_columns: list[dict[str, Any]],
+    ) -> None:
+        """Delete ALL existing columns then bulk-insert new ones.
+
+        1:1 with ``superset_old/daos/dataset.py:234-245`` (override path).
+        """
+        from sqlalchemy import delete as sa_delete
+
+        await self.session.execute(
+            sa_delete(TableColumn).where(TableColumn.table_id == model.id)
+        )
+        for col_data in property_columns:
+            col_data = dict(col_data)
+            col_data["table_id"] = model.id
+            new_col = TableColumn(**col_data)
+            self.session.add(new_col)
+        # Expire the stale collection so subsequent access reloads.
+        await self.session.flush()
         await self.session.refresh(model, ["columns"])
+
+    async def update_columns(
+        self,
+        model: SqlaTable,
+        property_columns: list[dict[str, Any]],
+        override_columns: bool = False,
+    ) -> None:
+        """Update dataset columns: insert new, update existing, delete removed.
+
+        When ``override_columns=True``, deletes ALL existing columns and
+        bulk-inserts the new ones — 1:1 with
+        ``superset_old/daos/dataset.py:234-245``.
+        """
+        self._validate_date_formats(property_columns)
+
+        await self.session.refresh(model, ["columns"])
+
+        if override_columns:
+            await self._apply_columns_override(model, property_columns)
+            return
+
         existing_columns = {col.id: col for col in model.columns}
 
         incoming_ids = set()
@@ -344,9 +387,7 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
             model.schema or None,
             model.catalog or None,
         )
-        metric_dicts = await asyncio.to_thread(
-            model.database.get_metrics, parsed_table
-        )
+        metric_dicts = await asyncio.to_thread(model.database.get_metrics, parsed_table)
         metrics = [SqlMetric(**metric) for metric in metric_dicts]
 
         any_date_col: str | None = None

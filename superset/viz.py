@@ -48,7 +48,14 @@ from geopy.point import Point
 from pandas.tseries.frequencies import to_offset
 
 from superset.constants import CACHE_DISABLED_TIMEOUT
-from superset.exceptions import CacheLoadError, SupersetException
+from superset.exceptions import (
+    CacheLoadError,
+    NullValueException,
+    QueryObjectValidationError,
+    SpatialException,
+    SupersetException,
+    SupersetSecurityException,
+)
 from superset.models.connectors import QueryResult
 from superset.utils.column import (
     Column,
@@ -67,7 +74,11 @@ from superset.utils.core import (
     simple_filter_to_adhoc,
     split_adhoc_filters_into_base_filters,
 )
-from superset.utils.date import get_since_until, parse_past_timedelta
+from superset.utils.date import (
+    get_since_until,
+    parse_human_timedelta,
+    parse_past_timedelta,
+)
 from superset.utils.hashing import md5_sha_from_str
 
 if TYPE_CHECKING:
@@ -115,16 +126,34 @@ def _get_form_data_token(form_data: dict[str, Any]) -> str:
 
 
 def _error_msg_from_exception(ex: Exception) -> str:
-    """Extract a human-readable error message from an exception."""
+    """Translate exception into error message.
+
+    1:1 port of ``superset_old/utils/core.py:455-475``.  Handles dict-type
+    ``ex.message`` (common with Presto/Trino drivers) by extracting the
+    ``"message"`` key, falling back to ``str(ex)``.
+    """
+    msg: Any = ""
     if hasattr(ex, "message"):
-        return ex.message
-    return str(ex)
+        if isinstance(ex.message, dict):
+            msg = ex.message.get("message")
+        elif ex.message:
+            msg = ex.message
+    return str(msg) or str(ex)
 
 
-def _get_stacktrace() -> str | None:
+def _get_stacktrace(settings: SupersetSettings | None = None) -> str | None:
+    """Return the current stacktrace if SHOW_STACKTRACE is enabled, else None.
+
+    1:1 with the original ``get_stacktrace()`` in
+    ``superset_old/utils/core.py:1433-1438`` which checks
+    ``app.config["SHOW_STACKTRACE"]`` and returns ``None`` when the flag
+    is ``False`` (the production default).
+    """
     import traceback
 
-    return traceback.format_exc()
+    if settings is not None and getattr(settings, "show_stacktrace", False):
+        return traceback.format_exc()
+    return None
 
 
 def get_first_metric_name(
@@ -258,39 +287,61 @@ def _normalize_dttm_col(
 ) -> None:
     """Normalize the __timestamp column in-place.
 
-    Handles python_date_format from the datasource granularity column
-    (epoch_s, epoch_ms, or strftime pattern) and applies timezone offset.
+    1:1 port of ``superset_old/utils/core.py:1779-1822``
+    (``normalize_dttm_col``), specialized for the single ``__timestamp``
+    (``DTTM_ALIAS``) column that ``BaseViz.get_df`` passes.
+
+    Key parity notes:
+    - ``utc=False`` (not ``True``): produces naive ``datetime64[ns]``
+      series matching the original's behavior.
+    - Epoch formats: checks ``is_numeric_dtype`` and has a fallback to
+      ``pd.Timestamp(x)`` for already-formatted timestamp strings.
+    - Non-epoch formats: uses ``errors="coerce"`` and ``exact=False``.
     """
+    from pandas.core.dtypes.common import is_numeric_dtype
+
     if DTTM_ALIAS not in df.columns:
         return
     if df[DTTM_ALIAS].empty:
         return
-    try:
-        if timestamp_format in ("epoch_s", "epoch_ms"):
-            unit = "s" if timestamp_format == "epoch_s" else "ms"
-            df[DTTM_ALIAS] = pd.to_datetime(df[DTTM_ALIAS], unit=unit, utc=True)
-        elif timestamp_format:
-            # strftime-based python_date_format from the datasource column
+
+    if timestamp_format in ("epoch_s", "epoch_ms"):
+        dttm_series = df[DTTM_ALIAS]
+        if is_numeric_dtype(dttm_series):
+            # Column is formatted as a numeric value
+            unit = timestamp_format.replace("epoch_", "")
             df[DTTM_ALIAS] = pd.to_datetime(
-                df[DTTM_ALIAS], format=timestamp_format, utc=True
+                dttm_series,
+                utc=False,
+                unit=unit,
+                origin="unix",
+                errors="coerce",
+                exact=False,
             )
         else:
-            df[DTTM_ALIAS] = pd.to_datetime(df[DTTM_ALIAS], utc=True)
-    except Exception:
-        df[DTTM_ALIAS] = pd.to_datetime(df[DTTM_ALIAS])
+            # Column has already been formatted as a timestamp.
+            try:
+                df[DTTM_ALIAS] = dttm_series.apply(
+                    lambda x: pd.Timestamp(x) if pd.notna(x) else pd.NaT
+                )
+            except ValueError:
+                logger.warning(
+                    "Unable to convert column %s to datetime, ignoring",
+                    DTTM_ALIAS,
+                )
+    else:
+        df[DTTM_ALIAS] = pd.to_datetime(
+            df[DTTM_ALIAS],
+            utc=False,
+            format=timestamp_format,
+            errors="coerce",
+            exact=False,
+        )
 
     if offset:
-        try:
-            df[DTTM_ALIAS] += timedelta(hours=offset)
-        except Exception:
-            logger.warning("Failed to apply timezone offset %s", offset)
-
-    if time_shift:
-        try:
-            delta = parse_past_timedelta(time_shift)
-            df[DTTM_ALIAS] += delta
-        except Exception:
-            logger.warning("Failed to apply time_shift %s", time_shift)
+        df[DTTM_ALIAS] += timedelta(hours=offset)
+    if time_shift is not None:
+        df[DTTM_ALIAS] += parse_human_timedelta(time_shift)
 
 
 def _extract_dataframe_dtypes(
@@ -370,7 +421,7 @@ class BaseViz:
         settings: SupersetSettings | None = None,
     ) -> None:
         if not datasource:
-            raise SupersetException("Viz is missing a datasource")
+            raise QueryObjectValidationError("Viz is missing a datasource")
 
         self.datasource = datasource
         self.viz_type = form_data.get("viz_type")
@@ -466,7 +517,7 @@ class BaseViz:
         if min_periods:
             df = df[min_periods:]
         if df.empty:
-            raise SupersetException(
+            raise QueryObjectValidationError(
                 "Applied rolling window did not return any data. Please make sure "
                 "the source query satisfies the minimum periods defined in the "
                 "rolling window."
@@ -530,14 +581,14 @@ class BaseViz:
                 until=self.form_data.get("until"),
             )
         except ValueError as ex:
-            raise SupersetException(str(ex)) from ex
+            raise QueryObjectValidationError(str(ex)) from ex
 
         time_shift = self.form_data.get("time_shift", "")
         self.time_shift = parse_past_timedelta(time_shift)
         from_dttm = None if since is None else (since - self.time_shift)
         to_dttm = None if until is None else (until - self.time_shift)
         if from_dttm and to_dttm and from_dttm > to_dttm:
-            raise SupersetException("From date cannot be larger than to date")
+            raise QueryObjectValidationError("From date cannot be larger than to date")
 
         self.from_dttm = from_dttm
         self.to_dttm = to_dttm
@@ -647,14 +698,7 @@ class BaseViz:
         )
         self.query = self.results.query
         self.status = self.results.status
-        if self.results.error_message:
-            self.errors.append(
-                dataclasses.asdict(
-                    _make_superset_error(
-                        message=self.results.error_message,
-                    )
-                )
-            )
+        self.errors = self.results.errors
 
         df = self.results.df
         if not df.empty:
@@ -681,8 +725,8 @@ class BaseViz:
         """Returns a payload of metadata and data (async)."""
         try:
             await self.async_run_extra_queries()
-        except Exception as ex:
-            error = dataclasses.asdict(_make_superset_error(message=str(ex)))
+        except SupersetSecurityException as ex:
+            error = dataclasses.asdict(ex.error)
             self.errors.append(error)
             self.status = "failed"
 
@@ -798,13 +842,13 @@ class BaseViz:
                     if col not in self.datasource.column_names
                 ]
                 if invalid_columns:
-                    raise SupersetException(
+                    raise QueryObjectValidationError(
                         f"Columns missing in datasource: {invalid_columns}"
                     )
                 df = await self.get_df(query_obj)
                 if self.status != "failed":
                     is_loaded = True
-            except SupersetException as ex:
+            except QueryObjectValidationError as ex:
                 error = dataclasses.asdict(_make_superset_error(message=str(ex)))
                 self.errors.append(error)
                 self.status = "failed"
@@ -813,7 +857,7 @@ class BaseViz:
                 error = dataclasses.asdict(_make_superset_error(message=str(ex)))
                 self.errors.append(error)
                 self.status = "failed"
-                stacktrace = _get_stacktrace()
+                stacktrace = _get_stacktrace(self.settings)
 
             # --- Cache write ---
             # 1:1 with the original (viz.py:615-622): a successful load is
@@ -939,12 +983,15 @@ class BaseViz:
 
     async def get_csv(self) -> str:
         """Return a CSV string of the query result."""
+        from superset.utils.csv import df_to_escaped_csv
+
         payload = await self.get_df_payload()
         df = payload.get("df")
         if df is None or df.empty:
             return ""
         include_index = not isinstance(df.index, pd.RangeIndex)
-        return df.to_csv(index=include_index)
+        csv_export_config = self._get_setting("csv_export", {}) or {}
+        return df_to_escaped_csv(df, index=include_index, **csv_export_config)
 
     async def get_json(self) -> str:
         """Return JSON string of the full payload."""
@@ -986,9 +1033,9 @@ class TimeTableViz(BaseViz):
     def query_obj(self) -> QueryObjectDict:
         query_obj = super().query_obj()
         if not self.form_data.get("metrics"):
-            raise SupersetException("Pick at least one metric")
+            raise QueryObjectValidationError("Pick at least one metric")
         if self.form_data.get("groupby") and len(self.form_data["metrics"]) > 1:
-            raise SupersetException(
+            raise QueryObjectValidationError(
                 "When using 'Group By' you are limited to use a single metric"
             )
         sort_by = get_first_metric_name(query_obj["metrics"])
@@ -1048,9 +1095,11 @@ class CalHeatmapViz(BaseViz):
                 until=form_data.get("until"),
             )
         except ValueError as ex:
-            raise SupersetException(str(ex)) from ex
+            raise QueryObjectValidationError(str(ex)) from ex
         if not start or not end:
-            raise SupersetException("Please provide both time bounds (Since and Until)")
+            raise QueryObjectValidationError(
+                "Please provide both time bounds (Since and Until)"
+            )
         domain = form_data.get("domain_granularity")
         diff_delta = rdelta.relativedelta(end, start)
         diff_secs = (end - start).total_seconds()
@@ -1124,9 +1173,9 @@ class BubbleViz(NVD3Viz):
         query_obj["row_limit"] = self.form_data.get("limit")
         query_obj["metrics"] = [self.z_metric, self.x_metric, self.y_metric]
         if len(set(self.metric_labels)) < 3:
-            raise SupersetException("Please use 3 different metric labels")
+            raise QueryObjectValidationError("Please use 3 different metric labels")
         if not all(query_obj["metrics"] + [self.entity]):
-            raise SupersetException("Pick a metric for x, y and size")
+            raise QueryObjectValidationError("Pick a metric for x, y and size")
         return query_obj
 
     def get_data(self, df: pd.DataFrame | None) -> VizData:
@@ -1161,7 +1210,7 @@ class BulletViz(NVD3Viz):
         self.metric = form_data["metric"]
         query_obj["metrics"] = [self.metric]
         if not self.metric:
-            raise SupersetException("Pick a metric to display")
+            raise QueryObjectValidationError("Pick a metric to display")
         return query_obj
 
     def get_data(self, df: pd.DataFrame | None) -> VizData:
@@ -1303,12 +1352,12 @@ class NVD3TimeSeriesViz(NVD3Viz):
             try:
                 delta = parse_past_timedelta(option)
             except ValueError as ex:
-                raise SupersetException(str(ex)) from ex
+                raise QueryObjectValidationError(str(ex)) from ex
             query_object["inner_from_dttm"] = query_object["from_dttm"]
             query_object["inner_to_dttm"] = query_object["to_dttm"]
 
             if not query_object["from_dttm"] or not query_object["to_dttm"]:
-                raise SupersetException(
+                raise QueryObjectValidationError(
                     "An enclosed time range (both start and end) must be specified "
                     "when using a Time Comparison."
                 )
@@ -1356,7 +1405,7 @@ class NVD3TimeSeriesViz(NVD3Viz):
                 elif comparison_type == "ratio":
                     diff = df / df2
                 else:
-                    raise SupersetException(
+                    raise QueryObjectValidationError(
                         f"Invalid `comparison_type`: {comparison_type}"
                     )
                 diff = diff[diff.first_valid_index() : diff.last_valid_index()]
@@ -1473,11 +1522,11 @@ class CountryMapViz(BaseViz):
         metric = self.form_data.get("metric")
         entity = self.form_data.get("entity")
         if not self.form_data.get("select_country"):
-            raise SupersetException("Must specify a country")
+            raise QueryObjectValidationError("Must specify a country")
         if not metric:
-            raise SupersetException("Must specify a metric")
+            raise QueryObjectValidationError("Must specify a metric")
         if not entity:
-            raise SupersetException("Must provide ISO codes")
+            raise QueryObjectValidationError("Must provide ISO codes")
         query_obj["metrics"] = [metric]
         query_obj["groupby"] = [entity]
         return query_obj
@@ -1611,7 +1660,9 @@ class MapboxViz(BaseViz):
                 self.form_data.get("all_columns_x") is None
                 or self.form_data.get("all_columns_y") is None
             ):
-                raise SupersetException("[Longitude] and [Latitude] must be set")
+                raise QueryObjectValidationError(
+                    "[Longitude] and [Latitude] must be set"
+                )
             query_obj["columns"] = [
                 self.form_data.get("all_columns_x"),
                 self.form_data.get("all_columns_y"),
@@ -1619,7 +1670,7 @@ class MapboxViz(BaseViz):
 
             if label_col and len(label_col) >= 1:
                 if label_col[0] == "count":
-                    raise SupersetException(
+                    raise QueryObjectValidationError(
                         "Must have a [Group By] column to have 'count' as the [Label]"
                     )
                 query_obj["columns"].append(label_col[0])
@@ -1635,21 +1686,21 @@ class MapboxViz(BaseViz):
                 and label_col[0] != "count"
                 and label_col[0] not in self.form_data["groupby"]
             ):
-                raise SupersetException(
+                raise QueryObjectValidationError(
                     "Choice of [Label] must be present in [Group By]"
                 )
             if (
                 self.form_data.get("point_radius") != "Auto"
                 and self.form_data.get("point_radius") not in self.form_data["groupby"]
             ):
-                raise SupersetException(
+                raise QueryObjectValidationError(
                     "Choice of [Point Radius] must be present in [Group By]"
                 )
             if (
                 self.form_data.get("all_columns_x") not in self.form_data["groupby"]
                 or self.form_data.get("all_columns_y") not in self.form_data["groupby"]
             ):
-                raise SupersetException(
+                raise QueryObjectValidationError(
                     "[Longitude] and [Latitude] columns must be present in [Group By]"
                 )
         return query_obj
@@ -1837,14 +1888,18 @@ class DeckGLMultiLayer(BaseViz):
             mapbox_api_key = self._get_setting("mapbox_api_key", "")
             return {"features": {}, "mapboxApiKey": mapbox_api_key, "slices": []}
 
-        stmt = select(Slice).where(Slice.id.in_(slice_ids))
+        stmt = (
+            select(Slice)
+            .where(Slice.id.in_(slice_ids))
+            .options(selectinload(Slice.owners))
+        )
         result = await session.execute(stmt)
         slices = result.scalars().all()
 
         features: dict[str, list[Any]] = {}
 
         for layer_index, slc in enumerate(slices):
-            slice_form_data = stdlib_json.loads(slc.params or "{}")
+            slice_form_data = slc.form_data
             slice_form_data = self._apply_layer_filtering(slice_form_data, layer_index)
 
             viz_type_name = slice_form_data.get("viz_type")
@@ -1889,9 +1944,7 @@ class DeckGLMultiLayer(BaseViz):
         return {
             "features": features,
             "mapboxApiKey": mapbox_api_key,
-            "slices": [
-                {"slice_id": slc.id, "slice_name": slc.slice_name} for slc in slices
-            ],
+            "slices": [slc.data for slc in slices if slc.data is not None],
         }
 
 
@@ -1986,7 +2039,7 @@ class BaseDeckGLViz(BaseViz):
             point = Point(latlong)
             return (point.latitude, point.longitude)
         except Exception as ex:
-            raise SupersetException(
+            raise SpatialException(
                 f"Invalid spatial point encountered: {latlong}"
             ) from ex
 
@@ -2024,7 +2077,7 @@ class BaseDeckGLViz(BaseViz):
             self.reverse_latlong(df, key)
 
         if df.get(key) is None:
-            raise SupersetException(
+            raise NullValueException(
                 "Encountered invalid NULL spatial entry, "
                 "please consider filtering those out"
             )

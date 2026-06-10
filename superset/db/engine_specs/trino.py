@@ -26,6 +26,7 @@ from enum import IntEnum
 from typing import Any, cast
 
 from sqlalchemy import types
+from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql import text
 
@@ -355,7 +356,7 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
         tt = target_type.upper().strip()
         if tt == "DATE":
             return f"DATE '{dttm.date().isoformat()}'"
-        if tt in {"TIMESTAMP", "TIMESTAMP WITHOUT TIME ZONE"}:
+        if tt.startswith("TIMESTAMP"):
             return f"""TIMESTAMP '{dttm.isoformat(timespec="microseconds", sep=" ")}'"""
         return None
 
@@ -517,7 +518,7 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
         """
         try:
             return await super().get_columns(conn, table_name, schema)
-        except Exception:
+        except NoSuchTableError:
             logger.debug(
                 "information_schema.columns failed for %s.%s,"
                 " falling back to SHOW COLUMNS",
@@ -629,13 +630,3 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
         limit: int | None = None,
     ) -> list[tuple[Any, ...]]:
         return await cls._default_fetch_data(conn, query, limit)
-
-    @classmethod
-    def adjust_engine_params(
-        cls,
-        uri: str,
-        connect_args: dict[str, Any] | None = None,
-    ) -> tuple[str, dict[str, Any]]:
-        args = connect_args.copy() if connect_args else {}
-        args.setdefault("http_scheme", "https")
-        return uri, args

@@ -1,13 +1,21 @@
 import json as _json
+from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from litestar import Litestar
+from litestar.connection import ASGIConnection
+from litestar.exceptions import NotAuthorizedException, PermissionDeniedException
+from litestar.response import Response as _Response, Template as _Template
 from litestar.testing import AsyncTestClient
 
 from superset.app import create_app
 from superset.config import SupersetSettings
-from superset.controllers.spa import SPA_ROUTE_PREFIXES, SPAController
+from superset.controllers.spa import (
+    _render_welcome_dashboard,
+    SPA_ROUTE_PREFIXES,
+    SPAController,
+)
 
 
 @pytest.fixture
@@ -159,7 +167,12 @@ async def test_frontend_log_writes_action_log_not_event_name():
             state=state,
         )
 
-    assert result == {"status": "OK"}
+    # 1:1 with superset_old/views/core.py:872-873 ``return Response(status=200)``
+    # — empty body, 200 status; matches our Response(content=None, status_code=200).
+    from litestar.response import Response as _Response
+
+    assert isinstance(result, _Response)
+    assert result.status_code == 200
     assert len(captured) == 2
 
     for rec in captured:
@@ -189,7 +202,11 @@ async def test_frontend_log_empty_events_returns_ok():
         state=state,
     )
 
-    assert result == {"status": "OK"}
+    # 1:1 with superset_old/views/core.py:873: returns empty Response(status=200).
+    from litestar.response import Response as _Response
+
+    assert isinstance(result, _Response)
+    assert result.status_code == 200
 
 
 async def test_frontend_log_no_explode_single_form_event():
@@ -221,3 +238,373 @@ async def test_frontend_log_no_explode_single_form_event():
 
     assert len(captured) == 1
     assert captured[0]["action"] == "log"
+
+
+# ---------------------------------------------------------------------------
+# _render_welcome_dashboard — 1:1 parity tests
+# Mirrors Superset.welcome() → self.dashboard() from
+# superset_old/views/core.py:926-931 + 795-837.
+# ---------------------------------------------------------------------------
+
+
+def _make_session_factory(welcome_dashboard_id=None, dashboard=None):
+    """Build a mock session_factory that services the three async-with calls
+    made by _render_welcome_dashboard:
+      1. UserAttribute.welcome_dashboard_id query
+      2. AsyncDashboardDAO.get_by_id_or_slug
+      3. security_manager.raise_for_access
+    Each call opens a *separate* context-manager; we return fresh mock sessions
+    from an iterator so each ``async with session_factory()`` gets its own.
+    """
+    # Session 1: welcome_dashboard_id query
+    wa_session = AsyncMock()
+    wa_result = MagicMock()
+    wa_result.scalar.return_value = welcome_dashboard_id
+    wa_session.execute = AsyncMock(return_value=wa_result)
+    wa_session.__aenter__ = AsyncMock(return_value=wa_session)
+    wa_session.__aexit__ = AsyncMock(return_value=False)
+
+    # Session 2: dashboard DAO lookup
+    dao_session = AsyncMock()
+    dao_session.__aenter__ = AsyncMock(return_value=dao_session)
+    dao_session.__aexit__ = AsyncMock(return_value=False)
+
+    # Session 3: security manager
+    sec_session = AsyncMock()
+    sec_session.__aenter__ = AsyncMock(return_value=sec_session)
+    sec_session.__aexit__ = AsyncMock(return_value=False)
+
+    sessions = iter([wa_session, dao_session, sec_session])
+
+    def session_factory():
+        return next(sessions)
+
+    return session_factory, dao_session
+
+
+async def test_render_welcome_dashboard_no_id_returns_none():
+    """When welcome_dashboard_id is None/0, return None → caller shows welcome."""
+    sf, _ = _make_session_factory(welcome_dashboard_id=None)
+    result = await _render_welcome_dashboard(
+        user=MagicMock(),
+        user_id=1,
+        session_factory=sf,
+        state=MagicMock(),
+        settings=MagicMock(
+            enable_ui_theme_administration=False,
+            static_assets_prefix="",
+            session_cookie_name="session",
+            secret_key="x" * 32,
+        ),
+        request=MagicMock(cookies={}),
+    )
+    assert result is None
+
+
+async def test_render_welcome_dashboard_not_found_returns_404():
+    """When the dashboard row is missing, return 404 — mirrors abort(404)."""
+    sf, dao_session = _make_session_factory(welcome_dashboard_id=99)
+
+    # DAO returns None (dashboard not found)
+    mock_dao = AsyncMock()
+    mock_dao.get_by_id_or_slug = AsyncMock(return_value=None)
+
+    with patch("superset.controllers.spa.AsyncDashboardDAO", return_value=mock_dao):
+        result = await _render_welcome_dashboard(
+            user=MagicMock(),
+            user_id=1,
+            session_factory=sf,
+            state=MagicMock(),
+            settings=MagicMock(
+                enable_ui_theme_administration=False,
+                static_assets_prefix="",
+                session_cookie_name="session",
+                secret_key="x" * 32,
+            ),
+            request=MagicMock(cookies={}),
+        )
+
+    assert isinstance(result, _Response)
+    assert result.status_code == 404
+
+
+async def test_render_welcome_dashboard_access_denied_returns_404():
+    """When raise_for_access raises SupersetSecurityException, return 404.
+
+    Mirrors superset_old/views/core.py:809-812: authenticated user who
+    cannot access the dashboard gets abort(404).
+    """
+    from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+    from superset.exceptions import SupersetSecurityException
+
+    sf, dao_session = _make_session_factory(welcome_dashboard_id=7)
+
+    mock_dashboard = MagicMock()
+    mock_dashboard.dashboard_title = "Secret"
+    mock_dao = AsyncMock()
+    mock_dao.get_by_id_or_slug = AsyncMock(return_value=mock_dashboard)
+
+    _sec_exc = SupersetSecurityException(
+        SupersetError(
+            message="denied",
+            error_type=SupersetErrorType.DASHBOARD_SECURITY_ACCESS_ERROR,
+            level=ErrorLevel.ERROR,
+        )
+    )
+
+    mock_sec_mgr = AsyncMock()
+    mock_sec_mgr.raise_for_access = AsyncMock(side_effect=_sec_exc)
+
+    with (
+        patch("superset.controllers.spa.AsyncDashboardDAO", return_value=mock_dao),
+        # provide_security_manager is a local import inside _render_welcome_dashboard;
+        # patch it at the superset.dependencies module level.
+        patch(
+            "superset.dependencies.provide_security_manager",
+            new=AsyncMock(return_value=mock_sec_mgr),
+        ),
+    ):
+        result = await _render_welcome_dashboard(
+            user=MagicMock(),
+            user_id=1,
+            session_factory=sf,
+            state=MagicMock(),
+            settings=MagicMock(
+                enable_ui_theme_administration=False,
+                static_assets_prefix="",
+                session_cookie_name="session",
+                secret_key="x" * 32,
+            ),
+            request=MagicMock(cookies={}),
+        )
+
+    assert isinstance(result, _Response)
+    assert result.status_code == 404
+
+
+async def test_render_welcome_dashboard_access_ok_returns_200_template_with_title():
+    """When the dashboard is accessible, return Template(200) with dashboard title.
+
+    Mirrors original: ``self.dashboard()`` returns render_template(200)
+    with title=dashboard.dashboard_title (NOT a 302 redirect).
+    The browser URL stays at /superset/welcome/.
+    """
+    sf, dao_session = _make_session_factory(welcome_dashboard_id=42)
+
+    mock_dashboard = MagicMock()
+    mock_dashboard.dashboard_title = "My Dashboard"
+    mock_dao = AsyncMock()
+    mock_dao.get_by_id_or_slug = AsyncMock(return_value=mock_dashboard)
+
+    mock_sec_mgr = AsyncMock()
+    mock_sec_mgr.raise_for_access = AsyncMock(return_value=None)
+
+    with (
+        patch("superset.controllers.spa.AsyncDashboardDAO", return_value=mock_dao),
+        # provide_security_manager is a local import in _render_welcome_dashboard;
+        # must patch at the superset.dependencies module level.
+        patch(
+            "superset.dependencies.provide_security_manager",
+            new=AsyncMock(return_value=mock_sec_mgr),
+        ),
+        patch(
+            "superset.controllers.spa._build_bootstrap_data",
+            return_value={"common": {"theme": {}}, "user": {}},
+        ),
+    ):
+        result = await _render_welcome_dashboard(
+            user=MagicMock(),
+            user_id=1,
+            session_factory=sf,
+            state=MagicMock(),
+            settings=MagicMock(
+                enable_ui_theme_administration=False,
+                static_assets_prefix="",
+                session_cookie_name="session",
+                secret_key="x" * 32,
+            ),
+            request=MagicMock(cookies={}),
+        )
+
+    # Must be a Template (200), NOT a Redirect — critical 1:1 parity point
+    assert isinstance(result, _Template), f"Expected Template, got {type(result)}"
+    # Title must be the dashboard title, NOT the generic "Superset"
+    assert result.context["title"] == "My Dashboard"
+    # bootstrap_data must be present
+    assert "bootstrap_data" in result.context
+
+
+async def test_render_welcome_dashboard_no_redirect_issued():
+    """Confirm _render_welcome_dashboard never returns a Redirect.
+
+    The original Superset.welcome() → self.dashboard() path always returns
+    200 (or 404) — never a 302.  The liteset fix must not issue a Redirect.
+    """
+    from litestar.response import Redirect as _Redirect
+
+    sf, dao_session = _make_session_factory(welcome_dashboard_id=10)
+
+    mock_dashboard = MagicMock()
+    mock_dashboard.dashboard_title = "Dashboard"
+    mock_dao = AsyncMock()
+    mock_dao.get_by_id_or_slug = AsyncMock(return_value=mock_dashboard)
+
+    mock_sec_mgr = AsyncMock()
+    mock_sec_mgr.raise_for_access = AsyncMock(return_value=None)
+
+    with (
+        patch("superset.controllers.spa.AsyncDashboardDAO", return_value=mock_dao),
+        # provide_security_manager is a local import in _render_welcome_dashboard;
+        # must patch at the superset.dependencies module level.
+        patch(
+            "superset.dependencies.provide_security_manager",
+            new=AsyncMock(return_value=mock_sec_mgr),
+        ),
+        patch(
+            "superset.controllers.spa._build_bootstrap_data",
+            return_value={"common": {"theme": {}}, "user": {}},
+        ),
+    ):
+        result = await _render_welcome_dashboard(
+            user=MagicMock(),
+            user_id=1,
+            session_factory=sf,
+            state=MagicMock(),
+            settings=MagicMock(
+                enable_ui_theme_administration=False,
+                static_assets_prefix="",
+                session_cookie_name="session",
+                secret_key="x" * 32,
+            ),
+            request=MagicMock(cookies={}),
+        )
+
+    assert not isinstance(result, _Redirect), "Must not redirect — original returns 200"
+
+
+# ---------------------------------------------------------------------------
+# Guard configuration: language_pack and frontend_log
+#
+# Original: both endpoints decorated with FAB @has_access which checks
+# can_language_pack / can_log on the "Superset" view class.
+# Liteset: must use require_permission("can_language_pack", "Superset") /
+#          require_permission("can_log", "Superset") — NOT require_authentication.
+#
+# Refs:
+#   superset_old/views/core.py:868-873 (log: @has_access)
+#   superset_old/views/core.py:901-904 (language_pack: @has_access)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _UserWithPerm:
+    """Authenticated user with a given permission tuple."""
+
+    is_authenticated: bool = True
+    permissions: set = field(default_factory=set)
+    roles: list = field(default_factory=list)
+
+
+@dataclass
+class _AnonUser:
+    """Unauthenticated user (no session)."""
+
+    is_authenticated: bool = False
+    permissions: set = field(default_factory=set)
+    roles: list = field(default_factory=list)
+
+
+def _make_conn(user: object) -> MagicMock:
+    """Build a mock ASGIConnection with the given user attached."""
+    conn = MagicMock(spec=ASGIConnection)
+    conn.user = user
+    # required by require_permission guard: reads auth_role_admin from app state
+    conn.app.state.settings.auth_role_admin = "Admin"
+    return conn
+
+
+def _extract_guard(handler):
+    """Return the single guard function attached to a Litestar handler."""
+    guards = list(handler.guards)
+    assert len(guards) == 1, f"Expected 1 guard, got {len(guards)}: {guards}"
+    return guards[0]
+
+
+# --- language_pack ---
+
+
+def test_language_pack_guard_allows_user_with_can_language_pack():
+    """Authenticated user who has can_language_pack on Superset passes the guard.
+
+    Original: @has_access allows access when can_language_pack is present.
+    """
+    guard = _extract_guard(SPAController.language_pack)
+    user = _UserWithPerm(permissions={("can_language_pack", "Superset")})
+    conn = _make_conn(user)
+    # Must NOT raise
+    guard(conn, MagicMock())
+
+
+def test_language_pack_guard_denies_user_without_can_language_pack():
+    """Authenticated user lacking can_language_pack is denied with 403.
+
+    Original: @has_access denies and redirects to login. Liteset maps this to
+    PermissionDeniedException (403) — an allowed migration artifact.
+    """
+    guard = _extract_guard(SPAController.language_pack)
+    user = _UserWithPerm(permissions={("can_read", "Chart")})  # wrong permission
+    conn = _make_conn(user)
+    with pytest.raises(PermissionDeniedException):
+        guard(conn, MagicMock())
+
+
+def test_language_pack_guard_denies_unauthenticated_user():
+    """Unauthenticated caller without can_language_pack gets 401.
+
+    Original: @has_access redirects unauthenticated callers to login (401 equiv).
+    """
+    guard = _extract_guard(SPAController.language_pack)
+    user = _AnonUser()
+    conn = _make_conn(user)
+    with pytest.raises(NotAuthorizedException):
+        guard(conn, MagicMock())
+
+
+# --- frontend_log ---
+
+
+def test_frontend_log_guard_allows_user_with_can_log():
+    """Authenticated user who has can_log on Superset passes the guard.
+
+    Original: @has_access allows access when can_log is present.
+    """
+    guard = _extract_guard(SPAController.frontend_log)
+    user = _UserWithPerm(permissions={("can_log", "Superset")})
+    conn = _make_conn(user)
+    # Must NOT raise
+    guard(conn, MagicMock())
+
+
+def test_frontend_log_guard_denies_user_without_can_log():
+    """Authenticated user lacking can_log is denied with 403.
+
+    Original: @has_access on log() endpoint denies users without can_log.
+    Liteset maps this to PermissionDeniedException (403).
+    """
+    guard = _extract_guard(SPAController.frontend_log)
+    user = _UserWithPerm(permissions={("can_read", "Chart")})  # wrong permission
+    conn = _make_conn(user)
+    with pytest.raises(PermissionDeniedException):
+        guard(conn, MagicMock())
+
+
+def test_frontend_log_guard_denies_unauthenticated_user():
+    """Unauthenticated caller without can_log gets 401.
+
+    Original: @has_access redirects unauthenticated callers to login.
+    """
+    guard = _extract_guard(SPAController.frontend_log)
+    user = _AnonUser()
+    conn = _make_conn(user)
+    with pytest.raises(NotAuthorizedException):
+        guard(conn, MagicMock())

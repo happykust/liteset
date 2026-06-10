@@ -66,9 +66,7 @@ class UpdateRLSRuleCommand(AsyncBaseCommand[Any]):
 
         # Resolve role names/ids to Role ORM objects — 1:1 with the original
         # ``populate_roles(self._roles)`` call in validate().
-        self._properties["roles"] = await populate_roles(
-            self._dao.session, self._roles
-        )
+        self._properties["roles"] = await populate_roles(self._dao.session, self._roles)
 
         # Resolve dataset ids to ``SqlaTable`` objects — inlined from the
         # legacy sync ``UpdateRLSRuleCommand.validate``.  Raises

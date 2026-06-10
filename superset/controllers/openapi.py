@@ -36,7 +36,7 @@ from typing import Any
 from litestar import Controller, get, Request
 from litestar.response import Response
 
-from superset.guards.rbac import require_authentication
+from superset.guards.rbac import require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class OpenApiController(Controller):
     path = "/api/v1"
     tags = ["OpenAPI"]
 
-    @get("/_openapi", guards=[require_authentication])
+    @get("/_openapi", guards=[require_permission("can_get", "OpenApi")])
     async def get_openapi_spec(
         self,
         request: Request[Any, Any, Any],

@@ -47,7 +47,7 @@ class GenericDataType(IntEnum):
 # for all callers that previously used ``from superset.superset_typing import X``.
 # ---------------------------------------------------------------------------
 
-SQLType = Union[TypeEngine, type[TypeEngine]]
+SQLType = Union[TypeEngine[Any], type[TypeEngine[Any]]]
 
 
 class LegacyMetric(TypedDict):
@@ -188,6 +188,7 @@ class CRUDDAOProtocol(Protocol):
         page_size: int = 0,
         order_by: list[Any] | None = None,
         options: list[Any] | None = None,
+        joins: list[Any] | None = None,
     ) -> list[Any]: ...
     async def count(self, filters: list[Any] | None = None) -> int: ...
     async def find_one_or_none(self, **filter_by: Any) -> Any: ...

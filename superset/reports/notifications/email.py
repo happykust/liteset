@@ -441,7 +441,7 @@ class EmailNotification(BaseNotification):
             )
         except SupersetErrorsException as ex:
             raise NotificationError(
-                ";".join([error.get("message", str(error)) for error in ex.errors])
+                ";".join([error.message for error in ex.errors])
             ) from ex
         except Exception as ex:
             raise NotificationError(str(ex)) from ex

@@ -91,7 +91,7 @@ def cidr_func(req: AdvancedDataTypeRequest) -> AdvancedDataTypeResponse:
 
 # Make this return a single clause
 def cidr_translate_filter_func(  # noqa: C901
-    col: Column, operator: FilterOperator, values: list[Any]
+    col: Column[Any], operator: FilterOperator, values: list[Any]
 ) -> Any:
     """Build a SQLAlchemy expression for a CIDR-aware filter.
 

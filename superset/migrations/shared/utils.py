@@ -30,6 +30,7 @@ runtime CLI surface.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Callable, Iterator, Optional, Union
 
 from sqlalchemy import inspect
@@ -37,14 +38,14 @@ from sqlalchemy.orm import Query, Session
 
 from superset.utils import json
 
-DEFAULT_BATCH_SIZE = 200
+# 1:1 with superset_old/migrations/shared/utils.py:54 — the BATCH_SIZE
+# environment variable overrides the default of 1000.
+DEFAULT_BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 1000))
 
 
 def paginated_update(
-    query: Query,
-    print_page_progress: Optional[
-        Union[Callable[[int, int], None], bool]
-    ] = None,
+    query: Query[Any],
+    print_page_progress: Optional[Union[Callable[[int, int], None], bool]] = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> Iterator[Any]:
     """Yield model instances in fixed-size batches.

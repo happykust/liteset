@@ -83,9 +83,9 @@ class GuestUser:
                 permissions.add(("can_read", "Chart"))
 
         return cls(
-            username=user_info.get("username", "guest"),
-            first_name=user_info.get("first_name", ""),
-            last_name=user_info.get("last_name", ""),
+            username=user_info.get("username", "guest_user"),
+            first_name=user_info.get("first_name", "Guest"),
+            last_name=user_info.get("last_name", "User"),
             resources=resources,
             rls_rules=payload.get("rls_rules", []),
             permissions=permissions,
@@ -99,6 +99,7 @@ def create_guest_access_token(
     user: dict[str, Any],
     resources: list[dict[str, Any]],
     rls: list[dict[str, Any]],
+    algorithm: str = _GUEST_TOKEN_ALGORITHM,
     exp_seconds: int = _GUEST_TOKEN_EXP_SECONDS,
     audience: str = "",
 ) -> str:
@@ -109,6 +110,8 @@ def create_guest_access_token(
         user: Dict with user info (username, first_name, last_name).
         resources: List of resource access dicts (type, id).
         rls: List of Row Level Security rule dicts (clause).
+        algorithm: JWT signing algorithm (default: HS256). Read from
+            ``GUEST_TOKEN_JWT_ALGO`` config in the original.
         exp_seconds: Token expiry in seconds (default: 300).
         audience: JWT audience claim. When non-empty, encoded into the
             token and validated on decode. Matches the original
@@ -128,7 +131,7 @@ def create_guest_access_token(
         # always encode aud; matches superset_old/security/manager.py:2717
         "aud": audience,
     }
-    return jwt.encode(payload, secret_key, algorithm=_GUEST_TOKEN_ALGORITHM)
+    return jwt.encode(payload, secret_key, algorithm=algorithm)
 
 
 def parse_guest_token(

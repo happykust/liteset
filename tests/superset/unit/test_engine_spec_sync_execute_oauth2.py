@@ -32,7 +32,7 @@ from superset.db_engine_specs.base import BaseEngineSpec
 from superset.exceptions import OAuth2RedirectError
 
 
-class _OAuth2Required(Exception):
+class _OAuth2Required(Exception):  # noqa: N818
     """Sentinel error standing in for an engine's "auth needed" exception."""
 
 
@@ -92,7 +92,7 @@ def test_execute_oauth2_disabled_does_not_start_dance() -> None:
 
     # Not an OAuth2RedirectError — the dance never runs, so the original
     # error is mapped/re-raised instead.
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(Exception) as exc_info:  # noqa: PT011
         _SpecWithOAuth2.execute(
             _cursor_raising(_OAuth2Required("token expired")),
             "SELECT 1",
@@ -118,7 +118,7 @@ def test_execute_non_oauth2_error_does_not_start_dance() -> None:
         lambda cls, db: _fake_dance(db)
     )
 
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(Exception) as exc_info:  # noqa: PT011
         _SpecWithOAuth2.execute(
             _cursor_raising(ValueError("syntax error")),
             "SELECT 1",

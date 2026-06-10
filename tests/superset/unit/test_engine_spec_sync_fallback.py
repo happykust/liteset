@@ -16,6 +16,7 @@
 # under the License.
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -128,6 +129,128 @@ async def test_sync_fallback_fetch_data_with_limit() -> None:
     rows = await spec.fetch_data(mock_conn, "SELECT id FROM t", limit=5)
     assert rows == [(1,)]
     mock_sync_result.fetchmany.assert_called_once_with(5)
+
+
+def test_get_datatype_delegates_to_sync_spec() -> None:
+    """get_datatype must delegate to the sync spec so integer DBAPI OID codes
+    (e.g. MySQLdb FIELD_TYPE integers) are resolved to type-name strings.
+    Without delegation BaseAsyncEngineSpec.get_datatype returns None for
+    integer codes, making column_type_mutators permanently inoperative.
+    1:1 with BaseEngineSpec.fetch_data calling cls.get_datatype where cls is
+    the engine's own spec (superset_old/db_engine_specs/base.py:996).
+    """
+
+    class SyncSpecWithIntOids:
+        engine = "test_oids"
+        engine_name = "TestOIDs"
+        # Simulates e.g. MySQLdb FIELD_TYPE: integer OID 246 == DECIMAL
+        _type_code_map = {246: "DECIMAL"}
+
+        @classmethod
+        def get_datatype(cls, type_code: Any) -> str | None:
+            return cls._type_code_map.get(type_code)
+
+    spec = make_async_spec(SyncSpecWithIntOids)
+    # Integer OID 246 must resolve to "DECIMAL" via sync spec delegation
+    assert spec.get_datatype(246) == "DECIMAL"
+    # Unknown OID returns None
+    assert spec.get_datatype(999) is None
+    # String type codes still work (falls through to sync spec, which
+    # delegates to base for non-integer values in a typical override)
+    assert spec.get_datatype("VARCHAR") is None  # not in _type_code_map
+
+
+async def test_fetch_data_column_type_mutators_with_int_oid() -> None:
+    """fetch_data must apply column_type_mutators for engines where the DBAPI
+    returns integer OID codes in cursor.description.  The fix ensures that
+    SyncFallbackEngineSpec.get_datatype delegates to the sync spec's
+    get_datatype, matching the original BaseEngineSpec.fetch_data behaviour
+    (superset_old/db_engine_specs/base.py:991-998).
+
+    Without the fix, cls.get_datatype(246) returns None (BaseAsyncEngineSpec
+    only handles string type codes), so get_sqla_column_type(None) returns None
+    and the mutator dict is never consulted.  With the fix, the sync spec's
+    get_datatype maps 246 -> "DECIMAL", get_sqla_column_type("DECIMAL") returns
+    Numeric() (from _default_column_type_mappings), and the mutator fires.
+    """
+    from decimal import Decimal
+
+    from sqlalchemy import types as sa_types
+
+    # 246 == MySQLdb FIELD_TYPE.DECIMAL (integer OID used by mysqlclient)
+    _oid = 246
+
+    class SyncSpecWithMutators:
+        engine = "test_mutators"
+        engine_name = "TestMutators"
+        # Use Numeric (not DECIMAL) as the key because _default_column_type_mappings
+        # maps the "DECIMAL" string to types.Numeric(), not types.DECIMAL().
+        column_type_mutators = {
+            sa_types.Numeric: lambda val: Decimal(val) if isinstance(val, str) else val,
+        }
+        _decimal_oid: int = _oid
+
+        @classmethod
+        def get_datatype(cls, type_code: Any) -> str | None:
+            # Map the integer OID to a type-name string, exactly as
+            # MySQLEngineSpec does with MySQLdb.constants.FIELD_TYPE.
+            if type_code == cls._decimal_oid:
+                return "DECIMAL"
+            if isinstance(type_code, str) and type_code:
+                return type_code.upper()
+            return None
+
+    spec = make_async_spec(SyncSpecWithMutators)
+
+    # cursor.description row: (name, type_code, ...)
+    col_desc = [("price", _oid, None, None, None, None, None)]
+
+    mock_cursor = MagicMock()
+    mock_cursor.description = col_desc
+
+    mock_result = MagicMock()
+    mock_result.cursor = mock_cursor
+    mock_result.fetchall.return_value = [("12.50",), ("3.99",)]
+
+    async def fake_run_sync(fn):
+        mock_sync_conn = MagicMock()
+        mock_sync_conn.execute.return_value = mock_result
+        return fn(mock_sync_conn)
+
+    mock_conn = AsyncMock()
+    mock_conn.run_sync = fake_run_sync
+
+    rows = await spec.fetch_data(mock_conn, "SELECT price FROM t")
+    # Mutator must have converted the string values to Decimal.
+    # Before the fix this would be [("12.50",), ("3.99",)] because get_datatype(246)
+    # returned None and the mutator was never reached.
+    assert rows == [(Decimal("12.50"),), (Decimal("3.99"),)]
+
+
+async def test_fetch_data_no_mutators_without_column_type_mutators() -> None:
+    """Smoke-test: when the sync spec has no column_type_mutators the data is
+    returned as-is (no mutation attempted regardless of OID codes)."""
+
+    class SyncSpecNoMutators:
+        engine = "test_nomut"
+        engine_name = "TestNoMut"
+
+    spec = make_async_spec(SyncSpecNoMutators)
+
+    mock_result = MagicMock()
+    mock_result.cursor = None
+    mock_result.fetchall.return_value = [("hello",), ("world",)]
+
+    async def fake_run_sync(fn):
+        mock_sync_conn = MagicMock()
+        mock_sync_conn.execute.return_value = mock_result
+        return fn(mock_sync_conn)
+
+    mock_conn = AsyncMock()
+    mock_conn.run_sync = fake_run_sync
+
+    rows = await spec.fetch_data(mock_conn, "SELECT x FROM t")
+    assert rows == [("hello",), ("world",)]
 
 
 def test_sync_fallback_extract_errors_delegates() -> None:

@@ -62,9 +62,9 @@ class DeleteDatabaseCommand(AsyncBaseCommand[None]):
         # dataset check.
         from superset.db.daos.report import AsyncReportScheduleDAO
 
-        reports = await AsyncReportScheduleDAO(
-            self._dao.session
-        ).find_by_database_ids([self._database_id])
+        reports = await AsyncReportScheduleDAO(self._dao.session).find_by_database_ids(
+            [self._database_id]
+        )
         if reports:
             report_names = ", ".join(report.name for report in reports)
             raise DatabaseDeleteFailedReportsExistError(

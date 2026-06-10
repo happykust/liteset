@@ -32,7 +32,6 @@ from superset.models.connectors import AsyncQueryExecutionMixin, SqlaTable, Tabl
 from superset.models.helpers import ExploreMixin
 from superset.models.sql_lab import Query
 
-
 # ---------------------------------------------------------------------------
 # Step 1 — behaviour-preserving refactor on SqlaTable
 # ---------------------------------------------------------------------------
@@ -193,7 +192,11 @@ def test_query_perm_strings() -> None:
         database_name = "examples"
 
     q = _make_query()
-    q.database = _DB()  # type: ignore[assignment]
+    # Bypass the ORM relationship descriptor to avoid SA backref instrumentation
+    # firing on a plain non-ORM _DB instance.  Writing to __dict__ directly
+    # places the value in SA's loaded-attribute cache so q.database returns _DB()
+    # without triggering a lazy-load or backref event.
+    q.__dict__["database"] = _DB()
     assert q.schema_perm == "examples.public"
     assert q.perm == "[examples].[my tab](id:123)"
 

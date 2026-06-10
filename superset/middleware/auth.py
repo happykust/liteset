@@ -31,6 +31,8 @@ from typing import Any
 from litestar.connection import ASGIConnection
 from litestar.middleware import AbstractAuthenticationMiddleware, AuthenticationResult
 
+from superset.utils.core import set_current_user
+
 logger = logging.getLogger(__name__)
 
 _USER_CACHE_TTL: int = 300  # 5 minutes — long enough that a bot or load
@@ -152,6 +154,7 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         # 1. Try cookie session auth
         user = await self._authenticate_cookie(connection)
         if user:
+            set_current_user(user)
             return AuthenticationResult(user=user, auth="cookie")
 
         # 2. Try guest token header (X-GuestToken or configured header name).
@@ -160,17 +163,20 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         #    Also checks form data ``guest_token`` field for sendBeacon API.
         user = await self._authenticate_guest_token(connection)
         if user:
+            set_current_user(user)
             return AuthenticationResult(user=user, auth="guest_token")
 
         # 3. Try JWT Bearer token (API access tokens)
         user = await self._authenticate_jwt(connection)
         if user:
+            set_current_user(user)
             return AuthenticationResult(user=user, auth="jwt")
 
         # Return anonymous user with Public role permissions (if configured).
         # This allows public routes (health checks, SPA assets, public dashboards)
         # to work without authentication.
         anon = await self._build_anonymous_user(connection)
+        set_current_user(anon)
         return AuthenticationResult(user=anon, auth=None)
 
     async def _build_anonymous_user(
@@ -405,7 +411,7 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         # Try API access token
         return await self._resolve_user_from_access_token(connection, token)
 
-    async def _resolve_user_from_access_token(
+    async def _resolve_user_from_access_token(  # noqa: C901
         self,
         connection: ASGIConnection[Any, Any, Any, Any],
         token: str,
@@ -477,9 +483,7 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
                 # Without this, a JSON-encoding bug or a redis-client
                 # mismatch makes every request fall back to DB while the
                 # operator has no signal in logs.
-                logger.exception(
-                    "JWT auth: failed to cache user %d in Redis", user_id
-                )
+                logger.exception("JWT auth: failed to cache user %d in Redis", user_id)
 
         return user
 

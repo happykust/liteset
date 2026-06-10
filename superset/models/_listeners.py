@@ -56,7 +56,6 @@ if TYPE_CHECKING:
     from superset.models.security import User
     from superset.models.slice import Slice
     from superset.models.sql_lab import Query
-    from superset.models.tags import Tag, TaggedObject
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +70,7 @@ Session = sessionmaker()
 
 
 def _slice_set_related_perm(
-    _mapper: Mapper, connection: Connection, target: "Slice"
+    _mapper: Mapper[Any], connection: Connection, target: "Slice"
 ) -> None:
     """Propagate the datasource's perm strings onto the chart row.
 
@@ -99,7 +98,7 @@ def _slice_set_related_perm(
 
 
 def _slice_after_changed(
-    _mapper: Mapper, _connection: Connection, target: "Slice"
+    _mapper: Mapper[Any], _connection: Connection, target: "Slice"
 ) -> None:
     """Trigger thumbnail regeneration after a chart insert/update.
 
@@ -112,8 +111,14 @@ def _slice_after_changed(
     except ImportError:
         return
     try:
+        from superset.utils.core import get_current_user
+
+        user = get_current_user()
+        current_user = (
+            user.username if user and not getattr(user, "is_anonymous", False) else None
+        )
         cache_chart_thumbnail.delay(
-            current_user=None,
+            current_user=current_user,
             chart_id=target.id,
             force=True,
         )
@@ -131,7 +136,7 @@ def _slice_after_changed(
 
 
 def _dashboard_after_changed(
-    _mapper: Mapper, _connection: Connection, target: "Dashboard"
+    _mapper: Mapper[Any], _connection: Connection, target: "Dashboard"
 ) -> None:
     """Trigger thumbnail regeneration after a dashboard insert/update.
 
@@ -144,8 +149,14 @@ def _dashboard_after_changed(
     except ImportError:
         return
     try:
+        from superset.utils.core import get_current_user
+
+        user = get_current_user()
+        current_user = (
+            user.username if user and not getattr(user, "is_anonymous", False) else None
+        )
         cache_dashboard_thumbnail.delay(
-            current_user=None,
+            current_user=current_user,
             dashboard_id=target.id,
             force=True,
         )
@@ -164,7 +175,7 @@ def _dashboard_after_changed(
 
 
 def _user_copy_dashboard(
-    _mapper: Mapper, connection: Connection, target: "User"
+    _mapper: Mapper[Any], connection: Connection, target: "User"
 ) -> None:
     """Clone the welcome dashboard for a newly-registered user.
 
@@ -189,7 +200,7 @@ def _user_copy_dashboard(
     from superset.models.dashboard import Dashboard
     from superset.models.user import UserAttribute
 
-    with Session(bind=connection) as session:  # type: ignore[arg-type]
+    with Session(bind=connection) as session:
         template = (
             session.query(Dashboard).filter_by(id=int(dashboard_id)).one_or_none()
         )
@@ -229,7 +240,7 @@ def _database_perm_for(target: "Database") -> str:
 
 
 def _database_after_insert(
-    _mapper: Mapper, connection: Connection, target: "Database"
+    _mapper: Mapper[Any], connection: Connection, target: "Database"
 ) -> None:
     """Create the ``database_access`` PVM after a database insert.
 
@@ -240,7 +251,7 @@ def _database_after_insert(
 
 
 def _database_after_update(
-    _mapper: Mapper, connection: Connection, target: "Database"
+    _mapper: Mapper[Any], connection: Connection, target: "Database"
 ) -> None:
     """Rename PVMs when ``database_name`` changes.
 
@@ -297,7 +308,7 @@ def _database_after_update(
 
 
 def _database_after_delete(
-    _mapper: Mapper, connection: Connection, target: "Database"
+    _mapper: Mapper[Any], connection: Connection, target: "Database"
 ) -> None:
     """Delete database/schema/catalog PVMs when a database is deleted.
 
@@ -347,7 +358,7 @@ def _dataset_perm(connection: Connection, target: "SqlaTable") -> str | None:
 
 
 def _sqlatable_before_update(
-    _mapper: Mapper, connection: Connection, target: "SqlaTable"
+    _mapper: Mapper[Any], connection: Connection, target: "SqlaTable"
 ) -> None:
     """Refresh ``perm`` / ``schema_perm`` / ``catalog_perm`` before update.
 
@@ -360,7 +371,7 @@ def _sqlatable_before_update(
 
 
 def _sqlatable_after_insert(
-    _mapper: Mapper, connection: Connection, target: "SqlaTable"
+    _mapper: Mapper[Any], connection: Connection, target: "SqlaTable"
 ) -> None:
     """Create the ``datasource_access`` PVM after a dataset insert."""
     perm = _dataset_perm(connection, target)
@@ -371,7 +382,7 @@ def _sqlatable_after_insert(
 
 
 def _sqlatable_after_delete(
-    _mapper: Mapper, connection: Connection, target: "SqlaTable"
+    _mapper: Mapper[Any], connection: Connection, target: "SqlaTable"
 ) -> None:
     """Remove the ``datasource_access`` PVM after a dataset delete."""
     if not target.perm:
@@ -449,7 +460,7 @@ def _object_after_insert(
     """
     from superset.models.tags import TagType
 
-    with Session(bind=connection) as session:  # type: ignore[arg-type]
+    with Session(bind=connection) as session:
         for owner_id in owner_ids:
             owner_tag = _get_or_create_tag(session, f"owner:{owner_id}", TagType.owner)
             _add_tagged_object_if_missing(
@@ -458,9 +469,7 @@ def _object_after_insert(
                 object_id=target.id,
                 object_type=object_type,
             )
-        type_tag = _get_or_create_tag(
-            session, f"type:{object_type}", TagType.type
-        )
+        type_tag = _get_or_create_tag(session, f"type:{object_type}", TagType.type)
         _add_tagged_object_if_missing(
             session,
             tag_id=type_tag.id,
@@ -479,7 +488,7 @@ def _object_after_update(
     """Generic ``ObjectUpdater.after_update`` body — re-syncs owner tags."""
     from superset.models.tags import Tag, TaggedObject, TagType
 
-    with Session(bind=connection) as session:  # type: ignore[arg-type]
+    with Session(bind=connection) as session:
         existing = (
             session.query(TaggedObject)
             .join(Tag)
@@ -519,7 +528,7 @@ def _object_after_delete(
     """Generic ``ObjectUpdater.after_delete`` body — drops every tag row."""
     from superset.models.tags import TaggedObject
 
-    with Session(bind=connection) as session:  # type: ignore[arg-type]
+    with Session(bind=connection) as session:
         session.query(TaggedObject).filter(
             TaggedObject.object_type == object_type,
             TaggedObject.object_id == target.id,
@@ -547,57 +556,57 @@ def _query_owners_ids(target: "Query") -> list[int]:
 # (mapper, connection, target).
 
 
-def _chart_tag_after_insert(_m: Mapper, c: Connection, t: "Slice") -> None:
+def _chart_tag_after_insert(_m: Mapper[Any], c: Connection, t: "Slice") -> None:
     _object_after_insert(_OBJECT_TYPE_CHART, t, c, _slice_owners_ids(t))
 
 
-def _chart_tag_after_update(_m: Mapper, c: Connection, t: "Slice") -> None:
+def _chart_tag_after_update(_m: Mapper[Any], c: Connection, t: "Slice") -> None:
     _object_after_update(_OBJECT_TYPE_CHART, t, c, _slice_owners_ids(t))
 
 
-def _chart_tag_after_delete(_m: Mapper, c: Connection, t: "Slice") -> None:
+def _chart_tag_after_delete(_m: Mapper[Any], c: Connection, t: "Slice") -> None:
     _object_after_delete(_OBJECT_TYPE_CHART, t, c)
 
 
-def _dashboard_tag_after_insert(_m: Mapper, c: Connection, t: "Dashboard") -> None:
+def _dashboard_tag_after_insert(_m: Mapper[Any], c: Connection, t: "Dashboard") -> None:
     _object_after_insert(_OBJECT_TYPE_DASHBOARD, t, c, _dashboard_owners_ids(t))
 
 
-def _dashboard_tag_after_update(_m: Mapper, c: Connection, t: "Dashboard") -> None:
+def _dashboard_tag_after_update(_m: Mapper[Any], c: Connection, t: "Dashboard") -> None:
     _object_after_update(_OBJECT_TYPE_DASHBOARD, t, c, _dashboard_owners_ids(t))
 
 
-def _dashboard_tag_after_delete(_m: Mapper, c: Connection, t: "Dashboard") -> None:
+def _dashboard_tag_after_delete(_m: Mapper[Any], c: Connection, t: "Dashboard") -> None:
     _object_after_delete(_OBJECT_TYPE_DASHBOARD, t, c)
 
 
-def _dataset_tag_after_insert(_m: Mapper, c: Connection, t: "SqlaTable") -> None:
+def _dataset_tag_after_insert(_m: Mapper[Any], c: Connection, t: "SqlaTable") -> None:
     _object_after_insert(_OBJECT_TYPE_DATASET, t, c, _dataset_owners_ids(t))
 
 
-def _dataset_tag_after_update(_m: Mapper, c: Connection, t: "SqlaTable") -> None:
+def _dataset_tag_after_update(_m: Mapper[Any], c: Connection, t: "SqlaTable") -> None:
     _object_after_update(_OBJECT_TYPE_DATASET, t, c, _dataset_owners_ids(t))
 
 
-def _dataset_tag_after_delete(_m: Mapper, c: Connection, t: "SqlaTable") -> None:
+def _dataset_tag_after_delete(_m: Mapper[Any], c: Connection, t: "SqlaTable") -> None:
     _object_after_delete(_OBJECT_TYPE_DATASET, t, c)
 
 
-def _query_tag_after_insert(_m: Mapper, c: Connection, t: "Query") -> None:
+def _query_tag_after_insert(_m: Mapper[Any], c: Connection, t: "Query") -> None:
     _object_after_insert(_OBJECT_TYPE_QUERY, t, c, _query_owners_ids(t))
 
 
-def _query_tag_after_update(_m: Mapper, c: Connection, t: "Query") -> None:
+def _query_tag_after_update(_m: Mapper[Any], c: Connection, t: "Query") -> None:
     _object_after_update(_OBJECT_TYPE_QUERY, t, c, _query_owners_ids(t))
 
 
-def _query_tag_after_delete(_m: Mapper, c: Connection, t: "Query") -> None:
+def _query_tag_after_delete(_m: Mapper[Any], c: Connection, t: "Query") -> None:
     _object_after_delete(_OBJECT_TYPE_QUERY, t, c)
 
 
 # FavStar updaters: implicit ``favorited_by:<user>`` tags
 def _favstar_after_insert(
-    _mapper: Mapper, connection: Connection, target: "FavStar"
+    _mapper: Mapper[Any], connection: Connection, target: "FavStar"
 ) -> None:
     from superset.models.tags import TagType
 
@@ -609,7 +618,7 @@ def _favstar_after_insert(
     obj_type = object_type_map.get(str(target.class_name))
     if obj_type is None:
         return
-    with Session(bind=connection) as session:  # type: ignore[arg-type]
+    with Session(bind=connection) as session:
         tag = _get_or_create_tag(
             session,
             f"favorited_by:{target.user_id}",
@@ -625,12 +634,12 @@ def _favstar_after_insert(
 
 
 def _favstar_after_delete(
-    _mapper: Mapper, connection: Connection, target: "FavStar"
+    _mapper: Mapper[Any], connection: Connection, target: "FavStar"
 ) -> None:
     from superset.models.tags import Tag, TaggedObject, TagType
 
     name = f"favorited_by:{target.user_id}"
-    with Session(bind=connection) as session:  # type: ignore[arg-type]
+    with Session(bind=connection) as session:
         ids_query = (
             session.query(TaggedObject.id)
             .join(Tag)
@@ -719,9 +728,7 @@ def _ensure_view_menu(connection: Connection, name: str) -> int:
     return int(row.id)
 
 
-def _delete_pvm(
-    connection: Connection, perm_name: str, view_menu_name: str
-) -> None:
+def _delete_pvm(connection: Connection, perm_name: str, view_menu_name: str) -> None:
     """Delete a PVM + role assoc + orphaned ViewMenu (matches original)."""
     row = connection.execute(
         text(
@@ -738,14 +745,9 @@ def _delete_pvm(
     _delete_pvm_by_id(connection, int(row.id), int(row.view_menu_id))
 
 
-def _delete_pvm_by_id(
-    connection: Connection, pvm_id: int, view_menu_id: int
-) -> None:
+def _delete_pvm_by_id(connection: Connection, pvm_id: int, view_menu_id: int) -> None:
     connection.execute(
-        text(
-            "DELETE FROM ab_permission_view_role "
-            "WHERE permission_view_id = :pvid"
-        ),
+        text("DELETE FROM ab_permission_view_role WHERE permission_view_id = :pvid"),
         {"pvid": pvm_id},
     )
     connection.execute(
@@ -753,9 +755,7 @@ def _delete_pvm_by_id(
         {"pvid": pvm_id},
     )
     remaining = connection.execute(
-        text(
-            "SELECT id FROM ab_permission_view WHERE view_menu_id = :vmid LIMIT 1"
-        ),
+        text("SELECT id FROM ab_permission_view WHERE view_menu_id = :vmid LIMIT 1"),
         {"vmid": view_menu_id},
     ).first()
     if remaining is None:
@@ -765,9 +765,7 @@ def _delete_pvm_by_id(
         )
 
 
-def _rename_view_menu(
-    connection: Connection, old_name: str, new_name: str
-) -> None:
+def _rename_view_menu(connection: Connection, old_name: str, new_name: str) -> None:
     connection.execute(
         text("UPDATE ab_view_menu SET name = :new WHERE name = :old"),
         {"old": old_name, "new": new_name},
@@ -859,7 +857,9 @@ def _is_thumbnails_listeners_enabled() -> bool:
     except ImportError:
         return False
     try:
-        return bool(feature_flag_manager.is_feature_enabled("THUMBNAILS_SQLA_LISTENERS"))
+        return bool(
+            feature_flag_manager.is_feature_enabled("THUMBNAILS_SQLA_LISTENERS")
+        )
     except Exception:  # noqa: BLE001
         return False
 

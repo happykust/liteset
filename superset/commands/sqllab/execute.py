@@ -47,14 +47,39 @@ from superset.common.query_status import QueryStatus
 from superset.exceptions import (
     CommandInvalidError,
     ObjectNotFoundError,
+    SupersetException,
     SupersetTimeoutException,
 )
+from superset.utils import core as utils
 from superset.utils.dates import now_as_float
 
 if TYPE_CHECKING:
     from superset.db.daos.query import AsyncQueryDAO
 
 logger = logging.getLogger(__name__)
+
+
+def _map_execute_statements_error(ex: Exception, db_engine_spec: Any) -> Exception:
+    """Map an ``execute_sql_statements`` exception to the HTTP-facing one.
+
+    1:1 with ``handle_query_error`` errors extraction
+    (superset_old/sql_lab.py:108-114) followed by
+    ``SynchronousSqlJsonExecutor.execute`` re-raising the FAILED payload as
+    ``SupersetErrorsException(errors)`` (superset_old/sqllab/
+    sql_json_executer.py:107-112) with the DEFAULT status — HTTP 500.
+    """
+    from superset.exceptions import (
+        SupersetErrorException,
+        SupersetErrorsException,
+    )
+
+    if isinstance(ex, SupersetErrorException):
+        return SupersetErrorsException([ex.error])
+    if isinstance(ex, SupersetErrorsException):
+        return SupersetErrorsException(ex.errors)
+    # Generic exception → DB-specific extraction, 1:1 with
+    # ``query.database.db_engine_spec.extract_errors(str(ex))``.
+    return SupersetErrorsException(db_engine_spec.extract_errors(str(ex)))
 
 
 class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
@@ -97,7 +122,13 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         self._ctas_method = ctas_method
         self._tmp_table_name = tmp_table_name
         self._query_limit = query_limit
-        self._run_async = run_async
+        # 1:1 with ``SqlJsonExecutionContext.__init__``
+        # (superset_old/sqllab/sqllab_execution_context.py:80-82):
+        # ``SQLLAB_FORCE_RUN_ASYNC`` forces all queries through Celery
+        # regardless of the request parameter.
+        self._run_async = self._is_feature_enabled("SQLLAB_FORCE_RUN_ASYNC") or bool(
+            run_async
+        )
         self._client_id = client_id or secrets.token_hex(5)[:11]
         self._user_id = user_id
         self._sql_editor_id = sql_editor_id
@@ -133,13 +164,22 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
             QueryStatus.PENDING,
             QueryStatus.TIMED_OUT,
         ):
-            return self._build_response(
-                status=existing.status,
-                query=existing,
-                data=[],
-                columns=[],
-                expanded_columns=[],
-            )
+            # 1:1 with ``ExecuteSqlCommand.is_query_handled`` → status set to
+            # ``QUERY_ALREADY_CREATED`` in the original.  Signal this to the
+            # controller so it returns HTTP 200, not 202 (which is reserved
+            # exclusively for fresh Celery dispatches == QUERY_IS_RUNNING).
+            query_dict = existing.to_dict() if hasattr(existing, "to_dict") else {}
+            if query_dict:
+                query_dict["state"] = existing.status.lower()
+            # ``save_metadata`` runs after EVERY path in the original
+            # (superset_old/commands/sql_lab/execute.py:112-114); for a
+            # query-dict payload (no ``columns`` key) it writes
+            # ``extra_json["columns"] = {}`` on the row.
+            await self._dao.save_metadata(existing, {"query": query_dict})
+            return {
+                "query": query_dict,
+                "query_already_created": True,
+            }
 
         # ------------------------------------------------------------------
         # 2. Load the Database record
@@ -152,8 +192,17 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
 
         # ------------------------------------------------------------------
         # 3. Determine effective row limit
+        # 1:1 with ``SqlJsonExecutionContext._get_limit_param``
+        # (superset_old/sqllab/sqllab_execution_context.py:109-116):
+        # ``apply_max_row_limit(queryLimit or 0)`` → ``min(SQL_MAX_ROW, limit)``
+        # when limit != 0, else SQL_MAX_ROW. This caps any user-requested limit
+        # to the configured maximum so users cannot request arbitrarily large
+        # result sets.
         # ------------------------------------------------------------------
-        effective_limit = self._query_limit or self._sql_max_row
+        if self._query_limit and self._query_limit > 0:
+            effective_limit = min(self._sql_max_row, self._query_limit)
+        else:
+            effective_limit = self._sql_max_row
 
         # ------------------------------------------------------------------
         # 4. Create Query record with PENDING status
@@ -209,18 +258,31 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
                 )
             except Exception as ex:
                 logger.info("SQL Lab access denied for query %s: %s", query_id, ex)
-                query.status = QueryStatus.FAILED
-                query.error_message = str(ex)
-                query.end_time = now_as_float()
+                query.status = QueryStatus.FAILED  # type: ignore[assignment]
+                query.error_message = str(ex)  # type: ignore[assignment]
+                query.end_time = now_as_float()  # type: ignore[assignment]
                 await session.flush()
                 raise
 
         # ------------------------------------------------------------------
         # 6. Jinja templateParams — render *before* parsing the script.
         # Mirrors ``SqlQueryRenderImpl.render`` from the original.
+        #
+        # 1:1 with ``ExecuteSqlCommand._run_sql_json_exec_from_scratch``
+        # (superset_old/commands/sql_lab/execute.py:161-163): any exception
+        # raised after the Query row is created (Jinja template error, limit
+        # error, …) must mark the query FAILED before propagating so the row
+        # never gets stuck in PENDING indefinitely.
         # ------------------------------------------------------------------
-        rendered_sql = await self._render_jinja(db_row, query)
-        query.executed_sql = rendered_sql
+        try:
+            rendered_sql = await self._render_jinja(db_row, query)
+        except Exception:
+            query.status = QueryStatus.FAILED  # type: ignore[assignment]
+            query.end_time = now_as_float()  # type: ignore[assignment]
+            await session.flush()
+            raise
+
+        query.executed_sql = rendered_sql  # type: ignore[assignment]
 
         # ------------------------------------------------------------------
         # 6b. Reduce the effective limit to the SQL's own LIMIT when smaller
@@ -236,20 +298,26 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
                 from superset.config import SupersetSettings
 
                 ctas_no_limit = bool(
-                    getattr(SupersetSettings(), "sqllab_ctas_no_limit", False)
+                    getattr(SupersetSettings(), "sqllab_ctas_no_limit", False)  # type: ignore[call-arg]
                 )
             except Exception:  # noqa: BLE001
                 ctas_no_limit = False
-        if not (ctas_no_limit and self._select_as_cta) and effective_limit:
-            sql_limit = db_row.db_engine_spec.get_limit_from_sql(rendered_sql)
-            limits = [sql_limit, effective_limit]
-            if limits[0] is None or limits[0] > limits[1]:
-                query.limiting_factor = LimitingFactor.DROPDOWN
-            elif limits[1] > limits[0]:
-                query.limiting_factor = LimitingFactor.QUERY
-            else:  # limits[0] == limits[1]
-                query.limiting_factor = LimitingFactor.QUERY_AND_DROPDOWN
-            query.limit = min(lim for lim in limits if lim is not None)
+        try:
+            if not (ctas_no_limit and self._select_as_cta) and effective_limit:
+                sql_limit = db_row.db_engine_spec.get_limit_from_sql(rendered_sql)
+                limits = [sql_limit, effective_limit]
+                if limits[0] is None or limits[0] > limits[1]:  # type: ignore[operator]
+                    query.limiting_factor = LimitingFactor.DROPDOWN  # type: ignore[assignment]
+                elif limits[1] > limits[0]:  # type: ignore[operator]
+                    query.limiting_factor = LimitingFactor.QUERY  # type: ignore[assignment]
+                else:  # limits[0] == limits[1]
+                    query.limiting_factor = LimitingFactor.QUERY_AND_DROPDOWN  # type: ignore[assignment]
+                query.limit = min(lim for lim in limits if lim is not None)  # type: ignore[misc]
+        except Exception:
+            query.status = QueryStatus.FAILED  # type: ignore[assignment]
+            query.end_time = now_as_float()  # type: ignore[assignment]
+            await session.flush()
+            raise
 
         # ------------------------------------------------------------------
         # 7. Async branch — dispatch to Celery and return immediately.
@@ -260,7 +328,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
             try:
                 from superset.tasks.sql_lab import get_sql_results
 
-                get_sql_results.delay(
+                task = get_sql_results.delay(
                     query_id=query_id,
                     rendered_query=rendered_sql,
                     return_results=False,
@@ -271,32 +339,56 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
                     # via ``_is_store_results``).
                     store_results=not self._select_as_cta,
                     username=getattr(self._current_user, "username", None),
-                    start_time=start_time,
+                    start_time=now_as_float(),
                     expand_data=self._expand_data,
                     log_params=self._log_params,
                 )
-            except Exception:  # noqa: BLE001
-                # Failure to enqueue should not silently fall back to a
-                # sync execution that would exceed the HTTP timeout —
-                # surface the error as we do for any other backend
-                # configuration issue.
-                logger.exception("Failed to enqueue Celery task for SQL Lab query")
-                query.status = QueryStatus.FAILED
-                query.error_message = (
-                    "Could not enqueue async SQL execution. Check Celery configuration."
-                )
-                await session.flush()
-                raise
+                # 1:1 with ``ASynchronousSqlJsonExecutor.execute``
+                # (superset_old/sqllab/sql_json_executer.py:179-185): discard
+                # the Celery result so the result backend does not accumulate
+                # stale entries.
+                try:
+                    task.forget()
+                except NotImplementedError:
+                    logger.warning(
+                        "Unable to forget Celery task as backend"
+                        "does not support this operation"
+                    )
+            except Exception as ex:  # noqa: BLE001
+                # 1:1 with ``ASynchronousSqlJsonExecutor.execute``
+                # (superset_old/sqllab/sql_json_executer.py:186-200): set
+                # structured error in extra_json and raise
+                # SupersetErrorException with ASYNC_WORKERS_ERROR type.
+                logger.exception("Query %i: %s", query_id, str(ex))
+                from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+                from superset.exceptions import SupersetErrorException
 
-            query.status = QueryStatus.PENDING
+                message = "Failed to start remote query on a worker."
+                error = SupersetError(
+                    message=message,
+                    error_type=SupersetErrorType.ASYNC_WORKERS_ERROR,
+                    level=ErrorLevel.ERROR,
+                )
+                import dataclasses
+
+                error_payload = dataclasses.asdict(error)
+                query.set_extra_json_key("errors", [error_payload])
+                query.status = QueryStatus.FAILED  # type: ignore[assignment]
+                query.error_message = message  # type: ignore[assignment]
+                await session.flush()
+                raise SupersetErrorException(error) from ex
+
+            query.status = QueryStatus.PENDING  # type: ignore[assignment]
             await session.flush()
-            return self._build_response(
-                status="running",
-                query=query,
-                data=[],
-                columns=[],
-                expanded_columns=[],
-            )
+
+            query_dict = query.to_dict() if hasattr(query, "to_dict") else {}
+            if query_dict:
+                query_dict["state"] = QueryStatus.PENDING.lower()
+            # 1:1 with the unconditional ``save_metadata`` after run()
+            # (superset_old/commands/sql_lab/execute.py:112-114) — writes
+            # ``extra_json["columns"] = {}`` for the QUERY_IS_RUNNING payload.
+            await self._dao.save_metadata(query, {"query": query_dict})
+            return {"query": query_dict}
 
         # ------------------------------------------------------------------
         # 8. Synchronous execution — delegate to ``execute_sql_statements``.
@@ -319,9 +411,8 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         from superset.models.sql_lab import Query as _Query
         from superset.tasks.sql_lab import execute_sql_statements
 
-        store_results = (
-            not self._select_as_cta
-            and self._is_feature_enabled("SQLLAB_BACKEND_PERSISTENCE")
+        store_results = not self._select_as_cta and self._is_feature_enabled(
+            "SQLLAB_BACKEND_PERSISTENCE"
         )
         await session.commit()
 
@@ -330,7 +421,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
             payload = await asyncio.wait_for(
                 asyncio.to_thread(
                     execute_sql_statements,
-                    query_id,
+                    query_id,  # type: ignore[arg-type]
                     rendered_sql,
                     True,  # return_results
                     store_results,
@@ -350,11 +441,11 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
             await session.rollback()
             timed_out = await session.get(_Query, query_id)
             if timed_out is not None:
-                timed_out.status = QueryStatus.TIMED_OUT
+                timed_out.status = QueryStatus.TIMED_OUT  # type: ignore[assignment]
                 timed_out.error_message = (
-                    f"The query exceeded the {sqllab_timeout} seconds timeout."
+                    f"The query exceeded the {sqllab_timeout} seconds timeout."  # type: ignore[assignment]
                 )
-                timed_out.end_time = now_as_float()
+                timed_out.end_time = now_as_float()  # type: ignore[assignment]
                 await session.commit()
             raise SupersetTimeoutException(
                 error_type="SQLLAB_TIMEOUT_ERROR",
@@ -364,6 +455,41 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
                 ),
                 level="error",
             ) from None
+        except Exception as ex:  # noqa: BLE001
+            # Mirrors ``get_sql_results`` (superset_old/sql_lab.py:192-197):
+            # any exception that escapes ``execute_sql_statements`` before the
+            # per-block try/except loop (pre-execution checks:
+            # SupersetDisallowedSQLFunctionException,
+            # SupersetDMLNotAllowedException, SupersetInvalidCTASException,
+            # SupersetInvalidCVASException,
+            # SupersetResultsBackendNotConfigureException) flows through
+            # ``handle_query_error`` (superset_old/sql_lab.py:90-124) into a
+            # FAILED payload, and ``SynchronousSqlJsonExecutor.execute``
+            # (superset_old/sqllab/sql_json_executer.py:107-114) re-raises it
+            # as ``SupersetErrorsException(errors)`` with the DEFAULT status —
+            # HTTP 500, NOT 422. Also mark the query FAILED on our async
+            # session so it doesn't stay stuck in RUNNING / PENDING.
+            logger.warning("Query %s: execute_sql_statements raised: %s", query_id, ex)
+            try:
+                await session.rollback()
+                failed_q = await session.get(_Query, query_id)
+                if failed_q is not None and failed_q.status not in (
+                    QueryStatus.FAILED,
+                ):
+                    failed_q.status = QueryStatus.FAILED  # type: ignore[assignment]
+                    failed_q.error_message = str(ex)  # type: ignore[assignment]
+                    failed_q.end_time = now_as_float()  # type: ignore[assignment]
+                    await session.commit()
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "Failed to mark query FAILED after execute_sql_statements error",
+                    exc_info=True,
+                )
+
+            # Re-raise mirroring handle_query_error's errors extraction
+            # (superset_old/sql_lab.py:108-114) + the sync executor's
+            # ``raise SupersetErrorsException(errors)`` — default status 500.
+            raise _map_execute_statements_error(ex, db_row.db_engine_spec) from ex
 
         # ``execute_sql_statements`` returns the full, correct response shape
         # (data / columns / selected_columns / expanded_columns + a ``query``
@@ -372,6 +498,33 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         # through our async session would surface a stale, pre-execution
         # snapshot because the worker committed on a separate connection.
         payload = payload or {}
+
+        # 1:1 with ``SynchronousSqlJsonExecutor.execute``
+        # (superset_old/sqllab/sql_json_executer.py:107-114): when
+        # ``execute_sql_statements`` returns a FAILED payload (DB error, SQL
+        # error, etc.) raise an appropriate exception so the HTTP layer returns
+        # 400/500 instead of silently returning 200 with status=failed in the
+        # body. ``data["errors"]`` is a list of ``dataclasses.asdict(SupersetError)``
+        # dicts — reconstruct ``SupersetError`` instances for the exception.
+        if payload.get("status") == QueryStatus.FAILED:
+            from superset.errors import SupersetError as _SupersetError
+            from superset.exceptions import (
+                SupersetErrorsException as _SupersetErrorsException,
+                SupersetGenericDBErrorException as _SupersetGenericDBErrorException,
+            )
+
+            errors = payload.get("errors") or []
+            if errors:
+                try:
+                    error_objects = [_SupersetError(**e) for e in errors]
+                except Exception:  # noqa: BLE001
+                    error_objects = []
+                if error_objects:
+                    raise _SupersetErrorsException(error_objects)
+            raise _SupersetGenericDBErrorException(
+                payload.get("error") or "Query execution failed"
+            )
+
         payload.setdefault("query_id", query_id)
         payload.setdefault("status", QueryStatus.SUCCESS)
         payload.setdefault("data", [])
@@ -386,6 +539,27 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
             await session.rollback()
             refreshed = await session.get(_Query, query_id)
             payload["query"] = refreshed.to_dict() if refreshed is not None else {}
+
+        # 1:1 with the original ``ExecuteSqlCommand.run()``
+        # (superset_old/commands/sql_lab/execute.py:112-114): persist column
+        # metadata (with column_name normalization) into the Query's
+        # extra_json after execution.  ``execute_sql_statements`` already
+        # stored columns via ``query.set_extra_json_key("columns", ...)``,
+        # but the ``save_metadata`` normalization (adding ``column_name``
+        # from ``name``) ensures downstream consumers can read
+        # ``column_name`` even when the result set only provides ``name``.
+        try:
+            await session.rollback()
+            refreshed_q = await session.get(_Query, query_id)
+            if refreshed_q is not None:
+                await self._dao.save_metadata(refreshed_q, payload)
+                await session.commit()
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "save_metadata after sync execution failed; "
+                "columns already persisted by execute_sql_statements",
+                exc_info=True,
+            )
 
         # 1:1 with ``ExecutionContextConvertor.serialize_payload`` →
         # ``apply_display_max_row_configuration_if_require``: cap the returned
@@ -412,31 +586,128 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
     async def _render_jinja(self, database: Any, query: Any) -> str:
         """Apply Jinja ``templateParams`` to ``self._sql``.
 
-        Mirrors ``SqlQueryRenderImpl.render`` which applied the template
-        processor and surfaced ``find_undeclared_variables`` errors.
-        Falls back to the original SQL if rendering fails so the error
-        is reported by the engine itself (matching the original which
-        raised :class:`SupersetTemplateException` from
-        ``commands/sql_lab/execute.py``).
+        1:1 with ``SqlQueryRenderImpl.render`` (superset_old/sqllab/
+        query_render.py:53-107): catches ``TemplateError`` and raises a
+        structured ``CommandInvalidError`` with the appropriate error type
+        (``INVALID_TEMPLATE_PARAMS_ERROR`` or
+        ``MISSING_TEMPLATE_PARAMS_ERROR``), issue codes, and extra data
+        (``undefined_parameters``, ``template_parameters``).  Also
+        validates undeclared variables via
+        ``jinja2.meta.find_undeclared_variables`` when
+        ``ENABLE_TEMPLATE_PROCESSING`` is enabled.
         """
         if not self._template_params and not _has_jinja_markers(self._sql):
-            return self._sql
+            return self._sql.strip().strip(";")
         try:
             from superset.jinja_context import get_template_processor
         except ImportError:
-            return self._sql
+            return self._sql.strip().strip(";")
         try:
-            processor = get_template_processor(database, query=query)
-            rendered = processor.process_template(self._sql, **self._template_params)
-            return rendered if isinstance(rendered, str) else self._sql
-        except Exception as ex:  # noqa: BLE001
-            logger.warning(
-                "Jinja templateParams rendering failed: %s; "
-                "passing raw SQL to the engine",
-                ex,
+            from jinja2 import TemplateError
+
+            try:
+                processor = get_template_processor(database, query=query)
+                rendered = processor.process_template(
+                    self._sql.strip().strip(";"), **self._template_params
+                )
+                if not isinstance(rendered, str):
+                    return self._sql.strip().strip(";")
+            except TemplateError as ex:
+                # 1:1 with ``SqlQueryRenderImpl._raise_template_exception``
+                err = SupersetException(
+                    "The query contains one or more malformed template parameters. "
+                    "Please check your query and confirm that all template "
+                    "parameters are surround by double braces, for example, "
+                    '"{{ ds }}". Then, try running your query again.',
+                    error_type="INVALID_TEMPLATE_PARAMS_ERROR",
+                )
+                err.extra = {
+                    "issue_codes": [
+                        {
+                            "code": 1028,
+                            "message": (
+                                "Issue 1028 - The query contains one or more "
+                                "malformed template parameters."
+                            ),
+                        }
+                    ],
+                }
+                raise err from ex
+
+            # 1:1 with ``SqlQueryRenderImpl._validate``: when
+            # ``ENABLE_TEMPLATE_PROCESSING`` is enabled, check for
+            # undeclared variables in the rendered query.
+            if self._is_feature_enabled("ENABLE_TEMPLATE_PROCESSING"):
+                self._check_undeclared_template_vars(processor, rendered)
+
+            return rendered
+        except CommandInvalidError:
+            raise
+        except SupersetException:
+            # 1:1 with SqlQueryRenderImpl.render() (superset_old/sqllab/
+            # query_render.py:53-68): template-render exceptions are
+            # SqlQueryRenderException (SqlLabException → SupersetException,
+            # status=500) and propagate; they are NOT silently absorbed.
+            raise
+
+    def _check_undeclared_template_vars(self, processor: Any, rendered: str) -> None:
+        """Raise ``SupersetException`` when undeclared Jinja variables exist.
+
+        1:1 with ``SqlQueryRenderImpl._validate`` +
+        ``_raise_undefined_parameter_exception``
+        (superset_old/sqllab/query_render.py): uses
+        ``jinja2.meta.find_undeclared_variables``
+        on the rendered SQL and raises ``SqlQueryRenderException`` (status=500).
+        In liteset we raise the base ``SupersetException`` (status_code=500) which
+        is equivalent — both produce HTTP 500 from the global exception handler.
+        Silently skips if the parser itself fails (complex templates), exactly as
+        the original does.
+        """
+        try:
+            from jinja2.meta import find_undeclared_variables
+
+            syntax_tree = processor.env.parse(rendered)
+            undefined_parameters = find_undeclared_variables(syntax_tree)
+            if undefined_parameters:
+                params_str = utils.format_list(list(undefined_parameters))
+                count = len(undefined_parameters)
+                if count == 1:
+                    reason = f"The parameter {params_str} in your query is undefined."
+                else:
+                    reason = (
+                        "The following parameters in your query are "
+                        f"undefined: {params_str}."
+                    )
+                err = SupersetException(
+                    f"{reason} Please check your template parameters "
+                    "for syntax errors and make sure they match across "
+                    "your SQL query and Set Parameters. Then, try "
+                    "running your query again.",
+                    error_type="MISSING_TEMPLATE_PARAMS_ERROR",
+                )
+                err.extra = {
+                    "undefined_parameters": list(undefined_parameters),
+                    "template_parameters": self._template_params,
+                    "issue_codes": [
+                        {
+                            "code": 1006,
+                            "message": (
+                                "Issue 1006 - One or more parameters "
+                                "specified in the query are missing."
+                            ),
+                        }
+                    ],
+                }
+                raise err
+        except SupersetException:
+            raise
+        except Exception:  # noqa: BLE001
+            # find_undeclared_variables can fail on complex templates;
+            # proceed with the rendered SQL as the original does.
+            logger.debug(
+                "find_undeclared_variables failed; proceeding with rendered SQL",
                 exc_info=True,
             )
-            return self._sql
 
     def _get_sqllab_timeout(self) -> int:
         """Return the configured ``SQLLAB_TIMEOUT`` in seconds.
@@ -464,7 +735,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         try:
             from superset.config import SupersetSettings
 
-            max_rows = int(getattr(SupersetSettings(), "display_max_row", 10000))
+            max_rows = int(getattr(SupersetSettings(), "display_max_row", 10000))  # type: ignore[call-arg]
         except Exception:  # noqa: BLE001
             max_rows = 10000
 
@@ -494,7 +765,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         try:
             from superset.config import SupersetSettings
 
-            func = getattr(SupersetSettings(), "sqllab_ctas_schema_name_func", None)
+            func = getattr(SupersetSettings(), "sqllab_ctas_schema_name_func", None)  # type: ignore[call-arg]
         except Exception:  # noqa: BLE001
             func = None
         if not func:

@@ -85,3 +85,21 @@ def test_require_permission_denies_unauthenticated_user():
     handler = MagicMock()
     with pytest.raises(NotAuthorizedException, match="Not authenticated"):
         guard(conn, handler)
+
+
+def test_require_permission_allows_anonymous_user_with_public_role_permission():
+    """Anonymous user whose Public role carries the required permission is allowed.
+
+    1:1 with the original FAB ``@protect()`` which calls
+    ``sm.is_item_public(permission_str, class_permission_name)`` BEFORE
+    checking authentication — so a Public-role grant passes anonymous callers
+    through (see Flask-AppBuilder security/decorators.py lines 98-101).
+    This behaviour is present in AsyncEventsRestApi which uses ``@protect()``
+    with ``allow_browser_login = True``.
+    """
+    user = MockAnonymousUser()
+    user.permissions = {("can_list", "AsyncEventsRestApi")}
+    guard = require_permission("can_list", "AsyncEventsRestApi")
+    conn = _make_mock_connection(user)
+    handler = MagicMock()
+    guard(conn, handler)  # must NOT raise — Public role permission allows anonymous

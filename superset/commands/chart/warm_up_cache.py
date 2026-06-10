@@ -279,9 +279,7 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
     # Branch B — modern ``query_context`` (AsyncQueryContextProcessor)
     # ------------------------------------------------------------------
 
-    def _build_queries(
-        self, qc_dict: dict[str, Any], datasource: Any
-    ) -> list[Any]:
+    def _build_queries(self, qc_dict: dict[str, Any], datasource: Any) -> list[Any]:
         """Build AsyncQueryObject list from stored query_context dict.
 
         ``AsyncQueryObject.datasource`` is a required dataclass field; the

@@ -72,7 +72,7 @@ def _params_dict(obj: Any) -> dict[str, Any]:
     if hasattr(obj, "params_dict"):
         try:
             return obj.params_dict
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110
             pass
     raw = getattr(obj, "params", None) or "{}"
     try:
@@ -122,6 +122,24 @@ def _reset_ownership(obj: Any, user: Any | None = None) -> None:
         obj.owners = [user]
 
 
+def _current_orm_user(session: Any) -> Any | None:
+    """Resolve the importing user as an ORM row bound to ``session``.
+
+    Mirrors the ``if g and hasattr(g, "user"): self.owners = [g.user]``
+    fallback in the original ``ImportExportMixin.reset_ownership``
+    (superset_old/models/helpers.py:448-457).  The liteset ContextVar may
+    hold a ``CachedUser`` (not ORM-mapped), so re-fetch by id.
+    """
+    from superset.utils.core import get_current_user
+
+    user_id = getattr(get_current_user(), "id", None)
+    if user_id is None:
+        return None
+    from superset.models.security import User
+
+    return session.get(User, user_id)
+
+
 def _get_datasource_by_name(
     session: Any,
     datasource_name: str,
@@ -137,19 +155,22 @@ def _get_datasource_by_name(
     from superset.models.connectors import SqlaTable
     from superset.models.core import Database
 
+    # 1:1 with the original: the catalog filter ALWAYS applies (None →
+    # ``WHERE catalog IS NULL``), and the schema match is done in Python so
+    # '' and NULL compare equal across dialects
+    # (superset_old/connectors/sqla/models.py:1218-1238).
+    schema = schema or None
     query = (
         session.query(SqlaTable)
         .join(Database)
-        .filter(
-            SqlaTable.table_name == datasource_name,
-            Database.database_name == database_name,
-        )
+        .filter(SqlaTable.table_name == datasource_name)
+        .filter(Database.database_name == database_name)
+        .filter(SqlaTable.catalog == catalog)
     )
-    if schema is not None:
-        query = query.filter(SqlaTable.schema == schema)
-    if catalog is not None:
-        query = query.filter(SqlaTable.catalog == catalog)
-    return query.first()
+    for tbl in query.all():
+        if schema == (tbl.schema or None):
+            return tbl
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +194,7 @@ def import_chart(
     )
 
     slc_to_import = _copy_export_fields(slc_to_import)
-    _reset_ownership(slc_to_import)
+    _reset_ownership(slc_to_import, user=_current_orm_user(session))
     params = _params_dict(slc_to_import)
     datasource = _get_datasource_by_name(
         session,
@@ -208,9 +229,7 @@ def import_dashboard(  # noqa: C901
     from superset.models.dashboard import Dashboard
     from superset.models.slice import Slice
 
-    def alter_positions(
-        dashboard: Any, old_to_new_slc_id_dict: dict[int, int]
-    ) -> None:
+    def alter_positions(dashboard: Any, old_to_new_slc_id_dict: dict[int, int]) -> None:
         """Update ``slice_id`` references in ``position_json``."""
         position_data = json.loads(dashboard.position_json)
         position_json = position_data.values()
@@ -318,7 +337,7 @@ def import_dashboard(  # noqa: C901
 
     dashboard_to_import = _copy_export_fields(dashboard_to_import)
     dashboard_to_import.id = None
-    _reset_ownership(dashboard_to_import)
+    _reset_ownership(dashboard_to_import, user=_current_orm_user(session))
     # ``position_json`` may be empty for dashboards built only via the
     # chart-edit page without re-arranging.
     if dashboard_to_import.position_json:
@@ -345,9 +364,7 @@ def import_dashboard(  # noqa: C901
 
     dashboard = existing_dashboard or dashboard_to_import
     dashboard.slices = (
-        session.query(Slice)
-        .filter(Slice.id.in_(old_to_new_slc_id_dict.values()))
-        .all()
+        session.query(Slice).filter(Slice.id.in_(old_to_new_slc_id_dict.values())).all()
     )
     # Migrate any filter-box charts to native dashboard filters.
     migrate_dashboard(dashboard)
@@ -463,17 +480,21 @@ class ImportDashboardsCommand:
                 session.close()
 
     def validate(self) -> None:
-        """Ensure every file is JSON before any import is attempted."""
-        from superset.commands.importers.exceptions import IncorrectVersionError
+        """Ensure every file is JSON before any import is attempted.
 
-        for file_name, content in self.contents.items():
+        1:1 with the original v0 command (superset_old/commands/dashboard/
+        importers/v0.py:340-347): a malformed JSON re-raises the ValueError
+        bare. Converting it to IncorrectVersionError would make the
+        dispatcher silently skip this version and report the misleading
+        "Could not find a valid command to import file" instead of the real
+        JSON parse error.
+        """
+        for _file_name, content in self.contents.items():
             try:
                 json.loads(content)
-            except ValueError as ex:
+            except ValueError:
                 logger.exception("Invalid JSON file")
-                raise IncorrectVersionError(
-                    f"{file_name} is not a valid JSON file"
-                ) from ex
+                raise
 
 
 __all__ = [

@@ -23,9 +23,10 @@ from datetime import datetime
 from typing import Any
 
 import msgspec
-from litestar import Controller, delete, get, post, put
+from litestar import Controller, delete, get, post, put, Request
 from litestar.datastructures import State
 from litestar.di import Provide
+from litestar.exceptions import HTTPException
 from litestar.response import Redirect
 
 from superset.controllers.base import extract_pagination
@@ -106,15 +107,188 @@ def _user_to_response(user: Any) -> UserResponse:
     )
 
 
-def _hash_password(password: str) -> str:
-    """Hash a password (werkzeug-compatible, no werkzeug dependency)."""
+def _check_password_complexity(password: str, settings: Any | None) -> None:
+    """Raise HTTPException(400) if the password fails FAB complexity rules.
+
+    Mirrors PasswordComplexityValidator.__call__
+    (Flask-AppBuilder/flask_appbuilder/security/sqla/apis/user/validator.py)
+    and the equivalent check in user_me.py:224-239.
+    """
+    if settings is None:
+        return
+    if not getattr(settings, "fab_password_complexity_enabled", False):
+        return
+    from superset.utils.password import default_password_complexity
+
+    validator = getattr(settings, "fab_password_complexity_validator", None)
+    try:
+        if validator is not None:
+            validator(password)
+        else:
+            default_password_complexity(password)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"password": [str(exc)]},
+        ) from exc
+
+
+async def _validate_entity_ids(
+    session: Any,
+    requested_ids: list[int],
+    model_name: str,
+    field_name: str,
+    status_code: int = 400,
+) -> None:
+    """Raise HTTPException when any requested ID does not exist in the DB.
+
+    Mirrors FAB UserApi behavior:
+    - POST (post()): response_400 → status_code=400 (default)
+    - PUT  (put()):  response_404 → status_code=404
+
+    FAB UserApi.post() lines 132-159 use response_400(...).
+    FAB UserApi.put() lines 249-276 use response_404(...) for the same check.
+    """
+    if not requested_ids:
+        return
+    from sqlalchemy import select
+
+    if field_name == "roles":
+        from superset.models.security import Role as _EntityModel
+    else:
+        from superset.models.security import Group as _EntityModel
+
+    stmt = select(_EntityModel.id).where(_EntityModel.id.in_(requested_ids))
+    result = await session.execute(stmt)
+    found_ids = {row[0] for row in result}
+    missing_ids = sorted(set(requested_ids) - found_ids)
+    if missing_ids:
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                field_name: [f"{model_name}(s) with ID(s) {missing_ids} not found."]
+            },
+        )
+
+
+def _hash_password(password: str, settings: Any | None = None) -> str:
+    """Hash a password using FAB_PASSWORD_HASH_METHOD and FAB_PASSWORD_HASH_SALT_LENGTH.
+
+    Mirrors pre_update (superset_old/views/users/api.py:52-56) which reads
+    FAB_PASSWORD_HASH_METHOD (default 'scrypt') and
+    FAB_PASSWORD_HASH_SALT_LENGTH (default 16) from app.config and passes
+    them to werkzeug's generate_password_hash.
+    """
     from superset.utils.password import generate_password_hash
 
-    return generate_password_hash(password)
+    method = "scrypt"
+    salt_length = 16
+    if settings is not None:
+        method = getattr(settings, "fab_password_hash_method", "scrypt") or "scrypt"
+        salt_length = getattr(settings, "fab_password_hash_salt_length", 16) or 16
+
+    return generate_password_hash(password, method=method, salt_length=salt_length)
+
+
+def _apply_simple_filter(
+    col: Any, opr: str, value: Any, escape_like: Any
+) -> Any | None:
+    """Return a single SQLAlchemy filter expression for a scalar column.
+
+    Returns None when the operator is unrecognised (caller skips it).
+    """
+    if opr == "eq":
+        return col == value
+    if opr == "neq":
+        return col != value
+    if opr == "sw":
+        return col.ilike(f"{escape_like(str(value))}%")
+    if opr == "ct":
+        return col.ilike(f"%{escape_like(str(value))}%")
+    if opr == "gt":
+        return col > value
+    if opr == "lt":
+        return col < value
+    if opr == "gte":
+        return col >= value
+    if opr == "lte":
+        return col <= value
+    return None
+
+
+def _validate_user_update_payload(
+    item_roles: list[int] | None,
+    item_groups: list[int] | None,
+    user: Any,
+) -> None:
+    """Guard against clearing a user's last role/group assignment.
+
+    Mirrors FAB UserApi.put() lines 225-244 which return HTTP 400 in three
+    cases:
+    1. Both roles and groups are explicitly cleared to [].
+    2. Roles are cleared to [] and the user has no existing groups (and none
+       are being assigned).
+    3. Groups are cleared to [] and the user has no existing roles (and none
+       are being assigned).
+
+    Raises:
+        HTTPException: 400 when any guard condition is met.
+    """
+    if item_roles == [] and item_groups == []:
+        raise HTTPException(
+            status_code=400,
+            detail="User must have at least one role or group!",
+        )
+
+    if item_roles == [] and (item_groups is None and not user.groups):
+        raise HTTPException(
+            status_code=400,
+            detail=("Cannot clear all roles unless at least one group is assigned!"),
+        )
+
+    if item_groups == [] and (item_roles is None and not user.roles):
+        raise HTTPException(
+            status_code=400,
+            detail=("Cannot clear all groups unless at least one role is assigned!"),
+        )
+
+
+async def _validate_user_update_extended(
+    data: "UserPutBody",
+    session: Any,
+    settings: Any | None,
+) -> None:
+    """Run async/settings-dependent validation for a user PUT request.
+
+    Mirrors FAB UserApi.put() lines 245-283:
+    - PasswordComplexityValidator on the new password (if provided).
+    - Role/group ID existence checks (HTTP 404 if any ID is missing).
+
+    Note: FAB UserApi.put() uses response_404() for missing role/group IDs
+    (lines 252-276), unlike post() which uses response_400() (lines 135-158).
+
+    Extracted from ``update`` to keep that handler's cyclomatic complexity
+    within the C901 threshold.
+    """
+    if data.password:
+        _check_password_complexity(data.password, settings)
+    if data.roles is not None:
+        await _validate_entity_ids(
+            session, data.roles, "Role", "roles", status_code=404
+        )
+    if data.groups is not None:
+        await _validate_entity_ids(
+            session, data.groups, "Group", "groups", status_code=404
+        )
 
 
 def _build_user_filters(rison_params: dict[str, Any] | None) -> list[Any]:
-    """Build SQLAlchemy filter expressions from Rison filter list."""
+    """Build SQLAlchemy filter expressions from Rison filter list.
+
+    Mirrors SupersetUserApi.search_columns (superset_old/security/manager.py:150-164)
+    which includes: id, roles, groups, first_name, last_name, username, active,
+    email, last_login, login_count, fail_login_count, created_on, changed_on.
+    """
     from superset.models.security import User
     from superset.utils import escape_like
 
@@ -122,30 +296,41 @@ def _build_user_filters(rison_params: dict[str, Any] | None) -> list[Any]:
     if not rison_params:
         return filters
 
-    allowed: dict[str | None, Any] = {
+    # Simple column filters (equality, inequality, substring)
+    simple_cols: dict[str, Any] = {
+        "id": User.id,
         "username": User.username,
         "first_name": User.first_name,
         "last_name": User.last_name,
         "email": User.email,
         "active": User.active,
+        "last_login": User.last_login,
+        "login_count": User.login_count,
+        "fail_login_count": User.fail_login_count,
+        "created_on": User.created_on,
+        "changed_on": User.changed_on,
     }
 
     for f in rison_params.get("filters", []):
         col_name = f.get("col")
         opr = f.get("opr", "eq")
         value = f.get("value")
-        col = allowed.get(col_name)
+
+        # Relationship filters (roles, groups) — mirrors original .any(id=value)
+        if col_name == "roles":
+            filters.append(User.roles.any(id=value))
+            continue
+        if col_name == "groups":
+            filters.append(User.groups.any(id=value))
+            continue
+
+        col = simple_cols.get(col_name)
         if col is None:
             continue
 
-        if opr == "eq":
-            filters.append(col == value)
-        elif opr == "neq":
-            filters.append(col != value)
-        elif opr == "sw":
-            filters.append(col.ilike(f"{escape_like(str(value))}%"))
-        elif opr == "ct":
-            filters.append(col.ilike(f"%{escape_like(str(value))}%"))
+        expr = _apply_simple_filter(col, opr, value, escape_like)
+        if expr is not None:
+            filters.append(expr)
 
     return filters
 
@@ -207,8 +392,11 @@ class UserController(Controller):
         )
 
         result = [_user_to_response(u) for u in users]
+        ids = [u.id for u in users]
         await event_logger.alog_with_context("user.list")
-        return msgspec.to_builtins(UsersSearchResponse(result=result, count=total))
+        return msgspec.to_builtins(
+            UsersSearchResponse(result=result, count=total, ids=ids)
+        )
 
     # ------------------------------------------------------------------
     # GET /{pk} — single user
@@ -243,6 +431,8 @@ class UserController(Controller):
         self,
         user_dao: Any,
         data: UserPostBody,
+        state: State,
+        request: Request[Any, Any, Any],
     ) -> dict[str, Any]:
         """POST /api/v1/security/users/ — create a new user."""
         if not data.username or not data.username.strip():
@@ -252,24 +442,51 @@ class UserController(Controller):
         if not data.password:
             raise SupersetValidationException("Password is required")
 
+        # FAB UserPostSchema.validate_roles_or_groups_present():
+        # raises ValidationError (→ response_400) when both roles and groups
+        # are empty or absent.  Mirror that guard here (HTTP 400).
+        if not data.roles and not data.groups:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "At least one of 'roles' or 'groups' must be provided"
+                    " and non-empty."
+                ),
+            )
+
+        settings = getattr(state, "settings", None)
+
+        # FAB UserPostSchema: validate=[PasswordComplexityValidator()] on password
+        _check_password_complexity(data.password, settings)
+
+        # FAB UserApi.post() lines 132-159: verify role/group IDs exist → 400
+        await _validate_entity_ids(user_dao.session, data.roles, "Role", "roles")
+        await _validate_entity_ids(user_dao.session, data.groups, "Group", "groups")
+
         attrs: dict[str, Any] = {
             "first_name": data.first_name.strip(),
             "last_name": data.last_name.strip(),
             "username": data.username.strip(),
             "email": data.email.strip(),
-            "password": _hash_password(data.password),
+            "password": _hash_password(data.password, settings=settings),
             "active": data.active,
             "created_on": datetime.now(),
             "changed_on": datetime.now(),
             "role_ids": data.roles,
             "group_ids": data.groups,
         }
+        current_user = getattr(request, "user", None)
+        if current_user and getattr(current_user, "id", None):
+            attrs["created_by_fk"] = current_user.id
+            attrs["changed_by_fk"] = current_user.id
 
         user = await user_dao.create(attrs)
         await event_logger.alog_with_context(
             "user.create", extra={"username": data.username}
         )
-        return {"id": user.id, "result": msgspec.to_builtins(_user_to_response(user))}
+        # 1:1 with FAB UserApi.post() (security/sqla/apis/user/api.py:169):
+        # ``self.response(201, id=model.id)`` — no ``result`` key.
+        return {"id": user.id}
 
     # ------------------------------------------------------------------
     # PUT /{pk} — update user
@@ -278,18 +495,31 @@ class UserController(Controller):
         "/{pk:int}",
         guards=[require_permission("can_put", "User")],
     )
-    async def update(
+    async def update(  # noqa: C901
         self,
         user_dao: Any,
         pk: int,
         data: UserPutBody,
+        state: State,
+        request: Request[Any, Any, Any],
     ) -> dict[str, Any]:
         """PUT /api/v1/security/users/{pk} — update a user."""
         user = await user_dao.find_by_id(pk)
         if user is None:
             raise ObjectNotFoundError("User", pk)
 
+        # FAB UserApi.put() lines 225-244: three guard blocks that prevent
+        # clearing a user's last role/group, returning HTTP 400.
+        _validate_user_update_payload(data.roles, data.groups, user)
+
+        settings = getattr(state, "settings", None)
+        # FAB UserPutSchema: password complexity + role/group ID checks (400)
+        await _validate_user_update_extended(data, user_dao.session, settings)
+
         attrs: dict[str, Any] = {"changed_on": datetime.now()}
+        current_user = getattr(request, "user", None)
+        if current_user and getattr(current_user, "id", None):
+            attrs["changed_by_fk"] = current_user.id
         if data.first_name is not None:
             attrs["first_name"] = data.first_name.strip()
         if data.last_name is not None:
@@ -299,7 +529,7 @@ class UserController(Controller):
         if data.email is not None:
             attrs["email"] = data.email.strip()
         if data.password is not None and data.password:
-            attrs["password"] = _hash_password(data.password)
+            attrs["password"] = _hash_password(data.password, settings=settings)
         if data.active is not None:
             attrs["active"] = data.active
         if data.roles is not None:
@@ -307,12 +537,16 @@ class UserController(Controller):
         if data.groups is not None:
             attrs["group_ids"] = data.groups
 
-        updated = await user_dao.update(user, attrs)
+        await user_dao.update(user, attrs)
         await event_logger.alog_with_context("user.update", object_ref=str(pk))
-        return {
-            "id": pk,
-            "result": msgspec.to_builtins(_user_to_response(updated)),
+
+        # 1:1 with FAB UserApi.put() return: echoes the provided fields without `id`.
+        result_dict = {
+            k: getattr(data, k)
+            for k in data.__struct_fields__
+            if getattr(data, k) is not None
         }
+        return {"result": result_dict}
 
     # ------------------------------------------------------------------
     # DELETE /{pk} — delete user
@@ -440,7 +674,7 @@ _REG_DISTINCT_COLUMNS = frozenset(
 )
 
 
-def _reg_to_dict(reg: Any) -> dict[str, Any]:
+def _reg_to_dict(reg: Any, is_list: bool = False) -> dict[str, Any]:
     """Serialize a RegisterUser model instance to a dict.
 
     Matches FAB's auto-generated show_columns which includes all non-PK
@@ -448,17 +682,19 @@ def _reg_to_dict(reg: Any) -> dict[str, Any]:
     the top level of the response (``{"id": ..., "result": ...}``),
     avoiding duplication.
     """
-    return {
+    res = {
         "username": reg.username,
         "email": reg.email,
         "first_name": reg.first_name,
         "last_name": reg.last_name,
-        "password": reg.password,
         "registration_date": (
             reg.registration_date.isoformat() if reg.registration_date else None
         ),
         "registration_hash": reg.registration_hash,
     }
+    if not is_list:
+        res["password"] = reg.password
+    return res
 
 
 def _build_reg_filters(rison_params: dict[str, Any] | None) -> list[Any]:
@@ -602,7 +838,7 @@ class UserRegistrationsController(Controller):
             page_size=page_size,
         )
 
-        result = [{"id": r.id, **_reg_to_dict(r)} for r in registrations]
+        result = [{"id": r.id, **_reg_to_dict(r, is_list=True)} for r in registrations]
         ids = [r.id for r in registrations]
         await event_logger.alog_with_context("user_registrations.list")
         return {"result": result, "ids": ids, "count": total}

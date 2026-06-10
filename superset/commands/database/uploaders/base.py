@@ -215,9 +215,7 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
             raise DatabaseSchemaUploadNotAllowed()
 
         # The engine must support file upload (1:1 supports_file_upload check).
-        if not getattr(
-            self._database.db_engine_spec, "supports_file_upload", True
-        ):
+        if not getattr(self._database.db_engine_spec, "supports_file_upload", True):
             raise DatabaseUploadNotSupported()
 
     async def run(self) -> dict[str, Any]:

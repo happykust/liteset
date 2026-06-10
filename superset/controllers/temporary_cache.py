@@ -27,7 +27,7 @@ from litestar import Controller, delete, get, post, put
 
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError
-from superset.guards.rbac import require_authentication
+from superset.guards.rbac import require_permission
 from superset.typing import KeyValueDAOProtocol, UserProtocol
 
 
@@ -48,7 +48,7 @@ class TemporaryCacheController(Controller):
 
     resource: ClassVar[str] = ""
 
-    @get("/{key:str}", guards=[require_authentication])
+    @get("/{key:str}", guards=[require_permission("can_get", "TemporaryCacheRestApi")])
     async def get_value(
         self,
         key: str,
@@ -74,7 +74,11 @@ class TemporaryCacheController(Controller):
             pass
         return {"value": raw}
 
-    @post("/", status_code=201, guards=[require_authentication])
+    @post(
+        "/",
+        status_code=201,
+        guards=[require_permission("can_post", "TemporaryCacheRestApi")],
+    )
     async def create_value(
         self,
         data: TemporaryCacheSchema,
@@ -102,7 +106,7 @@ class TemporaryCacheController(Controller):
         )
         return {"key": key}
 
-    @put("/{key:str}", guards=[require_authentication])
+    @put("/{key:str}", guards=[require_permission("can_put", "TemporaryCacheRestApi")])
     async def update_value(
         self,
         key: str,
@@ -139,7 +143,11 @@ class TemporaryCacheController(Controller):
         )
         return {"key": key}
 
-    @delete("/{key:str}", status_code=200, guards=[require_authentication])
+    @delete(
+        "/{key:str}",
+        status_code=200,
+        guards=[require_permission("can_delete", "TemporaryCacheRestApi")],
+    )
     async def delete_value(
         self,
         key: str,

@@ -152,9 +152,7 @@ async def test_raise_for_access_denied(manager, mock_dao):
     table.qualify.return_value = table
 
     with pytest.raises(SupersetSecurityException):
-        await manager.raise_for_access(
-            user=gamma_user, database=database, table=table
-        )
+        await manager.raise_for_access(user=gamma_user, database=database, table=table)
 
 
 async def test_can_access_database(manager, mock_dao):
@@ -324,9 +322,7 @@ async def test_raise_for_access_guest_query_context_modified_denied(
     guest = MockGuestUser()
     query_context = MagicMock()
 
-    with patch(
-        "superset.security.manager.query_context_modified", return_value=True
-    ):
+    with patch("superset.security.manager.query_context_modified", return_value=True):
         with pytest.raises(
             SupersetSecurityException, match="Guest user cannot modify chart payload"
         ):
@@ -381,9 +377,7 @@ def test_get_guest_user_from_request_not_guest(manager):
 # --- Guest chart access tests (C1 fix) ---
 
 
-async def test_guest_denied_chart_without_datasource_access(
-    embedded_manager, mock_dao
-):
+async def test_guest_denied_chart_without_datasource_access(embedded_manager, mock_dao):
     """Guest (non-admin, non-owner) without datasource access is denied a chart.
 
     Upstream chart path (Path-5) has no guest-specific dashboard-association
@@ -609,3 +603,86 @@ def test_get_schema_perm_with_catalog(manager):
         manager.get_schema_perm("examples", "public", catalog="cat")
         == "[examples].[cat].[public]"
     )
+
+
+# ---------------------------------------------------------------------------
+# get_catalogs_accessible_by_user: admin bypass is inside hierarchical gate
+# (audit MEDIUM — real regression fix: removed unconditional is_admin shortcut)
+# ---------------------------------------------------------------------------
+
+
+async def test_get_catalogs_accessible_by_user_admin_hierarchical_true(
+    manager: AsyncSecurityManager, mock_dao: AsyncMock
+) -> None:
+    """Admin gets all catalogs when hierarchical=True (via can_access_database).
+
+    1:1 with original: ``if hierarchical and self.can_access_database(database)``
+    short-circuits for admin because can_access_database includes is_admin check.
+    """
+    admin_user = MockUser(roles=[MockRole()])
+    database = MagicMock()
+    database.perm = "[db].(id:1)"
+    catalogs = ["cat1", "cat2", "cat3"]
+
+    result = await manager.get_catalogs_accessible_by_user(
+        database, catalogs, hierarchical=True, user=admin_user
+    )
+
+    assert result == catalogs
+
+
+async def test_get_catalogs_accessible_by_user_admin_hierarchical_false_no_perms(
+    manager: AsyncSecurityManager, mock_dao: AsyncMock
+) -> None:
+    """Admin is NOT exempt when hierarchical=False; perm filtering applies.
+
+    Original (superset_old/security/manager.py:983): the admin shortcut is
+    ``if hierarchical and self.can_access_database(database)``, so with
+    hierarchical=False the shortcut is skipped even for admins and the full
+    catalog_access / schema_access / datasource_access filtering runs.
+    """
+    admin_user = MockUser(roles=[MockRole()])
+    database = MagicMock()
+    database.id = 42
+    database.database_name = "mydb"
+    database.get_default_catalog = MagicMock(return_value=None)
+    catalogs = ["cat1", "cat2"]
+
+    # Admin has no catalog / schema / datasource perms
+    mock_dao.get_all_permissions_for_user_with_groups.return_value = set()
+
+    result = await manager.get_catalogs_accessible_by_user(
+        database, catalogs, hierarchical=False, user=admin_user
+    )
+
+    # No matching perms → admin gets nothing (perm filter applied, not bypassed)
+    assert result == []
+    mock_dao.get_all_permissions_for_user_with_groups.assert_awaited_once_with(
+        admin_user.id
+    )
+
+
+async def test_get_catalogs_accessible_by_user_admin_non_hierarchical_with_perm(
+    manager: AsyncSecurityManager, mock_dao: AsyncMock
+) -> None:
+    """Admin with catalog_access gets only those catalogs when hierarchical=False.
+
+    Confirms the perm-based path runs (not bypassed) for admins.
+    """
+    admin_user = MockUser(roles=[MockRole()])
+    database = MagicMock()
+    database.id = 42
+    database.database_name = "mydb"
+    database.get_default_catalog = MagicMock(return_value=None)
+    catalogs = ["cat1", "cat2", "cat3"]
+
+    # Admin has catalog_access only for cat1
+    mock_dao.get_all_permissions_for_user_with_groups.return_value = {
+        ("catalog_access", "[mydb].[cat1]"),
+    }
+
+    result = await manager.get_catalogs_accessible_by_user(
+        database, catalogs, hierarchical=False, user=admin_user
+    )
+
+    assert result == ["cat1"]

@@ -29,9 +29,18 @@ import functools
 import json as _json
 import logging
 import re
+import warnings
 from datetime import datetime
 from re import Match, Pattern
-from typing import Any, Callable, NamedTuple, TYPE_CHECKING, TypedDict, Union
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    NamedTuple,
+    TYPE_CHECKING,
+    TypedDict,
+    Union,
+)
 
 from sqlalchemy import column, select, types
 from sqlalchemy.engine.interfaces import Compiled, Dialect
@@ -134,14 +143,17 @@ builtin_time_grains: dict[str | None, str] = {
 
 
 @functools.lru_cache(maxsize=1)
-def _time_grain_config() -> tuple[dict[str, dict[str, str]], tuple[str, ...]]:
-    """Cached ``(TIME_GRAIN_ADDON_EXPRESSIONS, TIME_GRAIN_DENYLIST)`` from config.
+def _time_grain_config() -> tuple[
+    dict[str, dict[str, str]], tuple[str, ...], dict[str, str]
+]:
+    """Cached ``(TIME_GRAIN_ADDON_EXPRESSIONS, TIME_GRAIN_DENYLIST, TIME_GRAIN_ADDONS)``
+    from config.
 
     Mirrors the ``app.config[...]`` reads in the original
-    ``get_time_grain_expressions``. These are static at runtime, so the result
-    is cached to avoid rebuilding ``SupersetSettings`` on every call (this runs
-    per chart query). Falls back to the upstream defaults (``{}`` / ``()``) when
-    settings can't be loaded.
+    ``get_time_grain_expressions`` and ``get_time_grains``. These are static at
+    runtime, so the result is cached to avoid rebuilding ``SupersetSettings`` on
+    every call (this runs per chart query). Falls back to the upstream defaults
+    (``{}`` / ``()`` / ``{}``) when settings can't be loaded.
     """
     try:
         from superset.config import SupersetSettings
@@ -150,9 +162,10 @@ def _time_grain_config() -> tuple[dict[str, dict[str, str]], tuple[str, ...]]:
         return (
             dict(getattr(settings, "time_grain_addon_expressions", {}) or {}),
             tuple(getattr(settings, "time_grain_denylist", []) or []),
+            dict(getattr(settings, "time_grain_addons", {}) or {}),
         )
     except Exception:  # noqa: BLE001
-        return {}, ()
+        return {}, (), {}
 
 
 # ---------------------------------------------------------------------------
@@ -914,6 +927,24 @@ class BaseEngineSpec:  # noqa: PLR0904
             clause = clause.replace(":", "\\:")
         return text(clause)
 
+    @classmethod
+    def get_engine(
+        cls,
+        database: Database,
+        catalog: str | None = None,
+        schema: str | None = None,
+        source: Any | None = None,
+    ) -> ContextManager[Engine]:
+        """
+        Return an engine context manager.
+
+            >>> with DBEngineSpec.get_engine(database, catalog, schema, source) as engine:
+            ...     connection = engine.connect()
+            ...     connection.execute(sql)
+
+        """  # noqa: E501
+        return database.get_sqla_engine(catalog=catalog, schema=schema, source=source)
+
     # ------------------------------------------------------------------
     # Time-grain expressions
     # ------------------------------------------------------------------
@@ -1019,7 +1050,7 @@ class BaseEngineSpec:  # noqa: PLR0904
         # — merge any engine-specific addon expressions, then drop denylisted
         # grains (both config-driven; defaults are empty).
         time_grain_expressions = cls._time_grain_expressions.copy()
-        addon_expressions, denylist = _time_grain_config()
+        addon_expressions, denylist, _ = _time_grain_config()
         time_grain_expressions.update(addon_expressions.get(cls.engine, {}))
         for key in denylist:
             time_grain_expressions.pop(key, None)
@@ -1041,14 +1072,14 @@ class BaseEngineSpec:  # noqa: PLR0904
         """
         Generate a tuple of supported time grains.
 
-        1:1 with ``superset_old/db_engine_specs/base.py:get_time_grains``. The
-        ``TIME_GRAIN_ADDONS`` merge is omitted (this classmethod has no access
-        to ``SupersetSettings``; the upstream default is an empty mapping).
+        1:1 with ``superset_old/db_engine_specs/base.py:get_time_grains``.
 
         :return: All time grains supported by the engine
         """
         ret_list = []
         time_grains = builtin_time_grains.copy()
+        _, _, time_grain_addons = _time_grain_config()
+        time_grains.update(time_grain_addons)
         for duration, func in cls.get_time_grain_expressions().items():
             if duration in time_grains:
                 name = time_grains[duration]
@@ -1193,8 +1224,21 @@ class BaseEngineSpec:  # noqa: PLR0904
         ``handle_cursor`` consecutively, but in some engines (e.g. Trino) we
         may need to handle client limitations such as lack of async support.
         """
+        from sqlalchemy.orm import object_session
+
+        from superset.constants import QUERY_CANCEL_KEY
+
         logger.debug("Query %d: Running query: %s", query.id, sql)
         cls.execute(cursor, sql, query.database, async_=True)
+        if not cls.has_query_id_before_execute:
+            cancel_query_id = query.database.db_engine_spec.get_cancel_query_id(
+                cursor, query
+            )
+            if cancel_query_id is not None:
+                query.set_extra_json_key(QUERY_CANCEL_KEY, cancel_query_id)
+                session = object_session(query)
+                if session is not None:
+                    session.commit()
         logger.debug("Query %d: Handling cursor", query.id)
         cls.handle_cursor(cursor, query)
 
@@ -1544,6 +1588,58 @@ class BaseEngineSpec:  # noqa: PLR0904
             }
         ]
 
+    @classmethod
+    def get_table_metadata(
+        cls,
+        database: Database,
+        table: Table,
+    ) -> dict[str, Any]:
+        """Returns basic table metadata.
+
+        1:1 with ``superset_old/db_engine_specs/base.py:get_table_metadata``.
+        Delegates to ``superset.databases.utils.get_table_metadata``.
+
+        :param database: Database instance
+        :param table: A Table instance
+        :return: Basic table metadata
+        """
+        from superset.databases.utils import get_table_metadata
+
+        return get_table_metadata(database, table)
+
+    @classmethod
+    def get_extra_table_metadata(
+        cls,
+        database: Database,
+        table: Table,
+    ) -> dict[str, Any]:
+        """Returns engine-specific table metadata.
+
+        1:1 with ``superset_old/db_engine_specs/base.py:get_extra_table_metadata``.
+        Includes backwards-compat fallback for the deprecated
+        ``extra_table_metadata`` method.
+
+        :param database: Database instance
+        :param table: A Table instance
+        :return: Engine-specific table metadata
+        """
+        # old method that doesn't work with catalogs
+        if hasattr(cls, "extra_table_metadata"):
+            warnings.warn(  # noqa: B028
+                "The `extra_table_metadata` method is deprecated, please implement "
+                "the `get_extra_table_metadata` method in the DB engine spec.",
+                DeprecationWarning,
+            )
+
+            # If a catalog is passed, return nothing, since we don't know the exact
+            # table that is being requested.
+            if table.catalog:
+                return {}
+
+            return cls.extra_table_metadata(database, table.table, table.schema)
+
+        return {}
+
     # ------------------------------------------------------------------
     # SQL limit helpers
     # ------------------------------------------------------------------
@@ -1734,7 +1830,7 @@ class BaseEngineSpec:  # noqa: PLR0904
         :param sql: SQL query with possibly multiple statements
         :param source: Source of the query (eg, "sql_lab")
         """
-        extra = database.get_extra() or {}
+        extra = database.get_extra(source) or {}
         if not cls.get_allow_cost_estimate(extra):
             raise Exception(  # noqa: TRY002
                 "Database does not support cost estimation"
@@ -1995,7 +2091,23 @@ class BaseEngineSpec:  # noqa: PLR0904
 
     @classmethod
     def validate_database_uri(cls, sqlalchemy_uri: URL) -> None:
-        """Validate a database SQLAlchemy URI per engine spec."""
+        """Validate a database SQLAlchemy URI per engine spec.
+
+        1:1 with ``superset_old/db_engine_specs/base.py:validate_database_uri``.
+        Invokes the user-configured ``DB_SQLA_URI_VALIDATOR`` callback (if set)
+        before checking disallowed query params.
+        """
+        try:
+            from superset.config import SupersetSettings
+
+            settings = SupersetSettings()  # type: ignore[call-arg]
+            db_engine_uri_validator = getattr(settings, "db_sqla_uri_validator", None)
+        except Exception:  # noqa: BLE001
+            db_engine_uri_validator = None
+
+        if db_engine_uri_validator:
+            db_engine_uri_validator(sqlalchemy_uri)
+
         if existing_disallowed := cls.disallow_uri_query_params.get(
             sqlalchemy_uri.get_driver_name(), set()
         ).intersection(sqlalchemy_uri.query):

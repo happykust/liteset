@@ -138,6 +138,25 @@ def _create_session_cookie(
     return jwt.encode(payload, secret_key, algorithm="HS256")
 
 
+def _clear_flash_cookies(
+    response: Template,
+    flash_raw: str | None,
+    flash_danger_raw: str | None,
+) -> None:
+    """Expire flash cookies so each message shows exactly once."""
+    if flash_raw or flash_danger_raw:
+        from litestar.datastructures import Cookie
+
+        if flash_raw:
+            response.cookies.append(
+                Cookie(key=_FLASH_COOKIE_NAME, value="", max_age=0, path="/")
+            )
+        if flash_danger_raw:
+            response.cookies.append(
+                Cookie(key="_flash_danger", value="", max_age=0, path="/")
+            )
+
+
 class AuthController(Controller):
     """Login / logout endpoints."""
 
@@ -160,19 +179,32 @@ class AuthController(Controller):
         except Exception:  # noqa: BLE001
             user = None
 
-        # If already authenticated, redirect to home
+        # If already authenticated, redirect to home.
+        # Mirrors FAB @no_cache wrapping ALL return paths of SupersetAuthView.login:
+        # the early-return redirect(appbuilder.get_url_for_index) also received
+        # Cache-Control/Pragma/Expires headers in the original.
         if user is not None and getattr(user, "is_authenticated", False):
-            return Redirect(path="/")
+            _redirect = Redirect(path="/")
+            _redirect.headers["Cache-Control"] = (
+                "no-store, no-cache, must-revalidate, max-age=0"
+            )
+            _redirect.headers["Pragma"] = "no-cache"
+            _redirect.headers["Expires"] = "0"
+            return _redirect
 
         # Read one-shot flash messages from cookie (set by failed POST /login/).
         flash_messages: list[list[str]] = []
+        import urllib.parse
+
         flash_raw = request.cookies.get(_FLASH_COOKIE_NAME)
         if flash_raw:
-            import urllib.parse
-
-            flash_messages = [
-                ["warning", urllib.parse.unquote(flash_raw)],
-            ]
+            flash_messages.append(["warning", urllib.parse.unquote(flash_raw)])
+        # "danger" category cookie set by register_activation errors --
+        # mirrors Flask flash(msg, "danger") for registration not found /
+        # add_user failed.
+        flash_danger_raw = request.cookies.get("_flash_danger")
+        if flash_danger_raw:
+            flash_messages.append(["danger", urllib.parse.unquote(flash_danger_raw)])
 
         # Build anonymous user with Public role permissions (if configured),
         # matching Flask-AppBuilder behaviour where anonymous visitors see
@@ -216,18 +248,17 @@ class AuthController(Controller):
                 "csrf_token": "",
             },
         )
-        # Clear the flash cookie so the message shows only once.
-        if flash_raw:
-            from litestar.datastructures import Cookie
-
-            response.cookies.append(
-                Cookie(
-                    key=_FLASH_COOKIE_NAME,
-                    value="",
-                    max_age=0,
-                    path="/",
-                )
-            )
+        # Mirrors Flask-AppBuilder's @no_cache decorator on the login view.
+        # Sets Cache-Control: no-store, no-cache, must-revalidate, max-age=0;
+        # Pragma: no-cache; Expires: 0.  Prevents browsers and proxies from
+        # caching the login page (which could expose stale auth state).
+        response.headers["Cache-Control"] = (
+            "no-store, no-cache, must-revalidate, max-age=0"
+        )
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        # Clear the flash cookies so messages show only once.
+        _clear_flash_cookies(response, flash_raw, flash_danger_raw)
         return response
 
     @post(
@@ -388,6 +419,13 @@ class AuthController(Controller):
 
         # Redirect to ``?next=`` target (validated) or home
         redirect = Redirect(path=safe_redirect_target)
+        # Mirrors Flask-AppBuilder's @no_cache on the combined GET+POST login
+        # handler — applies to every response path including POST success.
+        redirect.headers["Cache-Control"] = (
+            "no-store, no-cache, must-revalidate, max-age=0"
+        )
+        redirect.headers["Pragma"] = "no-cache"
+        redirect.headers["Expires"] = "0"
         redirect.cookies.append(
             _make_session_cookie(
                 cookie_name,
@@ -501,6 +539,12 @@ def _login_failed_redirect(next_url: str = "") -> Redirect:
     if next_url:
         login_path = f"/login/?next={urllib.parse.quote(next_url, safe='')}"
     redirect = Redirect(path=login_path)
+    # Mirrors Flask-AppBuilder's @no_cache decorator on the combined GET+POST
+    # login handler (FAB security/views.py AuthDBView.login is @no_cache).
+    # The decorator wraps every response path — including POST failure redirects.
+    redirect.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    redirect.headers["Pragma"] = "no-cache"
+    redirect.headers["Expires"] = "0"
     redirect.cookies.append(
         Cookie(
             key=_FLASH_COOKIE_NAME,

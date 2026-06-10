@@ -34,7 +34,6 @@ from __future__ import annotations
 import functools
 import inspect
 import logging
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, Callable, TYPE_CHECKING
@@ -51,6 +50,7 @@ from superset.events import (
     StdOutEventLogger,
 )
 from superset.utils.core import get_user_id, LoggerLevel, to_int
+from superset.utils.dates import now_as_float
 
 if TYPE_CHECKING:
     from superset.stats_logger import BaseStatsLogger
@@ -86,16 +86,12 @@ DBEventLogger = AsyncDBEventLogger
 
 @contextmanager
 def stats_timing(stats_key: str, stats_logger: BaseStatsLogger) -> Iterator[float]:
-    """Time a block and report the result via ``stats_logger.timing``.
-
-    The original lived in ``utils.decorators`` but is more naturally
-    grouped with the event-logger primitives.
-    """
-    start = time.time()
+    """Provide a transactional scope around a series of operations."""
+    start_ts = now_as_float()
     try:
-        yield start
+        yield start_ts
     finally:
-        stats_logger.timing(stats_key, time.time() - start)
+        stats_logger.timing(stats_key, now_as_float() - start_ts)
 
 
 # ---------------------------------------------------------------------------

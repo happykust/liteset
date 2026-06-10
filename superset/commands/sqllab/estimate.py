@@ -231,7 +231,9 @@ class EstimateQueryCostCommand(AsyncBaseCommand[list[dict[str, Any]]]):
 
         return results
 
-    def _is_cost_estimate_allowed(self, engine_spec: Any, extra: dict[str, Any]) -> bool:
+    def _is_cost_estimate_allowed(
+        self, engine_spec: Any, extra: dict[str, Any]
+    ) -> bool:
         attr = getattr(engine_spec, "get_allow_cost_estimate", None)
         if isinstance(attr, bool):
             return attr

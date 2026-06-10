@@ -383,8 +383,15 @@ async def test_export_dashboards_produces_zip(mock_dao, mock_dashboard):
         "slug": "test-dashboard",
     }
     _exec_returns(mock_dao, one=mock_dashboard)
+    # validate() calls dao.count() after the access-filter check; return 1 for
+    # the single requested ID so the access gate passes.
+    mock_dao.count = AsyncMock(return_value=1)
     cmd = ExportDashboardsCommand(model_ids=[1], dao=mock_dao)
-    buf = await cmd.execute()
+    with patch(
+        "superset.db.filters.dashboard_access_filters",
+        AsyncMock(return_value=[]),
+    ):
+        buf = await cmd.execute()
     assert isinstance(buf, io.BytesIO)
     with zipfile.ZipFile(buf) as zf:
         names = zf.namelist()
@@ -399,9 +406,16 @@ async def test_export_dashboards_produces_zip(mock_dao, mock_dashboard):
 
 async def test_export_dashboards_not_found(mock_dao):
     _exec_returns(mock_dao, one=None)
+    # count=0 → validate() sees the ID as inaccessible and raises before
+    # _export_single is ever called (same observable result: ObjectNotFoundError).
+    mock_dao.count = AsyncMock(return_value=0)
     cmd = ExportDashboardsCommand(model_ids=[999], dao=mock_dao)
-    with pytest.raises(ObjectNotFoundError):
-        await cmd.execute()
+    with patch(
+        "superset.db.filters.dashboard_access_filters",
+        AsyncMock(return_value=[]),
+    ):
+        with pytest.raises(ObjectNotFoundError):
+            await cmd.execute()
 
 
 async def test_export_dashboards_non_object_position_json(mock_dao, mock_dashboard):
@@ -418,8 +432,14 @@ async def test_export_dashboards_non_object_position_json(mock_dao, mock_dashboa
         "json_metadata": '"a string"',
     }
     _exec_returns(mock_dao, one=mock_dashboard)
+    # Access gate: 1 accessible ID out of 1 requested → passes.
+    mock_dao.count = AsyncMock(return_value=1)
     cmd = ExportDashboardsCommand(model_ids=[1], dao=mock_dao)
-    buf = await cmd.execute()
+    with patch(
+        "superset.db.filters.dashboard_access_filters",
+        AsyncMock(return_value=[]),
+    ):
+        buf = await cmd.execute()
     assert isinstance(buf, io.BytesIO)
     with zipfile.ZipFile(buf) as zf:
         assert any(n.startswith("dashboards/") for n in zf.namelist())
@@ -429,6 +449,250 @@ async def test_export_dashboards_no_dao():
     cmd = ExportDashboardsCommand(model_ids=[1], dao=None)
     with pytest.raises(CommandInvalidError, match="DAO not provided"):
         await cmd.execute()
+
+
+async def test_export_dashboards_includes_ssh_tunnel_in_database_yaml(
+    mock_dao, mock_dashboard
+):
+    """databases/*.yaml in a dashboard bundle must carry the masked SSH tunnel.
+
+    1:1 with the original: dashboard export delegates database YAMLs to
+    ``ExportDatasetsCommand._export`` (superset_old/commands/dashboard/
+    export.py → chart/export.py:104 → dataset/export.py:114-121), which adds
+    ``payload["ssh_tunnel"] = mask_password_info(...)`` whenever
+    ``DatabaseDAO.get_ssh_tunnel(database_id)`` returns a tunnel.
+    """
+    from superset.constants import PASSWORD_MASK
+
+    db = MagicMock()
+    db.id = 10
+    db.database_name = "TunnelDB"
+    db.uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    db.export_to_dict.return_value = {
+        "database_name": "TunnelDB",
+        "sqlalchemy_uri": "postgresql://x",
+    }
+
+    dataset = MagicMock()
+    dataset.id = 5
+    dataset.table_name = "tbl"
+    dataset.uuid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    dataset.database = db
+    dataset.export_to_dict.return_value = {"table_name": "tbl", "sql": None}
+
+    chart = MagicMock()
+    chart.id = 7
+    chart.slice_name = "Chart"
+    chart.uuid = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    chart.tags = []
+    chart.table = dataset
+    chart.export_to_dict.return_value = {"slice_name": "Chart", "viz_type": "table"}
+
+    mock_dashboard.slices = [chart]
+    mock_dashboard.export_to_dict.return_value = {
+        "dashboard_title": "Test Dashboard",
+        "slug": "test-dashboard",
+    }
+    _exec_returns(mock_dao, one=mock_dashboard)
+    mock_dao.count = AsyncMock(return_value=1)
+
+    tunnel = MagicMock()
+    tunnel.export_to_dict.return_value = {
+        "server_address": "ssh.example.com",
+        "server_port": 22,
+        "username": "tunnel_user",
+        "password": "super-secret",
+    }
+    ssh_dao_cls = MagicMock()
+    ssh_dao_cls.return_value.get_by_database_id = AsyncMock(return_value=tunnel)
+
+    with (
+        patch(
+            "superset.db.filters.dashboard_access_filters",
+            AsyncMock(return_value=[]),
+        ),
+        patch("superset.db.daos.database.AsyncSSHTunnelDAO", ssh_dao_cls),
+    ):
+        cmd = ExportDashboardsCommand(model_ids=[1], dao=mock_dao)
+        buf = await cmd.execute()
+
+    with zipfile.ZipFile(buf) as zf:
+        db_files = [n for n in zf.namelist() if n.startswith("databases/")]
+        assert db_files, "no databases/*.yaml emitted"
+        db_yaml = yaml.safe_load(zf.read(db_files[0]))
+
+    assert "ssh_tunnel" in db_yaml, "ssh_tunnel must be embedded in database YAML"
+    assert db_yaml["ssh_tunnel"]["server_address"] == "ssh.example.com"
+    assert db_yaml["ssh_tunnel"]["username"] == "tunnel_user"
+    # Secrets must be masked, never exported in clear text.
+    assert db_yaml["ssh_tunnel"]["password"] == PASSWORD_MASK
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM fix: export_related=False suppresses tags.yaml and theme files
+# Original: superset_old/commands/dashboard/export.py:187 gates ALL related
+# emissions (charts, tags, themes) inside ``if export_related:``.
+# superset_old/commands/export/assets.py:59 always calls command with
+# export_related=False so the full-assets bundle never contains tags.yaml
+# or theme YAML files from the dashboard exporter.
+# ---------------------------------------------------------------------------
+
+
+async def test_export_dashboards_export_related_false_suppresses_tags_yaml(
+    mock_dao, mock_dashboard
+):
+    """When export_related=False, _export_single must NOT emit tags.yaml.
+
+    The original ExportAssetsCommand (superset_old/commands/export/assets.py:59)
+    passes export_related=False to every per-resource command.  The original
+    ExportDashboardsCommand._export gates the tags.yaml emission inside
+    ``if export_related:`` (superset_old/commands/dashboard/export.py:187-197).
+    A full-assets bundle therefore never contains tags.yaml; liteset must
+    reproduce the same absence.
+    """
+    mock_dashboard.export_to_dict.return_value = {
+        "dashboard_title": "Dash With Tags",
+    }
+    _exec_returns(mock_dao, one=mock_dashboard)
+
+    cmd = ExportDashboardsCommand(model_ids=[1], dao=mock_dao, export_related=False)
+
+    with patch("superset.commands.dashboard.export.feature_flag_manager") as mock_ffm:
+        mock_ffm.is_feature_enabled.return_value = True
+        files = await cmd._export_single(1)  # noqa: SLF001
+
+    file_names = [f for f, _ in files]
+    assert "tags.yaml" not in file_names, (
+        "export_related=False must suppress tags.yaml (1:1 with original "
+        "superset_old/commands/dashboard/export.py:187 if export_related: guard)"
+    )
+
+
+async def test_export_dashboards_export_related_true_emits_tags_yaml(
+    mock_dao, mock_dashboard
+):
+    """When export_related=True (default), _export_single MUST emit tags.yaml
+    when TAGGING_SYSTEM is enabled.  This confirms the flag correctly gates
+    rather than unconditionally blocking.
+    """
+    tag = MagicMock()
+    tag.name = "my-tag"
+    tag.description = "a tag"
+    from superset.models.tags import TagType
+
+    tag.type = TagType.custom
+
+    mock_dashboard.export_to_dict.return_value = {
+        "dashboard_title": "Dash With Tags",
+    }
+    mock_dashboard.tags = [tag]
+    _exec_returns(mock_dao, one=mock_dashboard)
+
+    cmd = ExportDashboardsCommand(model_ids=[1], dao=mock_dao, export_related=True)
+
+    with patch("superset.commands.dashboard.export.feature_flag_manager") as mock_ffm:
+        mock_ffm.is_feature_enabled.return_value = True
+        files = await cmd._export_single(1)  # noqa: SLF001
+
+    file_names = [f for f, _ in files]
+    assert "tags.yaml" in file_names, (
+        "export_related=True must emit tags.yaml when TAGGING_SYSTEM is enabled"
+    )
+
+
+async def test_export_dashboards_export_related_false_suppresses_theme_files(
+    mock_dao, mock_dashboard
+):
+    """When export_related=False, _export_single must NOT emit any theme YAML files.
+
+    The original ExportDashboardsCommand._export gates the theme export inside
+    ``if export_related:`` (superset_old/commands/dashboard/export.py:199-203).
+    The full-assets bundle calls every per-resource command with export_related=False
+    (superset_old/commands/export/assets.py:59), so no theme files are injected
+    by the dashboard exporter into the bundle.
+    """
+    theme = MagicMock()
+    theme.id = 7
+    theme.uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    mock_dashboard.theme = theme
+
+    mock_dashboard.export_to_dict.return_value = {
+        "dashboard_title": "Dash With Theme",
+    }
+    _exec_returns(mock_dao, one=mock_dashboard)
+
+    cmd = ExportDashboardsCommand(model_ids=[1], dao=mock_dao, export_related=False)
+
+    with patch("superset.commands.dashboard.export.feature_flag_manager") as mock_ffm:
+        mock_ffm.is_feature_enabled.return_value = False
+        files = await cmd._export_single(1)  # noqa: SLF001
+
+    file_names = [f for f, _ in files]
+    theme_files = [f for f in file_names if f.startswith("themes/")]
+    assert not theme_files, (
+        "export_related=False must suppress theme YAML files (1:1 with original "
+        "superset_old/commands/dashboard/export.py:199-203 if export_related: guard)"
+    )
+
+
+async def test_export_dashboards_export_related_true_emits_theme_files(
+    mock_dao, mock_dashboard
+):
+    """When export_related=True (default) and the dashboard has a theme,
+    _export_single MUST emit the theme YAML file.
+    """
+    theme = MagicMock()
+    theme.id = 7
+    theme.uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    mock_dashboard.theme = theme
+
+    mock_dashboard.export_to_dict.return_value = {
+        "dashboard_title": "Dash With Theme",
+    }
+    _exec_returns(mock_dao, one=mock_dashboard)
+
+    # Stub ExportThemesCommand so we don't need a real DAO/model.
+    # ExportThemesCommand is imported lazily inside _export_single via
+    # ``from superset.commands.theme import ExportThemesCommand`` — patch
+    # it at the source module so the local import picks up the stub.
+    fake_theme_files: list[tuple[str, str]] = [("themes/MyTheme.yaml", "version: 1")]
+
+    mock_export_instance = AsyncMock()
+    mock_export_instance.run = AsyncMock(return_value=fake_theme_files)
+
+    with (
+        patch("superset.commands.dashboard.export.feature_flag_manager") as mock_ffm,
+        patch(
+            "superset.commands.theme.ExportThemesCommand",
+            return_value=mock_export_instance,
+        ),
+        patch("superset.db.daos.theme.AsyncThemeDAO"),
+    ):
+        mock_ffm.is_feature_enabled.return_value = False
+
+        cmd = ExportDashboardsCommand(model_ids=[1], dao=mock_dao, export_related=True)
+        files = await cmd._export_single(1)  # noqa: SLF001
+
+    file_names = [f for f, _ in files]
+    assert "themes/MyTheme.yaml" in file_names, (
+        "export_related=True must emit theme YAML files when dashboard has a theme"
+    )
+
+
+async def test_export_dashboards_denies_inaccessible_id(mock_dao):
+    """validate() raises ObjectNotFoundError when the requested dashboard ID is
+    not accessible to the current user (count < len(model_ids))."""
+    # count=0 simulates an ID the security filter excludes entirely.
+    mock_dao.count = AsyncMock(return_value=0)
+    cmd = ExportDashboardsCommand(
+        model_ids=[42], dao=mock_dao, security_manager=MagicMock()
+    )
+    with patch(
+        "superset.db.filters.dashboard_access_filters",
+        AsyncMock(return_value=[]),
+    ):
+        with pytest.raises(ObjectNotFoundError):
+            await cmd.validate()
 
 
 # ---------------------------------------------------------------------------
@@ -476,9 +740,7 @@ async def test_import_dashboards_missing_title(mock_dao):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("bundle/metadata.yaml", yaml.safe_dump({"version": "1.0.0"}))
-        zf.writestr(
-            "bundle/dashboards/bad.yaml", yaml.safe_dump({"slug": "no-title"})
-        )
+        zf.writestr("bundle/dashboards/bad.yaml", yaml.safe_dump({"slug": "no-title"}))
     buf.seek(0)
     cmd = ImportDashboardsCommand(contents=buf, dao=mock_dao)
     with pytest.raises(CommandInvalidError, match="Missing dashboard_title"):
@@ -778,7 +1040,8 @@ async def test_bulk_delete_skips_delete_tagged_objects_when_flag_off(
 async def test_delete_dashboard_calls_delete_tagged_when_flag_on(
     mock_dao, mock_dashboard
 ):
-    """DeleteDashboardCommand.run() removes tagged_object rows when TAGGING_SYSTEM is on."""
+    """DeleteDashboardCommand.run() removes tagged_object rows when TAGGING_SYSTEM
+    is on."""
     cmd = DeleteDashboardCommand(dao=mock_dao, dashboard_id=1)
     cmd._dashboard = mock_dashboard
 
@@ -840,9 +1103,7 @@ async def test_create_dashboard_skips_implicit_tags_when_flag_off(mock_dao):
             "sys.modules",
             {"superset.models.dashboard": MagicMock(Dashboard=mock_dashboard_cls)},
         ),
-        patch(
-            "superset.commands.dashboard.create.feature_flag_manager"
-        ) as mock_ffm,
+        patch("superset.commands.dashboard.create.feature_flag_manager") as mock_ffm,
         patch(
             "superset.commands.dashboard.create.add_implicit_tags_after_insert",
             new_callable=AsyncMock,
@@ -855,7 +1116,8 @@ async def test_create_dashboard_skips_implicit_tags_when_flag_off(mock_dao):
 
 
 async def test_create_dashboard_calls_implicit_tags_when_flag_on(mock_dao):
-    """CreateDashboardCommand.run() calls add_implicit_tags when TAGGING_SYSTEM is on."""
+    """CreateDashboardCommand.run() calls add_implicit_tags when TAGGING_SYSTEM
+    is on."""
     mock_dao.validate_slug_uniqueness = AsyncMock(return_value=True)
 
     cmd = CreateDashboardCommand(dao=mock_dao, data={"dashboard_title": "Test"})
@@ -872,9 +1134,7 @@ async def test_create_dashboard_calls_implicit_tags_when_flag_on(mock_dao):
             "sys.modules",
             {"superset.models.dashboard": MagicMock(Dashboard=mock_dashboard_cls)},
         ),
-        patch(
-            "superset.commands.dashboard.create.feature_flag_manager"
-        ) as mock_ffm,
+        patch("superset.commands.dashboard.create.feature_flag_manager") as mock_ffm,
         patch(
             "superset.commands.dashboard.create.add_implicit_tags_after_insert",
             new_callable=AsyncMock,
@@ -884,3 +1144,119 @@ async def test_create_dashboard_calls_implicit_tags_when_flag_on(mock_dao):
         await cmd.run()
 
     mock_tags.assert_awaited_once_with(mock_dao.session, "dashboard", instance.id, [])
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM fix: export_related=False suppresses chart/dataset/database YAMLs
+# Original: superset_old/commands/dashboard/export.py:187 gates ALL related
+# emissions (charts, tags, themes, datasets) inside ``if export_related:``.
+# When export_related=False (full-assets bundle via AsyncFullAssetManager),
+# the dashboard exporter must emit ONLY the dashboard YAML.
+# ---------------------------------------------------------------------------
+
+
+async def test_export_dashboards_export_related_false_suppresses_chart_yaml(
+    mock_dao, mock_dashboard
+):
+    """When export_related=False, _export_single must NOT emit chart YAMLs.
+
+    The original ExportDashboardsCommand._export gates the entire chart
+    sub-export inside ``if export_related:``
+    (superset_old/commands/dashboard/export.py:187-193).
+    When the full-assets manager calls with export_related=False, only the
+    dashboard YAML must appear in the output.
+    """
+    chart = MagicMock()
+    chart.id = 10
+    chart.slice_name = "Test Chart"
+    chart.uuid = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+    chart.table = None
+    chart.tags = []
+    chart.export_to_dict.return_value = {
+        "slice_name": "Test Chart",
+        "viz_type": "table",
+    }
+    mock_dashboard.slices = [chart]
+    mock_dashboard.export_to_dict.return_value = {
+        "dashboard_title": "Dash With Charts",
+    }
+    _exec_returns(mock_dao, one=mock_dashboard)
+
+    cmd = ExportDashboardsCommand(model_ids=[1], dao=mock_dao, export_related=False)
+
+    with patch("superset.commands.dashboard.export.feature_flag_manager") as mock_ffm:
+        mock_ffm.is_feature_enabled.return_value = False
+        files = await cmd._export_single(1)  # noqa: SLF001
+
+    file_names = [f for f, _ in files]
+    chart_files = [f for f in file_names if f.startswith("charts/")]
+    assert not chart_files, (
+        "export_related=False must suppress chart YAMLs (1:1 with original "
+        "superset_old/commands/dashboard/export.py:187 ``if export_related:`` guard)"
+    )
+    # Only the dashboard YAML must be present.
+    assert len(file_names) == 1
+    assert file_names[0].startswith("dashboards/")
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM fix: chart YAMLs inside dashboard bundles must NOT carry a `tags` key
+# Original: ExportDashboardsCommand calls ExportChartsCommand.disable_tag_export()
+# before the chart sub-export, so chart YAMLs in a dashboard bundle have no
+# ``tags`` key (superset_old/commands/dashboard/export.py:191, chart/export.py:84).
+# The import-time ``import_tag`` is only invoked when a ``tags`` key exists in a
+# chart config (superset_old/commands/dashboard/importers/v1/__init__.py:152-157),
+# so having the key changes import behaviour (creates tag associations).
+# ---------------------------------------------------------------------------
+
+
+async def test_export_dashboards_chart_yaml_has_tags_key(mock_dao, mock_dashboard):
+    """Chart YAMLs produced inside a dashboard bundle MUST have a ``tags`` key.
+
+    The original superset_old/commands/chart/export.py:77-80 unconditionally adds
+    ``payload["tags"]`` inside ``_file_content`` when TAGGING_SYSTEM is enabled.
+    ``disable_tag_export()`` only suppresses the separate ``tags.yaml`` yield,
+    not the inline tags key (which is required by the importer to restore tags).
+    """
+    from superset.models.tags import TagType
+
+    tag = MagicMock()
+    tag.name = "my-chart-tag"
+    tag.description = "chart tag"
+    tag.type = TagType.custom
+
+    chart = MagicMock()
+    chart.id = 20
+    chart.slice_name = "Tagged Chart"
+    chart.uuid = "cccccccc-dddd-eeee-ffff-000000000000"
+    chart.table = None
+    chart.tags = [tag]
+    chart.export_to_dict.return_value = {
+        "slice_name": "Tagged Chart",
+        "viz_type": "bar",
+    }
+
+    mock_dashboard.slices = [chart]
+    mock_dashboard.export_to_dict.return_value = {
+        "dashboard_title": "Dash With Tagged Charts",
+    }
+    _exec_returns(mock_dao, one=mock_dashboard)
+
+    cmd = ExportDashboardsCommand(model_ids=[1], dao=mock_dao, export_related=True)
+
+    with patch("superset.commands.dashboard.export.feature_flag_manager") as mock_ffm:
+        mock_ffm.is_feature_enabled.return_value = True
+        files = await cmd._export_single(1)  # noqa: SLF001
+
+    chart_files = [
+        (name, content) for name, content in files if name.startswith("charts/")
+    ]
+    assert chart_files, "export_related=True must produce at least one chart YAML"
+    for name, content in chart_files:
+        import yaml as _yaml
+
+        parsed = _yaml.safe_load(content)
+        assert "tags" in parsed, (
+            f"Chart YAML {name!r} must have a ``tags`` key inside a dashboard "
+            "bundle so the importer restores them."
+        )

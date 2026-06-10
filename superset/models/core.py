@@ -204,6 +204,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         "encrypted_extra",
         "impersonate_user",
     ]
+    export_children = ["tables"]
 
     def __repr__(self) -> str:
         return self.name
@@ -407,6 +408,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
             schema=schema,
             nullpool=nullpool,
             override_ssh_tunnel=override_ssh_tunnel,
+            source=source,
         )
 
     def get_inspector(
@@ -472,6 +474,58 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
             schema=table.schema,
         ) as inspector:
             return self.db_engine_spec.get_metrics(self, inspector, table)
+
+    def get_table_comment(self, table: Any) -> str | None:
+        """Fetch table comment from the engine spec."""
+        with self.get_inspector(
+            catalog=table.catalog,
+            schema=table.schema,
+        ) as inspector:
+            return self.db_engine_spec.get_table_comment(inspector, table)
+
+    def get_columns(self, table: Any) -> list[dict[str, Any]]:
+        """Fetch table columns from the engine spec."""
+        with self.get_inspector(
+            catalog=table.catalog,
+            schema=table.schema,
+        ) as inspector:
+            return self.db_engine_spec.get_columns(
+                inspector, table, self.schema_options
+            )
+
+    def get_indexes(self, table: Any) -> list[dict[str, Any]]:
+        """Fetch indexes from the engine spec."""
+        with self.get_inspector(
+            catalog=table.catalog,
+            schema=table.schema,
+        ) as inspector:
+            return self.db_engine_spec.get_indexes(self, inspector, table)
+
+    def get_pk_constraint(self, table: Any) -> dict[str, Any]:
+        """Fetch primary key constraint from the engine spec."""
+        with self.get_inspector(
+            catalog=table.catalog,
+            schema=table.schema,
+        ) as inspector:
+            pk_constraint = inspector.get_pk_constraint(table.table, table.schema) or {}
+
+            def _convert(value: Any) -> Any:
+                from superset.utils.json import base_json_conv
+
+                try:
+                    return base_json_conv(value)
+                except TypeError:
+                    return None
+
+            return {key: _convert(value) for key, value in pk_constraint.items()}
+
+    def get_foreign_keys(self, table: Any) -> list[dict[str, Any]]:
+        """Fetch foreign keys from the engine spec."""
+        with self.get_inspector(
+            catalog=table.catalog,
+            schema=table.schema,
+        ) as inspector:
+            return inspector.get_foreign_keys(table.table, table.schema)
 
     async def get_all_table_names_in_schema(
         self,
@@ -701,6 +755,51 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
 
         return feature_flag_manager.is_feature_enabled("OPTIMIZE_SQL")
 
+    @staticmethod
+    def _resolve_log_query() -> Any:
+        """Resolve the QUERY_LOGGER callable from config.
+
+        Returns the callable or ``None`` if unavailable. Resolved lazily
+        so Celery workers pick up the operator's configured logger without
+        a Flask app context. 1:1 with the lazy-import block in
+        ``get_df``.
+        """
+        # The config module has no module-level QUERY_LOGGER attribute —
+        # the operator's value reaches SupersetSettings via the
+        # _SUPERSET_TO_LITESET mapping, so resolve from settings directly.
+        try:
+            from superset.config import SupersetSettings as _SupersetSettings
+
+            log_query = getattr(_SupersetSettings(), "query_logger", None)
+        except Exception:  # noqa: BLE001
+            log_query = None
+        return log_query
+
+    @staticmethod
+    def _call_log_query(
+        log_query: Any,
+        engine_url: Any,
+        sql: str,
+        schema: str | None,
+    ) -> None:
+        """Invoke QUERY_LOGGER if configured.
+
+        Mirrors the ``_log_query`` closure from the original ``get_df``
+        implementation. Resolves the security-manager proxy lazily so
+        callers without a full app context do not raise.
+        """
+        if not log_query:
+            return
+        try:
+            from superset.security.manager import (
+                get_sync_security_manager_proxy,
+            )
+
+            sm_proxy = get_sync_security_manager_proxy()
+        except Exception:  # noqa: BLE001
+            sm_proxy = None
+        log_query(engine_url, sql, schema, __name__, sm_proxy)
+
     def get_df(
         self,
         sql: str,
@@ -736,6 +835,15 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
 
         script = SQLScript(sql, self.db_engine_spec.engine)
         statements = list(script.statements)
+
+        # 1:1 with superset_old/models/core.py:680-681: open a throw-away
+        # engine context purely to capture ``engine.url`` for QUERY_LOGGER.
+        with self.get_sqla_engine(catalog=catalog, schema=schema) as engine:
+            engine_url = engine.url
+
+        # QUERY_LOGGER audit hook — 1:1 with superset_old/models/core.py:683-693.
+        log_query = self._resolve_log_query()
+
         with self.get_sqla_engine(catalog=catalog, schema=schema) as engine:
             with closing(engine.raw_connection()) as conn:
                 # Pre-session queries set the selected catalog/schema.
@@ -754,18 +862,24 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
                         statement.format(),
                         is_split=True,
                     )
-                    self.db_engine_spec.execute(cursor, sql_, self)
+                    # QUERY_LOGGER + event_logger.log_context — 1:1 with
+                    # superset_old/models/core.py:703-709.
+                    self._call_log_query(log_query, engine_url, sql_, schema)
+                    from superset.events import event_logger as _event_logger
+
+                    with _event_logger.log_context(
+                        action="execute_sql",
+                        database=self,
+                        object_ref=__name__,
+                    ):
+                        self.db_engine_spec.execute(cursor, sql_, self)
                     rows = self.fetch_rows(cursor, i == len(statements) - 1)
                     if rows is not None:
                         df = self.load_into_dataframe(cursor.description, rows)
 
                 if mutator:
-                    mutated = mutator(df)
-                    if mutated is not None:
-                        df = mutated
+                    df = mutator(df)
 
-                if df is None:
-                    df = pd.DataFrame()
                 return self.post_process_df(df)
 
     def fetch_rows(self, cursor: Any, last: bool) -> list[tuple[Any, ...]] | None:
@@ -774,12 +888,25 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         1:1 with ``superset_old/models/core.py:Database.fetch_rows``:
         intermediate statements are drained and discarded; only the last
         statement's rows are returned via the engine spec's ``fetch_data``.
+        Decorated with ``@event_logger.log_this`` — 1:1 with line 720.
         """
-        if not last:
-            cursor.fetchall()
-            return None
+        from superset.events import event_logger as _event_logger
 
-        return self.db_engine_spec.fetch_data(cursor)
+        # Use log_this_with_context(action=..., object_ref=...) so both the
+        # logged action and object_ref match the original @event_logger.log_this
+        # on the method directly (superset_old/models/core.py:720). Without an
+        # explicit object_ref the inner function's __qualname__ would be recorded
+        # as "Database.fetch_rows.<locals>._fetch" rather than "Database.fetch_rows".
+        @_event_logger.log_this_with_context(
+            action="fetch_rows", object_ref="Database.fetch_rows"
+        )
+        def _fetch(cursor: Any, last: bool) -> list[tuple[Any, ...]] | None:
+            if not last:
+                cursor.fetchall()
+                return None
+            return self.db_engine_spec.fetch_data(cursor)
+
+        return _fetch(cursor, last)
 
     def load_into_dataframe(
         self,
@@ -791,11 +918,25 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         1:1 with ``superset_old/models/core.py:Database.load_into_dataframe``
         — goes through :class:`SupersetResultSet` so column de-duplication
         and type coercion match the rest of the codebase.
+        Decorated with ``@event_logger.log_this`` — 1:1 with line 728.
         """
+        from superset.events import event_logger as _event_logger
         from superset.result_set import SupersetResultSet
 
-        result_set = SupersetResultSet(data, description, self.db_engine_spec)
-        return result_set.to_pandas_df()
+        # Use log_this_with_context(action=..., object_ref=...) so both the
+        # logged action and object_ref match the original @event_logger.log_this
+        # on the method directly (superset_old/models/core.py:728). Without an
+        # explicit object_ref the inner function's __qualname__ would be recorded
+        # as "Database.load_into_dataframe.<locals>._load" instead.
+        @_event_logger.log_this_with_context(
+            action="load_into_dataframe",
+            object_ref="Database.load_into_dataframe",
+        )
+        def _load(description: Any, data: list[tuple[Any, ...]]) -> Any:
+            result_set = SupersetResultSet(data, description, self.db_engine_spec)
+            return result_set.to_pandas_df()
+
+        return _load(description, data)
 
     @staticmethod
     def post_process_df(df: Any) -> Any:
@@ -837,9 +978,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         delegates to the engine spec, binding the engine to the table's
         catalog/schema so per-catalog dialects resolve correctly.
         """
-        with self.get_sqla_engine(
-            catalog=table.catalog, schema=table.schema
-        ) as engine:
+        with self.get_sqla_engine(catalog=table.catalog, schema=table.schema) as engine:
             return self.db_engine_spec.select_star(
                 self,
                 table,

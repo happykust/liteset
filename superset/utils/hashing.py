@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Callable
 
-import simplejson as json  # type: ignore[import-untyped]
+from superset.utils import json
 
 
 def md5_sha_from_str(val: str) -> str:
@@ -33,5 +33,7 @@ def md5_sha_from_dict(
     ignore_nan: bool = False,
     default: Callable[[Any], Any] | None = None,
 ) -> str:
-    json_data = json.dumps(obj, sort_keys=True, ignore_nan=ignore_nan, default=default)
+    json_data = json.dumps(
+        obj, sort_keys=True, ignore_nan=ignore_nan, default=default, allow_nan=True
+    )
     return md5_sha_from_str(json_data)

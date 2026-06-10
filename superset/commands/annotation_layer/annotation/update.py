@@ -46,11 +46,18 @@ class UpdateAnnotationCommand(AsyncBaseCommand["Annotation"]):
         # Short-descr uniqueness within the layer (excluding self) — 1:1 with
         # upstream update.py. The model has only a non-unique index, so the
         # check must be explicit.
-        short_descr = self._data.get(
-            "short_descr", getattr(self._annotation, "short_descr", None)
+        # Original: short_descr defaults to "" when absent from the payload
+        # (superset_old/commands/annotation_layer/annotation/update.py:56:
+        # ``self._properties.get('short_descr', '')``).
+        # The upstream controller always sets item["layer"] = pk before
+        # calling the command, so layer_id is always present and the
+        # uniqueness check always fires — gated only on layer_id, NOT on
+        # short_descr being truthy.
+        short_descr: str = self._data.get("short_descr", "")
+        layer_id = self._data.get("layer_id") or getattr(
+            self._annotation, "layer_id", None
         )
-        layer_id = getattr(self._annotation, "layer_id", None)
-        if short_descr and layer_id is not None:
+        if layer_id is not None:
             if not await self._dao.validate_update_uniqueness(
                 layer_id, short_descr, annotation_id=self._pk
             ):
@@ -61,16 +68,14 @@ class UpdateAnnotationCommand(AsyncBaseCommand["Annotation"]):
                 raise AnnotationUniquenessValidationError()
 
         # Mirror upstream date-sanity check (superset_old/commands/annotation_
-        # layer/annotation/update.py:82-84). Falls back to the stored value
-        # when the incoming payload omits one side of the range.
-        existing_start = getattr(self._annotation, "start_dttm", None)
-        existing_end = getattr(self._annotation, "end_dttm", None)
-        start_dttm = self._data.get("start_dttm", existing_start)
-        end_dttm = self._data.get("end_dttm", existing_end)
+        # layer/annotation/update.py:80-83). Both default to None when the
+        # incoming payload omits one side of the range, making the check a
+        # no-op unless BOTH fields are present in the request — 1:1 with
+        # original ``self._properties.get("start_dttm")`` / ``get("end_dttm")``.
+        start_dttm = self._data.get("start_dttm")
+        end_dttm = self._data.get("end_dttm")
         if start_dttm and end_dttm and end_dttm < start_dttm:
-            raise CommandInvalidError(
-                "end_dttm must be greater or equal to start_dttm"
-            )
+            raise CommandInvalidError("end_dttm must be greater or equal to start_dttm")
 
         # Validate json_metadata is valid JSON — 1:1 with upstream
         # ``AnnotationPutSchema.json_metadata`` which carries
@@ -80,6 +85,7 @@ class UpdateAnnotationCommand(AsyncBaseCommand["Annotation"]):
         json_metadata = self._data.get("json_metadata")
         if json_metadata not in (None, "", msgspec.UNSET):
             import json as _json
+
             try:
                 _json.loads(json_metadata)
             except (TypeError, ValueError) as ex:

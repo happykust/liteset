@@ -52,6 +52,10 @@ class AnnotationLayer(Base, AuditMixinNullable):
     name = Column(String(250))
     descr = Column(Text)
 
+    def __repr__(self) -> str:
+        # 1:1 superset_old/models/annotations.py:37.
+        return str(self.name)
+
 
 class Annotation(Base, AuditMixinNullable):
     """A single annotation within a layer."""
@@ -66,6 +70,10 @@ class Annotation(Base, AuditMixinNullable):
     short_descr = Column(String(500))
     long_descr = Column(Text)
     json_metadata = Column(MediumText())
+
+    def __repr__(self) -> str:
+        # 1:1 superset_old/models/annotations.py:67.
+        return str(self.short_descr)
 
     # -- relationships --------------------------------------------------------
 

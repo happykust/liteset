@@ -92,8 +92,7 @@ def _parent_foreign_key_mappings(cls: type) -> dict[str, str]:
     if not parent_rel:
         return {}
     return {
-        local.name: remote.name
-        for (local, remote) in parent_rel.local_remote_pairs
+        local.name: remote.name for (local, remote) in parent_rel.local_remote_pairs
     }
 
 
@@ -145,9 +144,7 @@ def import_from_dict(  # noqa: C901
 
     if not allow_reparenting:
         # Add filter for parent obj
-        filters.extend(
-            [getattr(cls, k) == dict_rep.get(k) for k in parent_refs]
-        )
+        filters.extend([getattr(cls, k) == dict_rep.get(k) for k in parent_refs])
 
     # Add filter for unique constraints
     ucs = [
@@ -365,9 +362,7 @@ def import_metric(session: Any, metric: Any) -> Any:
 
 
 def import_column(session: Any, column: Any) -> Any:
-    return _import_simple_obj(
-        session, column, lambda c: lookup_sqla_column(session, c)
-    )
+    return _import_simple_obj(session, column, lambda c: lookup_sqla_column(session, c))
 
 
 def _import_datasource(  # noqa: C901

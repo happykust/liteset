@@ -1228,7 +1228,7 @@ class SQLScript:
     # Special engines that can't be parsed using sqlglot. Supporting non-SQL engines
     # adds a lot of complexity to Superset, so we should avoid adding new engines to
     # this data structure.
-    special_engines: dict[str, type[BaseSQLStatement]] = {
+    special_engines: dict[str, type[BaseSQLStatement[Any]]] = {
         "kustokql": KustoKQLStatement,
     }
 
@@ -1278,9 +1278,7 @@ class SQLScript:
         Return optimized script.
         """
         script = copy.deepcopy(self)
-        script.statements = [  # type: ignore
-            statement.optimize() for statement in self.statements
-        ]
+        script.statements = [statement.optimize() for statement in self.statements]
 
         return script
 

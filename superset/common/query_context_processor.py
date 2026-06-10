@@ -350,9 +350,7 @@ class AsyncQueryContextProcessor:
         )
         query_results = []
         for qo in query_objects:
-            result_type = (
-                getattr(qo, "result_type", None) or ctx_result_type or "full"
-            )
+            result_type = getattr(qo, "result_type", None) or ctx_result_type or "full"
 
             if result_type == "columns":
                 result = self._get_columns()
@@ -361,7 +359,9 @@ class AsyncQueryContextProcessor:
             elif result_type == "query":
                 result = await self._get_query_only(qo)
             elif result_type == "samples":
-                result = await self._get_samples(qo)
+                result = await self._get_samples(
+                    qo, force=force, force_cached=force_cached
+                )
             elif result_type == "drill_detail":
                 result = await self._get_drill_detail(
                     qo, force=force, force_cached=force_cached
@@ -373,7 +373,7 @@ class AsyncQueryContextProcessor:
                     force_cached=force_cached,
                     skip_post_processing=True,
                 )
-            else:
+            elif result_type in ("full", "post_processed"):
                 # "full" / "post_processed" — default behavior. For
                 # ``post_processed`` the original returns the full results and
                 # leaves chart-specific post-processing to the viz layer, so it
@@ -383,6 +383,19 @@ class AsyncQueryContextProcessor:
                     qo,
                     force=force,
                     force_cached=force_cached,
+                )
+            else:
+                # 1:1 with original ``get_query_results``
+                # (``superset_old/common/query_actions.py:231-235``):
+                # unrecognized result types raise a validation error.
+                from superset.exceptions import QueryObjectValidationError
+                from superset.i18n import _
+
+                raise QueryObjectValidationError(
+                    _(
+                        "Invalid result type: %(result_type)s",
+                        result_type=result_type,
+                    )
                 )
             query_results.append(result)
 
@@ -506,7 +519,9 @@ class AsyncQueryContextProcessor:
         try:
             if hasattr(datasource, "_build_sql"):
                 sql, _from_dttm, _to_dttm = await asyncio.to_thread(
-                    datasource._build_sql, query_dict, None  # noqa: SLF001
+                    datasource._build_sql,
+                    query_dict,
+                    None,  # noqa: SLF001
                 )
                 result["query"] = sql
             elif hasattr(datasource, "get_query_str_extended"):
@@ -528,7 +543,12 @@ class AsyncQueryContextProcessor:
 
         return result
 
-    async def _get_samples(self, query_object: AsyncQueryObject) -> dict[str, Any]:
+    async def _get_samples(
+        self,
+        query_object: AsyncQueryObject,
+        force: bool = False,
+        force_cached: bool = False,
+    ) -> dict[str, Any]:
         """Execute a simplified query for raw sample rows.
 
         1:1 port of ``superset_old/common/query_actions.py:_get_samples``:
@@ -557,7 +577,12 @@ class AsyncQueryContextProcessor:
         if not sample_qo.row_limit:
             sample_qo.row_limit = getattr(self._settings, "samples_row_limit", 1000)
 
-        return await self.get_df_payload(sample_qo, skip_post_processing=True)
+        return await self.get_df_payload(
+            sample_qo,
+            force=force,
+            force_cached=force_cached,
+            skip_post_processing=True,
+        )
 
     async def _get_drill_detail(
         self,
@@ -620,7 +645,12 @@ class AsyncQueryContextProcessor:
         # query interface.
 
         # Validate query object (sanitize filters, check duplicates, etc.)
-        query_object.validate()
+        # Pass the resolved ORM datasource so _sanitize_filters can render
+        # Jinja templates in extras.where/having and sanitize the SQL clause —
+        # matching the original superset_old/common/query_context_processor.py
+        # behaviour where self.datasource on the QueryObject was always the ORM
+        # model (set at construction time via query_object_factory.py:83).
+        query_object.validate(datasource=self._datasource)
 
         # Validate columns exist in datasource (skip if no column metadata)
         ds_columns = getattr(self._datasource, "column_names", None)
@@ -653,6 +683,15 @@ class AsyncQueryContextProcessor:
         cache_key = await self._get_cache_key(query_object)
         timeout = self._get_cache_timeout()
 
+        # 1:1 with the original ``get_df_payload`` (line 139):
+        # ``force_query = self._query_context.force
+        #     or timeout == CACHE_DISABLED_TIMEOUT``
+        # When the cache timeout chain returns -1 (CACHE_DISABLED_TIMEOUT),
+        # the cache is bypassed entirely — both reads and writes.
+        from superset.constants import CACHE_DISABLED_TIMEOUT
+
+        force_query = force or timeout == CACHE_DISABLED_TIMEOUT
+
         # Check cache
         cached_df: pd.DataFrame | None = None
         cached_annotation_data: dict[str, Any] = {}
@@ -660,7 +699,7 @@ class AsyncQueryContextProcessor:
         cached_rejected_filter_columns: list[Any] = []
         cached_applied_template_filters: list[str] = []
         is_cached = False
-        if self._cache_manager is not None and cache_key and not force:
+        if self._cache_manager is not None and cache_key and not force_query:
             cached_result = await self._cache_get(cache_key)
             if cached_result is not None:
                 if isinstance(cached_result, dict) and "df" in cached_result:
@@ -829,6 +868,7 @@ class AsyncQueryContextProcessor:
             ]
             for col in df.columns.values
         }
+
         # Adhoc column/metric expression keys arrive in either camelCase
         # (raw request) or snake_case (after msgspec ``rename="camel"``
         # normalization), so read both — matching the dual-key convention
@@ -872,8 +912,8 @@ class AsyncQueryContextProcessor:
         )
         df.columns = [unescape_separator(col) for col in df.columns.values]
 
-        # Compute coltypes from DataFrame dtypes
-        coltypes = self._extract_coltypes(df)
+        # Compute coltypes from DataFrame dtypes + datasource column metadata
+        coltypes = self._extract_coltypes(df, self._datasource)
 
         # Surfaced filter metadata from the SQL build pipeline. Two sources:
         # - Cache hit: stored in the payload alongside the DataFrame.
@@ -983,14 +1023,12 @@ class AsyncQueryContextProcessor:
         if hasattr(self._settings, "feature_flags"):
             flags = self._settings.feature_flags or {}
             try:
-                database = datasource.database  # type: ignore[union-attr]
+                database = datasource.database  # type: ignore[attr-defined]
                 if (
                     flags.get("CACHE_IMPERSONATION")
                     and getattr(database, "impersonate_user", False)
                 ) or flags.get("CACHE_QUERY_BY_USER"):
-                    if key := database.db_engine_spec.get_impersonation_key(
-                        self._user
-                    ):
+                    if key := database.db_engine_spec.get_impersonation_key(self._user):
                         logger.debug(
                             "Adding impersonation key to QueryObject cache dict: %s",
                             key,
@@ -1255,23 +1293,150 @@ class AsyncQueryContextProcessor:
         return df
 
     @staticmethod
-    def _extract_coltypes(df: pd.DataFrame) -> list[int]:
-        """Map DataFrame column dtypes to GenericDataType integers."""
+    def _extract_coltypes(
+        df: pd.DataFrame,
+        datasource: Any | None = None,
+    ) -> list[int]:
+        """Map DataFrame column types to GenericDataType enum values.
+
+        1:1 port of ``superset_old/utils/core.py:extract_dataframe_dtypes``.
+
+        Three datasource-aware operations the original performs:
+        1. Build ``columns_by_name`` from ``datasource.columns`` — each entry
+           may be a dict or a column object with ``.column_name`` /
+           ``.is_dttm`` attributes.
+        2. For all-NaN series, consult ``datasource.columns_types`` (a
+           ``{column_name: sql_type}`` dict) and map via
+           ``_map_sql_type_to_inferred_type``; fall back to
+           ``_get_metric_type_from_column`` if the column name is not found in
+           ``columns_types``.
+        3. For each column, if the matching datasource column has
+           ``is_dttm == True``, classify as TEMPORAL regardless of pandas dtype.
+        """
+        from pandas.api.types import infer_dtype
+
         from superset.typing import GenericDataType
 
-        result: list[int] = []
-        for col in df.columns:
-            dtype = df[col].dtype
-            if pd.api.types.is_bool_dtype(dtype):
-                # Check bool before numeric since bool is a subtype of int
-                result.append(GenericDataType.BOOLEAN)
-            elif pd.api.types.is_datetime64_any_dtype(dtype):
-                result.append(GenericDataType.TEMPORAL)
-            elif pd.api.types.is_numeric_dtype(dtype):
-                result.append(GenericDataType.NUMERIC)
+        # Map of pandas infer_dtype strings to GenericDataType
+        inferred_type_map: dict[str, GenericDataType] = {
+            "floating": GenericDataType.NUMERIC,
+            "integer": GenericDataType.NUMERIC,
+            "mixed-integer-float": GenericDataType.NUMERIC,
+            "decimal": GenericDataType.NUMERIC,
+            "boolean": GenericDataType.BOOLEAN,
+            "datetime64": GenericDataType.TEMPORAL,
+            "datetime": GenericDataType.TEMPORAL,
+            "date": GenericDataType.TEMPORAL,
+        }
+
+        columns_by_name: dict[str, Any] = {}
+        if datasource:
+            for column in getattr(datasource, "columns", None) or []:
+                if isinstance(column, dict):
+                    columns_by_name[column.get("column_name")] = column
+                else:
+                    columns_by_name[getattr(column, "column_name", None)] = column
+
+        generic_types: list[int] = []
+        for column in df.columns:
+            column_object = columns_by_name.get(column)
+            series = df[column]
+            inferred_type: str = ""
+            if series.isna().all():
+                sql_type: str | None = ""
+                if datasource and hasattr(datasource, "columns_types"):
+                    columns_types = datasource.columns_types
+                    if column in columns_types:
+                        sql_type = columns_types.get(column)
+                        inferred_type = (
+                            AsyncQueryContextProcessor._map_sql_type_to_inferred_type(
+                                sql_type,
+                            )
+                        )
+                    else:
+                        inferred_type = (
+                            AsyncQueryContextProcessor._get_metric_type_from_column(
+                                column, datasource
+                            )
+                        )
             else:
-                result.append(GenericDataType.STRING)
-        return result
+                inferred_type = infer_dtype(series)
+            if isinstance(column_object, dict):
+                generic_type = (
+                    GenericDataType.TEMPORAL
+                    if column_object and column_object.get("is_dttm")
+                    else inferred_type_map.get(inferred_type, GenericDataType.STRING)
+                )
+            else:
+                generic_type = (
+                    GenericDataType.TEMPORAL
+                    if column_object and getattr(column_object, "is_dttm", False)
+                    else inferred_type_map.get(inferred_type, GenericDataType.STRING)
+                )
+            generic_types.append(generic_type)
+
+        return generic_types
+
+    @staticmethod
+    def _map_sql_type_to_inferred_type(sql_type: str | None) -> str:
+        """Map a SQL type to a pandas inferred-type string.
+
+        1:1 port of ``superset_old/utils/core.py:map_sql_type_to_inferred_type``.
+        """
+        if not sql_type:
+            return "string"
+        _type_mapping = {
+            re.compile(r"INT", re.IGNORECASE): "integer",
+            re.compile(r"CHAR|TEXT|VARCHAR", re.IGNORECASE): "string",
+            re.compile(r"DECIMAL|NUMERIC|FLOAT|DOUBLE", re.IGNORECASE): "floating",
+            re.compile(r"BOOL", re.IGNORECASE): "boolean",
+            re.compile(r"DATE|TIME", re.IGNORECASE): "datetime64",
+        }
+        for pattern, inferred_type in _type_mapping.items():
+            if pattern.search(sql_type):
+                return inferred_type
+        return "string"
+
+    @staticmethod
+    def _get_metric_type_from_column(column: Any, datasource: Any) -> str:
+        """Determine the metric type from a column name and datasource.
+
+        1:1 port of ``superset_old/utils/core.py:get_metric_type_from_column``.
+        """
+        _metric_map_type: dict[str, str] = {
+            "SUM": "floating",
+            "AVG": "floating",
+            "COUNT": "floating",
+            "COUNT_DISTINCT": "floating",
+            "MIN": "numeric",
+            "MAX": "numeric",
+            "FIRST": "string",
+            "LAST": "string",
+            "GROUP_CONCAT": "string",
+        }
+
+        metrics = getattr(datasource, "metrics", None) or []
+        metric = next(
+            (m for m in metrics if getattr(m, "metric_name", None) == column),
+            None,
+        )
+        if metric is None:
+            return ""
+
+        expression: str = getattr(metric, "expression", "") or ""
+        if not expression:
+            return ""
+
+        match = re.match(
+            r"(SUM|AVG|COUNT|COUNT_DISTINCT|MIN|MAX|FIRST|LAST)\((.*)\)",
+            expression,
+        )
+        if match:
+            operation = match.group(1)
+            return _metric_map_type.get(operation, "")
+
+        logger.warning("Unexpected metric expression type: %s", expression)
+        return ""
 
     @staticmethod
     def _exec_post_processing(
@@ -1408,8 +1573,16 @@ class AsyncQueryContextProcessor:
         JSON) because the cached values may contain pandas DataFrames and
         NumPy arrays — the same approach the original Flask QueryContextProcessor
         takes via ``superset.extensions.cache_manager``.
+
+        1:1 with ``superset_old/utils/cache.py:set_and_log_cache`` lines 61-63:
+        skip the write when timeout == CACHE_DISABLED_TIMEOUT so that datasets
+        with caching disabled never populate the cache store.
         """
         if self._cache_manager is None:
+            return
+        from superset.constants import CACHE_DISABLED_TIMEOUT
+
+        if timeout == CACHE_DISABLED_TIMEOUT:
             return
         try:
             import pickle  # noqa: S403
@@ -1490,103 +1663,165 @@ class AsyncQueryContextProcessor:
         """Fetch annotation data from another chart (recursive).
 
         Depth limit prevents infinite recursion when charts reference each other.
+        1:1 with ``superset_old/common/query_context_processor.py:1164-1232``:
+        - raises QueryObjectValidationError (not ValueError) for user-visible
+          errors (chart not found, missing datasource, missing query context)
+        - wraps the entire execution in try/except SupersetException so
+          internal errors are sanitized before surfacing to the user
+        - calls raise_for_access on the annotation processor to enforce
+          RBAC on the annotation chart's datasource
         """
+        from superset.exceptions import (
+            QueryObjectValidationError,
+            SupersetException,
+        )
+        from superset.i18n import _
+        from superset.utils.core import error_msg_from_exception
+
         if _depth >= _MAX_RECURSION_DEPTH:
-            raise ValueError(
+            raise QueryObjectValidationError(
                 f"Annotation recursion depth exceeded (max={_MAX_RECURSION_DEPTH})"
             )
 
         if self._chart_dao is None:
-            raise ValueError("Chart DAO not available for annotations")
+            raise QueryObjectValidationError(
+                _("Chart DAO not available for annotations")
+            )
 
         chart = await self._chart_dao.find_by_id(annotation_layer["value"])
         if not chart:
-            raise ValueError(
-                f"Chart with ID {annotation_layer['value']} "
-                f"(referenced by annotation layer '{annotation_layer['name']}') "
-                f"was not found."
-            )
-
-        # Mirror the original ``get_viz_annotation_data`` branch
-        # (superset_old/common/query_context_processor.py:1181-1202):
-        # legacy viz_type charts (e.g. "line", "area", "pie") are served via
-        # ``BaseViz.get_payload()``; modern charts go through
-        # ``chart.get_query_context()`` → ``AsyncQueryContextProcessor``.
-        # The original imported ``viz_types`` from ``superset.viz`` at module
-        # level; we do it lazily here to avoid a circular-import at load time.
-        from superset.viz import viz_types  # noqa: PLC0415
-
-        chart_viz_type = getattr(chart, "viz_type", None)
-        if chart_viz_type in viz_types:
-            # Legacy chart — run through the async viz pipeline.
-            if not getattr(chart, "datasource", None):
-                raise ValueError(
-                    f"The dataset for chart ID {chart.id} (referenced by "
-                    f"annotation layer '{annotation_layer['name']}') was not "
-                    f"found. Please check that the dataset exists and is "
-                    f"accessible."
+            raise QueryObjectValidationError(
+                _(
+                    "Chart with ID %(chart_id)s (referenced by "
+                    "annotation layer '%(layer_name)s') was not found. "
+                    "Please verify that the chart exists and is accessible.",
+                    chart_id=annotation_layer["value"],
+                    layer_name=annotation_layer["name"],
                 )
-            from superset.viz import get_viz as _get_viz  # noqa: PLC0415
-
-            form_data = chart.form_data.copy() if chart.form_data else {}
-            form_data.update(annotation_layer.get("overrides", {}))
-            viz_obj = _get_viz(
-                datasource=chart.datasource,
-                form_data=form_data,
-                force=force,
-            )
-            payload = await viz_obj.get_payload()
-            return payload.get("data") or []
-
-        get_qc = getattr(chart, "get_query_context", None)
-        if get_qc is None:
-            raise ValueError(
-                f"Chart ID {chart.id} does not support get_query_context(). "
-                f"Annotation layer '{annotation_layer['name']}' cannot be resolved."
-            )
-        query_context = get_qc()
-        if not query_context:
-            raise ValueError(
-                f"The query context for chart ID {chart.id} "
-                f"(referenced by annotation layer '{annotation_layer['name']}') "
-                f"was not found."
             )
 
-        # Apply annotation overrides to query objects
-        overrides = annotation_layer.get("overrides", {})
-        if overrides and query_context.queries:
-            for qo in query_context.queries:
-                if "time_grain_sqla" in overrides:
-                    qo.extras["time_grain_sqla"] = overrides["time_grain_sqla"]
-                if "time_range" in overrides:
-                    qo.time_range = overrides["time_range"]
-                    # Resolve time_range to actual datetime bounds
-                    from superset.utils.date import get_since_until
+        try:
+            # Mirror the original ``get_viz_annotation_data`` branch
+            # (superset_old/common/query_context_processor.py:1181-1202):
+            # legacy viz_type charts (e.g. "line", "area", "pie") are served via
+            # ``BaseViz.get_payload()``; modern charts go through
+            # ``chart.get_query_context()`` → ``AsyncQueryContextProcessor``.
+            # The original imported ``viz_types`` from ``superset.viz`` at module
+            # level; we do it lazily here to avoid a circular-import at load time.
+            from superset.viz import viz_types  # noqa: PLC0415
 
-                    from_dttm, to_dttm = get_since_until(
-                        time_range=overrides["time_range"]
+            chart_viz_type = getattr(chart, "viz_type", None)
+            if chart_viz_type in viz_types:
+                # Legacy chart — run through the async viz pipeline.
+                if not getattr(chart, "datasource", None):
+                    raise QueryObjectValidationError(
+                        _(
+                            "The dataset for chart ID %(chart_id)s (referenced by "
+                            "annotation layer '%(layer_name)s') was not "
+                            "found. Please check that the dataset exists and is "
+                            "accessible.",
+                            chart_id=chart.id,
+                            layer_name=annotation_layer["name"],
+                        )
                     )
-                    qo.from_dttm = from_dttm
-                    qo.to_dttm = to_dttm
+                from superset.viz import get_viz as _get_viz  # noqa: PLC0415
 
-        # Build a new processor scoped to the annotation chart's datasource.
-        # Using self._datasource here would produce wrong cache keys and
-        # access checks (the annotation source may be a different dataset).
-        annotation_datasource = getattr(chart, "datasource", self._datasource)
-        annotation_processor = AsyncQueryContextProcessor(
-            datasource=annotation_datasource,
-            settings=self._settings,
-            security_manager=self._security_manager,
-            user=self._user,
-            cache_manager=self._cache_manager,
-            annotation_dao=self._annotation_dao,
-            chart_dao=self._chart_dao,
-            _recursion_depth=_depth + 1,
-        )
-        payload = await annotation_processor.get_payload(
-            query_objects=query_context.queries, force=force
-        )
-        return {"records": payload["queries"][0].get("data", [])}
+                form_data = chart.form_data.copy() if chart.form_data else {}
+                form_data.update(annotation_layer.get("overrides", {}))
+                viz_obj = _get_viz(
+                    datasource=chart.datasource,
+                    form_data=form_data,
+                    force=force,
+                )
+                payload = await viz_obj.get_payload()
+                return payload.get("data") or []
+
+            get_qc = getattr(chart, "get_query_context", None)
+            if get_qc is None:
+                raise QueryObjectValidationError(
+                    _(
+                        "The query context for chart ID %(chart_id)s (referenced "
+                        "by annotation layer '%(layer_name)s') was not found. "
+                        "Please ensure the chart is properly configured and has "
+                        "a valid query context.",
+                        chart_id=chart.id,
+                        layer_name=annotation_layer["name"],
+                    )
+                )
+            query_context = get_qc()
+            if not query_context:
+                raise QueryObjectValidationError(
+                    _(
+                        "The query context for chart ID %(chart_id)s (referenced "
+                        "by annotation layer '%(layer_name)s') was not found. "
+                        "Please ensure the chart is properly configured and has "
+                        "a valid query context.",
+                        chart_id=chart.id,
+                        layer_name=annotation_layer["name"],
+                    )
+                )
+
+            # Apply annotation overrides to query objects
+            overrides = annotation_layer.get("overrides", {})
+            if overrides and query_context.queries:
+                time_range = overrides.get("time_range")
+                if time_range:
+                    from superset.utils.date import get_since_until_from_time_range
+
+                    from_dttm, to_dttm = get_since_until_from_time_range(
+                        time_range=time_range
+                    )
+                for qo in query_context.queries:
+                    if time_grain_sqla := overrides.get("time_grain_sqla"):
+                        qo.extras["time_grain_sqla"] = time_grain_sqla
+                    if time_range:
+                        qo.from_dttm = from_dttm
+                        qo.to_dttm = to_dttm
+
+            # Mirror original line 1226: set force on the annotation query_context
+            # so that processing_time_offsets() inside the annotation processor
+            # reads self._query_context.force correctly when force=True.
+            query_context.force = force
+
+            # Build a new processor scoped to the annotation chart's datasource.
+            # Using self._datasource here would produce wrong cache keys and
+            # access checks (the annotation source may be a different dataset).
+            annotation_datasource = getattr(chart, "datasource", self._datasource)
+            annotation_processor = AsyncQueryContextProcessor(
+                datasource=annotation_datasource,
+                settings=self._settings,
+                security_manager=self._security_manager,
+                user=self._user,
+                cache_manager=self._cache_manager,
+                annotation_dao=self._annotation_dao,
+                chart_dao=self._chart_dao,
+                query_context=query_context,
+                _recursion_depth=_depth + 1,
+            )
+
+            # 1:1 with the original (line 1227-1228):
+            # ``command = ChartDataCommand(query_context)``
+            # ``command.validate()`` — which calls raise_for_access on the
+            # annotation chart's datasource. Without this, a user could
+            # access data from datasets they don't have permission for.
+            await annotation_processor.raise_for_access()
+
+            payload = await annotation_processor.get_payload(
+                query_objects=query_context.queries, force=force
+            )
+            # 1:1 with superset_old/common/query_actions.py:_get_full (line 115):
+            # ``get_df_payload`` stores the result as ``{"df": df, ...}``; the
+            # ``df -> data`` conversion normally happens in the chart controller
+            # (_render_chart_data_payload), which is NOT invoked in this
+            # annotation path.  We must replicate the conversion here so that
+            # ``payload["queries"][0]["data"]`` is populated before reading it.
+            q = payload["queries"][0]
+            if isinstance(q, dict) and isinstance(q.get("df"), pd.DataFrame):
+                df = q.pop("df")
+                q["data"] = df.to_dict(orient="records")
+            return {"records": q.get("data", [])}
+        except SupersetException as ex:
+            raise QueryObjectValidationError(error_msg_from_exception(ex)) from ex
 
     async def processing_time_offsets(  # noqa: C901
         self,
@@ -1710,8 +1945,8 @@ class AsyncQueryContextProcessor:
                 if offset == "inherit" or self._is_valid_date(offset):
                     offset = self._get_offset_custom_or_inherit(
                         offset,
-                        outer_from_dttm,  # type: ignore[arg-type]
-                        outer_to_dttm,  # type: ignore[arg-type]
+                        outer_from_dttm,
+                        outer_to_dttm,
                     )
                 query_object_clone.from_dttm = get_past_or_future(
                     offset,
@@ -1742,9 +1977,7 @@ class AsyncQueryContextProcessor:
                 new_filters = [
                     flt
                     for flt in copy.deepcopy(query_object_clone.filters)
-                    if not (
-                        isinstance(flt, dict) and flt.get("op") == "TEMPORAL_RANGE"
-                    )
+                    if not (isinstance(flt, dict) and flt.get("op") == "TEMPORAL_RANGE")
                 ]
                 temporal_col = self._get_temporal_column_for_filter(
                     query_object_clone, x_axis_label
@@ -1825,18 +2058,14 @@ class AsyncQueryContextProcessor:
             # the RESOLVED+original offset and the time grain so distinct offsets
             # never collide. ``force`` bypasses the read (always recompute).
             cached_time_offset_key = (
-                offset
-                if offset == original_offset
-                else f"{offset}_{original_offset}"
+                offset if offset == original_offset else f"{offset}_{original_offset}"
             )
             offset_cache_key = await self._get_cache_key(
                 query_object_clone,
                 time_offset=f"{cached_time_offset_key}|{time_grain}",
             )
             force = bool(getattr(self._query_context, "force", False))
-            cached_offset = (
-                None if force else await self._cache_get(offset_cache_key)
-            )
+            cached_offset = None if force else await self._cache_get(offset_cache_key)
             if isinstance(cached_offset, dict) and "df" in cached_offset:
                 offset_dfs[offset] = cached_offset["df"]
                 queries.append(cached_offset.get("query", ""))
@@ -1922,11 +2151,10 @@ class AsyncQueryContextProcessor:
         join_column_producer = None
 
         for offset, offset_df in offset_dfs.items():
-            is_date_range_offset = (
-                self._is_valid_date_range(offset)
-                and feature_flag_manager.is_feature_enabled(
-                    "DATE_RANGE_TIMESHIFTS_ENABLED"
-                )
+            is_date_range_offset = self._is_valid_date_range(
+                offset
+            ) and feature_flag_manager.is_feature_enabled(
+                "DATE_RANGE_TIMESHIFTS_ENABLED"
             )
             offset_df, actual_join_keys = self._determine_join_keys(
                 df,
@@ -2011,7 +2239,9 @@ class AsyncQueryContextProcessor:
         value = row.iloc[column_index]
 
         if hasattr(value, "strftime"):
-            if time_offset:
+            if time_offset and not AsyncQueryContextProcessor._is_valid_date_range(
+                time_offset
+            ):
                 value = value + DateOffset(**normalize_time_delta(time_offset))
 
             if time_grain in (
@@ -2061,9 +2291,7 @@ class AsyncQueryContextProcessor:
             suffixes=("", R_SUFFIX),
         )
         result_df.drop(columns=[temp_key], inplace=True, errors="ignore")
-        result_df.drop(
-            columns=[f"{temp_key}{R_SUFFIX}"], inplace=True, errors="ignore"
-        )
+        result_df.drop(columns=[f"{temp_key}{R_SUFFIX}"], inplace=True, errors="ignore")
         return result_df
 
     @staticmethod
@@ -2195,7 +2423,7 @@ class AsyncQueryContextProcessor:
         # Validate each query object before access check
         if self._query_context is not None:
             for query in self._query_context.queries:
-                query.validate()
+                query.validate(datasource=self._datasource)
 
         if getattr(self._datasource, "type", None) == "query":
             await self._security_manager.raise_for_access(
@@ -2236,6 +2464,12 @@ class AsyncQueryContextProcessor:
             from superset import config as _config
             from superset.utils import csv as _csv, excel as _excel
 
+            # 1:1 with the original ``get_data`` (line 994):
+            # ``include_index = not isinstance(df.index, pd.RangeIndex)``
+            # DataFrames with custom indices (e.g., after pivot/groupby)
+            # include the index as a column in the export.
+            include_index = not isinstance(df.index, pd.RangeIndex)
+
             # Rename columns to their verbose (human-readable) labels — 1:1
             # with upstream ``get_data`` which reads
             # ``datasource.data["verbose_map"]``.
@@ -2252,14 +2486,14 @@ class AsyncQueryContextProcessor:
                 csv_export, excel_export = {"encoding": "utf-8-sig"}, {}
 
             if result_format == "csv":
-                return _csv.df_to_escaped_csv(df, index=False, **csv_export)
+                return _csv.df_to_escaped_csv(df, index=include_index, **csv_export)
 
             # XLSX — apply column types before writing (numerics → numbers,
             # tz-aware datetimes → strings), matching upstream order.
             if coltypes is None:
                 coltypes = AsyncQueryContextProcessor._extract_coltypes(df)
             _excel.apply_column_types(df, coltypes)
-            return _excel.df_to_excel(df, index=False, **excel_export)
+            return _excel.df_to_excel(df, **excel_export)
 
         # Serialize datetime columns as epoch milliseconds to match the
         # original Superset chart data API, which uses ``json_int_dttm_ser``

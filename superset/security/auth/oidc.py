@@ -117,9 +117,7 @@ class OIDCAuthBackend(OAuthAuthBackend):
         (FAB ``manager.py:794-801``) which does the same with authlib.
         """
         if not id_token or not jwks_uri:
-            raise OAuthCallbackError(
-                "OIDC validation requires id_token and jwks_uri"
-            )
+            raise OAuthCallbackError("OIDC validation requires id_token and jwks_uri")
 
         # PyJWKClient is sync but the network calls inside it are short
         # and cached after first hit.  We dispatch them via ``to_thread``
@@ -153,9 +151,7 @@ class OIDCAuthBackend(OAuthAuthBackend):
         try:
             return await asyncio.to_thread(_validate)
         except pyjwt.PyJWTError as exc:
-            raise OAuthCallbackError(
-                f"OIDC id_token validation failed: {exc}"
-            ) from exc
+            raise OAuthCallbackError(f"OIDC id_token validation failed: {exc}") from exc
 
     @staticmethod
     def _claims_to_userinfo(claims: dict[str, Any]) -> dict[str, Any]:
@@ -172,7 +168,5 @@ class OIDCAuthBackend(OAuthAuthBackend):
             "first_name": claims.get("given_name", ""),
             "last_name": claims.get("family_name", ""),
             "email": claims.get("email", ""),
-            "role_keys": claims.get("groups", [])
-            or claims.get("roles", [])
-            or [],
+            "role_keys": claims.get("groups", []) or claims.get("roles", []) or [],
         }

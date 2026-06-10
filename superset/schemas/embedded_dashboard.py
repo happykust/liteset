@@ -27,7 +27,10 @@ to keep the schema module co-located with the rest of the dashboard API.
 
 from __future__ import annotations
 
-from superset.schemas.dashboard import EmbeddedDashboardConfig, EmbeddedDashboardResponse
+from superset.schemas.dashboard import (
+    EmbeddedDashboardConfig,
+    EmbeddedDashboardResponse,
+)
 
 __all__ = [
     "EmbeddedDashboardConfig",

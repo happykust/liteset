@@ -25,13 +25,16 @@ import msgspec
 from litestar import Controller, delete, get, post, put
 from litestar.di import Provide
 
-logger = logging.getLogger(__name__)
-
 from superset.commands.report import (
     BulkDeleteReportScheduleCommand,
     CreateReportScheduleCommand,
     DeleteReportScheduleCommand,
     UpdateReportScheduleCommand,
+)
+from superset.commands.report_exceptions import (
+    ReportScheduleCreateFailedError,
+    ReportScheduleDeleteFailedError,
+    ReportScheduleUpdateFailedError,
 )
 from superset.controllers.base import (
     build_rison_query_params,
@@ -50,8 +53,152 @@ from superset.schemas.report import (
     ReportSchedulePostSchema,
     ReportSchedulePutSchema,
 )
-from superset.typing import UserProtocol
+from superset.typing import SecurityManagerProtocol, UserProtocol
 from superset.utils import filter_unset
+
+logger = logging.getLogger(__name__)
+
+
+_SLACK_CACHE_KEY = "slack_conversations_list"
+
+
+def _slack_cache_get() -> list[dict[str, str]] | None:
+    """Read the Slack channel list from the cache (best-effort).
+
+    Returns the cached list if present, or ``None`` on cache miss or error.
+    Uses the synchronous cache interface — avoids asyncio loop conflicts when
+    called from a sync function running on the event loop thread.  1:1 with the
+    original Flask ``@cache_util.memoized_func`` synchronous decorator in
+    ``superset_old/utils/slack.py:62-65``.
+    """
+    import json as _json
+
+    from superset.extensions import cache_manager as _cm
+
+    try:
+        value = _cm.sync_cache.get(_SLACK_CACHE_KEY)
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return value
+        # Legacy: JSON-string payload written by an older release
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8", errors="replace")
+        if isinstance(value, str):
+            return _json.loads(value)
+        return None
+    except Exception:  # noqa: BLE001
+        logger.debug("Slack cache read failed; will fetch from API", exc_info=True)
+        return None
+
+
+def _slack_cache_set(channels: list[dict[str, str]], ttl: int) -> None:
+    """Write the Slack channel list to the cache (best-effort).
+
+    Silently ignores errors so a cache failure never breaks the API call.
+    Uses the synchronous cache interface — avoids asyncio loop conflicts when
+    called from a sync function running on the event loop thread.  1:1 with the
+    original Flask ``@cache_util.memoized_func`` synchronous decorator in
+    ``superset_old/utils/slack.py:62-65``.
+    """
+    from superset.extensions import cache_manager as _cm
+
+    try:
+        _cm.sync_cache.set(_SLACK_CACHE_KEY, channels, ttl=ttl)
+    except Exception:  # noqa: BLE001
+        logger.debug("Slack cache write failed; ignoring", exc_info=True)
+
+
+def _slack_fetch_all_channels(
+    client: Any,
+) -> list[dict[str, str]]:
+    """Fetch all Slack channels via paginated ``conversations_list`` calls.
+
+    Raises :exc:`RuntimeError` on :exc:`SlackApiError` (rate-limit or other).
+    """
+    from slack_sdk.errors import SlackApiError
+
+    all_channels: list[dict[str, str]] = []
+    cursor = None
+    try:
+        while True:
+            response = client.conversations_list(
+                limit=999,
+                cursor=cursor,
+                exclude_archived=True,
+                types="public_channel,private_channel",
+            )
+            page_channels = response.data.get("channels", [])
+            for ch in page_channels:
+                all_channels.append(
+                    {
+                        "id": ch.get("id", ""),
+                        "name": ch.get("name", ""),
+                        "is_member": ch.get("is_member", False),
+                        "is_private": ch.get("is_private", False),
+                    }
+                )
+            cursor = response.data.get("response_metadata", {}).get("next_cursor")
+            if not cursor:
+                break
+    except SlackApiError as ex:
+        status_code = getattr(ex.response, "status_code", None)
+        if status_code == 429:
+            raise RuntimeError(
+                f"Slack API rate limit exceeded: {ex}. "
+                "Consider increasing SLACK_API_RATE_LIMIT_RETRY_COUNT"
+            ) from ex
+        raise RuntimeError(f"Failed to list channels: {ex}") from ex
+    return all_channels
+
+
+def _slack_filter_by_type(
+    channels: list[dict[str, str]],
+    types: list[str],
+) -> list[dict[str, str]]:
+    """Filter channels to only the requested Slack channel types."""
+    type_set = set(types)
+    filtered: list[dict[str, str]] = []
+    for ch in channels:
+        is_private = ch.get("is_private", False)
+        if "public_channel" in type_set and not is_private:
+            filtered.append(ch)
+        elif "private_channel" in type_set and is_private:
+            filtered.append(ch)
+    return filtered
+
+
+def _slack_filter_by_search(
+    channels: list[dict[str, str]],
+    search_string: str,
+    exact_match: bool,
+) -> list[dict[str, str]]:
+    """Filter channels by name / id search terms.
+
+    Splits ``search_string`` on comma, whitespace, OR semicolon — 1:1 with
+    ``superset_old/utils/core.py::recipients_string_to_list`` which uses
+    ``re.split(r',|\\s|;', address_string)`` (called from
+    ``superset_old/utils/slack.py:162``).
+    """
+    import re
+
+    search_terms = [s for s in re.split(r",|\s|;", search_string) if s.strip()]
+    matched: list[dict[str, str]] = []
+    for ch in channels:
+        ch_name = (ch.get("name") or "").lower()
+        ch_id = (ch.get("id") or "").lower()
+        for term in search_terms:
+            t = term.lower()
+            if exact_match:
+                if t == ch_name or t == ch_id:
+                    matched.append(ch)
+                    break
+            else:
+                if t in ch_name or t in ch_id:
+                    matched.append(ch)
+                    break
+    return matched
+
 
 def _get_slack_channels(
     search_string: str | None = None,
@@ -74,7 +221,6 @@ def _get_slack_channels(
     """
     try:
         from slack_sdk import WebClient
-        from slack_sdk.errors import SlackApiError
         from slack_sdk.http_retry.builtin_handlers import RateLimitErrorRetryHandler
     except ImportError:
         logger.warning(
@@ -87,11 +233,13 @@ def _get_slack_channels(
 
     settings = SupersetSettings()  # type: ignore[call-arg]
     slack_token = getattr(settings, "slack_api_token", None)
-    if not slack_token:
-        logger.info("SLACK_API_TOKEN not configured; returning empty channel list")
-        return []
     if callable(slack_token):
         slack_token = slack_token()
+    # NB: no early-return when the token is missing — the original creates
+    # ``WebClient(token=None)`` and lets Slack answer ``not_authed``
+    # (SlackApiError -> SupersetException -> HTTP 422,
+    # superset_old/utils/slack.py:47-58); short-circuiting to ``[]`` here
+    # would turn that 422 into a silent 200.
 
     slack_proxy = getattr(settings, "slack_proxy", None) or None
     max_retry_count = getattr(settings, "slack_api_rate_limit_retry_count", 2) or 2
@@ -100,33 +248,9 @@ def _get_slack_channels(
     # ------------------------------------------------------------------
     # Cache read (best-effort; skip on error)
     # ------------------------------------------------------------------
-    _CACHE_KEY = "slack_conversations_list"
     cached_channels: list[dict[str, str]] | None = None
     if not force:
-        try:
-            from superset.extensions import cache_manager as _cm
-            import asyncio
-            import json as _json
-
-            # Run the async cache get in a new event loop (Celery / non-async context)
-            async def _aget() -> Any:
-                raw = await _cm.cache.get(_CACHE_KEY)
-                return raw
-
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_closed():
-                    raise RuntimeError("closed loop")
-                raw = loop.run_until_complete(_aget())
-            except RuntimeError:
-                raw = asyncio.run(_aget())
-
-            if raw is not None:
-                if isinstance(raw, (bytes, bytearray)):
-                    raw = raw.decode("utf-8", errors="replace")
-                cached_channels = _json.loads(raw)
-        except Exception:  # noqa: BLE001
-            pass
+        cached_channels = _slack_cache_get()
 
     if cached_channels is not None:
         all_channels: list[dict[str, str]] = cached_channels
@@ -138,58 +262,10 @@ def _get_slack_channels(
         rate_limit_handler = RateLimitErrorRetryHandler(max_retry_count=max_retry_count)
         client.retry_handlers.append(rate_limit_handler)
 
-        all_channels = []
-        cursor = None
-        page_count = 0
-        try:
-            while True:
-                page_count += 1
-                response = client.conversations_list(
-                    limit=999,
-                    cursor=cursor,
-                    exclude_archived=True,
-                    types="public_channel,private_channel",
-                )
-                page_channels = response.data.get("channels", [])
-                for ch in page_channels:
-                    all_channels.append({
-                        "id": ch.get("id", ""),
-                        "name": ch.get("name", ""),
-                        "is_member": ch.get("is_member", False),
-                        "is_private": ch.get("is_private", False),
-                    })
-                cursor = response.data.get("response_metadata", {}).get("next_cursor")
-                if not cursor:
-                    break
-        except SlackApiError as ex:
-            status_code = getattr(ex.response, "status_code", None)
-            if status_code == 429:
-                raise RuntimeError(
-                    f"Slack API rate limit exceeded: {ex}. "
-                    "Consider increasing SLACK_API_RATE_LIMIT_RETRY_COUNT"
-                ) from ex
-            raise RuntimeError(f"Failed to list channels: {ex}") from ex
+        all_channels = _slack_fetch_all_channels(client)
 
         # Cache the result (best-effort)
-        try:
-            from superset.extensions import cache_manager as _cm
-            import asyncio
-            import json as _json
-
-            serialized = _json.dumps(all_channels)
-
-            async def _aset() -> None:
-                await _cm.cache.set(_CACHE_KEY, serialized, ttl=slack_cache_timeout)
-
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_closed():
-                    raise RuntimeError("closed loop")
-                loop.run_until_complete(_aset())
-            except RuntimeError:
-                asyncio.run(_aset())
-        except Exception:  # noqa: BLE001
-            pass
+        _slack_cache_set(all_channels, ttl=slack_cache_timeout)
 
     # ------------------------------------------------------------------
     # Client-side filtering (mirrors get_channels_with_search)
@@ -197,34 +273,10 @@ def _get_slack_channels(
     channels = all_channels
 
     if types:
-        type_set = set(types)
-        filtered: list[dict[str, str]] = []
-        for ch in channels:
-            is_private = ch.get("is_private", False)
-            if "public_channel" in type_set and not is_private:
-                filtered.append(ch)
-            elif "private_channel" in type_set and is_private:
-                filtered.append(ch)
-        channels = filtered
+        channels = _slack_filter_by_type(channels, types)
 
     if search_string:
-        # Support comma-separated list of channel names / ids
-        search_terms = [s.strip() for s in search_string.replace(",", " ").split() if s.strip()]
-        matched: list[dict[str, str]] = []
-        for ch in channels:
-            ch_name = (ch.get("name") or "").lower()
-            ch_id = (ch.get("id") or "").lower()
-            for term in search_terms:
-                t = term.lower()
-                if exact_match:
-                    if t == ch_name or t == ch_id:
-                        matched.append(ch)
-                        break
-                else:
-                    if t in ch_name or t in ch_id:
-                        matched.append(ch)
-                        break
-        channels = matched
+        channels = _slack_filter_by_search(channels, search_string, exact_match)
 
     return channels
 
@@ -252,40 +304,38 @@ def _report_custom_filters() -> dict[str, Any]:
     return {"report_all_text": _report_all_text}
 
 
+# Exactly mirrors ``superset_old/reports/api.py::ReportScheduleRestApi.list_columns``
+# (26 fields).  Fields present only in ``show_columns`` (report_format,
+# database_id, last_value, log_retention, grace_period, working_timeout) and
+# the liteset-only ``changed_on_utc`` are intentionally absent — they belong to
+# the detail endpoint only.
 _LIST_COLUMNS = [
-    "id",
-    "name",
-    "type",
-    "description",
     "active",
-    "crontab",
-    "crontab_humanized",
-    "creation_method",
-    "timezone",
-    "report_format",
-    "chart_id",
-    "dashboard_id",
-    "database_id",
-    "extra",
-    "last_eval_dttm",
-    "last_state",
-    "last_value",
-    "log_retention",
-    "grace_period",
-    "working_timeout",
-    "changed_on",
-    "changed_on_delta_humanized",
-    "changed_on_utc",
     "changed_by.first_name",
     "changed_by.last_name",
-    "created_on",
+    "changed_on",
+    "changed_on_delta_humanized",
+    "chart_id",
     "created_by.first_name",
     "created_by.last_name",
-    "owners.id",
+    "created_on",
+    "creation_method",
+    "crontab",
+    "crontab_humanized",
+    "dashboard_id",
+    "description",
+    "extra",
+    "id",
+    "last_eval_dttm",
+    "last_state",
+    "name",
     "owners.first_name",
+    "owners.id",
     "owners.last_name",
     "recipients.id",
     "recipients.type",
+    "timezone",
+    "type",
 ]
 
 
@@ -406,13 +456,53 @@ class ReportScheduleController(Controller):
         security_manager: Any,
     ) -> dict[str, Any]:
         """POST /api/v1/report/ — create a report schedule."""
-        raw = msgspec.structs.asdict(data)
-        # Convert recipient structs to dicts
+        # filter_unset removes fields whose default is msgspec.UNSET (e.g.
+        # ``validator_type`` which uses UNSET to distinguish absent from explicit
+        # null — explicit null is rejected at decode time with HTTP 422,
+        # matching the original Marshmallow schema's no-allow_none behaviour).
+        raw = filter_unset(msgspec.structs.asdict(data))
+        # Convert recipient structs to plain dicts.  msgspec.structs.asdict()
+        # does NOT recursively convert nested Struct instances, so after the
+        # outer asdict() the recipient_config_json field is still a
+        # ReportRecipientConfigJSON struct.  The DAO checks
+        # isinstance(config, dict) — which is False for a struct — and passes
+        # the struct directly to asyncpg, raising ProgrammingError → 422.
+        # Fix: convert the nested recipient_config_json struct to a plain dict
+        # as well (identical to how validator_config_json is handled below).
         if raw.get("recipients"):
-            raw["recipients"] = [
-                msgspec.structs.asdict(r) if hasattr(r, "__struct_fields__") else r
-                for r in raw["recipients"]
-            ]
+            converted_recipients = []
+            for r in raw["recipients"]:
+                r_dict = (
+                    msgspec.structs.asdict(r) if hasattr(r, "__struct_fields__") else r
+                )
+                rcj = r_dict.get("recipient_config_json")
+                if rcj is msgspec.UNSET:
+                    # Optional in the original (no required=True on the
+                    # Nested field) — absent config keeps the model default
+                    # ``'{}'``.
+                    r_dict.pop("recipient_config_json", None)
+                elif rcj is not None and hasattr(rcj, "__struct_fields__"):
+                    r_dict["recipient_config_json"] = {
+                        k: v
+                        for k, v in msgspec.structs.asdict(rcj).items()
+                        if v is not msgspec.UNSET
+                    }
+                converted_recipients.append(r_dict)
+            raw["recipients"] = converted_recipients
+        # Convert validator_config_json struct to a plain dict so that the
+        # command's json.dumps() call succeeds — msgspec.structs.asdict() does
+        # NOT recursively convert nested Struct instances (original Marshmallow
+        # deserialized this to a plain dict; the command expects a plain dict).
+        # Also strip UNSET values so json.dumps() doesn't fail on them (fields
+        # in ValidatorConfigJSON are optional via msgspec.UNSET, mirroring the
+        # original's Marshmallow ``required=False``).
+        if raw.get("validator_config_json") is not None and hasattr(
+            raw["validator_config_json"], "__struct_fields__"
+        ):
+            vcj_raw = msgspec.structs.asdict(raw["validator_config_json"])
+            raw["validator_config_json"] = {
+                k: v for k, v in vcj_raw.items() if v is not msgspec.UNSET
+            }
         # Echo the validated input payload back in ``result`` — 1:1 with the
         # original ``self.response(201, id=new_model.id, result=item)``
         # (superset_old/reports/api.py:366-367). Snapshot before the command
@@ -425,7 +515,23 @@ class ReportScheduleController(Controller):
             user_id=current_user.id,
             security_manager=security_manager,
         )
-        item = await cmd.execute()
+        try:
+            item = await cmd.execute()
+        except ObjectNotFoundError as ex:
+            # 1:1 with original POST handler
+            # (superset_old/reports/api.py:368-369): a "not found" during
+            # creation means an invalid resource reference (chart, dashboard,
+            # database), so return 400 instead of the default 404.
+            from litestar.exceptions import HTTPException
+
+            raise HTTPException(status_code=400, detail=str(ex)) from ex
+        except ReportScheduleCreateFailedError as ex:
+            # 1:1 with superset_old/reports/api.py:372-379 — DB-level
+            # failure during create returns 422 with the error message.
+            logger.error("Error creating report schedule: %s", str(ex), exc_info=True)
+            from litestar.exceptions import HTTPException
+
+            raise HTTPException(status_code=422, detail=str(ex)) from ex
         await event_logger.alog_with_context(
             "report.create",
             object_ref=str(item.id),
@@ -447,12 +553,54 @@ class ReportScheduleController(Controller):
     ) -> dict[str, Any]:
         """PUT /api/v1/report/<pk> — update a report schedule."""
         raw = filter_unset(msgspec.structs.asdict(data))
-        # Convert recipient structs to dicts
+        # Convert recipient structs to plain dicts.  msgspec.structs.asdict()
+        # does NOT recursively convert nested Struct instances, so after the
+        # outer asdict() the recipient_config_json field is still a
+        # ReportRecipientConfigJSON struct.  The DAO checks
+        # isinstance(config, dict) — which is False for a struct — and passes
+        # the struct directly to asyncpg, raising ProgrammingError → 422.
+        # Fix: convert the nested recipient_config_json struct to a plain dict
+        # as well (identical to how validator_config_json is handled below).
         if raw.get("recipients"):
-            raw["recipients"] = [
-                msgspec.structs.asdict(r) if hasattr(r, "__struct_fields__") else r
-                for r in raw["recipients"]
-            ]
+            converted_recipients = []
+            for r in raw["recipients"]:
+                r_dict = (
+                    msgspec.structs.asdict(r) if hasattr(r, "__struct_fields__") else r
+                )
+                rcj = r_dict.get("recipient_config_json")
+                if rcj is msgspec.UNSET:
+                    # Optional in the original (no required=True on the
+                    # Nested field) — absent config keeps the model default
+                    # ``'{}'``.
+                    r_dict.pop("recipient_config_json", None)
+                elif rcj is not None and hasattr(rcj, "__struct_fields__"):
+                    r_dict["recipient_config_json"] = {
+                        k: v
+                        for k, v in msgspec.structs.asdict(rcj).items()
+                        if v is not msgspec.UNSET
+                    }
+                converted_recipients.append(r_dict)
+            raw["recipients"] = converted_recipients
+        # Convert validator_config_json struct to a plain dict so that the
+        # command's json.dumps() call succeeds — msgspec.structs.asdict() does
+        # NOT recursively convert nested Struct instances (original Marshmallow
+        # deserialized this to a plain dict; the command expects a plain dict).
+        # Also strip UNSET values so json.dumps() doesn't fail on them (fields
+        # in ValidatorConfigJSON are optional via msgspec.UNSET, mirroring the
+        # original's Marshmallow ``required=False``).
+        if raw.get("validator_config_json") is not None and hasattr(
+            raw["validator_config_json"], "__struct_fields__"
+        ):
+            vcj_raw = msgspec.structs.asdict(raw["validator_config_json"])
+            raw["validator_config_json"] = {
+                k: v for k, v in vcj_raw.items() if v is not msgspec.UNSET
+            }
+        # Echo the validated input payload back in ``result`` — 1:1 with the
+        # original ``self.response(200, id=new_model.id, result=item)``
+        # (superset_old/reports/api.py:447). Snapshot before the command
+        # mutates ``raw`` (it resolves chart/dashboard ids to ORM objects and
+        # serializes validator_config_json).
+        echo = dict(raw)
         cmd = UpdateReportScheduleCommand(
             dao=dao,
             pk=pk,
@@ -460,13 +608,23 @@ class ReportScheduleController(Controller):
             user_id=current_user.id,
             security_manager=security_manager,
         )
-        item = await cmd.execute()
+        try:
+            item = await cmd.execute()
+        except ReportScheduleUpdateFailedError as ex:
+            # 1:1 with superset_old/reports/api.py:454-461 — DB-level
+            # failure during update returns 422.
+            logger.error(
+                "Error updating report schedule %d: %s", pk, str(ex), exc_info=True
+            )
+            from litestar.exceptions import HTTPException
+
+            raise HTTPException(status_code=422, detail=str(ex)) from ex
         await event_logger.alog_with_context(
             "report.update",
             object_ref=f"report:{pk}",
             user_id=current_user.id,
         )
-        return {"id": item.id, "result": {"name": item.name}}
+        return {"id": item.id, "result": echo}
 
     @delete(
         "/{pk:int}",
@@ -487,7 +645,17 @@ class ReportScheduleController(Controller):
             user_id=current_user.id,
             security_manager=security_manager,
         )
-        await cmd.execute()
+        try:
+            await cmd.execute()
+        except ReportScheduleDeleteFailedError as ex:
+            # 1:1 with superset_old/reports/api.py:299-306 and :520 —
+            # DB-level failure during delete returns 422.
+            logger.error(
+                "Error deleting report schedule %d: %s", pk, str(ex), exc_info=True
+            )
+            from litestar.exceptions import HTTPException
+
+            raise HTTPException(status_code=422, detail=str(ex)) from ex
         await event_logger.alog_with_context("report.delete", object_ref=f"report:{pk}")
         return {"message": "OK"}
 
@@ -511,11 +679,34 @@ class ReportScheduleController(Controller):
             user_id=current_user.id,
             security_manager=security_manager,
         )
-        await cmd.execute()
+        try:
+            await cmd.execute()
+        except ReportScheduleDeleteFailedError as ex:
+            # 1:1 with superset_old/reports/api.py:520-521 —
+            # DB-level failure during bulk-delete returns 422.
+            logger.error(
+                "Error deleting report schedules %s: %s",
+                ids,
+                str(ex),
+                exc_info=True,
+            )
+            from litestar.exceptions import HTTPException
+
+            raise HTTPException(status_code=422, detail=str(ex)) from ex
         await event_logger.alog_with_context(
             "report.bulk_delete", extra={"count": len(ids)}
         )
-        return {"message": "OK"}
+        # 1:1 with original ``ngettext('Deleted %(num)d report schedule',
+        # 'Deleted %(num)d report schedules', num=len(item_ids))``
+        # (superset_old/reports/api.py:508-514) — locale-aware plural forms.
+        from superset.i18n import ngettext
+
+        msg = ngettext(
+            "Deleted %(num)d report schedule",
+            "Deleted %(num)d report schedules",
+            num=len(ids),
+        )
+        return {"message": msg}
 
     @get(
         "/related/{column_name:str}",
@@ -538,21 +729,35 @@ class ReportScheduleController(Controller):
             column_name=column_name,
             rison_params=rison_params,
             allowed_fields=frozenset(
-                {"owners", "created_by", "chart", "dashboard", "database"}
+                {"owners", "created_by", "changed_by", "chart", "dashboard", "database"}
             ),
             base_filters=base_filters or None,
+            # 1:1 superset_old/reports/api.py:233-237.
+            text_field_rel_fields={
+                "dashboard": "dashboard_title",
+                "chart": "slice_name",
+                "database": "database_name",
+            },
         )
 
     @get(
         "/_info",
         guards=[require_permission("can_read", "ReportSchedule")],
     )
-    async def info(self, dao: Any) -> dict[str, Any]:
+    async def info(
+        self,
+        dao: Any,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
         """GET /api/v1/report/_info -- API metadata for frontend."""
         return await get_info_payload(
             dao=dao,
             model_name="ReportSchedule",
             permissions=["can_read", "can_write"],
+            security_manager=security_manager,
+            current_user=current_user,
+            class_permission_name="ReportSchedule",
         )
 
     @get(
@@ -565,7 +770,8 @@ class ReportScheduleController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/report/slack_channels/ -- list Slack channels.
 
-        1:1 port of ``superset_old/reports/api.py:ReportScheduleRestApi.slack_channels``.
+        1:1 port of
+        ``superset_old/reports/api.py:ReportScheduleRestApi.slack_channels``.
         Queries the Slack API for all accessible channels, applies optional
         filtering by name/id (``search_string``), and returns a list of
         ``{id, name}`` dicts.
@@ -583,7 +789,9 @@ class ReportScheduleController(Controller):
         params = rison_params or {}
         search_string = params.get("search_string") or params.get("searchString")
         types = params.get("types", [])
-        exact_match = params.get("exact_match", False) or params.get("exactMatch", False)
+        exact_match = params.get("exact_match", False) or params.get(
+            "exactMatch", False
+        )
         force = params.get("force", False)
 
         try:
@@ -594,8 +802,12 @@ class ReportScheduleController(Controller):
                 force=force,
             )
             return {"result": channels}
-        except Exception as exc:  # noqa: BLE001
+        except RuntimeError as exc:
+            # 1:1 with superset_old/reports/api.py:588-590: the original only
+            # catches SupersetException (which the Slack util wraps SlackApiError
+            # into) and maps it to 422; all other exceptions propagate as 500.
+            # In liteset, _slack_fetch_all_channels raises RuntimeError for Slack
+            # errors — so we catch only RuntimeError here, letting unexpected
+            # AttributeError / TypeError / etc. propagate and become HTTP 500.
             logger.error("Error fetching slack channels: %s", str(exc), exc_info=True)
-            raise HTTPException(
-                status_code=422, detail=str(exc)
-            ) from exc
+            raise HTTPException(status_code=422, detail=str(exc)) from exc

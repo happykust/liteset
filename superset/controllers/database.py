@@ -33,6 +33,7 @@ from litestar.di import Provide
 from litestar.enums import RequestEncodingType
 from litestar.params import Body, Parameter
 from litestar.response import Response, Stream, Template
+from sqlalchemy.exc import NoSuchTableError
 
 from superset.commands.database.create import CreateDatabaseCommand
 from superset.commands.database.delete import DeleteDatabaseCommand
@@ -304,9 +305,7 @@ def _sync_table_and_view_names(
     return tables, views
 
 
-def _get_schema_access_for_file_upload(
-    database: Any, user: Any = None
-) -> set[str]:
+def _get_schema_access_for_file_upload(database: Any, user: Any = None) -> set[str]:
     """Resolve the schemas a user may upload files into for ``database``.
 
     1:1 with ``Database.get_schema_access_for_file_upload`` in
@@ -449,16 +448,17 @@ def _engine_select_star_sync(database: Any, table: Table) -> str:
     catalog = getattr(database, "get_default_catalog", lambda: None)()
     qualified = Table(table.table, table.schema, table.catalog or catalog)
 
-    # The /select_star/ endpoint always asks for ``show_cols=False`` and
-    # the partition rewrite only fires when ``latest_partition=True``;
-    # ``BaseEngineSpec.select_star`` only calls ``database.get_columns``
-    # when *either* is true (``if (show_cols or latest_partition) and not
-    # cols``). So with both off we can skip the pre-fetch entirely —
-    # eliminates the spurious ``failed to introspect columns`` warnings
-    # for non-existent tables (upstream's API behaves the same: returns
-    # plain ``SELECT * FROM table LIMIT 100`` without any introspection).
+    # The original ``select_star`` endpoint at
+    # ``superset_old/databases/api.py:1232-1234`` calls
+    # ``database.select_star(Table(...), latest_partition=True)`` which
+    # forwards to ``BaseEngineSpec.select_star`` (base.py:1615) with
+    # ``show_cols=False, latest_partition=True``.  When
+    # ``latest_partition=True``, the engine spec fetches columns via
+    # ``database.get_columns(table)`` and calls
+    # ``cls.where_latest_partition()`` to add partition-filtering WHERE
+    # clauses for Hive/Presto/Trino/BigQuery partitioned tables.
     try:
-        with database.get_sqla_engine(  # type: ignore[attr-defined]
+        with database.get_sqla_engine(
             catalog=qualified.catalog,
             schema=qualified.schema,
         ) as engine:
@@ -469,9 +469,13 @@ def _engine_select_star_sync(database: Any, table: Table) -> str:
                 limit=100,
                 show_cols=False,
                 indent=True,
-                latest_partition=False,
+                latest_partition=True,
                 cols=None,
             )
+    except NoSuchTableError:
+        # Re-raise so the endpoint can return 404 — mirrors original
+        # ``superset_old/databases/api.py:1236-1238``.
+        raise
     except Exception:  # noqa: BLE001
         if hasattr(db_engine_spec, "quote_table"):
             try:
@@ -488,9 +492,7 @@ def _engine_select_star_sync(database: Any, table: Table) -> str:
             except Exception:  # noqa: BLE001, S110
                 pass
         if qualified.schema:
-            return (
-                f'SELECT *\nFROM "{qualified.schema}"."{qualified.table}"\nLIMIT 100'
-            )
+            return f'SELECT *\nFROM "{qualified.schema}"."{qualified.table}"\nLIMIT 100'
         return f'SELECT *\nFROM "{qualified.table}"\nLIMIT 100'
 
 
@@ -523,9 +525,7 @@ def _extract_oauth2_client_info(raw: str | None) -> dict[str, Any]:
     return info if isinstance(info, dict) else {}
 
 
-async def _purge_oauth2_tokens(
-    dao: "DatabaseDAOProtocol", database_id: int
-) -> None:
+async def _purge_oauth2_tokens(dao: "DatabaseDAOProtocol", database_id: int) -> None:
     """Delete every ``DatabaseUserOAuth2Tokens`` row for ``database_id``.
 
     Mirrors ``Database.purge_oauth2_tokens`` at
@@ -551,31 +551,57 @@ async def _purge_oauth2_tokens_if_needed(
     *,
     dao: "DatabaseDAOProtocol",
     database: Any,
+    old_encrypted_extra: str | None,
     new_encrypted_extra: str | None,
+    old_db_engine_spec: Any | None = None,
 ) -> None:
     """Purge OAuth2 tokens iff the OAuth2 client config rotated.
 
-    Mirrors ``UpdateDatabaseCommand._handle_oauth2`` at
+    1:1 with ``UpdateDatabaseCommand._handle_oauth2`` at
     ``superset_old/commands/database/update.py:128-159``:
 
     - When ``encrypted_extra`` becomes ``None`` (OAuth2 disabled),
       purge unconditionally.
-    - Otherwise we conservatively purge whenever ``oauth2_client_info``
-      is set in the new payload.  The original implementation diffs
-      against the pre-update encrypted_extra; in the async/setattr
-      flow the previous value is no longer accessible at this point,
-      so we err on the side of safety (idempotent DELETE — no-op if
-      no tokens exist).
+    - Otherwise compare the four critical keys (``id``, ``scope``,
+      ``authorization_request_uri``, ``token_request_uri``) between the
+      old and new ``oauth2_client_info``.  Only purge when at least one
+      of those keys changed — so tokens are preserved when nothing
+      relevant changed.
     """
     if new_encrypted_extra is None:
         await _purge_oauth2_tokens(dao, int(database.id))
         return
 
-    new_config = _extract_oauth2_client_info(new_encrypted_extra)
-    if not new_config:
+    # 1:1 with UpdateDatabaseCommand._handle_oauth2 line 139:
+    # ``current_config = self._model.get_oauth2_config()``
+    # CRITICAL: must use the OLD encrypted_extra (pre-update) here.
+    # The original calls get_oauth2_config() BEFORE DatabaseDAO.update(),
+    # so self._model.encrypted_extra is still the old value.  In liteset
+    # the update has already run by the time we get here, so calling
+    # database.get_oauth2_config() would return the NEW config — making
+    # both sides of the comparison equal and suppressing the purge.
+    # Instead, rebuild the old config from old_encrypted_extra directly,
+    # then fall back to the engine-spec level (same approach as the
+    # original: json.loads(old).get('oauth2_client_info') or spec.get_oauth2_config()).
+    try:
+        old_per_db = _extract_oauth2_client_info(old_encrypted_extra)
+        if old_per_db:
+            current_config = old_per_db
+        elif old_db_engine_spec is not None:
+            current_config = old_db_engine_spec.get_oauth2_config() or {}
+        else:
+            current_config = {}
+    except Exception:  # noqa: BLE001
+        current_config = _extract_oauth2_client_info(old_encrypted_extra) or {}
+    if not current_config:
         return
 
-    await _purge_oauth2_tokens(dao, int(database.id))
+    new_config = _extract_oauth2_client_info(new_encrypted_extra)
+
+    for key in _OAUTH2_PURGE_KEYS:
+        if current_config.get(key) != new_config.get(key):
+            await _purge_oauth2_tokens(dao, int(database.id))
+            break
 
 
 # ---------------------------------------------------------------------------
@@ -605,7 +631,7 @@ async def _create_ssh_tunnel(
     if not feature_flag_manager.is_feature_enabled("SSH_TUNNELING"):
         raise SSHTunnelingNotEnabledError()
 
-    ssh_dao = AsyncSSHTunnelDAO(dao.session)  # type: ignore[attr-defined]
+    ssh_dao = AsyncSSHTunnelDAO(dao.session)
     cmd = CreateSSHTunnelCommand(
         dao=ssh_dao,
         database=database,
@@ -640,7 +666,7 @@ async def _sync_ssh_tunnel(
     if not feature_flag_manager.is_feature_enabled("SSH_TUNNELING"):
         raise SSHTunnelingNotEnabledError()
 
-    ssh_dao = AsyncSSHTunnelDAO(dao.session)  # type: ignore[attr-defined]
+    ssh_dao = AsyncSSHTunnelDAO(dao.session)
     current = await ssh_dao.get_by_database_id(int(database.id))
 
     if payload is None or payload == {}:  # noqa: PLC1901  # explicit empty-dict check
@@ -841,23 +867,46 @@ class DatabaseController(Controller):
             ],
             list_title="List Database",
         )
-        # Post-process: add computed columns that normally come from
-        # engine_spec but are needed by the frontend to avoid undefined.
+        # Post-process: add computed columns from the Database model's
+        # ``extra`` JSON and engine spec — 1:1 with the original's
+        # ``list_columns`` (superset_old/databases/api.py:207-234) which
+        # includes ``allows_cost_estimate``, ``allows_subquery``, etc. as
+        # @property descriptors on the model that read ``get_extra()`` and
+        # ``db_engine_spec.get_public_information()``.
+        db_by_id = {getattr(db, "id", None): db for db in databases}
         for row in payload.get("result", []):
-            allow_upload = row.get("allow_file_upload", False)
-            row["allows_cost_estimate"] = False
-            row["allows_subquery"] = True
-            row["allows_virtual_table_explore"] = True
-            row["explore_database_id"] = row.get("id")
-            row["disable_data_preview"] = False
-            row["disable_drill_to_detail"] = False
-            row["allow_multi_catalog"] = False
-            row["engine_information"] = {
-                "supports_file_upload": bool(allow_upload),
-                "disable_ssh_tunneling": False,
-                "supports_dynamic_catalog": False,
-                "supports_oauth2": False,
-            }
+            db_obj = db_by_id.get(row.get("id"))
+            if db_obj is not None:
+                row["allows_cost_estimate"] = getattr(
+                    db_obj, "allows_cost_estimate", False
+                )
+                row["allows_subquery"] = getattr(db_obj, "allows_subquery", True)
+                row["allows_virtual_table_explore"] = getattr(
+                    db_obj, "allows_virtual_table_explore", True
+                )
+                row["explore_database_id"] = getattr(
+                    db_obj, "explore_database_id", row.get("id")
+                )
+                row["disable_data_preview"] = getattr(
+                    db_obj, "disable_data_preview", False
+                )
+                row["disable_drill_to_detail"] = getattr(
+                    db_obj, "disable_drill_to_detail", False
+                )
+                row["allow_multi_catalog"] = getattr(
+                    db_obj, "allow_multi_catalog", False
+                )
+                row["engine_information"] = getattr(db_obj, "engine_information", {})
+            else:
+                # Fallback for safety if the model object is not found
+                row["allows_cost_estimate"] = False
+                row["allows_subquery"] = True
+                row["allows_virtual_table_explore"] = True
+                row["explore_database_id"] = row.get("id")
+                row["disable_data_preview"] = False
+                row["disable_drill_to_detail"] = False
+                row["allow_multi_catalog"] = False
+                row["engine_information"] = {}
         return payload
 
     # ------------------------------------------------------------------
@@ -867,12 +916,20 @@ class DatabaseController(Controller):
         "/_info",
         guards=[require_permission("can_read", "Database")],
     )
-    async def info(self, dao: DatabaseDAOProtocol) -> dict[str, Any]:
+    async def info(
+        self,
+        dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
         """GET /api/v1/database/_info — API metadata for frontend."""
         return await get_info_payload(
             dao=dao,
             model_name="Database",
             permissions=["can_upload", "can_read", "can_write", "can_export"],
+            security_manager=security_manager,
+            current_user=current_user,
+            class_permission_name="Database",
         )
 
     # ------------------------------------------------------------------
@@ -940,9 +997,7 @@ class DatabaseController(Controller):
             "extra": getattr(database, "extra", None),
             "force_ctas_schema": getattr(database, "force_ctas_schema", None),
             "impersonate_user": getattr(database, "impersonate_user", False),
-            "is_managed_externally": getattr(
-                database, "is_managed_externally", False
-            ),
+            "is_managed_externally": getattr(database, "is_managed_externally", False),
             # Original returns ``""`` (empty string) when no encrypted
             # extra is set, not ``null`` — the form's JSON-editor binds
             # to a string and chokes on null.
@@ -952,9 +1007,7 @@ class DatabaseController(Controller):
             "parameters": getattr(database, "parameters", None) or {},
             "parameters_schema": getattr(database, "parameters_schema", None) or {},
             "server_cert": getattr(database, "server_cert", None),
-            "uuid": (
-                str(database.uuid) if getattr(database, "uuid", None) else None
-            ),
+            "uuid": (str(database.uuid) if getattr(database, "uuid", None) else None),
         }
         # ssh_tunnel is added separately — original
         # ``superset_old/databases/api.py:get_connection`` calls
@@ -1009,7 +1062,7 @@ class DatabaseController(Controller):
         guards=[require_permission("can_write", "Database")],
         status_code=201,
     )
-    async def create(
+    async def create(  # noqa: C901
         self,
         request: Request[Any, Any, Any],
         dao: DatabaseDAOProtocol,
@@ -1053,23 +1106,75 @@ class DatabaseController(Controller):
                 "force_ctas_schema": data.force_ctas_schema,
             }
         )
+        # Keep the field under ``masked_encrypted_extra`` — 1:1 with the
+        # original pre_load flow (superset_old/databases/schemas.py:352 reads
+        # ``data.get("masked_encrypted_extra")`` during validation; only
+        # ``_create_database`` renames it to ``encrypted_extra`` at
+        # persistence time, superset_old/commands/database/create.py:157-160).
+        # An early rename starves the dynamic_form ``build_sqlalchemy_uri``
+        # path of credentials (e.g. BigQuery → "Missing service credentials").
         if data.masked_encrypted_extra is not None:
-            create_data["encrypted_extra"] = data.masked_encrypted_extra
+            create_data["masked_encrypted_extra"] = data.masked_encrypted_extra
 
-        # Extract ssh_tunnel before stripping it from create_data — the
-        # CreateDatabaseCommand only creates the Database row; the SSH tunnel
-        # is inserted in a separate step via CreateSSHTunnelCommand, matching
-        # superset_old/commands/database/create.py:88-102.
-        ssh_tunnel_payload = _coerce_ssh_tunnel_payload(
-            create_data.pop("ssh_tunnel", None)
-        )
+        # Keep ssh_tunnel in create_data so that CreateDatabaseCommand can
+        # forward it to TestConnectionDatabaseCommand during the pre-creation
+        # connection test — matching the original at
+        # superset_old/commands/database/create.py:56,64 where
+        # ``self._properties`` (which includes ``ssh_tunnel``) is passed
+        # verbatim to ``TestConnectionDatabaseCommand(self._properties).run()``.
+        # The command's ``run()`` filters create_data to model-only columns
+        # before ``dao.create()``, so the extra key is harmless for DB
+        # insertion.  We also capture it here for the separate SSH tunnel
+        # creation step below.
+        ssh_tunnel_payload = _coerce_ssh_tunnel_payload(create_data.get("ssh_tunnel"))
 
         cmd = CreateDatabaseCommand(
             dao=cast("AsyncDatabaseDAO", dao),
             data=create_data,
             user_id=current_user.id,
         )
-        db = await cmd.execute()
+        from litestar.exceptions import ClientException
+
+        from superset.commands.database.exceptions import (
+            DatabaseParametersInvalidError,
+        )
+        from superset.commands.database.ssh_tunnel.exceptions import (
+            SSHTunnelDatabasePortError,
+            SSHTunnelingNotEnabledError,
+        )
+        from superset.exceptions import (
+            DatabaseConnectionFailedError,
+            DatabaseCreateFailedError,
+        )
+
+        try:
+            db = await cmd.execute()
+        except DatabaseParametersInvalidError as ex:
+            # Original: build_sqlalchemy_uri ValueErrors were Marshmallow
+            # ValidationErrors from the @pre_load hook → ``response_400``
+            # (superset_old/databases/api.py:449-450) — HTTP 400, not 422.
+            raise ClientException(status_code=400, detail=str(ex)) from ex
+        except DatabaseConnectionFailedError as ex:
+            # Original: ``except DatabaseConnectionFailedError as ex:
+            # return self.response_422(message=str(ex))``
+            # (superset_old/databases/api.py:474-475). The command wraps any
+            # non-SupersetErrorsException connection-test failure into this
+            # exception, whose own status is 500 — without this catch the
+            # client gets 500 instead of 422. Must precede the
+            # DatabaseCreateFailedError arm (it is a subclass of it).
+            raise ClientException(status_code=422, detail=str(ex)) from ex
+        except DatabaseCreateFailedError as ex:
+            # Original: logs and returns 422
+            # (superset_old/databases/api.py:478-485).
+            logging.getLogger(__name__).error(
+                "Error creating model DatabaseRestApi: %s", str(ex), exc_info=True
+            )
+            raise ClientException(status_code=422, detail=str(ex)) from ex
+        except (SSHTunnelingNotEnabledError, SSHTunnelDatabasePortError) as ex:
+            # Original: ``except (SSHTunnelingNotEnabledError,
+            # SSHTunnelDatabasePortError) as ex: return self.response_400``
+            # (superset_old/databases/api.py:486).
+            raise ClientException(status_code=400, detail=str(ex)) from ex
         db_id = int(db.id)
 
         # Create SSH tunnel row if the request included one and the feature is enabled.
@@ -1213,6 +1318,18 @@ class DatabaseController(Controller):
             else msgspec.UNSET  # type: ignore[assignment]
         )
 
+        # Capture the old encrypted_extra BEFORE the command mutates the
+        # model — needed for the precise OAuth2 token purge diff below
+        # (1:1 with ``superset_old/commands/database/update.py:128-159``
+        # where ``_handle_oauth2`` runs before ``DatabaseDAO.update``).
+        old_database = await dao.find_by_id(pk)
+        old_encrypted_extra: str | None = (
+            getattr(old_database, "encrypted_extra", None) if old_database else None
+        )
+        old_db_engine_spec = (
+            getattr(old_database, "db_engine_spec", None) if old_database else None
+        )
+
         cmd = UpdateDatabaseCommand(
             dao=cast("AsyncDatabaseDAO", dao),
             database_id=pk,
@@ -1223,15 +1340,17 @@ class DatabaseController(Controller):
 
         # -----------------------------------------------------------------
         # OAuth2 token purge — mirrors UpdateDatabaseCommand._handle_oauth2.
-        # Must run AFTER the database row is updated so we compare against
-        # the NEW encrypted_extra value.
+        # Runs AFTER the database row is updated.  Compares old vs new
+        # ``encrypted_extra`` to determine if OAuth2 config changed.
         # -----------------------------------------------------------------
         new_encrypted_extra = update_data.get("encrypted_extra", msgspec.UNSET)
         if new_encrypted_extra is not msgspec.UNSET:
             await _purge_oauth2_tokens_if_needed(
                 dao=dao,
                 database=db,
+                old_encrypted_extra=old_encrypted_extra,
                 new_encrypted_extra=new_encrypted_extra,
+                old_db_engine_spec=old_db_engine_spec,
             )
 
         # -----------------------------------------------------------------
@@ -1356,9 +1475,7 @@ class DatabaseController(Controller):
             else:
                 # Sync-only engine (Trino, ClickHouse, …) — reflect via a
                 # thread-offloaded synchronous inspector.
-                catalog_names = await asyncio.to_thread(
-                    _sync_catalog_names, database
-                )
+                catalog_names = await asyncio.to_thread(_sync_catalog_names, database)
             catalogs_list = await security_manager.get_catalogs_accessible_by_user(
                 database,
                 sorted(catalog_names),
@@ -1384,8 +1501,14 @@ class DatabaseController(Controller):
         current_user: UserProtocol,
         q: str | None = None,
     ) -> SchemasResponse:
+        # The original uses ``self.datamodel.get(pk, self._base_filters)``
+        # which applies the ``DatabaseFilter`` base filter — users without
+        # ``database_access`` for this specific database get a 404.
+        # Mirrors ``superset_old/databases/api.py:783``.
         database = await dao.find_by_id(pk)
         if not database:
+            raise ObjectNotFoundError("Database", pk)
+        if not await _database_is_accessible(security_manager, current_user, database):
             raise ObjectNotFoundError("Database", pk)
         catalog: str | None = None
         force: bool = False
@@ -1609,21 +1732,22 @@ class DatabaseController(Controller):
             raise ObjectNotFoundError("Table", name) from exc
 
         try:
-            if database_has_async_driver(database):
-                async with get_async_connection(database) as (conn, _engine_spec):
-                    raw = await conn.run_sync(
-                        _inspect_table_metadata,
-                        name,
-                        effective_schema,
-                    )
-            else:
-                raw = await asyncio.to_thread(
-                    _sync_table_metadata,
-                    database,
-                    catalog,
-                    name,
-                    effective_schema,
-                )
+            # Delegate to the engine-spec's ``get_table_metadata`` — 1:1
+            # with ``superset_old/databases/api.py:1094``:
+            #   payload = database.db_engine_spec.get_table_metadata(database, table)
+            # This calls ``get_table_metadata()`` from ``databases/utils.py``
+            # which uses ``database.get_columns(table)`` (engine-spec-enriched
+            # columns with ``is_dttm``, ``type_generic``, ``duplicates_constraint``),
+            # ``database.get_pk_constraint(table)``,
+            # ``database.get_table_comment(table)``, and generates ``selectStar``
+            # via ``database.select_star(table, indent=True, cols=columns,
+            # latest_partition=True)`` — ensuring engine-specific partition-aware
+            # WHERE clauses for Hive/Presto/Trino and dialect-correct quoting.
+            raw = await asyncio.to_thread(
+                database.db_engine_spec.get_table_metadata,
+                database,
+                table,
+            )
         except Exception as exc:
             _log.warning(
                 "Failed to fetch table metadata for %s.%s on database %s: %s",
@@ -1636,10 +1760,12 @@ class DatabaseController(Controller):
                 f"Error fetching metadata for table '{name}': {exc}"
             ) from exc
 
-        # Convert raw dicts into typed response structs
+        # Convert raw dicts into typed response structs.
+        # The engine-spec returns ``column_name`` (not ``name``); accept both
+        # for robustness.
         columns = [
             TableMetadataColumn(
-                name=c["name"],
+                name=c.get("name", c.get("column_name", "")),
                 type=c.get("type", ""),
                 long_type=c.get("longType"),
                 keys=c.get("keys", []),
@@ -1825,21 +1951,14 @@ class DatabaseController(Controller):
             raise ObjectNotFoundError("Table", parsed_table) from exc
 
         try:
-            if database_has_async_driver(database):
-                async with get_async_connection(database) as (conn, _engine_spec):
-                    raw = await conn.run_sync(
-                        _inspect_table_metadata,
-                        parsed_table,
-                        parsed_schema,
-                    )
-            else:
-                raw = await asyncio.to_thread(
-                    _sync_table_metadata,
-                    database,
-                    None,
-                    parsed_table,
-                    parsed_schema,
-                )
+            # Delegate to engine-spec's ``get_table_metadata`` — 1:1 with
+            # ``superset_old/databases/api.py:941``:
+            #   get_table_metadata(database, Table(table_name, schema_name))
+            raw = await asyncio.to_thread(
+                database.db_engine_spec.get_table_metadata,
+                database,
+                table,
+            )
         except SQLAlchemyError as exc:
             await event_logger.alog_with_context(
                 "database.table_metadata_deprecated.error",
@@ -1859,9 +1978,12 @@ class DatabaseController(Controller):
                 status_code=exc.status_code,
             )
 
+        # Convert raw dicts into typed response structs.
+        # The engine-spec returns ``column_name`` (not ``name``); accept both
+        # for robustness.
         columns = [
             TableMetadataColumn(
-                name=c["name"],
+                name=c.get("name", c.get("column_name", "")),
                 type=c.get("type", ""),
                 long_type=c.get("longType"),
                 keys=c.get("keys", []),
@@ -2018,8 +2140,11 @@ class DatabaseController(Controller):
         current_user: UserProtocol,
         schema_name: str = Parameter(query="schema_name", default=""),
     ) -> SelectStarResponse:
-        if not _IDENTIFIER_RE.match(table_name):
-            raise CommandInvalidError(f"Invalid table name: {table_name}")
+        # The original uses ``<path:table_name>`` to support dotted/slashed
+        # table names (catalog.schema.table).  No restrictive regex is applied
+        # — the name is passed directly to the engine spec's ``select_star``.
+        if not table_name or not table_name.strip():
+            raise CommandInvalidError("Table name must not be empty")
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
@@ -2041,7 +2166,12 @@ class DatabaseController(Controller):
         # Use engine-spec-aware SELECT * generation — matches original
         # Database.select_star → BaseEngineSpec.select_star with dialect-
         # correct quoting and optional partition probing.
-        sql = await _engine_select_star(database, table)
+        try:
+            sql = await _engine_select_star(database, table)
+        except NoSuchTableError as exc:
+            # Original: ``except NoSuchTableError: return self.response(404, …)``
+            # (superset_old/databases/api.py:1236-1238)
+            raise ObjectNotFoundError("Table", table_name) from exc
         return SelectStarResponse(result=sql)
 
     # ------------------------------------------------------------------
@@ -2060,10 +2190,8 @@ class DatabaseController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> SelectStarResponse:
-        if not _IDENTIFIER_RE.match(table_name):
-            raise CommandInvalidError(f"Invalid table name: {table_name}")
-        if schema_name and not _IDENTIFIER_RE.match(schema_name):
-            raise CommandInvalidError(f"Invalid schema name: {schema_name}")
+        if not table_name or not table_name.strip():
+            raise CommandInvalidError("Table name must not be empty")
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
@@ -2084,7 +2212,12 @@ class DatabaseController(Controller):
         # Database.select_star → BaseEngineSpec.select_star with dialect-
         # correct quoting and optional partition probing.
         table_with_schema = Table(table_name, schema_name or None)
-        sql = await _engine_select_star(database, table_with_schema)
+        try:
+            sql = await _engine_select_star(database, table_with_schema)
+        except NoSuchTableError as exc:
+            # Original: ``except NoSuchTableError: return self.response(404, …)``
+            # (superset_old/databases/api.py:1236-1238)
+            raise ObjectNotFoundError("Table", table_name) from exc
         return SelectStarResponse(result=sql)
 
     # ------------------------------------------------------------------
@@ -2226,6 +2359,8 @@ class DatabaseController(Controller):
         self,
         dao: DatabaseDAOProtocol,
         rison_params: list[int] | dict[str, Any] | None,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
         token: str | None = Parameter(query="token", default=None),
     ) -> Stream:
         ids = extract_ids(rison_params)
@@ -2242,7 +2377,12 @@ class DatabaseController(Controller):
 
         timestamp = _datetime.now().strftime("%Y%m%dT%H%M%S")
         root = f"database_export_{timestamp}"
-        cmd = ExportDatabasesCommand(model_ids=ids, dao=cast("AsyncDatabaseDAO", dao))
+        cmd = ExportDatabasesCommand(
+            model_ids=ids,
+            dao=cast("AsyncDatabaseDAO", dao),
+            security_manager=security_manager,
+            user=current_user,
+        )
         cmd._root = root  # noqa: SLF001
         buf = await cmd.execute()
         await event_logger.alog_with_context(
@@ -2267,7 +2407,7 @@ class DatabaseController(Controller):
     )
     async def import_database(
         self,
-        request: Request,
+        request: Request[Any, Any, Any],
         dao: DatabaseDAOProtocol,
     ) -> dict[str, str]:
         """Import database(s) from a ZIP bundle.
@@ -2369,48 +2509,69 @@ class DatabaseController(Controller):
             spec_cls: Any,
             *,
             sync_fallback: bool,
+            available_drivers: list[str] | None = None,
         ) -> dict[str, Any]:
             engine_name = getattr(spec_cls, "engine_name", engine_key)
             default_driver = getattr(spec_cls, "default_driver", "") or ""
-            placeholder = (
+            # Use the engine spec's sqlalchemy_uri_placeholder when available
+            # — 1:1 with ``superset_old/databases/api.py:1904``.
+            placeholder = getattr(
+                spec_cls,
+                "sqlalchemy_uri_placeholder",
                 f"{engine_key}+{default_driver}://"
                 if default_driver
-                else f"{engine_key}://"
+                else f"{engine_key}://",
             )
-            return {
+            drivers = available_drivers or [default_driver or engine_key]
+            payload: dict[str, Any] = {
                 "name": engine_name,
                 "engine": engine_key,
                 "preferred": engine_name in preferred_set,
-                "available_drivers": [default_driver or engine_key],
-                "default_driver": default_driver,
+                "available_drivers": sorted(drivers),
                 "sqlalchemy_uri_placeholder": placeholder,
-                "parameters": {
-                    "properties": {
-                        "host": {"type": "string"},
-                        "port": {"type": "integer"},
-                        "username": {"type": "string"},
-                        "password": {"type": "string"},
-                        "database": {"type": "string"},
-                    },
-                    "required": ["host", "database"],
-                },
-                "engine_information": {
-                    "supports_file_upload": getattr(
-                        spec_cls, "supports_file_upload", False
-                    )
-                    if sync_fallback
-                    else False,
-                    "disable_ssh_tunneling": getattr(
-                        spec_cls, "disable_ssh_tunneling", False
-                    )
-                    if sync_fallback
-                    else False,
-                    "supports_dynamic_catalog": getattr(
-                        spec_cls, "supports_dynamic_catalog", False
-                    ),
-                    "supports_oauth2": getattr(spec_cls, "supports_oauth2", False),
-                },
+                # Use engine spec's ``get_public_information()`` for engine
+                # info — 1:1 with ``superset_old/databases/api.py:1906``.
+                # Sync engine specs inherit get_public_information() from
+                # BaseEngineSpec.  Async engine specs (BaseAsyncEngineSpec)
+                # do not, so we inline the same four keys using getattr
+                # with the same defaults as BaseEngineSpec.
+                "engine_information": (
+                    spec_cls.get_public_information()
+                    if hasattr(spec_cls, "get_public_information")
+                    else {
+                        "supports_file_upload": getattr(
+                            spec_cls, "supports_file_upload", False
+                        ),
+                        "disable_ssh_tunneling": getattr(
+                            spec_cls, "disable_ssh_tunneling", False
+                        ),
+                        "supports_dynamic_catalog": getattr(
+                            spec_cls, "supports_dynamic_catalog", False
+                        ),
+                        "supports_oauth2": getattr(spec_cls, "supports_oauth2", False),
+                    }
+                ),
+                "supports_oauth2": getattr(spec_cls, "supports_oauth2", False),
             }
+            if default_driver:
+                payload["default_driver"] = default_driver
+            # Show configuration parameters for engines that support it — 1:1
+            # with ``superset_old/databases/api.py:1914-1922``: only set
+            # ``parameters`` when the engine spec has ``parameters_json_schema``
+            # AND ``sqlalchemy_uri_placeholder`` AND
+            # ``default_driver in drivers``.
+            if (
+                hasattr(spec_cls, "parameters_json_schema")
+                and hasattr(spec_cls, "sqlalchemy_uri_placeholder")
+                and default_driver in drivers
+            ):
+                payload["parameters"] = spec_cls.parameters_json_schema()
+                # Re-set placeholder from the spec (it may be more specific
+                # after the conditional check, matching the original).
+                payload["sqlalchemy_uri_placeholder"] = (
+                    spec_cls.sqlalchemy_uri_placeholder
+                )
+            return payload
 
         # 1. Native async engine specs
         for engine_key, spec_cls in _NATIVE_SPECS.items():
@@ -2511,9 +2672,12 @@ class DatabaseController(Controller):
             _get_schema_access_for_file_upload(database, current_user)
         )
         if schemas and hasattr(security_manager, "get_schemas_accessible_by_user"):
+            default_catalog = await asyncio.to_thread(database.get_default_catalog)
             schemas = await security_manager.get_schemas_accessible_by_user(
                 database,
                 schemas,
+                catalog=default_catalog,
+                hierarchical=True,
                 user=current_user,
             )
         return SchemaAccessForUploadResponse(schemas=schemas)
@@ -2562,7 +2726,7 @@ class DatabaseController(Controller):
 
         # Extract the UploadFile object from the multipart dict.
         # Litestar puts named file fields as UploadFile instances in the dict.
-        file_field: UploadFile | None = data.get("file")  # type: ignore[assignment]
+        file_field: UploadFile | None = data.get("file")
         if file_field is None:
             raise CommandInvalidError("'file' field is required")
 
@@ -2577,9 +2741,7 @@ class DatabaseController(Controller):
 
         # Build a plain str→str dict of the non-file form fields so
         # parse_upload_form can coerce them the same way Marshmallow did.
-        form_dict: dict[str, Any] = {
-            k: v for k, v in data.items() if k != "file"
-        }
+        form_dict: dict[str, Any] = {k: v for k, v in data.items() if k != "file"}
 
         # parse_upload_form mirrors UploadPostSchema field-by-field:
         # bools, ints, delimited lists, column_data_types JSON.
@@ -2808,6 +2970,16 @@ class DatabaseController(Controller):
     async def delete_ssh_tunnel(
         self, pk: int, dao: DatabaseDAOProtocol
     ) -> dict[str, str]:
+        # Check database existence first — 1:1 with
+        # ``superset_old/databases/api.py:2045-2047``: the original does
+        # ``DatabaseDAO.find_by_id(pk)`` and returns 404 when missing,
+        # BEFORE checking for the SSH tunnel.  Without this the port
+        # would return ``ObjectNotFoundError("SSHTunnel", pk)`` instead
+        # of ``ObjectNotFoundError("Database", pk)`` when the database
+        # itself doesn't exist.
+        database = await dao.find_by_id(pk)
+        if not database:
+            raise ObjectNotFoundError("Database", pk)
         cmd = DeleteSSHTunnelCommand(dao=cast("AsyncDatabaseDAO", dao), database_id=pk)
         await cmd.execute()
         await event_logger.alog_with_context(

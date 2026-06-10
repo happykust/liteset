@@ -27,7 +27,7 @@ import logging
 import re
 from datetime import datetime
 from re import Pattern
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, TypedDict
 from urllib import parse
 
 from sqlalchemy import types
@@ -35,7 +35,10 @@ from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.engine.url import URL
 
 from superset.constants import TimeGrain
+from superset.databases.utils import make_url_safe
+from superset.db_engine_specs.base import BaseEngineSpec, BasicPropertiesType
 from superset.db_engine_specs.postgres import PostgresBaseEngineSpec
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.utils import json as json_utils
 
 if TYPE_CHECKING:
@@ -58,6 +61,33 @@ SYNTAX_ERROR_REGEX = re.compile(
 )
 
 
+class SnowflakeParametersType(TypedDict):
+    username: str
+    password: str
+    account: str
+    database: str
+    role: str
+    warehouse: str
+
+
+# The original code uses a Marshmallow ``SnowflakeParametersSchema``.
+# In liteset we store the OpenAPI fragment directly so that
+# ``parameters_json_schema()`` returns it as-is (same pattern as
+# ``BASIC_PARAMETERS_JSON_SCHEMA`` in base.py).
+SNOWFLAKE_PARAMETERS_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "username": {"type": "string", "description": "Username"},
+        "password": {"type": "string", "description": "Password"},
+        "account": {"type": "string", "description": "Account"},
+        "database": {"type": "string", "description": "Database name"},
+        "role": {"type": "string", "description": "Role"},
+        "warehouse": {"type": "string", "description": "Warehouse"},
+    },
+    "required": ["username", "password", "account", "database", "role", "warehouse"],
+}
+
+
 class SnowflakeEngineSpec(PostgresBaseEngineSpec):
     engine = "snowflake"
     engine_name = "Snowflake"
@@ -67,6 +97,7 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
     # Snowflake doesn't support IS true/false syntax, use = true/false instead
     use_equality_for_boolean_filters = True
 
+    parameters_schema = SNOWFLAKE_PARAMETERS_JSON_SCHEMA
     default_driver = "snowflake"
     sqlalchemy_uri_placeholder = "snowflake://"
 
@@ -121,6 +152,22 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
             {},
         ),
     }
+
+    @staticmethod
+    def get_extra_params(database: Database, source: Any = None) -> dict[str, Any]:
+        """
+        Add a user agent to be used in the requests.
+        """
+        from superset.utils.core import get_user_agent
+
+        extra: dict[str, Any] = BaseEngineSpec.get_extra_params(database)
+        engine_params: dict[str, Any] = extra.setdefault("engine_params", {})
+        connect_args: dict[str, Any] = engine_params.setdefault("connect_args", {})
+        user_agent = get_user_agent(database, source)
+
+        connect_args.setdefault("application", user_agent)
+
+        return extra
 
     @classmethod
     def adjust_engine_params(
@@ -227,6 +274,78 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
             return False
         return True
 
+    @classmethod
+    def build_sqlalchemy_uri(
+        cls,
+        parameters: SnowflakeParametersType,
+        encrypted_extra: dict[str, Any] | None = None,
+    ) -> str:
+        return URL.create(
+            "snowflake",
+            username=parameters.get("username"),
+            password=parameters.get("password"),
+            host=parameters.get("account"),
+            database=parameters.get("database"),
+            query={
+                "role": parameters.get("role"),
+                "warehouse": parameters.get("warehouse"),
+            },
+        ).render_as_string(hide_password=False)
+
+    @classmethod
+    def get_parameters_from_uri(
+        cls,
+        uri: str,
+        encrypted_extra: dict[str, str] | None = None,
+    ) -> Any:
+        url = make_url_safe(uri)
+        query = dict(url.query.items())
+        return {
+            "username": url.username,
+            "password": url.password,
+            "account": url.host,
+            "database": url.database,
+            "role": query.get("role"),
+            "warehouse": query.get("warehouse"),
+        }
+
+    @classmethod
+    def validate_parameters(
+        cls, properties: BasicPropertiesType
+    ) -> list[SupersetError]:
+        errors: list[SupersetError] = []
+        required = {
+            "warehouse",
+            "username",
+            "database",
+            "account",
+            "role",
+            "password",
+        }
+        parameters = properties.get("parameters", {})
+        present = {key for key in parameters if parameters.get(key, ())}
+
+        if missing := sorted(required - present):
+            errors.append(
+                SupersetError(
+                    message=f"One or more parameters are missing: {', '.join(missing)}",
+                    error_type=SupersetErrorType.CONNECTION_MISSING_PARAMETERS_ERROR,
+                    level=ErrorLevel.WARNING,
+                    extra={"missing": missing},
+                ),
+            )
+        return errors
+
+    @classmethod
+    def parameters_json_schema(cls) -> Any:
+        """
+        Return configuration parameters as OpenAPI.
+        """
+        if not cls.parameters_schema:
+            return None
+
+        return cls.parameters_schema
+
     @staticmethod
     def update_params_from_encrypted_extra(
         database: Database,
@@ -268,6 +387,24 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
                 encryption_algorithm=serialization.NoEncryption(),
             )
             connect_args["private_key"] = pkb
+        else:
+            # Custom auth: consult ALLOWED_EXTRA_AUTHENTICATIONS config
+            # (1:1 with superset_old: app.config["ALLOWED_EXTRA_AUTHENTICATIONS"]
+            # -> SupersetSettings().allowed_extra_authentications).
+            from superset.config import SupersetSettings
+
+            _settings = SupersetSettings()  # type: ignore[call-arg]
+            allowed_extra_auths: dict[str, Any] = (
+                _settings.allowed_extra_authentications.get("snowflake", {})
+            )
+            if auth_method in allowed_extra_auths:
+                snowflake_auth = allowed_extra_auths.get(auth_method)
+            else:
+                raise ValueError(
+                    f"For security reason, custom authentication '{auth_method}' "
+                    f"must be listed in 'ALLOWED_EXTRA_AUTHENTICATIONS' config"
+                )
+            connect_args["auth"] = snowflake_auth(**auth_params)
 
 
 __all__ = [

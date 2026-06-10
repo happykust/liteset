@@ -64,9 +64,15 @@ async def test_extracts_file_and_options() -> None:
         "overwrite": "true",
         "passwords": '{"databases/a.yaml": "pw"}',
     }
-    buf, filename, overwrite, passwords, ssh_pw, ssh_pk, ssh_pkpw = (
-        await parse_import_request(_request(form))
-    )
+    (
+        buf,
+        filename,
+        overwrite,
+        passwords,
+        ssh_pw,
+        ssh_pk,
+        ssh_pkpw,
+    ) = await parse_import_request(_request(form))
     assert isinstance(buf, io.BytesIO)
     assert buf.getvalue() == b"hello"
     assert filename == "bundle.zip"

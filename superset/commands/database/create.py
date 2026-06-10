@@ -23,6 +23,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
+from superset.commands.database.exceptions import DatabaseParametersInvalidError
 from superset.commands.database.test_connection import DatabaseTestConnectionCommand
 from superset.commands.database.utils import (
     _validate_extra,
@@ -100,10 +101,19 @@ class CreateDatabaseCommand(AsyncBaseCommand["Database"]):
             except (ValueError, TypeError):
                 encrypted_extra = {}
 
-            self._data["sqlalchemy_uri"] = spec_class.build_sqlalchemy_uri(
-                parameters,
-                encrypted_extra,
-            )
+            try:
+                self._data["sqlalchemy_uri"] = spec_class.build_sqlalchemy_uri(
+                    parameters,
+                    encrypted_extra,
+                )
+            except ValueError as ex:
+                # Engine specs (e.g. BigQuery) raise ValueError for missing /
+                # invalid credentials — surface as a structured 422 instead of
+                # propagating to the generic 500 handler.
+                # Mirrors original: marshmallow @pre_load hook raised
+                # marshmallow.ValidationError → caught by Schema.load() →
+                # API handler returned response_400.
+                raise DatabaseParametersInvalidError(str(ex)) from ex
 
         if not self._data.get("sqlalchemy_uri"):
             raise CommandInvalidError("sqlalchemy_uri is required")
@@ -138,11 +148,13 @@ class CreateDatabaseCommand(AsyncBaseCommand["Database"]):
             # frontend's "An error occurred while creating databases"
             # toast appends this message, and integration tests rely on
             # the exact string.
-            raise CommandInvalidError(
-                "A database with the same name already exists."
-            )
+            raise CommandInvalidError("A database with the same name already exists.")
 
     async def run(self) -> "Database":
+        from superset.commands.database.ssh_tunnel.exceptions import (
+            SSHTunnelDatabasePortError,
+            SSHTunnelingNotEnabledError,
+        )
         from superset.exceptions import (
             DatabaseConnectionFailedError,
             OAuth2RedirectError,
@@ -161,6 +173,12 @@ class CreateDatabaseCommand(AsyncBaseCommand["Database"]):
         # - SupersetErrorsException is re-raised with its original
         #   SIP-40 error payload so the frontend can show actionable
         #   CONNECTION_* errors
+        # - SSHTunnelingNotEnabledError (400) and SSHTunnelDatabasePortError
+        #   (422) are re-raised unchanged so the frontend sees the correct
+        #   status code and message — mirrors original:
+        #   superset_old/commands/database/create.py:70-80.
+        #   Neither extends SupersetErrorsException, so without this clause
+        #   they would fall to the generic handler and become HTTP 500.
         # - Any other exception is wrapped in DatabaseConnectionFailedError
         # -------------------------------------------------------------
         try:
@@ -177,8 +195,13 @@ class CreateDatabaseCommand(AsyncBaseCommand["Database"]):
             # permissions when setting up data access rules.  Mirrors
             # ``superset_old/commands/database/create.py:65-69``.
             pass
-        except SupersetErrorsException:
-            # Re-raise so the engine-spec-extracted errors reach the client
+        except (
+            SupersetErrorsException,
+            SSHTunnelingNotEnabledError,
+            SSHTunnelDatabasePortError,
+        ):
+            # Re-raise so the engine-spec-extracted errors and SSH errors
+            # reach the client with the correct status code.
             raise
         except Exception as ex:
             raise DatabaseConnectionFailedError() from ex

@@ -535,8 +535,14 @@ async def test_export_produces_zip(mock_dao, mock_dataset):
         "schema": "public",
     }
     mock_dao.find_by_id_with_options = AsyncMock(return_value=mock_dataset)
+    # validate() now checks per-id access; return count == len(model_ids) so
+    # the check passes for the single requested id.
+    mock_dao.count = AsyncMock(return_value=1)
     cmd = ExportDatasetsCommand(model_ids=[1], dao=mock_dao)
-    buf = await cmd.execute()
+    with patch(
+        "superset.db.filters.dataset_access_filters", AsyncMock(return_value=[])
+    ):
+        buf = await cmd.execute()
     assert isinstance(buf, io.BytesIO)
     with zipfile.ZipFile(buf) as zf:
         names = zf.namelist()
@@ -550,10 +556,29 @@ async def test_export_produces_zip(mock_dao, mock_dataset):
 
 
 async def test_export_not_found(mock_dao):
+    # count=0 → validate() raises ObjectNotFoundError before _export_single runs.
     mock_dao.find_by_id_with_options = AsyncMock(return_value=None)
+    mock_dao.count = AsyncMock(return_value=0)
     cmd = ExportDatasetsCommand(model_ids=[999], dao=mock_dao)
-    with pytest.raises(ObjectNotFoundError):
-        await cmd.execute()
+    with patch(
+        "superset.db.filters.dataset_access_filters", AsyncMock(return_value=[])
+    ):
+        with pytest.raises(ObjectNotFoundError):
+            await cmd.execute()
+
+
+async def test_export_datasets_denies_inaccessible_id(mock_dao):
+    """validate() raises ObjectNotFoundError when the DAO reports fewer
+    accessible rows than the number of requested IDs (IDOR prevention)."""
+    mock_dao.count = AsyncMock(return_value=0)
+    cmd = ExportDatasetsCommand(
+        model_ids=[42], dao=mock_dao, security_manager=MagicMock()
+    )
+    with patch(
+        "superset.db.filters.dataset_access_filters", AsyncMock(return_value=[])
+    ):
+        with pytest.raises(ObjectNotFoundError):
+            await cmd.execute()
 
 
 # ---- WarmUpDatasetCacheCommand ----
@@ -870,3 +895,53 @@ def test_dataset_invalid_error_handler_emits_message_dict():
             "database": ["Database does not exist"],
         }
     }
+
+
+async def test_update_dataset_override_columns_reaches_dao(mock_dao, mock_dataset):
+    """``override_columns`` + body columns must flow into ``dao.update``.
+
+    1:1 with superset_old: the command stores the flag in its properties
+    (superset_old/commands/dataset/update.py:68) and the DAO picks the
+    delete-all-and-reinsert path via ``attributes.get("override_columns")``
+    (superset_old/daos/dataset.py:188-193). The body ``columns`` must NOT be
+    dropped — the original applies them first and lets RefreshDatasetCommand
+    only update types afterwards.
+    """
+    mock_dao.find_by_id = AsyncMock(return_value=mock_dataset)
+    mock_dao.validate_uniqueness = AsyncMock(return_value=True)
+    mock_dao.validate_columns_exist = AsyncMock(return_value=True)
+    mock_dao.validate_columns_uniqueness = AsyncMock(return_value=True)
+    mock_dao.update = AsyncMock(return_value=mock_dataset)
+
+    body_columns = [{"column_name": "virtual_col", "expression": "a + b"}]
+    cmd = UpdateDatasetCommand(
+        dao=mock_dao,
+        dataset_id=1,
+        data={"columns": body_columns},
+        override_columns=True,
+    )
+    await cmd.validate()
+    await cmd.run()
+
+    mock_dao.update.assert_awaited_once()
+    _, attributes = mock_dao.update.await_args.args
+    assert attributes["override_columns"] is True
+    assert attributes["columns"] == body_columns
+
+
+@pytest.mark.asyncio
+async def test_dao_update_columns_dispatches_override_path():
+    """``update_columns(override_columns=True)`` takes the override branch."""
+    from superset.db.daos.dataset import AsyncDatasetDAO
+
+    session = MagicMock()
+    session.refresh = AsyncMock()
+    dao = AsyncDatasetDAO(session=session)
+    model = MagicMock()
+    model.id = 1
+
+    with patch.object(
+        AsyncDatasetDAO, "_apply_columns_override", new_callable=AsyncMock
+    ) as override:
+        await dao.update_columns(model, [{"column_name": "c1"}], override_columns=True)
+    override.assert_awaited_once_with(model, [{"column_name": "c1"}])

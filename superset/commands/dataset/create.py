@@ -152,9 +152,7 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             except SupersetParseError as ex:
                 message = ex.error.message if getattr(ex, "error", None) else str(ex)
                 exceptions.append(
-                    DatasetValidationError(
-                        f"Invalid SQL: {message}", field_name="sql"
-                    )
+                    DatasetValidationError(f"Invalid SQL: {message}", field_name="sql")
                 )
 
         # Validate/resolve owners here (not in run()) so a bad owner id is
@@ -326,9 +324,7 @@ class GetOrCreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             "catalog": self._data.get("catalog"),
             "template_params": self._data.get("template_params"),
             "normalize_columns": self._data.get("normalize_columns", False),
-            "always_filter_main_dttm": self._data.get(
-                "always_filter_main_dttm", False
-            ),
+            "always_filter_main_dttm": self._data.get("always_filter_main_dttm", False),
         }
         create_cmd = CreateDatasetCommand(
             dao=self._dao,

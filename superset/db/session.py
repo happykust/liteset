@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import (
     AsyncSession,
     create_async_engine as _create_async_engine,
 )
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import scoped_session, Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
 # Dialects that should default to READ COMMITTED when the caller hasn't
@@ -143,7 +143,7 @@ async def dispose_engine(engine: AsyncEngine) -> None:
 # ---------------------------------------------------------------------------
 
 _sync_engine: Engine | None = None
-_sync_session_factory: sessionmaker[Session] | None = None
+_sync_session_factory: scoped_session[Session] | None = None
 
 _ASYNC_TO_SYNC_DRIVERS: dict[str, str] = {
     "postgresql+asyncpg": "postgresql+psycopg2",
@@ -152,15 +152,18 @@ _ASYNC_TO_SYNC_DRIVERS: dict[str, str] = {
 }
 
 
-def get_sync_session() -> Session:
-    """Create a sync :class:`~sqlalchemy.orm.Session` for Celery task execution.
+def _ensure_sync_session_factory() -> scoped_session[Session]:
+    """Lazily initialise the module-level scoped_session registry.
 
-    The sync engine is lazily created on first call, converting the async
-    database URI from :class:`~superset.config.SupersetSettings` into its
-    synchronous equivalent (e.g. ``asyncpg`` -> ``psycopg2``).
+    The sync engine is created once per process, converting the async database
+    URI from :class:`~superset.config.SupersetSettings` into its synchronous
+    equivalent (e.g. ``asyncpg`` -> ``psycopg2``).
 
-    The engine and session factory are cached at module level so that
-    subsequent calls reuse the same connection pool.
+    Returns a :class:`~sqlalchemy.orm.scoped_session` so that all callers in
+    the same thread (task body *and* the ``task_postrun`` teardown handler)
+    share the **same** :class:`~sqlalchemy.orm.Session` object — exactly
+    mirroring Flask-SQLAlchemy's ``db.session`` which is itself a
+    ``scoped_session`` proxy.
     """
     global _sync_engine, _sync_session_factory  # noqa: PLW0603
     if _sync_engine is None:
@@ -184,6 +187,36 @@ def get_sync_session() -> Session:
                 sync_uri = sync_uri.replace(async_prefix, sync_prefix, 1)
                 break
         _sync_engine = _create_sync_engine(sync_uri)
-        _sync_session_factory = sessionmaker(bind=_sync_engine)
+        _sync_session_factory = scoped_session(sessionmaker(bind=_sync_engine))
     assert _sync_session_factory is not None  # noqa: S101
-    return _sync_session_factory()
+    return _sync_session_factory
+
+
+def get_sync_session() -> Session:
+    """Return the thread-local sync :class:`~sqlalchemy.orm.Session`.
+
+    Uses a :class:`~sqlalchemy.orm.scoped_session` registry so that all code
+    executing in the same Celery worker thread — including both the task body
+    and the ``task_postrun`` teardown handler — receives the **same** Session
+    object.  This matches the behaviour of Flask-SQLAlchemy's ``db.session``
+    (which is also a ``scoped_session``) in the original Superset.
+
+    Call :func:`remove_sync_session` in ``task_postrun`` to deregister the
+    thread-local session and release its connection back to the pool.
+    """
+    return _ensure_sync_session_factory()()
+
+
+def remove_sync_session() -> None:
+    """Remove the thread-local sync session from the scoped registry.
+
+    Equivalent to Flask-SQLAlchemy's ``db.session.remove()``.  Should be
+    called once per Celery task in the ``task_postrun`` signal handler so
+    that the connection is released and the thread-local registry entry is
+    cleared before the worker thread is reused.
+
+    Safe to call even if the session was already closed by task code — the
+    scoped_session.remove() call is idempotent in that case.
+    """
+    if _sync_session_factory is not None:
+        _sync_session_factory.remove()

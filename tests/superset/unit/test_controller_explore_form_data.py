@@ -18,9 +18,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from litestar.exceptions import PermissionDeniedException
 
 from superset.commands.explore_permalink.utils import check_dataset_access
 from superset.controllers.explore_form_data import ExploreFormDataController
@@ -82,3 +84,158 @@ async def test_check_dataset_access_missing_raises_not_found():
 
     with pytest.raises(ObjectNotFoundError):
         await check_dataset_access(dao, 1, security_manager=sm, user=MagicMock())
+
+
+# ---------------------------------------------------------------------------
+# Owner check regression — None-owner entries must still be protected
+# ---------------------------------------------------------------------------
+# Original: superset_old/commands/explore/form_data/update.py:62 and
+# delete.py:54 both do ``state["owner"] != get_user_id()`` unconditionally.
+# None != 456  → True → raises TemporaryCacheAccessDeniedError (→ 403).
+# The bug: ``if owner is not None and owner != user.id`` short-circuits to
+# False when owner=None, silently granting write access to any caller.
+
+
+def _make_envelope(owner: int | None) -> str:
+    """Return a JSON-encoded envelope with the given owner."""
+    return json.dumps(
+        {
+            "owner": owner,
+            "datasource_id": 1,
+            "datasource_type": "table",
+            "chart_id": None,
+            "form_data": '{"viz_type": "table"}',
+        }
+    )
+
+
+def _controller_self() -> MagicMock:
+    """Return a minimal controller self-mock carrying the resource attribute."""
+    self_mock = MagicMock()
+    self_mock.resource = ExploreFormDataController.resource
+    return self_mock
+
+
+async def test_update_value_owner_none_raises_permission_denied():
+    """PUT with a None-owner entry must raise PermissionDeniedException
+    when the caller is an authenticated user (id != None).
+
+    Regression for: ``if owner is not None and owner != current_user.id``
+    short-circuiting to False when owner=None (should raise, matches
+    original ``state["owner"] != get_user_id()`` → ``None != 456`` → True).
+    """
+    kv_dao = AsyncMock()
+    kv_dao.get_value = AsyncMock(return_value=_make_envelope(owner=None))
+
+    user = MagicMock()
+    user.id = 456
+
+    data = MagicMock()
+    data.form_data = '{"viz_type": "table"}'
+    data.datasource_id = 1
+    data.datasource_type = "table"
+    data.chart_id = None
+
+    update_fn = ExploreFormDataController.update_value.fn
+    with patch("superset.controllers.explore_form_data.check_access", new=AsyncMock()):
+        with pytest.raises(PermissionDeniedException):
+            await update_fn(
+                _controller_self(),
+                request=MagicMock(),
+                key="some-key",
+                data=data,
+                kv_dao=kv_dao,
+                chart_dao=AsyncMock(),
+                dataset_dao=AsyncMock(),
+                query_dao=AsyncMock(),
+                security_manager=AsyncMock(),
+                current_user=user,
+                tab_id=None,
+            )
+
+
+async def test_update_value_owner_mismatch_raises_permission_denied():
+    """PUT with a mismatched owner (non-None) must also raise — the normal
+    ownership enforcement path that existed before this regression."""
+    kv_dao = AsyncMock()
+    kv_dao.get_value = AsyncMock(return_value=_make_envelope(owner=99))
+
+    user = MagicMock()
+    user.id = 456
+
+    data = MagicMock()
+    data.form_data = '{"viz_type": "table"}'
+    data.datasource_id = 1
+    data.datasource_type = "table"
+    data.chart_id = None
+
+    update_fn = ExploreFormDataController.update_value.fn
+    with patch("superset.controllers.explore_form_data.check_access", new=AsyncMock()):
+        with pytest.raises(PermissionDeniedException):
+            await update_fn(
+                _controller_self(),
+                request=MagicMock(),
+                key="some-key",
+                data=data,
+                kv_dao=kv_dao,
+                chart_dao=AsyncMock(),
+                dataset_dao=AsyncMock(),
+                query_dao=AsyncMock(),
+                security_manager=AsyncMock(),
+                current_user=user,
+                tab_id=None,
+            )
+
+
+async def test_delete_value_owner_none_raises_permission_denied():
+    """DELETE with a None-owner entry must raise PermissionDeniedException
+    when the caller is authenticated.
+
+    Regression for: ``if owner is not None and owner != current_user.id``
+    short-circuiting to False when owner=None (should raise, matches
+    original ``state["owner"] != get_user_id()`` → ``None != 456`` → True).
+    """
+    kv_dao = AsyncMock()
+    kv_dao.get_value = AsyncMock(return_value=_make_envelope(owner=None))
+
+    user = MagicMock()
+    user.id = 456
+
+    delete_fn = ExploreFormDataController.delete_value.fn
+    with patch("superset.controllers.explore_form_data.check_access", new=AsyncMock()):
+        with pytest.raises(PermissionDeniedException):
+            await delete_fn(
+                _controller_self(),
+                request=MagicMock(),
+                key="some-key",
+                kv_dao=kv_dao,
+                chart_dao=AsyncMock(),
+                dataset_dao=AsyncMock(),
+                query_dao=AsyncMock(),
+                security_manager=AsyncMock(),
+                current_user=user,
+            )
+
+
+async def test_delete_value_owner_mismatch_raises_permission_denied():
+    """DELETE with a mismatched non-None owner must also raise."""
+    kv_dao = AsyncMock()
+    kv_dao.get_value = AsyncMock(return_value=_make_envelope(owner=99))
+
+    user = MagicMock()
+    user.id = 456
+
+    delete_fn = ExploreFormDataController.delete_value.fn
+    with patch("superset.controllers.explore_form_data.check_access", new=AsyncMock()):
+        with pytest.raises(PermissionDeniedException):
+            await delete_fn(
+                _controller_self(),
+                request=MagicMock(),
+                key="some-key",
+                kv_dao=kv_dao,
+                chart_dao=AsyncMock(),
+                dataset_dao=AsyncMock(),
+                query_dao=AsyncMock(),
+                security_manager=AsyncMock(),
+                current_user=user,
+            )

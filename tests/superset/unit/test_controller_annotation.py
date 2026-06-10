@@ -14,11 +14,12 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for annotation commands."""
+"""Unit tests for annotation commands and controller PUT response parity."""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -153,6 +154,7 @@ async def test_update_annotation_not_found(mock_dao):
 
 async def test_update_annotation_success(mock_dao, mock_annotation):
     mock_dao.find_by_id = AsyncMock(return_value=mock_annotation)
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
     mock_dao.update = AsyncMock(return_value=mock_annotation)
     cmd = UpdateAnnotationCommand(dao=mock_dao, pk=10, data={"short_descr": "updated"})
     result = await cmd.execute()
@@ -161,6 +163,66 @@ async def test_update_annotation_success(mock_dao, mock_annotation):
         mock_annotation, {"short_descr": "updated"}
     )
     mock_dao.session.flush.assert_awaited()
+
+
+async def test_update_annotation_short_descr_absent_uses_empty_string_for_uniqueness(
+    mock_dao, mock_annotation
+):
+    """When short_descr is absent from the PUT payload the uniqueness check must
+    use '' (empty string), NOT the existing annotation's short_descr.
+
+    Original: ``self._properties.get('short_descr', '')`` always defaults to
+    empty string when the field is absent
+    (superset_old/commands/annotation_layer/annotation/update.py:56).
+
+    Regression guard: the old liteset code resolved the existing annotation's
+    short_descr ("Test annotation"), which could raise a false 422 when that
+    value happened to match another row in the same layer (duplicate legacy
+    data). The original would accept the update because it checks '' which
+    can never conflict.
+    """
+    mock_dao.find_by_id = AsyncMock(return_value=mock_annotation)
+
+    # Simulate: validate_update_uniqueness returns False for "Test annotation"
+    # (the existing annotation's short_descr) but True for "" (empty string).
+    async def _uniqueness(layer_id: int, short_descr: str, annotation_id: int) -> bool:
+        return short_descr == ""
+
+    mock_dao.validate_update_uniqueness = _uniqueness
+    mock_dao.update = AsyncMock(return_value=mock_annotation)
+
+    # Payload only changes long_descr — short_descr is absent.
+    cmd = UpdateAnnotationCommand(
+        dao=mock_dao, pk=10, data={"layer_id": 1, "long_descr": "new text"}
+    )
+    # Must NOT raise — original always accepts (checks "" which passes).
+    result = await cmd.execute()
+    assert result.id == 10
+
+
+async def test_update_annotation_uniqueness_raises_on_payload_conflict(
+    mock_dao, mock_annotation
+):
+    """When short_descr IS in the payload and it conflicts, raise 422.
+
+    This tests the positive arm of the uniqueness check — the check must still
+    fire and reject conflicting values when short_descr is explicitly supplied.
+    """
+    from superset.commands.annotation_layer.annotation.exceptions import (
+        AnnotationUniquenessValidationError,
+    )
+
+    mock_dao.find_by_id = AsyncMock(return_value=mock_annotation)
+    # Simulate: "conflict" is already used by another annotation in the layer.
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=False)
+
+    cmd = UpdateAnnotationCommand(
+        dao=mock_dao,
+        pk=10,
+        data={"layer_id": 1, "short_descr": "conflict"},
+    )
+    with pytest.raises(AnnotationUniquenessValidationError):
+        await cmd.validate()
 
 
 # ---------------------------------------------------------------------------
@@ -209,3 +271,217 @@ async def test_bulk_delete_annotations_success(mock_dao, mock_annotation):
     await cmd.execute()
     mock_dao.delete.assert_awaited_once_with([mock_annotation])
     mock_dao.session.flush.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# AnnotationController PUT — result echoes only submitted fields (parity)
+# superset_old/annotation_layers/annotations/api.py:363-383
+# ---------------------------------------------------------------------------
+
+
+async def test_put_annotation_partial_update_only_submitted_fields_in_result(
+    mock_dao, mock_layer_dao, mock_layer, mock_annotation
+):
+    """PUT with only short_descr must return result with only short_descr + layer.
+
+    Original: ``item = edit_model_schema.load(request.json)`` contains only the
+    keys present in the request body; ``item["layer"] = pk`` is appended; the
+    response echoes ``item`` verbatim.  Liteset must NOT include long_descr,
+    start_dttm, end_dttm, json_metadata when the client did not submit them.
+    """
+    from superset.controllers.annotation import AnnotationController
+    from superset.schemas.annotation import AnnotationPutSchema
+
+    mock_layer_dao.find_by_id = AsyncMock(return_value=mock_layer)
+    mock_dao.find_by_id = AsyncMock(return_value=mock_annotation)
+    mock_dao.update = AsyncMock(return_value=mock_annotation)
+    mock_dao.session.flush = AsyncMock()
+
+    # Only short_descr submitted — all other fields remain UNSET.
+    data = AnnotationPutSchema(short_descr="only this field")
+
+    handler = AnnotationController.update
+    fn = handler.fn if hasattr(handler, "fn") else handler
+
+    with patch("superset.controllers.annotation.event_logger") as mock_event_logger:
+        mock_event_logger.alog_with_context = AsyncMock()
+        resp = await fn(
+            AnnotationController(owner=MagicMock()),
+            pk=5,
+            annotation_id=10,
+            data=data,
+            ann_dao=mock_dao,
+            layer_dao=mock_layer_dao,
+        )
+
+    assert resp["id"] == 10
+    result = resp["result"]
+    # Must contain submitted field and layer
+    assert result["short_descr"] == "only this field"
+    assert result["layer"] == 5
+    # Must NOT contain unsubmitted fields
+    assert "long_descr" not in result
+    assert "start_dttm" not in result
+    assert "end_dttm" not in result
+    assert "json_metadata" not in result
+
+
+async def test_put_annotation_multi_field_update_only_submitted_in_result(
+    mock_dao, mock_layer_dao, mock_layer, mock_annotation
+):
+    """PUT with short_descr + json_metadata returns only those two + layer."""
+    from superset.controllers.annotation import AnnotationController
+    from superset.schemas.annotation import AnnotationPutSchema
+
+    mock_layer_dao.find_by_id = AsyncMock(return_value=mock_layer)
+    mock_dao.find_by_id = AsyncMock(return_value=mock_annotation)
+    mock_dao.update = AsyncMock(return_value=mock_annotation)
+    mock_dao.session.flush = AsyncMock()
+
+    data = AnnotationPutSchema(
+        short_descr="updated descr", json_metadata='{"key": "val"}'
+    )
+
+    handler = AnnotationController.update
+    fn = handler.fn if hasattr(handler, "fn") else handler
+
+    with patch("superset.controllers.annotation.event_logger") as mock_event_logger:
+        mock_event_logger.alog_with_context = AsyncMock()
+        resp = await fn(
+            AnnotationController(owner=MagicMock()),
+            pk=3,
+            annotation_id=10,
+            data=data,
+            ann_dao=mock_dao,
+            layer_dao=mock_layer_dao,
+        )
+
+    result = resp["result"]
+    assert set(result.keys()) == {"short_descr", "json_metadata", "layer"}
+    assert result["short_descr"] == "updated descr"
+    assert result["json_metadata"] == '{"key": "val"}'
+    assert result["layer"] == 3
+
+
+async def test_put_annotation_datetime_fields_serialized_as_iso(
+    mock_dao, mock_layer_dao, mock_layer, mock_annotation
+):
+    """PUT with start_dttm/end_dttm returns ISO-formatted strings in result."""
+    from superset.controllers.annotation import AnnotationController
+    from superset.schemas.annotation import AnnotationPutSchema
+
+    mock_layer_dao.find_by_id = AsyncMock(return_value=mock_layer)
+    mock_dao.find_by_id = AsyncMock(return_value=mock_annotation)
+    mock_dao.update = AsyncMock(return_value=mock_annotation)
+    mock_dao.session.flush = AsyncMock()
+
+    dt_start = datetime(2024, 1, 15, 10, 30, 0)
+    dt_end = datetime(2024, 1, 16, 12, 0, 0)
+    data = AnnotationPutSchema(start_dttm=dt_start, end_dttm=dt_end)
+
+    handler = AnnotationController.update
+    fn = handler.fn if hasattr(handler, "fn") else handler
+
+    with patch("superset.controllers.annotation.event_logger") as mock_event_logger:
+        mock_event_logger.alog_with_context = AsyncMock()
+        resp = await fn(
+            AnnotationController(owner=MagicMock()),
+            pk=7,
+            annotation_id=10,
+            data=data,
+            ann_dao=mock_dao,
+            layer_dao=mock_layer_dao,
+        )
+
+    result = resp["result"]
+    assert set(result.keys()) == {"start_dttm", "end_dttm", "layer"}
+    assert result["start_dttm"] == dt_start.isoformat()
+    assert result["end_dttm"] == dt_end.isoformat()
+    assert result["layer"] == 7
+
+
+# ---------------------------------------------------------------------------
+# get_list — default page_size must be 20 (FAB ModelRestApi.page_size = 20)
+# superset_old/annotation_layers/annotations/api.py does NOT override page_size,
+# so it inherits FAB's default of 20 (flask_appbuilder/api/__init__.py:1014).
+# Liteset's extract_pagination defaults to 25; the annotation controller must
+# explicitly pass default_page_size=20 via build_rison_query_params.
+# ---------------------------------------------------------------------------
+
+
+async def test_get_list_default_page_size_is_20(mock_dao, mock_layer_dao, mock_layer):
+    """When rison_params is None, get_list must use page_size=20 (original FAB default).
+
+    Verifies that build_rison_query_params is called with default_page_size=20,
+    matching FAB ModelRestApi.page_size = 20 (flask_appbuilder/api/__init__.py:1014).
+    AnnotationRestApi does not override page_size, so the default of 20 applies.
+    """
+    from superset.controllers.annotation import AnnotationController
+
+    mock_layer_dao.find_by_id = AsyncMock(return_value=mock_layer)
+    mock_dao.find_all = AsyncMock(return_value=[])
+    mock_dao.count = AsyncMock(return_value=0)
+
+    handler = AnnotationController.get_list
+    fn = handler.fn if hasattr(handler, "fn") else handler
+
+    with (
+        patch("superset.controllers.annotation.build_rison_query_params") as mock_brqp,
+        patch("superset.controllers.annotation.event_logger") as mock_event_logger,
+        patch("superset.controllers.annotation.serialize_list_response") as mock_slr,
+    ):
+        mock_brqp.return_value = ([], None, 0, 20)
+        mock_event_logger.alog_with_context = AsyncMock()
+        mock_slr.return_value = {"count": 0, "result": []}
+
+        await fn(
+            AnnotationController(owner=MagicMock()),
+            pk=1,
+            ann_dao=mock_dao,
+            layer_dao=mock_layer_dao,
+            rison_params=None,
+        )
+
+    # Verify build_rison_query_params was called with default_page_size=20
+    assert mock_brqp.called
+    _, kwargs = mock_brqp.call_args
+    assert kwargs.get("default_page_size") == 20, (
+        "Expected default_page_size=20 (FAB default), "
+        f"got {kwargs.get('default_page_size')}"
+    )
+
+
+async def test_get_list_explicit_page_size_honored(
+    mock_dao, mock_layer_dao, mock_layer
+):
+    """When the client explicitly provides page_size=50, it takes precedence."""
+    from superset.controllers.annotation import AnnotationController
+
+    mock_layer_dao.find_by_id = AsyncMock(return_value=mock_layer)
+    mock_dao.find_all = AsyncMock(return_value=[])
+    mock_dao.count = AsyncMock(return_value=0)
+
+    handler = AnnotationController.get_list
+    fn = handler.fn if hasattr(handler, "fn") else handler
+
+    with (
+        patch("superset.controllers.annotation.build_rison_query_params") as mock_brqp,
+        patch("superset.controllers.annotation.event_logger") as mock_event_logger,
+        patch("superset.controllers.annotation.serialize_list_response") as mock_slr,
+    ):
+        mock_brqp.return_value = ([], None, 0, 50)
+        mock_event_logger.alog_with_context = AsyncMock()
+        mock_slr.return_value = {"count": 0, "result": []}
+
+        await fn(
+            AnnotationController(owner=MagicMock()),
+            pk=1,
+            ann_dao=mock_dao,
+            layer_dao=mock_layer_dao,
+            rison_params={"page": 0, "page_size": 50},
+        )
+
+    # The explicit page_size=50 from rison_params must be forwarded to find_all
+    mock_dao.find_all.assert_awaited_once()
+    call_kwargs = mock_dao.find_all.call_args[1]
+    assert call_kwargs["page_size"] == 50

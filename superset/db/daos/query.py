@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -28,6 +29,8 @@ from superset.db.base_dao import BaseAsyncDAO
 from superset.models.sql_lab import Query, SavedQuery
 from superset.utils.dates import now_as_float
 
+logger = logging.getLogger(__name__)
+
 
 class AsyncQueryDAO(BaseAsyncDAO[Query]):
     model_cls = Query
@@ -37,17 +40,20 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
         query: Query,
         payload: dict[str, Any],
     ) -> None:
-        """Extract column metadata from payload and store in query."""
-        columns = payload.get("columns", [])
-        processed = []
-        for col in columns:
-            processed_col = dict(col)
-            if "name" in processed_col and "column_name" not in processed_col:
-                processed_col["column_name"] = processed_col.pop("name")
-            processed.append(processed_col)
+        """Extract column metadata from payload and store in query.
 
-        query.set_extra_json_key("columns", processed)  # type: ignore[attr-defined]
+        1:1 port of ``superset_old/daos/query.py::QueryDAO.save_metadata``:
+        - default for absent ``columns`` key is ``{}`` (not ``[]``)
+        - unconditionally overwrites ``column_name`` with ``name`` when present
+        - keeps the ``name`` key in the dict (no pop)
+        - mutates the column dicts in-place (same object used for set_extra_json_key)
+        """
+        columns = payload.get("columns", {})
+        for col in columns:
+            if "name" in col:
+                col["column_name"] = col.get("name")
         self.session.add(query)
+        query.set_extra_json_key("columns", columns)  # type: ignore[attr-defined]
 
     async def get_queries_changed_after(
         self,
@@ -78,18 +84,36 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
         Calls cancel_query driver before setting STOPPED status.
         Returns the query if found and stopped, None if not found.
         """
-        query = await self.find_one_or_none(client_id=client_id)
+        # Eager-load ``Query.database``: ``cancel_query`` reads
+        # ``query.database.db_engine_spec`` from a ``to_thread`` worker
+        # (no greenlet/event loop there), so a lazy load would raise
+        # ``MissingGreenlet``. The original (superset_old/daos/query.py:75)
+        # relied on Flask-SQLAlchemy's transparent sync lazy-load.
+        from sqlalchemy.orm import selectinload
+
+        stmt = (
+            select(Query)
+            .filter_by(client_id=client_id)
+            .options(selectinload(Query.database))
+        )
+        result = await self.session.execute(stmt)
+        query = result.scalars().one_or_none()
         if not query:
             return None
 
-        # Skip if already in terminal state
+        # Skip if already in terminal state — 1:1 with
+        # ``superset_old/daos/query.py::stop_query``: STOPPED is NOT
+        # included so that a repeated stop retries cancellation against
+        # the driver (potentially raising SupersetCancelQueryException).
         terminal_states = {
             QueryStatus.FAILED,
             QueryStatus.SUCCESS,
             QueryStatus.TIMED_OUT,
-            QueryStatus.STOPPED,
         }
         if query.status in terminal_states:
+            logger.warning(
+                "Query with client_id could not be stopped: query already complete",
+            )
             return query
 
         # 1:1 with ``superset_old/daos/query.py::stop_query``: attempt to

@@ -140,9 +140,7 @@ def test_validate_guest_token_resources_schema_rejects_chart():
     from superset.security.guest import validate_guest_token_resources_schema
 
     # "chart" is NOT a supported guest-token resource type upstream.
-    errors = validate_guest_token_resources_schema(
-        [{"type": "chart", "id": "uuid-2"}]
-    )
+    errors = validate_guest_token_resources_schema([{"type": "chart", "id": "uuid-2"}])
     assert len(errors) == 1
 
 

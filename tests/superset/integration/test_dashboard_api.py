@@ -111,9 +111,7 @@ async def test_create_filter_state():
     filter_app = create_test_app(
         DashboardFilterStateController,
         dependency_overrides={
-            "dashboard_dao": Provide(
-                lambda: found_dashboard_dao, sync_to_thread=False
-            ),
+            "dashboard_dao": Provide(lambda: found_dashboard_dao, sync_to_thread=False),
         },
     )
     async with AsyncTestClient(app=filter_app) as client:

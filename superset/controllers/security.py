@@ -33,7 +33,7 @@ from litestar.exceptions import NotAuthorizedException, ValidationException
 
 from superset.controllers.base import extract_pagination
 from superset.events import event_logger
-from superset.guards.rbac import require_authentication, require_permission
+from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_role_dao
 from superset.security.guest import validate_guest_token_resources
@@ -124,11 +124,38 @@ class RefreshResponse(msgspec.Struct):
 
 
 class GuestTokenUser(msgspec.Struct):
-    """User info embedded in the guest token."""
+    """User info embedded in the guest token.
 
-    username: str
-    first_name: str = ""
-    last_name: str = ""
+    All fields are optional to match the original ``UserSchema`` (Marshmallow)
+    where none of the fields are ``required=True``, and ``GuestTokenUser``
+    (``TypedDict``, ``total=False``) — every key is optional.
+
+    Fields use ``None`` as sentinel so callers can distinguish "not provided"
+    from an explicit empty string.  ``_to_sparse_dict()`` produces the sparse
+    dict passed to the JWT, mirroring Marshmallow's behaviour of only
+    including keys that were explicitly provided by the caller.
+    """
+
+    username: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+
+    def _to_sparse_dict(self) -> dict[str, str]:
+        """Return a sparse dict containing only non-None fields.
+
+        Mirrors Marshmallow 3 ``UserSchema().load({})`` → ``{}`` behaviour:
+        absent fields are omitted from the output, which lets
+        ``GuestUser.from_token_payload`` fallbacks fire for ``username`` /
+        ``first_name`` / ``last_name``.
+        """
+        result: dict[str, str] = {}
+        if self.username is not None:
+            result["username"] = self.username
+        if self.first_name is not None:
+            result["first_name"] = self.first_name
+        if self.last_name is not None:
+            result["last_name"] = self.last_name
+        return result
 
 
 GuestTokenResourceType = Literal["dashboard"]
@@ -149,11 +176,17 @@ class GuestTokenRlsRule(msgspec.Struct):
 
 
 class GuestTokenCreateSchema(msgspec.Struct):
-    """POST body for ``/api/v1/security/guest_token/``."""
+    """POST body for ``/api/v1/security/guest_token/``.
 
-    user: GuestTokenUser
+    ``user`` is optional to match the original ``GuestTokenCreateSchema``
+    (Marshmallow) where ``user = fields.Nested(UserSchema)`` has no
+    ``required=True``.  When omitted, an empty dict is used downstream
+    (same as Marshmallow's default deserialization of a missing Nested field).
+    """
+
     resources: list[GuestTokenResource]
     rls: list[GuestTokenRlsRule]
+    user: GuestTokenUser | None = None
 
 
 class SecurityController(Controller):
@@ -168,7 +201,7 @@ class SecurityController(Controller):
 
     @get(
         "/csrf_token/",
-        guards=[require_authentication],
+        guards=[require_permission("can_read", "SecurityRestApi")],
     )
     async def csrf_token(
         self,
@@ -235,22 +268,33 @@ class SecurityController(Controller):
 
         Returns ``{"token": "<jwt_string>"}`` on success.
         """
-        from superset.exceptions import SupersetValidationException
+        from superset.exceptions import (
+            QueryObjectValidationError,
+            SupersetGenericErrorException,
+            SupersetValidationException,
+        )
 
         # Convert msgspec Structs to plain dicts for downstream functions
         resources_raw: list[dict[str, Any]] = [
             {"type": r.type, "id": r.id} for r in data.resources
         ]
 
-        # Validate resource entries (schema + DB existence checks)
-        # The session is obtained from the security_manager's DAO, which
-        # shares the same request-scoped AsyncSession.
+        # Validate resource entries (schema + DB existence checks).
+        # Original catches EmbeddedDashboardNotFoundError → response_400()
+        # and marshmallow ValidationError → response_400(); mirror as 400.
         session = security_manager.dao.session  # type: ignore[attr-defined]
         errors = await validate_guest_token_resources(resources_raw, session)
         if errors:
-            raise SupersetValidationException(
+            raise QueryObjectValidationError(
                 f"Invalid guest token resources: {'; '.join(errors)}"
             )
+
+        # Resolve user — data.user may be None when the field was omitted from
+        # the POST body (GuestTokenCreateSchema.user is Optional). Use an empty
+        # GuestTokenUser as the default so downstream accesses never crash.
+        # Original Marshmallow Nested field without required=True deserialized
+        # a missing user as {} → same empty-user semantics.
+        _user = data.user if data.user is not None else GuestTokenUser()
 
         # Apply GUEST_TOKEN_VALIDATOR_HOOK if configured (mirrors Superset's
         # current_app.config["GUEST_TOKEN_VALIDATOR_HOOK"]).
@@ -260,20 +304,19 @@ class SecurityController(Controller):
         )
         if guest_token_validator_hook is not None:
             if not callable(guest_token_validator_hook):
-                raise SupersetValidationException(
-                    "Guest token validator hook is not callable"
+                # Original raises SupersetGenericErrorException → HTTP 500:
+                # the hook is a server-side misconfiguration, not a client error.
+                raise SupersetGenericErrorException(
+                    message="Guest token validator hook not callable"
                 )
             token_payload: dict[str, Any] = {
-                "user": {
-                    "username": data.user.username,
-                    "first_name": data.user.first_name,
-                    "last_name": data.user.last_name,
-                },
+                "user": _user._to_sparse_dict(),
                 "resources": resources_raw,
                 "rls": [msgspec.structs.asdict(r) for r in data.rls],
             }
             if not guest_token_validator_hook(token_payload):
-                raise SupersetValidationException("Guest token validation failed")
+                # Original raises marshmallow ValidationError → response_400().
+                raise QueryObjectValidationError("Guest token validation failed")
 
         secret_key = getattr(settings, "guest_token_jwt_secret", "")
         if not secret_key:
@@ -310,29 +353,30 @@ class SecurityController(Controller):
             audience = getattr(settings, "webdriver_baseurl", "")
         audience = str(audience) if audience else ""
 
-        user_dict: dict[str, Any] = {
-            "username": data.user.username,
-            "first_name": data.user.first_name,
-            "last_name": data.user.last_name,
-        }
+        # Build a sparse user dict (only include keys provided by the caller).
+        # Matches Marshmallow's UserSchema sparse output — absent fields are
+        # omitted so GuestUser.from_token_payload fallbacks fire correctly.
+        user_dict: dict[str, Any] = _user._to_sparse_dict()
         rls_raw: list[dict[str, Any]] = [msgspec.structs.asdict(r) for r in data.rls]
 
+        algorithm: str = getattr(settings, "guest_token_jwt_algo", "HS256")
         token = security_manager.create_guest_access_token(
             secret_key=secret_key,
             user=user_dict,
             resources=resources_raw,
             rls=rls_raw,
+            algorithm=algorithm,
             exp_seconds=exp_seconds,
             audience=audience,
         )
         await event_logger.alog_with_context(
-            "security.guest_token", extra={"username": data.user.username}
+            "security.guest_token", extra={"username": _user.username or ""}
         )
         return {"token": token}
 
     @get(
         "/roles/search/",
-        guards=[require_permission("list_roles", "Security")],
+        guards=[require_permission("can_list_roles", "RoleRestAPI")],
     )
     async def search_roles(
         self,
@@ -344,27 +388,49 @@ class SecurityController(Controller):
         Supports Rison query parameters:
         - ``page``, ``page_size`` for pagination
         - ``order_column`` (id | name), ``order_direction`` (asc | desc)
-        - ``filters`` with ``col=name`` for name substring matching
+        - ``filters`` with ``col`` one of: name, user_ids, permission_ids,
+          group_ids
         """
         from superset.schemas.security import RoleResponse, RolesSearchResponse
 
         params = rison_params or {}
-        page, page_size = extract_pagination(rison_params)
+        # Original security/api.py:298 defaults page_size to 10 (not 25)
+        page, page_size = extract_pagination(rison_params, default_page_size=10)
         order_column = params.get("order_column", "id")
         order_direction = params.get("order_direction", "asc")
 
-        # Extract name filter from rison filters list
-        name_filter: str | None = None
-        for f in params.get("filters", []):
-            if f.get("col") == "name":
-                name_filter = f.get("value")
+        # Original returns 400 for invalid order_column (security/api.py:289-292)
+        valid_columns = ("id", "name")
+        if order_column not in valid_columns:
+            from litestar.exceptions import HTTPException
 
-        # Validate order_column to prevent arbitrary column access
-        if order_column not in ("id", "name"):
-            order_column = "id"
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid order column: {order_column}",
+            )
+
+        # Extract filters — mirrors original filter_dict loop (security/api.py:305-319)
+        name_filter: str | None = None
+        user_ids_filter: str | None = None
+        permission_ids_filter: str | None = None
+        group_ids_filter: str | None = None
+        for f in params.get("filters", []):
+            col = f.get("col")
+            value = f.get("value")
+            if col == "name":
+                name_filter = value
+            elif col == "user_ids":
+                user_ids_filter = value
+            elif col == "permission_ids":
+                permission_ids_filter = value
+            elif col == "group_ids":
+                group_ids_filter = value
 
         roles, total = await role_dao.search(
             name_filter=name_filter,
+            user_ids_filter=user_ids_filter,
+            permission_ids_filter=permission_ids_filter,
+            group_ids_filter=group_ids_filter,
             order_column=order_column,
             order_direction=order_direction,
             page=page,

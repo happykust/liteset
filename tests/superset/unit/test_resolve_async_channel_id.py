@@ -34,7 +34,6 @@ import uuid
 from unittest.mock import MagicMock
 
 import jwt as pyjwt
-import pytest
 
 from superset.middleware.async_token import resolve_async_channel_id_from_request
 

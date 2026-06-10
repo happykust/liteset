@@ -164,9 +164,7 @@ import pytest  # noqa: E402
 
 @pytest.mark.parametrize("bad", ['"[]"', '"\\"s\\""', '"5"', '"true"'])
 def test_dashboard_post_rejects_non_object_json_metadata(bad: str) -> None:
-    payload = (
-        b'{"dashboard_title": "x", "json_metadata": ' + bad.encode() + b"}"
-    )
+    payload = b'{"dashboard_title": "x", "json_metadata": ' + bad.encode() + b"}"
     with pytest.raises(msgspec.ValidationError, match="json_metadata must be"):
         msgspec.json.decode(payload, type=DashboardPostSchema)
 
@@ -214,9 +212,7 @@ def test_dashboard_copy_rejects_non_object_json_metadata() -> None:
     from superset.schemas.dashboard import DashboardCopySchema
 
     for bad in ['"[]"', '"\\"s\\""', '"5"']:
-        payload = (
-            b'{"dashboard_title": "c", "json_metadata": ' + bad.encode() + b"}"
-        )
+        payload = b'{"dashboard_title": "c", "json_metadata": ' + bad.encode() + b"}"
         with pytest.raises(msgspec.ValidationError, match="json_metadata must be"):
             msgspec.json.decode(payload, type=DashboardCopySchema)
     # A real object is accepted.

@@ -380,7 +380,12 @@ class DashboardController(Controller):
         "/_info",
         guards=[require_permission("can_read", "Dashboard")],
     )
-    async def info(self, dao: DashboardDAOProtocol) -> dict[str, Any]:
+    async def info(
+        self,
+        dao: DashboardDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
         """GET /api/v1/dashboard/_info — API metadata for frontend."""
         return await get_info_payload(
             dao=dao,
@@ -397,6 +402,9 @@ class DashboardController(Controller):
                 "can_set_embedded",
                 "can_write",
             ],
+            security_manager=security_manager,
+            current_user=current_user,
+            class_permission_name="Dashboard",
         )
 
     # ------------------------------------------------------------------
@@ -759,19 +767,45 @@ class DashboardController(Controller):
             raise ObjectNotFoundError("Dashboard", id_or_slug)
         await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
 
-        if not dashboard.position_json:
-            return {"all_tabs": {}, "tab_tree": []}
-
         try:
-            position = _json.loads(dashboard.position_json)
-        except (ValueError, TypeError):
-            return {"all_tabs": {}, "tab_tree": []}
+            position = (
+                _json.loads(dashboard.position_json)
+                if dashboard.position_json
+                else {}
+            )
+        except (ValueError, TypeError) as err:
+            from litestar.exceptions import ClientException
+
+            from superset.i18n import gettext as _
+
+            # 1:1 with ``except (TypeError, ValueError) → response_400``
+            # (superset_old/dashboards/api.py:484-489) — HTTP 400, not 422.
+            raise ClientException(
+                status_code=400,
+                detail=_(
+                    "Tab schema is invalid, caused by: %(error_msg)s",
+                    error_msg=str(err),
+                ),
+            ) from err
+
+        if position == {}:
+            # 1:1 with ``Dashboard.tabs`` (superset_old/models/dashboard.py:
+            # 307-309): ``if self.position == {}: return {}`` — covers NULL,
+            # "" AND the JSON-empty ``"{}"`` string; the dumped result is an
+            # EMPTY object (no all_tabs/tab_tree keys).
+            return {"result": {}}
 
         all_tabs: dict[str, str] = {}
         tab_tree: list[dict[str, Any]] = []
 
+        # Direct dict indexing throughout — 1:1 with ``Dashboard.tabs``
+        # (superset_old/models/dashboard.py:311-342): a position_json that is
+        # valid JSON but lacks ROOT_ID / a node "type" / "meta"."text" raises
+        # KeyError, which the original API's ``except (TypeError, ValueError)``
+        # does NOT catch -> @safe -> HTTP 500. Defensive ``.get`` fallbacks
+        # here turned those into silent 200s.
         def get_node(node_id: str) -> dict[str, Any]:
-            return position.get(node_id, {})
+            return position[node_id]
 
         def build_tab_tree(
             node: dict[str, Any], children: list[dict[str, Any]]
@@ -779,29 +813,20 @@ class DashboardController(Controller):
             new_children: list[dict[str, Any]] = []
             for child_id in node.get("children", []):
                 child = get_node(child_id)
-                if not child:
-                    continue
-                node_type = node.get("type", "")
-                if node_type == "TABS":
+                if node["type"] == "TABS":
                     children.append(child)
                     queue.append((child, new_children))
-                elif node_type in ("GRID", "ROOT"):
+                elif node["type"] in ("GRID", "ROOT"):
                     queue.append((child, children))
-                elif node_type == "TAB":
+                elif node["type"] == "TAB":
                     queue.append((child, new_children))
-            if node.get("type") == "TAB":
-                meta = node.get("meta", {})
-                title = meta.get("text") or meta.get("defaultText") or ""
-                node_id = node.get("id", "")
+            if node["type"] == "TAB":
                 node["children"] = new_children
-                node["title"] = title
-                node["value"] = node_id
-                node["parents"] = node.get("parents", [])
-                all_tabs[node_id] = title
+                node["title"] = node["meta"]["text"]
+                node["value"] = node["id"]
+                all_tabs[node["id"]] = node["title"]
 
         root = get_node("ROOT_ID")
-        if not root:
-            return {"all_tabs": {}, "tab_tree": []}
 
         queue: deque[tuple[dict[str, Any], list[dict[str, Any]]]] = deque()
         queue.append((root, tab_tree))
@@ -809,7 +834,7 @@ class DashboardController(Controller):
             node, children = queue.popleft()
             build_tab_tree(node, children)
 
-        return {"all_tabs": all_tabs, "tab_tree": tab_tree}
+        return {"result": {"all_tabs": all_tabs, "tab_tree": tab_tree}}
 
     # ------------------------------------------------------------------
     # GET — related charts
@@ -842,6 +867,8 @@ class DashboardController(Controller):
         await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
         charts = await dao.get_charts_for_dashboard(dashboard)
 
+        from superset.utils.core import markdown as _markdown
+
         result = []
         for chart in charts:
             # Use Slice.form_data property — applies update_time_range()
@@ -860,7 +887,9 @@ class DashboardController(Controller):
                         else None
                     ),
                     "description": desc or None,
-                    "description_markeddown": (f"<p>{desc}</p>" if desc else ""),
+                    # 1:1 with Slice.description_markeddown
+                    # (superset_old/models/slice.py:215-216).
+                    "description_markeddown": _markdown(desc),
                     "form_data": fd,
                     "slice_url": getattr(chart, "slice_url", None),
                     "certified_by": getattr(chart, "certified_by", None),
@@ -1054,7 +1083,6 @@ class DashboardController(Controller):
             dao=cast("AsyncDashboardDAO", dao),
             dashboard_id=pk,
             data={
-                "color_namespace": data.color_namespace,
                 "color_scheme": data.color_scheme,
                 "label_colors": data.label_colors,
                 "map_label_colors": data.map_label_colors,
@@ -1146,6 +1174,8 @@ class DashboardController(Controller):
         self,
         dao: DashboardDAOProtocol,
         rison_params: list[int] | dict[str, Any] | None,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
         token: str | None = Parameter(query="token", default=None),
     ) -> Stream:
         ids = extract_ids(rison_params)
@@ -1162,7 +1192,12 @@ class DashboardController(Controller):
 
         timestamp = _datetime.now().strftime("%Y%m%dT%H%M%S")
         root = f"dashboard_export_{timestamp}"
-        cmd = ExportDashboardsCommand(model_ids=ids, dao=cast("AsyncDashboardDAO", dao))
+        cmd = ExportDashboardsCommand(
+            model_ids=ids,
+            dao=cast("AsyncDashboardDAO", dao),
+            security_manager=security_manager,
+            user=current_user,
+        )
         cmd._root = root  # noqa: SLF001
         buf = await cmd.execute()
         await event_logger.alog_with_context(
@@ -1378,15 +1413,14 @@ class DashboardController(Controller):
         ):
             raise ObjectNotFoundError("Dashboard screenshot", pk)
 
-        from superset.utils.screenshots import (
-            DashboardScreenshot,
-            ScreenshotImageNotAvailableException,
-        )
-
         # Access-scoped lookup (1:1 upstream ``datamodel.get(pk, base_filters)``
         # → 404) — without it any holder of the coarse perm could serve/trigger
         # a screenshot or thumbnail of a dashboard they cannot access.
         from superset.db.filters import dashboard_access_filters
+        from superset.utils.screenshots import (
+            DashboardScreenshot,
+            ScreenshotImageNotAvailableException,
+        )
 
         _dash_filters = await dashboard_access_filters(security_manager, current_user)
         dashboard = await dao.get_full_by_id_or_slug(
@@ -1473,16 +1507,15 @@ class DashboardController(Controller):
         if not flags.get("THUMBNAILS", False):
             raise ObjectNotFoundError("Dashboard thumbnail", pk)
 
+        # Access-scoped lookup (1:1 upstream ``datamodel.get(pk, base_filters)``
+        # → 404) — without it any holder of the coarse perm could serve/trigger
+        # a screenshot or thumbnail of a dashboard they cannot access.
+        from superset.db.filters import dashboard_access_filters
         from superset.utils.screenshots import (
             DashboardScreenshot,
             ScreenshotCachePayload,
             ScreenshotImageNotAvailableException,
         )
-
-        # Access-scoped lookup (1:1 upstream ``datamodel.get(pk, base_filters)``
-        # → 404) — without it any holder of the coarse perm could serve/trigger
-        # a screenshot or thumbnail of a dashboard they cannot access.
-        from superset.db.filters import dashboard_access_filters
 
         _dash_filters = await dashboard_access_filters(security_manager, current_user)
         dashboard = await dao.get_full_by_id_or_slug(

@@ -138,9 +138,11 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
                 if hasattr(spec, "build_sqlalchemy_uri") and hasattr(
                     spec, "parameters_schema"
                 ):
-                    masked_extra = self._data.get(
-                        "masked_encrypted_extra"
-                    ) or self._data.get("encrypted_extra") or "{}"
+                    masked_extra = (
+                        self._data.get("masked_encrypted_extra")
+                        or self._data.get("encrypted_extra")
+                        or "{}"
+                    )
                     import json as _json
 
                     try:

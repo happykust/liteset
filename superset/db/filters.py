@@ -136,6 +136,76 @@ def _databases_from_view_menus(view_menu_names: set[str]) -> set[str]:
     return result
 
 
+def _apply_extra_dynamic_database_filters() -> list[Any]:
+    """Apply ``EXTRA_DYNAMIC_QUERY_FILTERS["databases"]`` if configured.
+
+    1:1 port of the dynamic-filter hook from
+    ``superset_old/databases/filters.py:DatabaseFilter.apply`` (lines 52-55).
+
+    The original passes the FAB ``Query`` through the callable BEFORE the
+    permission check, so the callable can hide/show databases independent
+    of RBAC (e.g. via feature flags).  We honour the same contract: a
+    ``Callable[[Query], Query]`` that may call ``query.filter(clause)``
+    and/or ``query.join(...)`` to restrict which databases are visible.
+
+    To faithfully replicate the original behaviour — including callables
+    that add JOINs rather than (or in addition to) WHERE clauses — we
+    construct a detached ``sqlalchemy.orm.Query``, invoke the callable,
+    and then use the resulting statement's full FROM clause.  When the
+    query has joins (detected via additional FROM entries beyond the base
+    ``Database`` table), we convert the whole filtered statement into a
+    scalar sub-select on ``Database.id`` and express it as an IN clause.
+    When only a plain WHERE was added we return that clause directly,
+    preserving backwards compatibility with existing filter callables.
+    """
+    from superset.config import SupersetSettings
+
+    settings = SupersetSettings()  # type: ignore[call-arg]
+    dynamic_filters = settings.extra_dynamic_query_filters
+    if not dynamic_filters:
+        return []
+    dynamic_db_filter = dynamic_filters.get("databases")
+    if not dynamic_db_filter:
+        return []
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy.orm import Query as LegacyQuery
+    from sqlalchemy.sql.selectable import Join
+
+    from superset.db.session import get_sync_session
+    from superset.models.core import Database
+
+    session = get_sync_session()
+    base_query = LegacyQuery(Database, session=session)
+    try:
+        filtered_query = dynamic_db_filter(base_query)
+    finally:
+        session.close()
+
+    stmt = filtered_query.statement
+    froms = stmt.get_final_froms()
+
+    # Check whether the callable introduced any JOINs (extra FROM entries
+    # that are not the plain Database table).
+    has_joins = any(isinstance(f, Join) for f in froms)
+
+    if has_joins:
+        # The callable added JOINs: materialise the full filter as an
+        # EXISTS / IN sub-select so the JOINs are honoured.  This is the
+        # correct translation of the original ``query = callable(query)``
+        # pattern where the whole resulting Query object was used directly.
+        # Pass the Select statement directly (not .subquery()) to avoid the
+        # SA "Coercing Subquery into select()" deprecation warning.
+        db_pk = sa_inspect(Database).primary_key[0]
+        id_select = filtered_query.with_entities(db_pk).statement
+        return [Database.id.in_(id_select)]
+
+    if stmt.whereclause is not None:
+        return [stmt.whereclause]
+
+    return []
+
+
 async def database_access_filters(
     security_manager: Any,
     user: Any,
@@ -145,23 +215,23 @@ async def database_access_filters(
     1:1 port of ``superset_old/databases/filters.py:DatabaseFilter.apply``.
 
     Visibility rules:
+      * ``EXTRA_DYNAMIC_QUERY_FILTERS["databases"]`` is applied FIRST
+        (before the RBAC check) so deployments can show/hide databases
+        via feature flags or other dynamic criteria;
       * users with the global ``all_database_access`` permission (which
         includes admins, who also carry that grant) see every database —
-        no restriction;
+        no additional restriction;
       * everyone else is restricted to databases for which they hold a
         ``database_access`` permission OR whose name appears in any
         ``catalog_access`` / ``schema_access`` / ``datasource_access``
         view-menu permission.
-
-    Note: the original additionally applies
-    ``EXTRA_DYNAMIC_QUERY_FILTERS["databases"]`` to the FAB ``Query``.  That
-    hook operates on a synchronous SQLAlchemy ``Query`` object and has no
-    direct analogue in the async ``find_all(filters=...)`` clause-list API,
-    so it is intentionally omitted here (no dynamic-filter callable is wired
-    up in this deployment).
     """
+    # Dynamic filters are applied BEFORE the permission check, matching
+    # the original ordering (superset_old/databases/filters.py:52-55).
+    dynamic_clauses = _apply_extra_dynamic_database_filters()
+
     if await security_manager.can_access_all_databases(user=user):
-        return []
+        return dynamic_clauses
 
     from superset.models.core import Database
 
@@ -183,7 +253,7 @@ async def database_access_filters(
         | _databases_from_view_menus(datasource_access)
     )
 
-    return [
+    return dynamic_clauses + [
         or_(
             Database.perm.in_(database_perms),
             Database.database_name.in_(sorted(database_names)),
@@ -318,7 +388,7 @@ async def dashboard_access_filters(  # noqa: C901  # full 1:1 port from old code
         # Use the association table directly — avoids depending on FAB's
         # ``ab_role`` model class import.
         try:
-            from superset.models.dashboard import DashboardRoles  # type: ignore
+            from superset.models.dashboard import DashboardRoles
 
             roles_based_query = (
                 select(Dashboard.id)

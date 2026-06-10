@@ -103,6 +103,12 @@ async def _run(
             )
             return
 
+        # 1:1 with the original task (superset_old/commands/database/
+        # sync_permissions.py:338): load the SSH tunnel so that
+        # ``_get_catalog_names`` / ``_get_schema_names`` can reach
+        # databases behind SSH tunnels.
+        ssh_tunnel = await dao.get_ssh_tunnel(database_id)
+
         security_manager = build_async_security_manager(session, SupersetSettings())
         cmd = SyncPermissionsCommand(
             dao=dao,
@@ -111,11 +117,13 @@ async def _run(
             username=username,
             old_db_connection_name=old_db_connection_name,
             db_connection=database,
+            ssh_tunnel=ssh_tunnel,
         )
         # We are already inside the Celery task, so call the inline sync
         # directly rather than ``run()`` (which would re-dispatch the task in
         # async mode) — and without ``validate()`` (no pre-flight ping), exactly
-        # like the original task's ``SyncPermissionsCommand(...).sync_database_permissions()``.
+        # like the original task's
+        # ``SyncPermissionsCommand(...).sync_database_permissions()``.
         await cmd.sync_database_permissions()
         # No request middleware here to commit the AsyncSession, so commit
         # explicitly — otherwise the new/renamed permission rows are lost.

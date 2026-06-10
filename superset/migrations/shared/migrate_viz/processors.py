@@ -16,6 +16,7 @@
 # under the License.
 from typing import Any
 
+from superset.migrations.shared.migrate_viz.base import MigrateViz
 from superset.migrations.shared.migrate_viz.query_functions import (
     build_query_context,
     contribution_operator,
@@ -43,8 +44,6 @@ from superset.migrations.shared.migrate_viz.query_functions import (
     time_compare_pivot_operator,
 )
 from superset.utils.core import as_list
-
-from .base import MigrateViz
 
 
 class MigrateTreeMap(MigrateViz):

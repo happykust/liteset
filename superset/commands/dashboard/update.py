@@ -19,7 +19,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import textwrap
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
@@ -185,6 +187,90 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
 
         return self._dashboard
 
+    @staticmethod
+    def _extract_tab_ids(position_json: str) -> set[str]:
+        """Parse a position JSON blob and return all ``TAB-*`` key IDs."""
+        import json as _json  # noqa: TID251
+
+        if not position_json:
+            return set()
+        try:
+            return {k for k in _json.loads(position_json) if k.startswith("TAB-")}
+        except (ValueError, TypeError):
+            return set()
+
+    async def _notify_deactivated_reports(self, reports_to_notify: list[Any]) -> None:
+        """Eager-load report owners and email each owner about deactivation.
+
+        1:1 with
+        ``superset_old/commands/dashboard/update.py::send_deactivated_email_warning``
+        (lines 142-187).  Runs SMTP in a thread to avoid blocking the loop.
+        """
+        from sqlalchemy import select as sa_select
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.reports import ReportSchedule
+        from superset.reports.notifications import _build_notification_config
+        from superset.reports.notifications.email import _send_email_smtp
+
+        report_ids = [r.id for r in reports_to_notify]
+        stmt = (
+            sa_select(ReportSchedule)
+            .where(ReportSchedule.id.in_(report_ids))
+            .options(selectinload(ReportSchedule.owners))
+        )
+        result = await self._dao.session.execute(stmt)
+        loaded_reports = {r.id: r for r in result.scalars().all()}
+
+        config = _build_notification_config()
+
+        # Implicit string concatenation keeps the exact text produced by the
+        # previous ``textwrap.dedent`` block while staying within the line limit.
+        description = (
+            "\n"
+            "The dashboard tab used in this report has been deleted "
+            "and your report has been deactivated.\n"
+            "Please update your report settings to remove or change "
+            "the tab used.\n"
+        )
+        html_content = textwrap.dedent(
+            f"""
+                <html>
+                <head>
+                    <style type="text/css">
+                    table, th, td {{
+                        border-collapse: collapse;
+                        border-color: rgb(200, 212, 227);
+                        color: rgb(42, 63, 95);
+                        padding: 4px 8px;
+                    }}
+                    .image{{
+                        margin-bottom: 18px;
+                    }}
+                    </style>
+                </head>
+                <body>
+                    <div>{description}</div>
+                    <br>
+                </body>
+                </html>
+                """
+        )
+
+        for report in reports_to_notify:
+            loaded = loaded_reports.get(report.id, report)
+            for report_owner in getattr(loaded, "owners", []):
+                email = getattr(report_owner, "email", None)
+                if email:
+                    subject = f"[Report: {report.name}] Deactivated"
+                    await asyncio.to_thread(
+                        _send_email_smtp,
+                        email,
+                        subject,
+                        html_content,
+                        config,
+                    )
+
     async def _process_tab_diff(self, old_position_json: str | None) -> None:
         """Detect deleted tabs and deactivate report schedules anchored to them.
 
@@ -194,30 +280,20 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         are considered deleted.  Report schedules whose ``extra`` JSON
         references a deleted tab's anchor are deactivated (``active=False``).
         """
-        import json as _json  # noqa: TID251
-
         assert self._dashboard is not None
 
         old_position = old_position_json or ""
         new_position = self._data.get("position_json", "")
 
-        try:
-            old_tabs = (
-                {k for k in _json.loads(old_position) if k.startswith("TAB-")}
-                if old_position
-                else set()
-            )
-        except (ValueError, TypeError):
-            old_tabs = set()
+        # Mirror the original guard: `if position_json and current_tabs` in
+        # superset_old/commands/dashboard/update.py:127.  When new_position is
+        # an empty string the caller supplied no real layout, so treat it as
+        # "no change" and do not deactivate any reports.
+        if not new_position:
+            return
 
-        try:
-            new_tabs = (
-                {k for k in _json.loads(new_position) if k.startswith("TAB-")}
-                if new_position
-                else set()
-            )
-        except (ValueError, TypeError):
-            new_tabs = set()
+        old_tabs = self._extract_tab_ids(old_position)
+        new_tabs = self._extract_tab_ids(new_position)
 
         deleted_tabs = old_tabs - new_tabs
         if not deleted_tabs:
@@ -236,12 +312,13 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         from superset.db.daos.report import AsyncReportScheduleDAO
 
         report_dao = AsyncReportScheduleDAO(session=self._dao.session)
-        seen_ids: set[int] = set()
+        reports_to_notify: list[Any] = []
+        # NO per-report dedup across tabs — the original loops every deleted
+        # tab independently and notifies owners once per MATCHED TAB
+        # (superset_old/commands/dashboard/update.py:142-187); re-setting
+        # ``active = False`` is idempotent.
         for tab in deleted_tabs:
             for report in await report_dao.find_by_extra_metadata(tab):
-                if report.id in seen_ids:
-                    continue
-                seen_ids.add(report.id)
                 report.active = False  # type: ignore[assignment]
                 logger.info(
                     "Deactivated report schedule %s (id=%s) — tab '%s' was "
@@ -251,10 +328,16 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
                     tab,
                     self._dashboard_id,
                 )
-        # NOTE: upstream also emails each report owner ("dashboard tab used in
-        # this report has been deleted"). Deferred — SMTP side-effect that the
-        # async stack routes through Celery; deactivation (the data change) is
-        # the contract-relevant behaviour.
+                reports_to_notify.append(report)
+
+        if reports_to_notify:
+            # 1:1 with
+            # ``superset_old/commands/dashboard/update.py``
+            # ``::send_deactivated_email_warning`` (lines 142-187):
+            # email each report owner when the report is deactivated
+            # due to a deleted tab.  Run in a thread so SMTP (sync
+            # smtplib) does not block the event-loop.
+            await self._notify_deactivated_reports(reports_to_notify)
 
 
 class UpdateDashboardFiltersCommand(AsyncBaseCommand[list[dict[str, Any]]]):
@@ -282,28 +365,18 @@ class UpdateDashboardFiltersCommand(AsyncBaseCommand[list[dict[str, Any]]]):
                 self._dashboard, self._user_id
             )
 
-    async def run(self) -> list[dict[str, Any]]:
-        assert self._dashboard is not None
-        import json  # noqa: TID251
+    @staticmethod
+    def _apply_filter_updates(
+        native_filter_configuration: list[dict[str, Any]],
+        deleted: list[str],
+        modified: list[dict[str, Any]],
+        reordered_filter_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        """Merge delete/modify/new-filter operations into the updated list.
 
-        metadata: dict[str, Any] = {}
-        if self._dashboard.json_metadata:
-            try:
-                parsed = json.loads(self._dashboard.json_metadata)
-                # Coerce a non-object value (imported/legacy ``[1,2]`` / ``"s"``)
-                # to {} so ``metadata.get(...)`` below doesn't raise → 500.
-                if isinstance(parsed, dict):
-                    metadata = parsed
-            except (json.JSONDecodeError, TypeError):
-                metadata = {}
-
-        native_filter_configuration: list[dict[str, Any]] = metadata.get(
-            "native_filter_configuration", []
-        )
-        reordered_filter_ids: list[str] = list(self._data.get("reordered") or [])
-        deleted: list[str] = list(self._data.get("deleted") or [])
-        modified: list[dict[str, Any]] = list(self._data.get("modified") or [])
-
+        Mirrors the mutation logic in the original
+        ``UpdateDashboardNativeFiltersCommand.run`` (sync port).
+        """
         updated_configuration: list[dict[str, Any]] = []
         # Modify / Delete existing filters
         for conf in native_filter_configuration:
@@ -326,7 +399,19 @@ class UpdateDashboardFiltersCommand(AsyncBaseCommand[list[dict[str, Any]]]):
                 if reordered_filter_ids and new_filter_id not in reordered_filter_ids:
                     reordered_filter_ids.append(new_filter_id)
 
-        # Reorder filters
+        return updated_configuration
+
+    @staticmethod
+    def _reorder_and_clean_filters(
+        updated_configuration: list[dict[str, Any]],
+        reordered_filter_ids: list[str],
+        metadata: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Reorder filters and strip legacy ``show_native_filters`` key.
+
+        1:1 with ``DashboardJSONMetadataSchema.@pre_load
+        remove_show_native_filters`` cleanup (apache/superset#23228).
+        """
         if reordered_filter_ids:
             filter_map = {
                 filter_config["id"]: filter_config
@@ -338,15 +423,47 @@ class UpdateDashboardFiltersCommand(AsyncBaseCommand[list[dict[str, Any]]]):
                 if filter_id in filter_map
             ]
 
-        # 1:1 with the original ``DashboardJSONMetadataSchema.@pre_load
-        # remove_show_native_filters`` cleanup (apache/superset#23228) —
-        # strip the legacy ``show_native_filters`` flag from the top-level
-        # metadata blob and from each ``native_filter_configuration``
-        # entry so it never re-enters storage on a filters update.
+        # Strip the legacy flag from top-level metadata and each entry.
         metadata.pop("show_native_filters", None)
         for filter_conf in updated_configuration:
             if isinstance(filter_conf, dict):
                 filter_conf.pop("show_native_filters", None)
+
+        return updated_configuration
+
+    async def run(self) -> list[dict[str, Any]]:
+        assert self._dashboard is not None
+        import json  # noqa: TID251
+
+        metadata: dict[str, Any] = {}
+        if self._dashboard.json_metadata:
+            try:
+                parsed = json.loads(self._dashboard.json_metadata)
+                # Coerce a non-object value (imported/legacy ``[1,2]`` / ``"s"``)
+                # to {} so ``metadata.get(...)`` below doesn't raise → 500.
+                if isinstance(parsed, dict):
+                    metadata = parsed
+            except (json.JSONDecodeError, TypeError):
+                metadata = {}
+
+        native_filter_configuration: list[dict[str, Any]] = metadata.get(
+            "native_filter_configuration", []
+        )
+        reordered_filter_ids: list[str] = list(self._data.get("reordered") or [])
+        deleted: list[str] = list(self._data.get("deleted") or [])
+        modified: list[dict[str, Any]] = list(self._data.get("modified") or [])
+
+        updated_configuration = self._apply_filter_updates(
+            native_filter_configuration,
+            deleted,
+            modified,
+            reordered_filter_ids,
+        )
+        updated_configuration = self._reorder_and_clean_filters(
+            updated_configuration,
+            reordered_filter_ids,
+            metadata,
+        )
 
         metadata["native_filter_configuration"] = updated_configuration
         self._dashboard.json_metadata = json.dumps(metadata)
@@ -383,8 +500,33 @@ class UpdateDashboardColorsCommand(AsyncBaseCommand["Dashboard"]):
 
     async def run(self) -> "Dashboard":
         assert self._dashboard is not None
+
+        # 1:1 with
+        # ``superset_old/commands/dashboard/update.py``
+        # ``UpdateDashboardColorsConfigCommand.run`` (lines 223-230):
+        # when ``mark_updated=False``, capture ``changed_on``
+        # *before* the color update is flushed.  The flush triggers SA's
+        # ``onupdate=datetime.now`` on the ``changed_on`` column; then we
+        # restore the captured value and flush again so the outer transaction
+        # commits the original timestamp.  Without the intermediate flush the
+        # SA ``onupdate`` fires during the final commit and overwrites the
+        # restored value.
+        original_changed_on = (
+            self._dashboard.changed_on if not self._mark_updated else None
+        )
+
         await self._dao.update_colors_config(
             self._dashboard, self._data, mark_updated=self._mark_updated
         )
+        # First flush: persists json_metadata; SA onupdate stamps changed_on=now()
         await self._dao.session.flush()
+
+        if not self._mark_updated and original_changed_on is not None:
+            # Restore the original timestamp (mirrors the intermediate
+            # db.session.commit() + reassignment in the original synchronous
+            # implementation).
+            self._dashboard.changed_on = original_changed_on  # type: ignore[assignment]
+            # Second flush: writes the restored changed_on value.
+            await self._dao.session.flush()
+
         return self._dashboard

@@ -32,7 +32,7 @@ import tempfile
 import threading
 import uuid
 import zlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import Enum, StrEnum
@@ -76,7 +76,10 @@ T = TypeVar("T")
 
 
 class AdhocFilterClause(TypedDict, total=False):
-    """TypedDict for adhoc filter clauses — ported 1:1 from superset_old/utils/core.py:216."""
+    """TypedDict for adhoc filter clauses.
+
+    Ported 1:1 from superset_old/utils/core.py:216.
+    """
 
     clause: str
     expressionType: str
@@ -89,7 +92,10 @@ class AdhocFilterClause(TypedDict, total=False):
 
 
 class QueryObjectFilterClause(TypedDict, total=False):
-    """TypedDict for query object filter clauses — ported 1:1 from superset_old/utils/core.py:227."""
+    """TypedDict for query object filter clauses.
+
+    Ported 1:1 from superset_old/utils/core.py:227.
+    """
 
     col: Any
     op: str
@@ -115,9 +121,7 @@ def apply_max_row_limit(limit: int, server_pagination: bool | None = None) -> in
     try:
         settings = _config.SupersetSettings()
         sql_max_row = int(getattr(settings, "sql_max_row", 100000))
-        table_viz_max = int(
-            getattr(settings, "table_viz_max_row_server", sql_max_row)
-        )
+        table_viz_max = int(getattr(settings, "table_viz_max_row_server", sql_max_row))
     except Exception:  # noqa: BLE001 — never break query building on config errors
         sql_max_row, table_viz_max = 100000, 100000
     max_limit = table_viz_max if server_pagination else sql_max_row
@@ -598,9 +602,15 @@ def get_user_agent(database: Any, source: QuerySource | None) -> str:
     ``USER_AGENT_FUNC`` from Flask's ``current_app.config``; in liteset we
     resolve it via the pydantic settings module instead, but the behaviour
     is byte-for-byte equivalent.
+
+    Like the original, falls back to inferring the QuerySource from the
+    request referrer header when ``source`` is None.
     """
     # pylint: disable=import-outside-toplevel
     from superset.constants import DEFAULT_USER_AGENT
+    from superset.utils.database import _get_query_source_from_request
+
+    source = source or _get_query_source_from_request()
 
     try:
         from superset.config import SupersetSettings
@@ -1103,10 +1113,10 @@ def markdown(raw: str, markup_wrap: bool | None = False) -> str:
         try:
             from markupsafe import Markup
 
-            safe = Markup(safe)
+            safe = Markup(safe)  # noqa: S704  # safe: nh3.clean() has already sanitised the input
         except ImportError:
             pass
-    return safe  # type: ignore[return-value]
+    return safe
 
 
 # ---------------------------------------------------------------------------
@@ -1155,3 +1165,33 @@ class SigalrmTimeout:
         except ValueError as ex:
             logger.warning("timeout can't be used in the current context")
             logger.exception(ex)
+
+
+def format_list(items: Sequence[str], sep: str = ", ", quote: str = '"') -> str:
+    """Format a list of strings with quoting and a separator.
+
+    1:1 port of ``superset_old/utils/core.py::format_list`` (line 1725).
+    Used by template-parameter error messages in SQL Lab.
+    """
+    quote_escaped = "\\" + quote
+    return sep.join(f"{quote}{x.replace(quote, quote_escaped)}{quote}" for x in items)
+
+
+# ---------------------------------------------------------------------------
+# user_label
+# Ported 1:1 from superset_old/utils/core.py:1070-1078
+# ---------------------------------------------------------------------------
+
+
+def user_label(user: Any) -> str | None:
+    """Given a user ORM object, returns a label.
+
+    Ported 1:1 from superset_old/utils/core.py::user_label (line 1070).
+    """
+    if user:
+        if user.first_name and user.last_name:
+            return user.first_name + " " + user.last_name
+
+        return user.username
+
+    return None

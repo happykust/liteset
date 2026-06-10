@@ -16,11 +16,25 @@
 # under the License.
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from superset.common.query_object import AsyncQueryObject, QueryObjectValidationError
+from superset.exceptions import QueryClauseValidationException
+
+
+def _make_datasource(engine: str = "postgresql") -> MagicMock:
+    """Build a datasource mock exposing ``.database.db_engine_spec.engine``.
+
+    Mirrors the ORM datasource model the real ``validate()`` receives: it must
+    provide a ``database`` (consumed by ``get_template_processor``) and the
+    ``database.db_engine_spec.engine`` dialect string passed to
+    ``sanitize_clause``.
+    """
+    datasource = MagicMock()
+    datasource.database.db_engine_spec.engine = engine
+    return datasource
 
 
 def test_query_object_defaults():
@@ -377,33 +391,73 @@ def test_cache_key_excludes_when_falsy():
 
 
 def test_validate_sanitizes_where_clause():
-    """validate() calls sanitize_clause on extras.where."""
+    """validate() sanitizes extras.where via sanitize_clause(clause, engine).
+
+    1:1 with ``superset_old/common/query_object.py::_sanitize_filters``:
+    sanitization runs only when both the clause and the datasource are present,
+    ``sanitize_clause`` is called with the engine dialect, and a
+    ``QueryClauseValidationException`` is converted into a
+    ``QueryObjectValidationError``.
+    """
     qo = AsyncQueryObject(
         datasource={"type": "table", "id": 1},
         extras={"where": "1=1"},
     )
+    datasource = _make_datasource("postgresql")
+    seen: dict[str, str] = {}
 
-    def fake_sanitize(clause: str) -> str:
-        raise Exception("Unsafe clause detected")
+    def fake_sanitize(clause: str, engine: str) -> str:
+        seen["clause"] = clause
+        seen["engine"] = engine
+        raise QueryClauseValidationException("Unsafe clause detected")
 
-    with patch("superset.common.query_object.sanitize_clause", fake_sanitize):
-        with pytest.raises(QueryObjectValidationError, match="Unsafe SQL"):
-            qo.validate()
+    processor = MagicMock()
+    processor.process_template.side_effect = lambda clause, **kw: clause
+
+    with (
+        patch("superset.common.query_object.sanitize_clause", fake_sanitize),
+        patch(
+            "superset.jinja_context.get_template_processor",
+            return_value=processor,
+        ),
+    ):
+        with pytest.raises(QueryObjectValidationError, match="Unsafe clause detected"):
+            qo.validate(datasource=datasource)
+
+    assert seen == {"clause": "1=1", "engine": "postgresql"}
 
 
 def test_validate_sanitizes_having_clause():
-    """validate() calls sanitize_clause on extras.having."""
+    """validate() sanitizes extras.having via sanitize_clause(clause, engine).
+
+    Same 1:1 contract as the WHERE case but for the HAVING clause.
+    """
     qo = AsyncQueryObject(
         datasource={"type": "table", "id": 1},
         extras={"having": "1=1; DROP TABLE"},
     )
+    datasource = _make_datasource("postgresql")
+    seen: dict[str, str] = {}
 
-    def fake_sanitize(clause: str) -> str:
-        raise Exception("bad having")
+    def fake_sanitize(clause: str, engine: str) -> str:
+        seen["clause"] = clause
+        seen["engine"] = engine
+        raise QueryClauseValidationException("bad having")
 
-    with patch("superset.common.query_object.sanitize_clause", fake_sanitize):
-        with pytest.raises(QueryObjectValidationError, match="Unsafe SQL"):
-            qo.validate()
+    processor = MagicMock()
+    processor.process_template.side_effect = lambda clause, **kw: clause
+
+    with (
+        patch("superset.common.query_object.sanitize_clause", fake_sanitize),
+        patch(
+            "superset.jinja_context.get_template_processor",
+            return_value=processor,
+        ),
+    ):
+        with pytest.raises(QueryObjectValidationError, match="bad having"):
+            qo.validate(datasource=datasource)
+
+    assert seen == {"clause": "1=1; DROP TABLE", "engine": "postgresql"}
 
 
 def test_validate_passes_when_sanitize_clause_unavailable():
@@ -427,7 +481,9 @@ def test_validate_rejects_duplicate_labels():
         datasource={"type": "table", "id": 1},
         columns=["revenue", "revenue"],
     )
-    with pytest.raises(QueryObjectValidationError, match="Duplicate label.*revenue"):
+    with pytest.raises(
+        QueryObjectValidationError, match="Duplicate column/metric labels.*revenue"
+    ):
         qo.validate()
 
 
@@ -438,19 +494,25 @@ def test_validate_rejects_duplicate_metric_labels():
         columns=["col1"],
         metrics=[{"label": "col1", "expressionType": "SIMPLE"}],
     )
-    with pytest.raises(QueryObjectValidationError, match="Duplicate label.*col1"):
+    with pytest.raises(
+        QueryObjectValidationError, match="Duplicate column/metric labels.*col1"
+    ):
         qo.validate()
 
 
-def test_validate_time_offsets_must_be_strings():
-    """Non-string items in time_offsets are rejected."""
+def test_validate_time_offsets_non_string_raises_attribute_error():
+    """A non-string offset crashes with AttributeError — 1:1 original.
+
+    superset_old ``_validate_time_offsets`` (query_object.py:306-321) has no
+    isinstance guard: the offset goes straight into ``date_range.split(":")``
+    and a non-string raises AttributeError → HTTP 500, NOT a 400 validation
+    error.
+    """
     qo = AsyncQueryObject(
         datasource={"type": "table", "id": 1},
         time_offsets=[123],  # type: ignore[list-item]
     )
-    with pytest.raises(
-        QueryObjectValidationError, match="time_offsets must contain strings"
-    ):
+    with pytest.raises(AttributeError):
         qo.validate()
 
 
@@ -461,7 +523,12 @@ def test_validate_missing_series_columns():
         columns=["col1", "col2"],
         series_columns=["col3"],
     )
-    with pytest.raises(QueryObjectValidationError, match="series_columns entry 'col3'"):
+    # Original message (superset_old/common/query_object.py:362-371):
+    # "The following entries in `series_columns` are missing in `columns`: "col3". "
+    with pytest.raises(
+        QueryObjectValidationError,
+        match=r'series_columns.*are missing.*"col3"',
+    ):
         qo.validate()
 
 
@@ -501,11 +568,83 @@ def test_apply_filters_syncs_temporal_range_to_time_range():
 
 
 def test_apply_filters_noop_without_time_range():
+    """When time_range=None, _apply_filters must be a no-op — filter vals unchanged.
+
+    1:1 with original: superset_old/common/query_context_factory.py:199-203
+    checks ``if query_object.time_range:``; the original QueryObject stores
+    time_range=None (from query_object_factory.py:86 ``time_range=time_range``),
+    so the guard is False and no filter val is modified.
+    """
     qo = AsyncQueryObject(
         datasource={"type": "table", "id": 1},
         filters=[{"col": "ds", "op": "TEMPORAL_RANGE", "val": "Last week"}],
     )
     assert qo.filters[0]["val"] == "Last week"
+    # self.time_range must remain None (not extracted from filter).
+    assert qo.time_range is None
+
+
+def test_apply_filters_noop_preserves_multiple_temporal_filters():
+    """When time_range=None, multiple TEMPORAL_RANGE filters must keep their own vals.
+
+    Regression: the previous code set self.time_range from the first/x-axis filter,
+    then _apply_filters() overwrote ALL TEMPORAL_RANGE filter vals with that single
+    val — silently corrupting comparison charts that use two time periods.
+
+    Original: superset_old/common/query_object_factory.py:86 always passes
+    ``time_range=time_range`` (the caller's None) to QueryObject, so each filter
+    retains its own val.
+    """
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        time_range=None,
+        filters=[
+            {"col": "ds1", "op": "TEMPORAL_RANGE", "val": "Last week"},
+            {"col": "ds2", "op": "TEMPORAL_RANGE", "val": "Last month"},
+        ],
+    )
+    # Neither filter val must be overwritten.
+    assert qo.filters[0]["val"] == "Last week"
+    assert qo.filters[1]["val"] == "Last month"
+    # self.time_range must stay None.
+    assert qo.time_range is None
+
+
+def test_cache_key_excludes_time_range_when_none():
+    """cache_key() must omit time_range when it was not supplied by the caller.
+
+    Regression: previous code set self.time_range from a TEMPORAL_RANGE filter,
+    causing cache_key() to include time_range even when the original caller passed
+    None — producing cache keys that differ from the original QueryObject.cache_key().
+    """
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        time_range=None,
+        filters=[{"col": "ds", "op": "TEMPORAL_RANGE", "val": "Last week"}],
+    )
+    ck = qo.cache_key()
+    assert "time_range" not in ck
+
+
+def test_dttm_resolved_from_temporal_filter_when_time_range_none():
+    """from_dttm/to_dttm are still computed from TEMPORAL_RANGE filter val.
+
+    Even though self.time_range stays None, the effective time range (extracted
+    from the filter) must be used to resolve from_dttm/to_dttm.  This mirrors
+    original factory behavior: processed_time_range drives dttm resolution
+    while time_range=None is stored on QueryObject.
+    """
+    qo = AsyncQueryObject(
+        datasource={"type": "table", "id": 1},
+        time_range=None,
+        filters=[
+            {"col": "ds", "op": "TEMPORAL_RANGE", "val": "2020-01-01 : 2020-12-31"}
+        ],
+    )
+    # Dttm must be resolved from the filter val even though time_range is None.
+    assert qo.from_dttm is not None
+    assert qo.to_dttm is not None
+    assert qo.time_range is None
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +664,6 @@ def test_capped_row_limit_server_pagination_uses_higher_ceiling():
 
 
 def test_from_request_threads_server_pagination():
-    from superset.common.query_object import _capped_row_limit
 
     with patch("superset.common.query_object._capped_row_limit") as mock_cap:
         mock_cap.return_value = 100

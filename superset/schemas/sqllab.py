@@ -105,37 +105,20 @@ class SQLLabBootstrap(msgspec.Struct):
 class SqlLabPermalinkSchema(msgspec.Struct, rename="camel"):
     """POST /api/v1/sqllab/permalink
 
-    Accepts either a raw ``state`` dict (original contract) or typed
-    top-level fields (``db_id``, ``sql``, ``schema``, etc.) which are
-    merged into ``state`` during normalization.
+    1:1 with the original ``SqlLabPermalinkSchema``
+    (superset_old/sqllab/permalink/schemas.py:20-52):
+    ``dbId`` (required, non-null), ``name`` (required), and ``sql`` (required)
+    are enforced at the schema level. ``schema``, ``catalog``,
+    ``templateParams``, and ``autorun`` remain optional.
     """
 
-    # Original contract: opaque state dict
-    state: dict[str, Any] = {}
+    # Required fields — 1:1 with original required=True, allow_none=False
+    db_id: int
+    name: str
+    sql: str
 
-    # Typed aliases for common fields (frontend may send these directly)
-    db_id: int | None = None
-    sql: str | None = None
+    # Optional fields
     schema: str | None = None
     catalog: str | None = None
     autorun: bool | None = None
     template_params: str | None = None
-    query_limit: int | None = None
-    name: str | None = None
-
-    def __post_init__(self) -> None:
-        """Merge typed fields into state when state is empty."""
-        typed_fields = {
-            "dbId": self.db_id,
-            "sql": self.sql,
-            "schema": self.schema,
-            "catalog": self.catalog,
-            "autorun": self.autorun,
-            "templateParams": self.template_params,
-            "queryLimit": self.query_limit,
-            "name": self.name,
-        }
-        # Only merge non-None typed fields that are not already in state
-        for key, value in typed_fields.items():
-            if value is not None and key not in self.state:
-                self.state[key] = value

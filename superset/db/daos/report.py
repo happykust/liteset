@@ -249,9 +249,7 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
         (the self-subscribe reports), then filters by the supplied dashboard
         and/or chart id.
         """
-        conditions = []
-        if user_id is not None:
-            conditions.append(ReportSchedule.created_by_fk == user_id)
+        conditions = [ReportSchedule.created_by_fk == user_id]
         if dashboard_id is not None:
             conditions.append(ReportSchedule.dashboard_id == dashboard_id)
         if chart_id is not None:

@@ -246,9 +246,7 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
                 conn_errors = database.db_engine_spec.extract_errors(
                     ping_error, context
                 )
-                raise SupersetErrorsException(
-                    conn_errors, status=400
-                ) from ping_error
+                raise SupersetErrorsException(conn_errors, status=400) from ping_error
             # Reachable + connected but ping returned False → offline (422).
             raise SupersetErrorsException(
                 errors=[

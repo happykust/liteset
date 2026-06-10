@@ -478,7 +478,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
             except (ValueError, TypeError):
                 pass
         for key in (
-            "color_namespace",
             "color_scheme",
             "label_colors",
             "shared_label_colors",
@@ -488,11 +487,11 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
             if key in data:
                 md[key] = data[key]
         dashboard.json_metadata = dumps(md)  # type: ignore[assignment]
-        if not mark_updated:
-            # Preserve the current changed_on so the onupdate trigger is suppressed
-            prev_changed_on = dashboard.changed_on
-            # Re-assign to override the SQLAlchemy onupdate after flush
-            dashboard.changed_on = prev_changed_on
+        # Note: changed_on restoration when mark_updated=False is handled by the
+        # caller (UpdateDashboardColorsCommand.run) *after* the intermediate flush,
+        # so that SA's onupdate trigger has already fired and the restored value
+        # is written on the second flush — 1:1 with the original's intermediate
+        # db.session.commit() + reassignment pattern.
 
 
 class AsyncEmbeddedDashboardDAO(BaseAsyncDAO[EmbeddedDashboard]):
@@ -509,12 +508,25 @@ class AsyncEmbeddedDashboardDAO(BaseAsyncDAO[EmbeddedDashboard]):
         self,
         uuid_val: str,
     ) -> EmbeddedDashboard | None:
-        """Find embedded dashboard by UUID."""
+        """Find embedded dashboard by UUID with changed_by eagerly loaded.
+
+        Uses an explicit query with selectinload(EmbeddedDashboard.changed_by)
+        because the controller reads embedded.changed_by; SA 2.0 AsyncSession
+        raises MissingGreenlet on lazy-select relationships outside greenlet_spawn.
+        Every other controller that returns changed_by data (annotation_layer,
+        css_template, saved_query, dashboard) uses selectinload consistently.
+        """
         try:
             parsed = UUID(uuid_val)
         except ValueError:
             return None
-        return await self.find_one_or_none(uuid=parsed)
+        stmt = (
+            select(EmbeddedDashboard)
+            .filter_by(uuid=parsed)
+            .options(selectinload(EmbeddedDashboard.changed_by))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().one_or_none()
 
     async def upsert(
         self,

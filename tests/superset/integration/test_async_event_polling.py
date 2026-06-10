@@ -25,13 +25,13 @@ from unittest.mock import AsyncMock, MagicMock
 import jwt as pyjwt
 import pytest
 from litestar import Litestar
-from litestar.datastructures import State
 
 # Skip msgspec validation for DI-injected mock params
 from litestar._signature.model import (
     _normalize_annotation as _norm_fn,
 )
 from litestar.connection import ASGIConnection
+from litestar.datastructures import State
 from litestar.di import Provide
 from litestar.middleware.authentication import (
     AbstractAuthenticationMiddleware,
@@ -70,6 +70,10 @@ class _MockAuthMiddleware(AbstractAuthenticationMiddleware):
         user = MagicMock()
         user.id = 42
         user.is_authenticated = True
+        # Grant the ``can_list`` permission on AsyncEventsRestApi so the
+        # ``require_permission`` guard on the polling endpoint passes.
+        user.permissions = {("can_list", "AsyncEventsRestApi")}
+        user.roles = []
         return AuthenticationResult(user=user, auth=None)
 
 

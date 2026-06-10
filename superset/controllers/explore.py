@@ -21,18 +21,29 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from litestar import Controller, Response, get
+from litestar import Controller, get, Response
 from litestar.connection import Request
 from litestar.di import Provide
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from superset.exceptions import ObjectNotFoundError, SupersetSecurityException
+from superset.exceptions import (
+    ObjectNotFoundError,
+    SupersetException,
+    SupersetSecurityException,
+)
 from superset.guards.rbac import require_permission
-from superset.providers import provide_chart_dao, provide_dataset_dao, provide_kv_dao
+from superset.providers import (
+    provide_chart_dao,
+    provide_dataset_dao,
+    provide_kv_dao,
+    provide_query_dao,
+)
 from superset.typing import (
     ChartDAOProtocol,
     DatasetDAOProtocol,
     KeyValueDAOProtocol,
+    QueryDAOProtocol,
     SecurityManagerProtocol,
     UserProtocol,
 )
@@ -126,6 +137,7 @@ class ExploreController(Controller):
         "chart_dao": Provide(provide_chart_dao, sync_to_thread=False),
         "dataset_dao": Provide(provide_dataset_dao, sync_to_thread=False),
         "kv_dao": Provide(provide_kv_dao, sync_to_thread=False),
+        "query_dao": Provide(provide_query_dao, sync_to_thread=False),
     }
 
     @get(
@@ -138,6 +150,7 @@ class ExploreController(Controller):
         chart_dao: ChartDAOProtocol,
         dataset_dao: DatasetDAOProtocol,
         kv_dao: KeyValueDAOProtocol,
+        query_dao: QueryDAOProtocol,
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
         session: AsyncSession,
@@ -209,8 +222,11 @@ class ExploreController(Controller):
                 # previously fell through to a 200 "[Missing Dataset]" state.
                 raise ObjectNotFoundError("ExplorePermalink", permalink_key)
 
-        # 1b. Load form_data from temporary cache key (overrides permalink)
-        if form_data_key:
+        # 1b. Load form_data from temporary cache key — elif, NOT if.
+        # 1:1 with superset_old/commands/explore/get.py:64-77 where
+        # permalink_key and form_data_key are in an if/elif chain: when
+        # permalink_key is provided, form_data_key is ignored entirely.
+        elif form_data_key:
             raw = await kv_dao.get_value(
                 resource="explore_form_data",
                 resource_id=0,
@@ -219,16 +235,116 @@ class ExploreController(Controller):
             if raw:
                 try:
                     entry = json.loads(raw)
-                    if isinstance(entry, dict) and "value" in entry:
-                        form_data = (
-                            json.loads(entry["value"])
-                            if isinstance(entry["value"], str)
-                            else entry["value"]
+                    if isinstance(entry, dict):
+                        # Access check — 1:1 with
+                        # superset_old/commands/explore/form_data/get.py:48-53
+                        # which calls ``check_access(datasource_id, chart_id,
+                        # datasource_type)`` before returning ``state["form_data"]``.
+                        # The liteset ``explore_form_data`` GET endpoint does this
+                        # too; replicating it here prevents any ``can_read Explore``
+                        # user from reading form_data cached for an inaccessible
+                        # datasource/chart by supplying a foreign form_data_key.
+                        from superset.commands.explore_form_data.utils import (
+                            check_access,
                         )
+
+                        _datasource_id: int = entry.get("datasource_id") or 0
+                        _datasource_type: str = entry.get("datasource_type") or "table"
+                        _chart_id: int | None = entry.get("chart_id")
+                        await check_access(
+                            datasource_id=_datasource_id,
+                            chart_id=_chart_id,
+                            datasource_type=_datasource_type,
+                            dataset_dao=dataset_dao,
+                            query_dao=query_dao,
+                            chart_dao=chart_dao,
+                            security_manager=security_manager,
+                            user=current_user,
+                        )
+                        # Extract the actual form_data from the envelope.
+                        # The liteset KV store writes the envelope as:
+                        # {"owner": ..., "datasource_id": ...,
+                        #  "datasource_type": ..., "chart_id": ...,
+                        #  "form_data": "<json_str>"}
+                        # (explore_form_data.py:338-346).  The real form_data
+                        # is under key "form_data", not "value".
+                        raw_fd = entry.get("form_data")
+                        if raw_fd is not None:
+                            form_data = (
+                                json.loads(raw_fd)
+                                if isinstance(raw_fd, str)
+                                else raw_fd
+                            )
                     else:
                         form_data = entry
                 except (json.JSONDecodeError, TypeError):
                     pass
+
+        # Cache-miss fallback — 1:1 with superset_old/commands/explore/get.py:79-95.
+        # When form_data_key was provided but the cache returned empty (expired),
+        # set an informational message and populate form_data with the fallback
+        # slice_id or datasource so the user gets a meaningful explore state
+        # rather than a blank page.
+        if not form_data:
+            if slice_id_raw:
+                try:
+                    form_data["slice_id"] = int(slice_id_raw)
+                except (ValueError, TypeError):
+                    pass
+                if form_data_key:
+                    message = (
+                        "Form data not found in cache, reverting to chart metadata."
+                    )
+            elif datasource_id_raw:
+                form_data["datasource"] = (
+                    f"{datasource_id_raw}__{datasource_type or 'table'}"
+                )
+                if form_data_key:
+                    message = (
+                        "Form data not found in cache, reverting to dataset metadata."
+                    )
+
+        # 1c. Merge ?form_data=<json> URL query parameter — 1:1 with
+        # superset_old/views/utils.py:200-213 where get_form_data() calls
+        # ``request.args.get("form_data")`` and merges it into form_data
+        # (overriding initial_form_data values, but overridden by slice
+        # defaults since slice_form_data.update(form_data) puts form_data
+        # on top).  This must run AFTER the initial load from permalink/
+        # form_data_key but BEFORE slice defaults are merged so that the
+        # {**defaults, **form_data} merge at line ~408 makes the arg win.
+        _args_form_data = request.query_params.get("form_data")
+        if _args_form_data:
+            try:
+                _parsed_args = json.loads(_args_form_data)
+                if isinstance(_parsed_args, dict):
+                    form_data.update(_parsed_args)
+            except (TypeError, ValueError):
+                pass
+
+        # Mirror superset_old/views/utils.py:226 — form_data's embedded
+        # slice_id wins over the URL param (e.g. a permalink that carries
+        # slice_id=42 while the URL also has ?slice_id=99 should load chart 42).
+        _fd_slice_id = form_data.get("slice_id")
+        if _fd_slice_id is not None:
+            try:
+                slice_id_raw = str(int(_fd_slice_id))
+            except (ValueError, TypeError):
+                pass
+
+        # Filter REJECTED_FORM_DATA_KEYS BEFORE the slice-defaults merge —
+        # 1:1 with superset_old/views/utils.py:222 which filters *before*
+        # the slice_form_data.update(form_data) merge at line 239.  The
+        # filter only strips JS keys from the request-submitted form_data
+        # (permalink / form_data_key / URL args).  The slice's own stored
+        # form_data (``defaults = chart.form_data``) is NOT filtered so a
+        # chart that was saved with JS keys while the feature was enabled
+        # continues to render those keys even after the flag is disabled —
+        # exactly matching original behaviour.
+        from superset.utils.feature_flags import feature_flag_manager
+
+        if not feature_flag_manager.is_feature_enabled("ENABLE_JAVASCRIPT_CONTROLS"):
+            _rejected = {"js_tooltip", "js_onclick_href", "js_data_mutator"}
+            form_data = {k: v for k, v in form_data.items() if k not in _rejected}
 
         # 2. Load slice defaults
         if slice_id_raw:
@@ -291,6 +407,8 @@ class ExploreController(Controller):
                         except Exception:  # noqa: BLE001
                             changed_on_humanized = ""
                     desc = getattr(chart, "description", None) or ""
+                    from superset.utils.core import markdown as _markdown
+
                     chart_cache_timeout = getattr(chart, "cache_timeout", None)
                     # ``Slice.form_data`` property applies update_time_range
                     # which migrates since/until → time_range
@@ -304,7 +422,10 @@ class ExploreController(Controller):
                         "changed_on_humanized": changed_on_humanized,
                         "datasource": getattr(chart, "datasource_name", None),
                         "description": desc or None,
-                        "description_markeddown": (f"<p>{desc}</p>" if desc else ""),
+                        # 1:1 with Slice.description_markeddown
+                        # (superset_old/models/slice.py:215-216):
+                        # rendered+sanitised HTML, not a bare <p> wrap.
+                        "description_markeddown": _markdown(desc),
                         "edit_url": f"/chart/edit/{chart.id}",
                         "form_data": defaults,
                         # ``Slice.query_context`` is stored as a raw JSON
@@ -338,48 +459,59 @@ class ExploreController(Controller):
                     }
                     merged = {**defaults, **form_data}
                     form_data = merged
-                else:
-                    message = f"Chart {slice_id} not found"
             except (ValueError, TypeError):
                 pass
 
-        # 3. Resolve datasource from form_data or query params (original logic)
+        # 3. Resolve datasource — 1:1 with superset_old/views/utils.py:284-296
+        # (get_datasource_info): form_data["datasource"] wins over the URL
+        # datasource_id param.  After resolution the resolved pair is
+        # unconditionally written back to form_data["datasource"] normalising
+        # it to "<id>__<type>" (superset_old/commands/explore/get.py:129-131).
         ds_id: int | None = None
         ds_type: str = datasource_type or "table"
 
-        # If datasource_id is in query params, use it directly
-        if datasource_id_raw:
-            try:
-                ds_id = int(datasource_id_raw)
-            except (ValueError, TypeError):
-                pass
-
-        # If not in query params, extract from form_data["datasource"] = "21__table"
-        if ds_id is None and "datasource" in form_data:
-            ds_str = str(form_data["datasource"])
-            if "__" in ds_str:
-                parts = ds_str.split("__")
+        # Priority 1: form_data["datasource"] = "21__table" wins over URL param.
+        # 1:1 with superset_old/views/utils.py:284-285 — form_data["datasource"]
+        # is checked first; the URL datasource_id is only the fallback.
+        _fd_ds_str = str(form_data.get("datasource", ""))
+        _fd_has_ds = "__" in _fd_ds_str
+        if _fd_has_ds:
+            _fd_parts = _fd_ds_str.split("__")
+            _fd_id_str = _fd_parts[0]
+            if _fd_id_str != "None":
                 try:
-                    ds_id = int(parts[0])
-                    ds_type = parts[1] if len(parts) > 1 else "table"
+                    ds_id = int(_fd_id_str)
+                    ds_type = _fd_parts[1] if len(_fd_parts) > 1 else "table"
                 except (ValueError, IndexError):
                     pass
 
-        # Fallback: if form_data doesn't contain datasource, use chart's
-        # own datasource_id.  Original Superset always has datasource in
-        # the chart params, but migrated charts may not.
-        if ds_id is None and slice_id_raw:
+        # Priority 2: URL datasource_id param — only when form_data has no
+        # "__"-containing datasource key (matching original fallback order).
+        if not _fd_has_ds and ds_id is None and datasource_id_raw:
             try:
-                chart = await chart_dao.find_by_id(int(slice_id_raw))
-                if chart is not None:
-                    chart_ds_id = getattr(chart, "datasource_id", None)
-                    if chart_ds_id:
-                        ds_id = int(chart_ds_id)
-                        ds_type = getattr(chart, "datasource_type", "table") or "table"
-                        # Also inject into form_data so frontend gets it
-                        form_data["datasource"] = f"{ds_id}__{ds_type}"
+                ds_id = int(datasource_id_raw)
+                # ds_type remains from the datasource_type URL param
             except (ValueError, TypeError):
                 pass
+
+        # Priority 3: liteset-only fallback to the chart's own datasource_id
+        # for migrated charts whose stored form_data lacks a "datasource" key.
+        if not _fd_has_ds and ds_id is None and slice_id_raw:
+            try:
+                _fb_chart = await chart_dao.find_by_id(int(slice_id_raw))
+                if _fb_chart is not None:
+                    _fb_ds_id = getattr(_fb_chart, "datasource_id", None)
+                    if _fb_ds_id:
+                        ds_id = int(_fb_ds_id)
+                        ds_type = (
+                            getattr(_fb_chart, "datasource_type", "table") or "table"
+                        )
+            except (ValueError, TypeError):
+                pass
+
+        # Always normalise form_data["datasource"] to the resolved pair —
+        # 1:1 with superset_old/commands/explore/get.py:129-131.
+        form_data["datasource"] = f"{ds_id}__{ds_type}"
 
         # Load the dataset
         if ds_id is not None:
@@ -409,39 +541,63 @@ class ExploreController(Controller):
                     # the chart form_data of an inaccessible chart/datasource,
                     # bypassing the chart/dataset 404. NB: ``return`` (not raise)
                     # because this whole block is inside a broad ``except``.
-                    if hasattr(security_manager, "raise_for_access"):
-                        try:
-                            await security_manager.raise_for_access(
-                                datasource=dataset, user=current_user
-                            )
-                        except SupersetSecurityException as ex:
-                            return Response(
-                                content={"message": getattr(ex, "message", str(ex))},
-                                status_code=403,
-                            )
+                    # raise_for_access is called unconditionally — 1:1 with
+                    # superset_old/commands/explore/get.py:123 which calls
+                    # ``security_manager.raise_for_access(datasource=datasource)``
+                    # with no hasattr guard.  Wrapping it in hasattr() would
+                    # silently skip the access check when a custom security
+                    # manager omits the method, allowing any authenticated
+                    # ``can_read Explore`` user to read any dataset.
+                    try:
+                        await security_manager.raise_for_access(
+                            datasource=dataset, user=current_user
+                        )
+                    except SupersetSecurityException as ex:
+                        # 1:1 with superset_old/explore/api.py:122-126:
+                        # ``self.response(403, **ex.to_dict())`` where the
+                        # original ``SupersetErrorException.to_dict`` returns
+                        # ``self.error.to_dict()`` = {message, error_type,
+                        # [extra]}. Liteset's exception has no ``to_dict``;
+                        # ``ex.error.to_dict()`` is the exact equivalent.
+                        # datasource_id/datasource_type belong only to the
+                        # DatasetAccessDeniedError path (handled below).
+                        return Response(
+                            content=ex.error.to_dict(),
+                            status_code=403,
+                        )
                     # WrongEndpointError 302 — 1:1 with upstream
-                    # ``commands/explore/get.py``: when there is no ``viz_type``
-                    # and the datasource defines a ``default_endpoint``, return a
-                    # 302 ``{"redirect": ...}`` (the frontend follows it) instead
-                    # of rendering an explore state. ``return`` (not raise) —
-                    # inside the broad ``except``. NB upstream's merged form_data
-                    # always carries a slice's viz_type, so this only fires for a
-                    # datasource-only explore (no ``slice_id``) — guard on it
-                    # since the port doesn't merge the slice's viz_type into the
-                    # local ``form_data`` dict.
+                    # ``commands/explore/get.py:125-127``: when there is no
+                    # ``viz_type`` in the merged form_data and the datasource
+                    # defines a ``default_endpoint``, return a 302
+                    # ``{"redirect": ...}`` (the frontend follows it) instead of
+                    # rendering an explore state. ``return`` (not raise) —
+                    # inside the broad ``except``. A chart whose viz_type is
+                    # NULL/empty also triggers this (corrupt chart edge-case),
+                    # matching upstream which has no slice_id guard here.
                     _viz_type = (
                         form_data.get("viz_type")
                         if isinstance(form_data, dict)
                         else None
                     )
                     _default_endpoint = getattr(dataset, "default_endpoint", None)
-                    if not _viz_type and not slice_id_raw and _default_endpoint:
+                    if not _viz_type and _default_endpoint:
                         return Response(
                             content={"redirect": _default_endpoint},
                             status_code=302,
                         )
                     # Build dataset_data matching original datasource.data structure
                     db_obj = getattr(dataset, "database", None)
+                    # ``select_star`` — 1:1 with ``SqlaTable.data["select_star"]``
+                    # (superset_old/connectors/sqla/models.py:398 + 1331-1338):
+                    # a compiled ``SELECT * … LIMIT 100`` preview. The property
+                    # is sync (compiles via the sync engine), so off-loop.
+                    import asyncio as _asyncio
+
+                    _select_star: str | None = None
+                    if db_obj is not None and hasattr(type(dataset), "select_star"):
+                        _select_star = await _asyncio.to_thread(
+                            lambda: dataset.select_star
+                        )
                     dataset_data = {
                         "id": dataset.id,
                         "type": ds_type,
@@ -450,6 +606,15 @@ class ExploreController(Controller):
                         or getattr(dataset, "name", ""),
                         "datasource_name": getattr(dataset, "table_name", ""),
                         "table_name": getattr(dataset, "table_name", ""),
+                        # Database dict — 1:1 with
+                        # superset_old/models/core.py:271-288
+                        # ``Database.data``.  The original includes
+                        # configuration_method, allows_cost_estimate,
+                        # allows_virtual_table_explore, schema_options,
+                        # parameters (sanitized to {} by
+                        # ``sanitize_datasource_data``),
+                        # disable_data_preview, disable_drill_to_detail,
+                        # parameters_schema, and engine_information.
                         "database": {
                             "id": db_obj.id if db_obj else 0,
                             "name": (
@@ -458,20 +623,63 @@ class ExploreController(Controller):
                             "backend": (
                                 getattr(db_obj, "backend", "") if db_obj else ""
                             ),
+                            "configuration_method": (
+                                getattr(db_obj, "configuration_method", None)
+                                if db_obj
+                                else None
+                            ),
                             "allows_subquery": (
                                 getattr(db_obj, "allows_subquery", True)
                                 if db_obj
                                 else True
+                            ),
+                            "allows_cost_estimate": (
+                                getattr(db_obj, "allows_cost_estimate", False)
+                                if db_obj
+                                else False
+                            ),
+                            "allows_virtual_table_explore": (
+                                getattr(db_obj, "allows_virtual_table_explore", True)
+                                if db_obj
+                                else True
+                            ),
+                            "explore_database_id": (
+                                getattr(db_obj, "explore_database_id", 0)
+                                if db_obj
+                                else 0
+                            ),
+                            "schema_options": (
+                                getattr(db_obj, "schema_options", {}) if db_obj else {}
+                            ),
+                            # Sanitized to {} — 1:1 with
+                            # ``sanitize_datasource_data`` which always
+                            # clears parameters to prevent leaking
+                            # sensitive connection info.
+                            "parameters": {},
+                            "disable_data_preview": (
+                                getattr(db_obj, "disable_data_preview", False)
+                                if db_obj
+                                else False
+                            ),
+                            "disable_drill_to_detail": (
+                                getattr(db_obj, "disable_drill_to_detail", False)
+                                if db_obj
+                                else False
                             ),
                             "allow_multi_catalog": (
                                 getattr(db_obj, "allow_multi_catalog", False)
                                 if db_obj
                                 else False
                             ),
-                            "explore_database_id": (
-                                getattr(db_obj, "explore_database_id", 0)
+                            "parameters_schema": (
+                                getattr(db_obj, "parameters_schema", {})
                                 if db_obj
-                                else 0
+                                else {}
+                            ),
+                            "engine_information": (
+                                getattr(db_obj, "engine_information", {})
+                                if db_obj
+                                else {}
                             ),
                         },
                         "schema": getattr(dataset, "schema", None),
@@ -500,9 +708,14 @@ class ExploreController(Controller):
                         "params": getattr(dataset, "params", None),
                         "perm": getattr(dataset, "perm", None) or "",
                         "edit_url": f"/tablemodelview/edit/{dataset.id}",
-                        "select_star": None,
+                        "select_star": _select_star,
                         "health_check_message": None,
-                        "column_formats": {},
+                        # 1:1 with original SqlaTable.column_formats property
+                        "column_formats": {
+                            getattr(m, "metric_name", ""): getattr(m, "d3format", None)
+                            for m in (getattr(dataset, "metrics", None) or [])
+                            if getattr(m, "d3format", None)
+                        },
                         "currency_formats": {},
                         "filter_select": bool(
                             getattr(dataset, "filter_select_enabled", True)
@@ -524,21 +737,17 @@ class ExploreController(Controller):
                                 for c in (getattr(dataset, "columns", None) or [])
                             },
                         },
-                        # ``owners`` mirrors ``SqlaTable.owners_data`` which
-                        # yields ``{first_name, last_name, username, id}``.
-                        # We additionally keep ``value`` because the
-                        # frontend's ``exploreReducer`` and
-                        # ``DatasourceEditor`` both read ``owner.value``
-                        # without a fallback — dropping it would break the
-                        # Edit-dataset modal's ``Cannot read properties of
-                        # undefined (reading 'map')`` failure mode.
+                        # ``SqlaTable.data`` overrides the BaseDatasource
+                        # integer-id list with ``owners_data`` dicts
+                        # (superset_old/connectors/sqla/models.py:1365 and
+                        # :219-228); the frontend DatasourceControl reads
+                        # ``o.id`` off each entry.
                         "owners": [
                             {
-                                "first_name": getattr(o, "first_name", "") or "",
-                                "last_name": getattr(o, "last_name", "") or "",
-                                "username": getattr(o, "username", "") or "",
+                                "first_name": getattr(o, "first_name", None),
+                                "last_name": getattr(o, "last_name", None),
+                                "username": getattr(o, "username", None),
                                 "id": o.id,
-                                "value": o.id,
                             }
                             for o in (getattr(dataset, "owners", None) or [])
                         ],
@@ -651,6 +860,14 @@ class ExploreController(Controller):
                             ),
                         ],
                     }
+            except SupersetException as ex:
+                # 1:1 with superset_old/commands/explore/get.py:149-150:
+                # when datasource.data raises a SupersetException, capture
+                # ex.message so it appears in result.message.
+                message = ex.message
+            except SQLAlchemyError:
+                # 1:1 with superset_old/commands/explore/get.py:151-152.
+                message = "SQLAlchemy error"
             except Exception:  # noqa: BLE001, S110
                 pass  # Dataset metadata is optional, continue without it
 
@@ -705,39 +922,40 @@ class ExploreController(Controller):
 
         # Mirror original Superset response shape (commands/explore/get.py):
         # when no slice/datasource is supplied, ``dataset`` becomes a
-        # ``[Missing Dataset]`` placeholder and ``form_data`` is filled
-        # with the explore form defaults — the frontend depends on these
-        # keys being present even on the empty-state path.
+        # ``[Missing Dataset]`` placeholder.  form_data["datasource"] is
+        # already normalised by the write-back above; the utility functions
+        # below (convert_legacy_filters_into_adhoc, merge_extra_filters,
+        # merge_request_params) fill in adhoc_filters, applied_time_extras,
+        # and url_params unconditionally.
         if dataset_data is None:
             dataset_data = {
                 "name": "[Missing Dataset]",
                 "type": str(datasource_type or "table"),
                 "columns": [],
                 "metrics": [],
-                "database": {"backend": "", "parameters": {}},
-            }
-        if not form_data:
-            datasource_token = (
-                f"{datasource_id_raw}__{datasource_type or 'table'}"
-                if datasource_id_raw is not None
-                else f"None__{datasource_type or 'table'}"
-            )
-            form_data = {
-                "datasource": datasource_token,
-                "adhoc_filters": [],
-                "applied_time_extras": {},
-                "url_params": {},
+                "database": {"id": 0, "backend": "", "parameters": {}},
             }
 
         # Apply legacy filter migration, extra-filter merging, and URL param
         # injection — 1:1 with superset_old/commands/explore/get.py:134-136.
         # These transforms must run AFTER slice defaults are merged but BEFORE
         # the response is built so the frontend always receives adhoc_filters.
+        from superset.legacy import update_time_range
         from superset.utils.core import (
             convert_legacy_filters_into_adhoc,
             merge_extra_filters,
             merge_request_params,
         )
+
+        # Migrate legacy since/until → time_range BEFORE the filter
+        # transforms — update_time_range is the LAST line of get_form_data()
+        # (superset_old/views/utils.py:242), which returns before
+        # GetExploreCommand runs convert_legacy_filters_into_adhoc /
+        # merge_extra_filters / merge_request_params (commands/explore/
+        # get.py:134-136). Running it after merge_extra_filters would let a
+        # merged "No filter" temporal adhoc-filter setdefault
+        # time_range="No filter" where the original would not.
+        update_time_range(form_data)
 
         convert_legacy_filters_into_adhoc(form_data)
         merge_extra_filters(form_data)

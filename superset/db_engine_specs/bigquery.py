@@ -38,7 +38,12 @@ from sqlalchemy.sql import column as sql_column, select, sqltypes
 from sqlalchemy.sql.expression import table as sql_table
 
 from superset.constants import TimeGrain
-from superset.db_engine_specs.base import BaseEngineSpec, BasicPropertiesType, ResultSetColumnType
+from superset.db_engine_specs.base import (
+    BaseEngineSpec,
+    BasicPropertiesType,
+    ResultSetColumnType,
+)
+from superset.db_engine_specs.exceptions import SupersetDBAPIConnectionError
 from superset.exceptions import SupersetException
 from superset.sql.parse import SQLScript, Table
 from superset.utils import core as utils, json
@@ -78,7 +83,6 @@ BIGQUERY_PARAMETERS_JSON_SCHEMA: dict[str, Any] = {
     "properties": {
         "credentials_info": {
             "type": "string",
-            "nullable": True,
             "description": "Contents of BigQuery JSON credentials.",
             "x-encrypted-extra": True,
         },
@@ -355,11 +359,13 @@ class BigQueryEngineSpec(BaseEngineSpec):
         with database.get_sqla_engine() as engine:
             try:
                 client = cls._get_client(engine, database)
-            except Exception:  # noqa: BLE001
+            except SupersetDBAPIConnectionError:
                 logger.warning(
                     "Could not connect to database to get catalogs due to missing "
-                    "credentials.",
+                    "credentials. This is normal in certain circustances, for example, "
+                    "doing an import."
                 )
+                # return {} here, since it will be repopulated when creds are added
                 return set()
 
             projects = client.list_projects()
@@ -500,7 +506,7 @@ class BigQueryEngineSpec(BaseEngineSpec):
         """
         extra = database.get_extra(source) or {}
         if not cls.get_allow_cost_estimate(extra):
-            raise Exception("Database does not support cost estimation")  # noqa: TRY002
+            raise SupersetException("Database does not support cost estimation")
 
         parsed_script = SQLScript(sql, engine=cls.engine)
 
@@ -527,7 +533,7 @@ class BigQueryEngineSpec(BaseEngineSpec):
     ) -> bigquery.Client:
         """Return the BigQuery client associated with an engine."""
         if not dependencies_installed:
-            raise Exception(  # noqa: TRY002
+            raise SupersetException(
                 "Could not import libraries needed to connect to BigQuery."
             )
 
@@ -541,7 +547,7 @@ class BigQueryEngineSpec(BaseEngineSpec):
             credentials = google.auth.default()[0]
             return bigquery.Client(credentials=credentials)
         except google.auth.exceptions.DefaultCredentialsError as ex:
-            raise Exception(  # noqa: TRY002
+            raise SupersetDBAPIConnectionError(
                 "The database credentials could not be found."
             ) from ex
 
@@ -690,6 +696,13 @@ class BigQueryEngineSpec(BaseEngineSpec):
     def parameters_json_schema(cls) -> Any:
         """Return configuration parameters as JSON Schema."""
         return cls.parameters_schema or None
+
+    @classmethod
+    def get_dbapi_exception_mapping(cls) -> dict[type[Exception], type[Exception]]:
+        # pylint: disable=import-outside-toplevel
+        from google.auth.exceptions import DefaultCredentialsError
+
+        return {DefaultCredentialsError: SupersetDBAPIConnectionError}
 
     @classmethod
     def select_star(

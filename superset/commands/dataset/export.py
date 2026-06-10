@@ -24,10 +24,10 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 import yaml  # type: ignore[import-untyped]
-from superset.utils.file import secure_filename
 
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.importexport.export_base import AsyncExportModelsCommand
+from superset.utils.file import get_filename
 from superset.utils.ssh_tunnel import mask_password_info
 
 if TYPE_CHECKING:
@@ -51,20 +51,38 @@ class ExportDatasetsCommand(AsyncExportModelsCommand):
     _resource_type = "SqlaTable"
 
     def __init__(
-        self, model_ids: list[int], dao: AsyncDatasetDAO | None = None
+        self,
+        model_ids: list[int],
+        dao: AsyncDatasetDAO | None = None,
+        security_manager: Any = None,
+        user: Any = None,
+        export_related: bool = True,
     ) -> None:
-        super().__init__(model_ids)
+        super().__init__(
+            model_ids,
+            security_manager=security_manager,
+            user=user,
+            export_related=export_related,
+        )
         self._dao = dao
+
+    async def validate(self) -> None:
+        from superset.db.filters import dataset_access_filters
+        from superset.models.connectors import SqlaTable
+
+        await self._validate_access(
+            self._dao, SqlaTable, dataset_access_filters, "Dataset"
+        )
 
     @staticmethod
     def _file_name(model: Any) -> str:
-        db_slug = (
-            secure_filename(model.database.database_name)
+        db_file_name = (
+            get_filename(model.database.database_name, model.database.id, skip_id=True)
             if model.database
             else "unknown"
-        ) or "unknown"
-        ds_slug = secure_filename(model.table_name or "") or "unnamed"
-        return f"datasets/{db_slug}/{ds_slug}_{model.id}.yaml"
+        )
+        ds_file_name = get_filename(model.table_name, model.id)
+        return f"datasets/{db_file_name}/{ds_file_name}.yaml"
 
     @staticmethod
     def _file_content(model: Any) -> str:
@@ -120,8 +138,13 @@ class ExportDatasetsCommand(AsyncExportModelsCommand):
         ]
 
         # Related database YAML (recursive=False) — matches the original.
+        # Guard with _export_related, mirroring
+        # superset_old/commands/dataset/export.py:94
+        # `if export_related:` — callers such as manager.py:266 pass
+        # export_related=False
+        # to suppress per-dataset database YAMLs in a full-asset bundle.
         db = getattr(dataset, "database", None)
-        if db:
+        if db and self._export_related:
             db_payload = db.export_to_dict(
                 recursive=False,
                 include_parent_ref=False,
@@ -155,7 +178,7 @@ class ExportDatasetsCommand(AsyncExportModelsCommand):
 
             db_payload["version"] = EXPORT_VERSION
 
-            db_slug = secure_filename(db.database_name or "") or "unnamed"
+            db_slug = get_filename(db.database_name, db.id, skip_id=True)
             files.append(
                 (
                     f"databases/{db_slug}.yaml",

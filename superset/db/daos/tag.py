@@ -130,9 +130,7 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         tag = await self.find_by_name(tag_name.strip())
         if not tag:
             raise ObjectNotFoundError("Tag", tag_name)
-        tagged_object = await self._find_tagged_object(
-            object_type, object_id, tag.id
-        )
+        tagged_object = await self._find_tagged_object(object_type, object_id, tag.id)
         if tagged_object is None:
             raise ObjectNotFoundError("TaggedObject", tag_name)
         await self.session.delete(tagged_object)
@@ -160,8 +158,14 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         Returns the entity-shaped dicts produced by
         :meth:`get_tagged_objects_by_tag_ids` — see that method's docstring
         for the contract.
+
+        If ``tag_names`` is empty/absent, returns all tagged objects (mirrors
+        superset_old/daos/tag.py:254 — ``find_by_names(tag_names) if tag_names
+        else find_all()``).
         """
-        tags = await self.find_by_names(tag_names)
+        tags = (
+            await self.find_by_names(tag_names) if tag_names else await self.find_all()
+        )
         tag_ids: list[int] = [t.id for t in tags]  # type: ignore[misc]
         return await self.get_tagged_objects_by_tag_ids(tag_ids, obj_types)
 
@@ -199,9 +203,7 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
             )
         )
         current: set[tuple[str, int]] = {(r[0], r[1]) for r in rows}
-        updated: set[tuple[str, int]] = {
-            (_norm(t), int(i)) for t, i in objects_to_tag
-        }
+        updated: set[tuple[str, int]] = {(_norm(t), int(i)) for t, i in objects_to_tag}
 
         # Add new associations.
         for obj_type, obj_id in updated - current:
@@ -223,6 +225,71 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                     )
                 )
 
+    # ------------------------------------------------------------------
+    # Serialisation helpers — produce the same shapes that the original
+    # Marshmallow schemas (TagGetResponseSchema, UserSchema) would emit
+    # when dumping raw SQLAlchemy model objects.  The liteset controller
+    # returns these dicts directly (no Marshmallow step), so the DAO
+    # must produce the final response shape.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _serialize_tag(tag: Any) -> dict[str, Any]:
+        """Serialize a Tag model to ``{id, name, type}``.
+
+        Matches ``TagGetResponseSchema`` (superset_old/tags/schemas.py:42-45).
+        ``type`` is ``str(tag.type)`` which produces e.g. ``"TagType.custom"``
+        — the exact value the original Marshmallow ``fields.String()`` emits.
+        """
+        return {
+            "id": tag.id,
+            "name": tag.name,
+            "type": str(tag.type) if tag.type is not None else None,
+        }
+
+    @staticmethod
+    def _serialize_user(user: Any) -> dict[str, Any]:
+        """Serialize a User model to ``{id, username, first_name, last_name}``.
+
+        Matches ``UserSchema`` (superset_old/dashboards/schemas.py:189-193).
+        """
+        return {
+            "id": getattr(user, "id", None),
+            "username": getattr(user, "username", None),
+            "first_name": getattr(user, "first_name", None),
+            "last_name": getattr(user, "last_name", None),
+        }
+
+    @staticmethod
+    def _serialize_created_by(user: Any) -> dict[str, Any] | None:
+        """Serialize a value for the ``created_by`` response field.
+
+        The original DAO stores ``obj.created_by_fk`` (a raw integer FK) in
+        the dict, then ``TaggedObjectEntityResponseSchema`` serialises it
+        through ``fields.Nested(UserSchema(exclude=["username"]))``.  Marshmallow 3
+        calls ``UserSchema.dump(integer_fk)`` — all field accessors miss on an
+        integer (``getattr(42, "id", missing)`` → ``missing``) so every field is
+        omitted, yielding an **empty dict** ``{}``.  When the FK is ``None``,
+        ``fields.Nested._serialize`` short-circuits and returns ``None``
+        (``null`` in JSON).
+
+        Reproducing the exact wire format:
+        - ``None`` → ``null``
+        - integer FK (non-``None``, non-User) → ``{}``
+        - User relationship object → ``{id, first_name, last_name}``
+        """
+        if user is None:
+            return None
+        if not hasattr(user, "id"):
+            # Raw integer FK or any other non-User value: Marshmallow 3 would
+            # dump it through UserSchema and get {} since every getattr misses.
+            return {}
+        return {
+            "id": getattr(user, "id", None),
+            "first_name": getattr(user, "first_name", None),
+            "last_name": getattr(user, "last_name", None),
+        }
+
     async def get_tagged_objects_by_tag_ids(  # noqa: C901
         self,
         tag_ids: list[int],
@@ -234,9 +301,19 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         returns Dashboard / Chart / SavedQuery (and Dataset where wired)
         rows shaped as
         ``{id, type, name, url, changed_on, created_by, creator, tags,
-        owners}`` — *not* the raw ``TaggedObject`` link rows. Frontend
-        ``Tagged Objects`` page reads ``.type`` / ``.name`` / ``.url``
-        directly and breaks when given link metadata.
+        owners}`` — *not* the raw ``TaggedObject`` link rows.
+
+        Response shape matches what the original Marshmallow
+        ``TaggedObjectEntityResponseSchema`` (superset_old/tags/schemas.py:48-57)
+        produces when dumping the dicts from the original DAO:
+
+        - ``tags``: ``[{id, name, type}]`` via ``TagGetResponseSchema``
+        - ``owners``: ``[{id, username, first_name, last_name}]`` via ``UserSchema``
+        - ``created_by``: ``{id, first_name, last_name}`` via
+          ``UserSchema(exclude=["username"])``
+
+        The liteset controller returns these dicts directly (no Marshmallow),
+        so the serialisation happens here.
         """
         if not tag_ids:
             return []
@@ -268,7 +345,11 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
             q = await self.session.execute(
                 select(model)
                 .where(model.id.in_(ids))
-                .options(selectinload(model.owners), selectinload(model.tags))  # type: ignore[attr-defined]
+                .options(
+                    selectinload(model.owners),
+                    selectinload(model.tags),
+                    selectinload(model.created_by),
+                )
             )
             return list(q.scalars().all())
 
@@ -284,10 +365,17 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                         "name": getattr(d, "dashboard_title", None),
                         "url": getattr(d, "url", None),
                         "changed_on": getattr(d, "changed_on", None),
-                        "created_by": getattr(d, "created_by_fk", None),
+                        "created_by": self._serialize_created_by(
+                            getattr(d, "created_by_fk", None)
+                        ),
                         "creator": d.creator() if hasattr(d, "creator") else None,
-                        "tags": [t.name for t in getattr(d, "tags", []) or []],
-                        "owners": [o.id for o in getattr(d, "owners", []) or []],
+                        "tags": [
+                            self._serialize_tag(t) for t in getattr(d, "tags", []) or []
+                        ],
+                        "owners": [
+                            self._serialize_user(o)
+                            for o in getattr(d, "owners", []) or []
+                        ],
                     }
                 )
 
@@ -303,14 +391,24 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                         "name": getattr(c, "slice_name", None),
                         "url": getattr(c, "url", None),
                         "changed_on": getattr(c, "changed_on", None),
-                        "created_by": getattr(c, "created_by_fk", None),
+                        "created_by": self._serialize_created_by(
+                            getattr(c, "created_by_fk", None)
+                        ),
                         "creator": c.creator() if hasattr(c, "creator") else None,
-                        "tags": [t.name for t in getattr(c, "tags", []) or []],
-                        "owners": [o.id for o in getattr(c, "owners", []) or []],
+                        "tags": [
+                            self._serialize_tag(t) for t in getattr(c, "tags", []) or []
+                        ],
+                        "owners": [
+                            self._serialize_user(o)
+                            for o in getattr(c, "owners", []) or []
+                        ],
                     }
                 )
 
-        # Saved queries
+        # Saved queries — mirrors superset_old/daos/tag.py:221-242 exactly.
+        # ``created_by`` stores the integer FK; ``owners`` is ``[obj.creator()]``
+        # (a one-element string list).  Both are serialised through Marshmallow 3
+        # in the original, producing ``{}`` and ``[{}]`` respectively.
         if (not obj_types or "query" in obj_types) and by_type.get("query"):
             sq_ids = by_type["query"]
             try:
@@ -321,7 +419,11 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                 _SavedQuery = None  # type: ignore[assignment]  # noqa: N806
             if _SavedQuery is not None:
                 q = await self.session.execute(
-                    select(_SavedQuery).where(_SavedQuery.id.in_(sq_ids))
+                    select(_SavedQuery)
+                    .where(_SavedQuery.id.in_(sq_ids))
+                    .options(
+                        selectinload(_SavedQuery.tags),
+                    )
                 )
                 for sq in q.scalars().all():
                     results.append(
@@ -330,16 +432,26 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                             "type": "query",
                             "name": getattr(sq, "label", None),
                             "url": (
-                                sq.url() if callable(getattr(sq, "url", None))
+                                sq.url()
+                                if callable(getattr(sq, "url", None))
                                 else getattr(sq, "url", None)
                             ),
                             "changed_on": getattr(sq, "changed_on", None),
-                            "created_by": getattr(sq, "created_by_fk", None),
+                            # Original stores created_by_fk (integer FK); Marshmallow 3
+                            # dumps an int through UserSchema → {} (all attrs missing).
+                            "created_by": self._serialize_created_by(
+                                getattr(sq, "created_by_fk", None)
+                            ),
                             "creator": (
                                 sq.creator() if hasattr(sq, "creator") else None
                             ),
-                            "tags": [],
-                            "owners": [],
+                            "tags": [
+                                self._serialize_tag(t)
+                                for t in getattr(sq, "tags", []) or []
+                            ],
+                            # Original: [obj.creator()] — a string list — through
+                            # Marshmallow UserSchema → [{}].  Always one element.
+                            "owners": [{}],
                         }
                     )
 

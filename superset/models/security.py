@@ -91,6 +91,11 @@ class User(Base):
     fail_login_count = Column(Integer, default=0)
     created_on = Column(DateTime, nullable=True)
     changed_on = Column(DateTime, nullable=True)
+    # FAB audit FK columns (flask_appbuilder/security/sqla/models.py:183-193);
+    # the requesting user's id is set explicitly by the controllers (FAB fills
+    # them via a column default reading flask.g, which has no async analogue).
+    created_by_fk = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
+    changed_by_fk = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
 
     roles = relationship("Role", secondary=ab_user_role, backref="user")
     groups = relationship("Group", secondary=ab_user_group, backref="users")
@@ -115,7 +120,11 @@ class Role(Base):
         secondary=ab_permission_view_role,
         backref="role",
     )
-    groups = relationship("Group", secondary=ab_group_role, backref="roles_")
+
+    def __repr__(self) -> str:
+        # 1:1 FAB Role.__repr__ (flask_appbuilder/security/sqla/models.py:132)
+        # — /related/ dropdown text relies on str(model).
+        return self.name
 
 
 class Group(Base):
@@ -128,6 +137,10 @@ class Group(Base):
     label = Column(String(150), nullable=True)
     description = Column(String(512), nullable=True)
 
+    # 1:1 FAB Group.roles (flask_appbuilder/security/sqla/models.py:287-289);
+    # the backref provides Role.groups.
+    roles = relationship("Role", secondary=ab_group_role, backref="groups")
+
 
 class Permission(Base):
     """Maps to Flask-AppBuilder's ``ab_permission`` table."""
@@ -137,6 +150,10 @@ class Permission(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(512), unique=True, nullable=False)
 
+    def __repr__(self) -> str:
+        # 1:1 FAB Permission.__repr__ (flask_appbuilder/security/sqla/models.py:47)
+        return self.name
+
 
 class ViewMenu(Base):
     """Maps to Flask-AppBuilder's ``ab_view_menu`` table."""
@@ -145,6 +162,10 @@ class ViewMenu(Base):
 
     id = Column(Integer, primary_key=True)
     name = Column(String(512), unique=True, nullable=False)
+
+    def __repr__(self) -> str:
+        # 1:1 FAB ViewMenu.__repr__ (flask_appbuilder/security/sqla/models.py:67)
+        return self.name
 
 
 class PermissionView(Base):
@@ -158,6 +179,11 @@ class PermissionView(Base):
 
     permission = relationship("Permission")
     view_menu = relationship("ViewMenu")
+
+    def __repr__(self) -> str:
+        # 1:1 FAB PermissionView.__repr__
+        # (flask_appbuilder/security/sqla/models.py:155)
+        return str(self.permission).replace("_", " ") + f" on {str(self.view_menu)}"
 
 
 class RegisterUser(Base):

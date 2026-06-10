@@ -18,12 +18,16 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
+from urllib import parse
 
 import humanize
 from litestar import Controller, get, post
+from litestar.connection import ASGIConnection
 from litestar.di import Provide
+from litestar.handlers import BaseRouteHandler
 
 from superset.controllers.base import build_rison_query_params, serialize_list_response
 from superset.events import event_logger
@@ -36,6 +40,25 @@ from superset.params.rison import provide_rison_query
 from superset.providers import provide_log_dao
 from superset.schemas.log import LogPostSchema
 from superset.typing import UserProtocol
+from superset.utils.dates import datetime_to_epoch
+
+
+def _require_log_views_enabled(
+    connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandler
+) -> None:
+    """Guard that returns 404 when log views are disabled via config.
+
+    1:1 with the original ``LogRestApi.is_enabled()`` /
+    ``@before_request ensure_enabled`` (superset_old/views/log/api.py:88-96)
+    which returns 404 when ``FAB_ADD_SECURITY_VIEWS`` or
+    ``SUPERSET_LOG_VIEW`` is ``False``.
+    """
+    from litestar.exceptions import NotFoundException
+
+    from superset.config import settings
+
+    if not settings.fab_add_security_views or not settings.superset_log_view:
+        raise NotFoundException(detail="Not found")
 
 
 class LogController(Controller):
@@ -48,7 +71,11 @@ class LogController(Controller):
 
     @get(
         "/",
-        guards=[require_authenticated_user, require_permission("can_read", "Log")],
+        guards=[
+            _require_log_views_enabled,
+            require_authenticated_user,
+            require_permission("can_read", "Log"),
+        ],
     )
     async def get_list(
         self,
@@ -63,6 +90,8 @@ class LogController(Controller):
         rison_filters, order_by, page, page_size = build_rison_query_params(
             Log,
             rison_params,
+            # ``LogRestApi.page_size = 20`` (superset_old/views/log/api.py:76).
+            default_page_size=20,
         )
         items = await dao.find_all(
             filters=rison_filters or None,
@@ -76,7 +105,6 @@ class LogController(Controller):
             items,
             total,
             [
-                "id",
                 "action",
                 "user_id",
                 "slice_id",
@@ -94,7 +122,11 @@ class LogController(Controller):
 
     @get(
         "/{pk:int}",
-        guards=[require_authenticated_user, require_permission("can_read", "Log")],
+        guards=[
+            _require_log_views_enabled,
+            require_authenticated_user,
+            require_permission("can_read", "Log"),
+        ],
     )
     async def get_single(self, pk: int, dao: Any) -> dict[str, Any]:
         """GET /api/v1/log/{pk} — get single log entry.
@@ -103,11 +135,18 @@ class LogController(Controller):
         the response mirrors original Superset's Marshmallow ``LogModelView``
         dump shape.
         """
-        from superset.exceptions import ObjectNotFoundError
+        from sqlalchemy.orm import selectinload
 
-        item = await dao.find_by_id(pk)
+        from superset.exceptions import ObjectNotFoundError
+        from superset.models.core import Log
+
+        items = await dao.find_all(
+            filters=[Log.id == pk], options=[selectinload(Log.user)]
+        )
+        item = items[0] if items else None
         if item is None:
             raise ObjectNotFoundError("Log", pk)
+        user = getattr(item, "user", None)
         return {
             "id": pk,
             "result": {
@@ -120,12 +159,23 @@ class LogController(Controller):
                 "dttm": str(getattr(item, "dttm", "") or ""),
                 "duration_ms": getattr(item, "duration_ms", None),
                 "referrer": getattr(item, "referrer", None),
+                "user": {
+                    "first_name": getattr(user, "first_name", None),
+                    "last_name": getattr(user, "last_name", None),
+                    "username": getattr(user, "username", None),
+                }
+                if user is not None
+                else None,
             },
         }
 
     @post(
         "/",
-        guards=[require_authenticated_user, require_permission("can_write", "Log")],
+        guards=[
+            _require_log_views_enabled,
+            require_authenticated_user,
+            require_permission("can_write", "Log"),
+        ],
         status_code=201,
     )
     async def create_log(
@@ -168,7 +218,13 @@ class LogController(Controller):
             },
         }
 
-    @get("/recent_activity/", guards=[require_authentication])
+    @get(
+        "/recent_activity/",
+        guards=[
+            require_authentication,
+            require_permission("can_recent_activity", "Log"),
+        ],
+    )
     async def recent_activity(
         self,
         dao: Any,
@@ -178,7 +234,9 @@ class LogController(Controller):
         """GET /api/v1/log/recent_activity/ — recent activity for current user."""
         params = rison_params or {}
         page = params.get("page", 0)
-        page_size = params.get("page_size", 25)
+        # Mirror FAB _sanitize_page_args: clamp to FAB_API_MAX_PAGE_SIZE (default 100).
+        # LogRestApi does not override max_page_size, so the cap is always 100.
+        page_size = min(params.get("page_size", 20), 100)
         actions = params.get("actions", ["mount_explorer", "mount_dashboard"])
         distinct = params.get("distinct", True)
 
@@ -190,15 +248,7 @@ class LogController(Controller):
             page_size=page_size,
         )
 
-        # Batch-fetch dashboard titles and slice names so item_title
-        # shows meaningful names instead of raw IDs.
-        dashboard_ids = {item.dashboard_id for item in items if item.dashboard_id}
-        slice_ids = {item.slice_id for item in items if item.slice_id}
-
-        dashboard_titles = await dao.get_dashboard_titles(dashboard_ids)
-        slice_names = await dao.get_slice_names(slice_ids)
-
-        now = datetime.now()
+        now = datetime.utcnow()
         result = []
         seen: set[str] = set()
         for item in items:
@@ -207,12 +257,15 @@ class LogController(Controller):
             dttm = getattr(item, "dttm", None)
 
             # Determine item_type and item_url
+            dashboard_slug = getattr(item, "dashboard_slug", None)
             if dashboard_id:
                 item_type = "dashboard"
-                item_url = f"/superset/dashboard/{dashboard_id}/"
+                item_url = f"/superset/dashboard/{dashboard_slug or dashboard_id}/"
             elif slice_id:
                 item_type = "slice"
-                item_url = f"/explore/?slice_id={slice_id}"
+                # Mirror Slice.build_explore_url() (superset_old/models/slice.py:309)
+                form_data_param = parse.quote(json.dumps({"slice_id": slice_id}))
+                item_url = f"/explore/?slice_id={slice_id}&form_data={form_data_param}"
             else:
                 item_type = None
                 item_url = None
@@ -235,14 +288,18 @@ class LogController(Controller):
                     "action": getattr(item, "action", ""),
                     "item_type": item_type,
                     "item_url": item_url,
-                    "item_title": slice_names.get(int(slice_id), "")
-                    if slice_id
-                    else dashboard_titles.get(
-                        int(dashboard_id), str(dashboard_id or "")
-                    )
+                    # Dashboard-first priority — mirrors the original if/elif block
+                    # in superset_old/daos/log.py:128-135.  Both
+                    # get_recent_activity query paths already JOIN Dashboard and
+                    # Slice and SELECT dashboard_title / slice_name, so we read
+                    # them directly from the row rather than issuing a redundant
+                    # batch-fetch that could miss in a race condition.
+                    "item_title": getattr(item, "dashboard_title", None)
                     if dashboard_id
-                    else "",
-                    "time": dttm.timestamp() * 1000 if dttm else None,
+                    else (getattr(item, "slice_name", None) or "<empty>")
+                    if slice_id
+                    else None,
+                    "time": datetime_to_epoch(dttm) if dttm else None,
                     "time_delta_humanized": time_delta_humanized,
                 }
             )

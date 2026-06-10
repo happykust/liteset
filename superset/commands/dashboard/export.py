@@ -73,15 +73,57 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
     _resource_type = "Dashboard"
 
     def __init__(
-        self, model_ids: list[int], dao: AsyncDashboardDAO | None = None
+        self,
+        model_ids: list[int],
+        dao: AsyncDashboardDAO | None = None,
+        security_manager: Any = None,
+        user: Any = None,
+        export_related: bool = True,
     ) -> None:
-        super().__init__(model_ids)
+        super().__init__(
+            model_ids,
+            security_manager=security_manager,
+            user=user,
+            export_related=export_related,
+        )
         self._dao = dao
+
+    async def validate(self) -> None:
+        from superset.db.filters import dashboard_access_filters
+        from superset.models.dashboard import Dashboard
+
+        await self._validate_access(
+            self._dao, Dashboard, dashboard_access_filters, "Dashboard"
+        )
 
     @staticmethod
     def _file_name(model: Any) -> str:
         file_name = get_filename(model.dashboard_title or "", model.id, skip_id=False)
         return f"dashboards/{file_name}.yaml"
+
+    async def _attach_ssh_tunnel(
+        self, db_payload: dict[str, Any], database_id: int
+    ) -> None:
+        """Attach the masked SSH-tunnel payload to a database YAML payload.
+
+        1:1 with ``superset_old/commands/dataset/export.py:114-121`` — the
+        path the original dashboard export delegates every database YAML to
+        (via ``ExportChartsCommand`` → ``ExportDatasetsCommand._export``).
+        """
+        from superset.db.daos.database import AsyncSSHTunnelDAO
+        from superset.utils.ssh_tunnel import mask_password_info
+
+        ssh_tunnel = await AsyncSSHTunnelDAO(self._dao.session).get_by_database_id(
+            database_id
+        )
+        if ssh_tunnel:
+            ssh_tunnel_payload = ssh_tunnel.export_to_dict(
+                recursive=False,
+                include_parent_ref=False,
+                include_defaults=True,
+                export_uuids=False,
+            )
+            db_payload["ssh_tunnel"] = mask_password_info(ssh_tunnel_payload)
 
     async def _export_single(self, model_id: int) -> list[tuple[str, str]]:  # noqa: C901
         from sqlalchemy import select as sa_select
@@ -178,6 +220,27 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
 
         payload["version"] = EXPORT_VERSION
 
+        # Export related theme — gated by export_related, 1:1 with
+        # superset_old/commands/dashboard/export.py:199-203 which emits theme
+        # files only inside the ``if export_related:`` block.  When called from
+        # AsyncFullAssetManager._export_type (export_related=False) the theme
+        # YAML must NOT be emitted here — each theme is already exported by
+        # its own top-level exporter in the full-assets bundle, and emitting
+        # it unconditionally would inject spurious themes/*.yaml entries into
+        # the bundle for every dashboard that has a theme (superset/importexport
+        # /manager.py:266 passes export_related=False for exactly this reason).
+        _theme_files: list[tuple[str, str]] = []
+        if self._export_related and theme:
+            from superset.commands.theme import ExportThemesCommand
+            from superset.db.daos.theme import AsyncThemeDAO
+
+            _theme_dao = AsyncThemeDAO(self._dao.session)
+            _export_themes_cmd = ExportThemesCommand(
+                dao=_theme_dao, model_ids=[theme.id]
+            )
+            await _export_themes_cmd.validate()
+            _theme_files = await _export_themes_cmd.run()
+
         # Fetch tags from the database if TAGGING_SYSTEM is enabled
         if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
             tags = getattr(dashboard, "tags", []) or []
@@ -190,13 +253,17 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
             )
         ]
 
-        # Emit a separate ``tags.yaml`` entry when the TAGGING_SYSTEM feature
-        # flag is enabled.  Ported 1:1 from
-        # ``superset_old/commands/tag/export.py::ExportTagsCommand``: dashboard
-        # tags are filtered to ``TagType.custom`` while chart tags drop the
-        # implicit ``type:`` / ``owner:`` system tags, then both sets are merged
-        # by name (dashboard wins on conflict).
-        if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+        # Emit a separate ``tags.yaml`` entry only when export_related=True and
+        # TAGGING_SYSTEM is enabled.  The original gates this inside the
+        # ``if export_related:`` block (superset_old/commands/dashboard/export.py
+        # :187-197).  When export_related=False (full-assets bundle from
+        # AsyncFullAssetManager) the tags.yaml must NOT be emitted here: no
+        # prior phase emits a tags.yaml so the first dashboard's tags.yaml would
+        # land in the bundle unchallenged, producing partial tag data that the
+        # original bundle never contained (clean absence is correct).
+        if self._export_related and feature_flag_manager.is_feature_enabled(
+            "TAGGING_SYSTEM"
+        ):
             dashboard_tags = [
                 {"tag_name": tag.name, "description": tag.description}
                 for tag in (getattr(dashboard, "tags", []) or [])
@@ -222,145 +289,210 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
                 )
             )
 
-        # Bundle related charts + datasets + databases.
-        seen_datasets: set[int] = set()
-        seen_databases: set[int] = set()
+        # Append theme YAML files to the bundle (populated above when
+        # export_related=True and a theme is present).
+        files.extend(_theme_files)
 
-        for chart in slices:
-            chart_payload = chart.export_to_dict(
-                recursive=False,
-                include_parent_ref=False,
-                include_defaults=True,
-                export_uuids=True,
-            )
-            chart_payload = {
-                k: v
-                for k, v in chart_payload.items()
-                if k not in ("datasource_type", "datasource_name", "url_params")
-            }
-            if chart_payload.get("params"):
-                try:
-                    chart_payload["params"] = _json.loads(chart_payload["params"])
-                except (_json.JSONDecodeError, TypeError):
-                    pass
-            if chart.table:
-                chart_payload["dataset_uuid"] = str(chart.table.uuid)
-            chart_payload["version"] = EXPORT_VERSION
+        # Bundle related charts + datasets + databases only when export_related is
+        # True — 1:1 with superset_old/commands/dashboard/export.py:187 where the
+        # entire chart/tags/theme/dataset block is guarded by ``if export_related:``.
+        # When export_related=False (e.g. AsyncFullAssetManager passes False to avoid
+        # cascading exports), only the dashboard YAML is emitted.
+        if self._export_related:
+            seen_datasets: set[int] = set()
+            seen_databases: set[int] = set()
 
-            chart_file_name = get_filename(chart.slice_name or "", chart.id)
-            files.append(
-                (
-                    f"charts/{chart_file_name}.yaml",
-                    yaml.safe_dump(chart_payload, sort_keys=False),
-                )
-            )
-
-            ds = chart.table
-            if ds and ds.id not in seen_datasets:
-                seen_datasets.add(ds.id)
-                ds_payload = ds.export_to_dict(
-                    recursive=True,
+            for chart in slices:
+                chart_payload = chart.export_to_dict(
+                    recursive=False,
                     include_parent_ref=False,
                     include_defaults=True,
                     export_uuids=True,
                 )
-                for key in ("params", "template_params", "extra"):
-                    if ds_payload.get(key):
-                        try:
-                            ds_payload[key] = _json.loads(ds_payload[key])
-                        except (TypeError, _json.JSONDecodeError):
-                            pass
-                for nested in ("metrics", "columns"):
-                    for attrs in ds_payload.get(nested, []) or []:
-                        if isinstance(attrs.get("extra"), str):
-                            try:
-                                attrs["extra"] = _json.loads(attrs["extra"])
-                            except (TypeError, _json.JSONDecodeError):
-                                pass
-                ds_payload["version"] = EXPORT_VERSION
-                if ds.database:
-                    ds_payload["database_uuid"] = str(ds.database.uuid)
-                db_file_name = (
-                    get_filename(
-                        ds.database.database_name or "",
-                        ds.database.id,
-                        skip_id=True,
-                    )
-                    if ds.database
-                    else "unknown"
-                )
-                ds_file_name = get_filename(ds.table_name or "", ds.id)
+                chart_payload = {
+                    k: v
+                    for k, v in chart_payload.items()
+                    if k not in ("datasource_type", "datasource_name", "url_params")
+                }
+                if chart_payload.get("params"):
+                    try:
+                        chart_payload["params"] = _json.loads(chart_payload["params"])
+                    except (_json.JSONDecodeError, TypeError):
+                        pass
+                if chart.table:
+                    chart_payload["dataset_uuid"] = str(chart.table.uuid)
+                chart_payload["version"] = EXPORT_VERSION
+                if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+                    tags = getattr(chart, "tags", []) or []
+                    chart_payload["tags"] = [
+                        tag.name for tag in tags if tag.type == TagType.custom
+                    ]
+                chart_file_name = get_filename(chart.slice_name or "", chart.id)
                 files.append(
                     (
-                        f"datasets/{db_file_name}/{ds_file_name}.yaml",
-                        yaml.safe_dump(ds_payload, sort_keys=False),
+                        f"charts/{chart_file_name}.yaml",
+                        yaml.safe_dump(chart_payload, sort_keys=False),
                     )
                 )
 
-                if ds.database and ds.database.id not in seen_databases:
-                    seen_databases.add(ds.database.id)
-                    db = ds.database
-                    db_payload = db.export_to_dict(
-                        recursive=False,
+                ds = chart.table
+                if ds and ds.id not in seen_datasets:
+                    seen_datasets.add(ds.id)
+                    ds_payload = ds.export_to_dict(
+                        recursive=True,
                         include_parent_ref=False,
                         include_defaults=True,
                         export_uuids=True,
                     )
-                    if db_payload.get("extra"):
-                        try:
-                            db_payload["extra"] = _json.loads(db_payload["extra"])
-                        except (TypeError, _json.JSONDecodeError):
-                            pass
-                    db_payload["version"] = EXPORT_VERSION
-                    db_file_name = get_filename(
-                        db.database_name or "", db.id, skip_id=True
+                    for key in ("params", "template_params", "extra"):
+                        if ds_payload.get(key):
+                            try:
+                                ds_payload[key] = _json.loads(ds_payload[key])
+                            except (TypeError, _json.JSONDecodeError):
+                                pass
+                    for nested in ("metrics", "columns"):
+                        for attrs in ds_payload.get(nested, []) or []:
+                            if isinstance(attrs.get("extra"), str):
+                                try:
+                                    attrs["extra"] = _json.loads(attrs["extra"])
+                                except (TypeError, _json.JSONDecodeError):
+                                    pass
+                    ds_payload["version"] = EXPORT_VERSION
+                    if ds.database:
+                        ds_payload["database_uuid"] = str(ds.database.uuid)
+                    db_file_name = (
+                        get_filename(
+                            ds.database.database_name or "",
+                            ds.database.id,
+                            skip_id=True,
+                        )
+                        if ds.database
+                        else "unknown"
                     )
+                    ds_file_name = get_filename(ds.table_name or "", ds.id)
                     files.append(
                         (
-                            f"databases/{db_file_name}.yaml",
-                            yaml.safe_dump(db_payload, sort_keys=False),
+                            f"datasets/{db_file_name}/{ds_file_name}.yaml",
+                            yaml.safe_dump(ds_payload, sort_keys=False),
                         )
                     )
 
-        # Native-filter referenced datasets that aren't chart datasources.
-        for native_filter in payload.get("metadata", {}).get(
-            "native_filter_configuration", []
-        ):
-            for target in native_filter.get("targets", []):
-                ds_uuid = target.get("datasetUuid")
-                if ds_uuid:
-                    ds_q = await self._dao.session.execute(
-                        sa_select(SqlaTable)
-                        .where(SqlaTable.uuid == _UUID(ds_uuid))
-                        .options(selectinload(SqlaTable.database))
-                    )
-                    ds = ds_q.scalars().one_or_none()
-                    if ds and ds.id not in seen_datasets:
-                        seen_datasets.add(ds.id)
-                        ds_payload = ds.export_to_dict(
-                            recursive=True,
+                    if ds.database and ds.database.id not in seen_databases:
+                        seen_databases.add(ds.database.id)
+                        db = ds.database
+                        db_payload = db.export_to_dict(
+                            recursive=False,
                             include_parent_ref=False,
                             include_defaults=True,
                             export_uuids=True,
                         )
-                        ds_payload["version"] = EXPORT_VERSION
-                        if ds.database:
-                            ds_payload["database_uuid"] = str(ds.database.uuid)
-                        db_file_name = (
-                            get_filename(
-                                ds.database.database_name or "",
-                                ds.database.id,
-                                skip_id=True,
-                            )
-                            if ds.database
-                            else "unknown"
+                        if db_payload.get("extra"):
+                            try:
+                                db_payload["extra"] = _json.loads(db_payload["extra"])
+                            except (TypeError, _json.JSONDecodeError):
+                                pass
+                        await self._attach_ssh_tunnel(db_payload, db.id)
+                        db_payload["version"] = EXPORT_VERSION
+                        db_file_name = get_filename(
+                            db.database_name or "", db.id, skip_id=True
                         )
-                        ds_file_name = get_filename(ds.table_name or "", ds.id)
                         files.append(
                             (
-                                f"datasets/{db_file_name}/{ds_file_name}.yaml",
-                                yaml.safe_dump(ds_payload, sort_keys=False),
+                                f"databases/{db_file_name}.yaml",
+                                yaml.safe_dump(db_payload, sort_keys=False),
                             )
                         )
+
+            # Native-filter referenced datasets that aren't chart datasources.
+            for native_filter in payload.get("metadata", {}).get(
+                "native_filter_configuration", []
+            ):
+                for target in native_filter.get("targets", []):
+                    ds_uuid = target.get("datasetUuid")
+                    if ds_uuid:
+                        ds_q = await self._dao.session.execute(
+                            sa_select(SqlaTable)
+                            .where(SqlaTable.uuid == _UUID(ds_uuid))
+                            .options(
+                                selectinload(SqlaTable.database),
+                                selectinload(SqlaTable.metrics),
+                                selectinload(SqlaTable.columns),
+                            )
+                        )
+                        ds = ds_q.scalars().one_or_none()
+                        if ds and ds.id not in seen_datasets:
+                            seen_datasets.add(ds.id)
+                            ds_payload = ds.export_to_dict(
+                                recursive=True,
+                                include_parent_ref=False,
+                                include_defaults=True,
+                                export_uuids=True,
+                            )
+                            # Apply the same JSON normalization as the chart-datasource
+                            # path and as ExportDatasetsCommand._file_content
+                            # (superset_old/commands/dataset/export.py:62-76).
+                            for key in ("params", "template_params", "extra"):
+                                if ds_payload.get(key):
+                                    try:
+                                        ds_payload[key] = _json.loads(ds_payload[key])
+                                    except (TypeError, _json.JSONDecodeError):
+                                        pass
+                            for nested in ("metrics", "columns"):
+                                for attrs in ds_payload.get(nested, []) or []:
+                                    if isinstance(attrs.get("extra"), str):
+                                        try:
+                                            attrs["extra"] = _json.loads(attrs["extra"])
+                                        except (TypeError, _json.JSONDecodeError):
+                                            pass
+                            ds_payload["version"] = EXPORT_VERSION
+                            if ds.database:
+                                ds_payload["database_uuid"] = str(ds.database.uuid)
+                            db_file_name = (
+                                get_filename(
+                                    ds.database.database_name or "",
+                                    ds.database.id,
+                                    skip_id=True,
+                                )
+                                if ds.database
+                                else "unknown"
+                            )
+                            ds_file_name = get_filename(ds.table_name or "", ds.id)
+                            files.append(
+                                (
+                                    f"datasets/{db_file_name}/{ds_file_name}.yaml",
+                                    yaml.safe_dump(ds_payload, sort_keys=False),
+                                )
+                            )
+
+                            # Emit the database YAML — mirrors ExportDatasetsCommand
+                            # _export() (superset_old/commands/dataset/export.py:94-125)
+                            # and the chart-datasource path above.
+                            if ds.database and ds.database.id not in seen_databases:
+                                seen_databases.add(ds.database.id)
+                                db = ds.database
+                                db_payload = db.export_to_dict(
+                                    recursive=False,
+                                    include_parent_ref=False,
+                                    include_defaults=True,
+                                    export_uuids=True,
+                                )
+                                if db_payload.get("extra"):
+                                    try:
+                                        db_payload["extra"] = _json.loads(
+                                            db_payload["extra"]
+                                        )
+                                    except (TypeError, _json.JSONDecodeError):
+                                        pass
+                                await self._attach_ssh_tunnel(db_payload, db.id)
+                                db_payload["version"] = EXPORT_VERSION
+                                db_file_name_db = get_filename(
+                                    db.database_name or "", db.id, skip_id=True
+                                )
+                                files.append(
+                                    (
+                                        f"databases/{db_file_name_db}.yaml",
+                                        yaml.safe_dump(db_payload, sort_keys=False),
+                                    )
+                                )
 
         return files

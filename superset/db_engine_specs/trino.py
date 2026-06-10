@@ -485,9 +485,7 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
         # Adds the executed query id to the extra payload so the query can be
         # cancelled by a concurrent stop request.
         cancel_query_id = cursor.query_id
-        logger.debug(
-            "Query %s: queryId %s found in cursor", query.id, cancel_query_id
-        )
+        logger.debug("Query %s: queryId %s found in cursor", query.id, cancel_query_id)
         query.set_extra_json_key(key=QUERY_CANCEL_KEY, value=cancel_query_id)
 
         if tracking_url := cls.get_tracking_url(cursor):

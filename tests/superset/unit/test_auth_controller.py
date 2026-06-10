@@ -1,16 +1,19 @@
 """Tests for authentication controller -- password hashing, email login,
-timing-safe behaviour.
+timing-safe behaviour, and no-cache header enforcement.
 """
 
 from __future__ import annotations
 
 import hashlib
+from unittest.mock import MagicMock
 
 import pytest
+from litestar.response import Redirect
 
 from superset.controllers.auth import (
     _check_password_hash,
     _FAKE_PASSWORD_HASH,
+    AuthController,
 )
 
 # ``_hash_internal`` is a helper in ``superset.utils.password`` (the auth
@@ -186,3 +189,123 @@ class TestWerkzeugInterop:
         stored = f"{method}${salt}${h}"
         assert _check_password_hash(stored, "my-password") is True
         assert _check_password_hash(stored, "not-my-password") is False
+
+
+# ===================================================================
+# login_page no-cache header tests
+# ===================================================================
+
+
+def _get_raw_method(controller_cls: type, method_name: str):
+    """Return the underlying async function from a Litestar-decorated handler."""
+    handler = getattr(controller_cls, method_name)
+    return handler.fn if hasattr(handler, "fn") else handler
+
+
+_login_page_fn = _get_raw_method(AuthController, "login_page")
+
+
+class TestLoginPageNoCacheHeaders:
+    """login_page must set no-cache headers on ALL response paths.
+
+    Original: FAB @no_cache wraps SupersetAuthView.login via make_response(),
+    so EVERY return value (early-return redirect for authenticated users AND
+    the render_app_template() Template path) receives:
+        Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+        Pragma: no-cache
+        Expires: 0
+
+    Regression: the early-return Redirect(path="/") at the authenticated-user
+    branch was missing these headers while the Template branch already had them.
+    """
+
+    @pytest.mark.asyncio
+    async def test_authenticated_redirect_carries_no_cache_headers(self) -> None:
+        """Early-return Redirect for an already-authenticated user must include
+        all three no-cache headers, mirroring the original @no_cache behaviour.
+        """
+        controller = MagicMock()
+
+        user = MagicMock()
+        user.is_authenticated = True
+
+        request = MagicMock()
+        request.user = user
+
+        settings = MagicMock()
+        settings.auth_role_public = ""
+        state = MagicMock()
+        state.settings = settings
+
+        result = await _login_page_fn(controller, request=request, state=state)
+
+        assert isinstance(result, Redirect)
+        assert result.url == "/"
+        assert (
+            result.headers.get("Cache-Control")
+            == "no-store, no-cache, must-revalidate, max-age=0"
+        )
+        assert result.headers.get("Pragma") == "no-cache"
+        assert result.headers.get("Expires") == "0"
+
+    @pytest.mark.asyncio
+    async def test_authenticated_redirect_target_is_index(self) -> None:
+        """The redirect must point to '/' — the index, matching
+        appbuilder.get_url_for_index in the original.
+        """
+        controller = MagicMock()
+
+        user = MagicMock()
+        user.is_authenticated = True
+
+        request = MagicMock()
+        request.user = user
+
+        settings = MagicMock()
+        settings.auth_role_public = ""
+        state = MagicMock()
+        state.settings = settings
+
+        result = await _login_page_fn(controller, request=request, state=state)
+
+        assert isinstance(result, Redirect)
+        assert result.url == "/"
+
+    @pytest.mark.asyncio
+    async def test_unauthenticated_user_gets_no_cache_on_template(self) -> None:
+        """Template response for unauthenticated users also carries no-cache headers
+        (this was already correct; test ensures the fix did not regress it).
+        """
+        from unittest.mock import patch
+
+        from litestar.response import Template
+
+        controller = MagicMock()
+
+        # UnauthenticatedUser: user.is_authenticated is False
+        user = MagicMock()
+        user.is_authenticated = False
+
+        request = MagicMock()
+        request.user = user
+        request.cookies.get = MagicMock(return_value=None)
+
+        settings = MagicMock()
+        settings.auth_role_public = ""
+        settings.static_assets_prefix = ""
+        state = MagicMock()
+        state.settings = settings
+
+        with patch(
+            "superset.controllers.auth._build_bootstrap_data",
+            return_value={"common": {}, "user": {}},
+        ):
+            result = await _login_page_fn(controller, request=request, state=state)
+
+        assert isinstance(result, Template)
+        assert (
+            result.headers.get("Cache-Control")
+            == "no-store, no-cache, must-revalidate, max-age=0"
+        )
+        assert result.headers.get("Pragma") == "no-cache"
+        assert result.headers.get("Expires") == "0"

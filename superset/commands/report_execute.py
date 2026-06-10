@@ -68,6 +68,7 @@ from superset.commands.report_exceptions import (
     ReportScheduleUnexpectedError,
     ReportScheduleWorkingTimeoutError,
 )
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import (
     CommandException,
     SupersetErrorsException,
@@ -96,6 +97,7 @@ from superset.tasks.utils import get_executor
 from superset.utils import json
 from superset.utils.core import override_user
 from superset.utils.csv import get_chart_csv_data, get_chart_dataframe
+from superset.utils.decorators import transaction
 from superset.utils.pdf import build_pdf_from_screenshots
 from superset.utils.screenshots import ChartScreenshot, DashboardScreenshot
 
@@ -233,9 +235,7 @@ class BaseReportState:
                     recipient.type = ReportRecipientType.SLACKV2
                     slack_recipients = json.loads(recipient.recipient_config_json)
                     # V1 method allowed a leading ``#`` in the channel name
-                    channel_names = (slack_recipients["target"] or "").replace(
-                        "#", ""
-                    )
+                    channel_names = (slack_recipients["target"] or "").replace("#", "")
                     # ensure existing reports can also fetch ids from private
                     # channels (exact match on both public and private)
                     channels = _get_slack_channels(
@@ -464,8 +464,7 @@ class BaseReportState:
         existing = (
             self._session.query(KeyValueEntry)
             .filter(
-                KeyValueEntry.resource
-                == KeyValueResource.DASHBOARD_PERMALINK.value,
+                KeyValueEntry.resource == KeyValueResource.DASHBOARD_PERMALINK.value,
                 KeyValueEntry.uuid == deterministic_uuid,
             )
             .one_or_none()
@@ -816,7 +815,7 @@ class BaseReportState:
         :raises: CommandException
         """
         settings = _get_settings()
-        notification_errors: list[dict[str, Any]] = []
+        notification_errors: list[SupersetError] = []
         for recipient in recipients:
             notification = create_notification(recipient, notification_content)
             try:
@@ -850,25 +849,33 @@ class BaseReportState:
             ) as ex:
                 # collect errors but keep processing them
                 notification_errors.append(
-                    {
-                        "message": ex.message,
-                        "error_type": "REPORT_NOTIFICATION_ERROR",
-                        "level": "error" if ex.status_code >= 500 else "warning",
-                    }
+                    SupersetError(
+                        message=ex.message,
+                        error_type=SupersetErrorType.REPORT_NOTIFICATION_ERROR,
+                        level=(
+                            ErrorLevel.ERROR
+                            if ex.status_code >= 500
+                            else ErrorLevel.WARNING
+                        ),
+                    )
                 )
         if notification_errors:
             # log all errors but raise based on the most severe
             for error in notification_errors:
                 logger.warning(str(error))
 
-            if any(error["level"] == "error" for error in notification_errors):
-                raise ReportScheduleSystemErrorsException(
-                    message=";".join(e["message"] for e in notification_errors)
+            if any(error.level == ErrorLevel.ERROR for error in notification_errors):
+                _exc = ReportScheduleSystemErrorsException(
+                    message=";".join(e.message for e in notification_errors)
                 )
-            if any(error["level"] == "warning" for error in notification_errors):
-                raise ReportScheduleClientErrorsException(
-                    message=";".join(e["message"] for e in notification_errors)
+                _exc.errors = notification_errors
+                raise _exc
+            if any(error.level == ErrorLevel.WARNING for error in notification_errors):
+                _exc = ReportScheduleClientErrorsException(
+                    message=";".join(e.message for e in notification_errors)
                 )
+                _exc.errors = notification_errors
+                raise _exc
 
     def send(self) -> None:
         """Create the notification content and send to all recipients.
@@ -1041,7 +1048,8 @@ class ReportNotTriggeredErrorState(BaseReportState):
             # string carries the joined reasons even when ``errors`` is unset).
             if isinstance(first_ex, SupersetErrorsException) and first_ex.errors:
                 error_message = ";".join(
-                    e.get("message", str(e)) if isinstance(e, dict)
+                    e.get("message", str(e))
+                    if isinstance(e, dict)
                     else str(getattr(e, "message", e))
                     for e in first_ex.errors
                 )
@@ -1074,7 +1082,7 @@ class ReportNotTriggeredErrorState(BaseReportState):
 
                 except SupersetErrorsException as second_ex:
                     second_error_message = ";".join(
-                        [str(error) for error in second_ex.errors]
+                        [error.message for error in second_ex.errors]
                     )
                 except ReportScheduleUnexpectedError:
                     # send_error failed due to logging issue, log and continue
@@ -1206,6 +1214,7 @@ class ReportScheduleStateMachine:
         self._scheduled_dttm = scheduled_dttm
         self._session = session
 
+    @transaction()
     def run(self) -> None:
         for state_cls in self.states_cls:
             if (self._report_schedule.last_state is None and state_cls.initial) or (
@@ -1251,6 +1260,7 @@ class ExecuteReportScheduleCommand:
         self._execution_id = UUID(task_id)
         self._session = session
 
+    @transaction()
     def run(self) -> None:
         try:
             self.validate()

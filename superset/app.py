@@ -19,6 +19,7 @@ from __future__ import annotations
 import json  # noqa: TID251 — superset must not depend on superset for core imports
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -204,6 +205,78 @@ async def readiness_probe(state: State) -> Response[dict[str, Any]]:
     return Response(body, status_code=200 if healthy else 503)
 
 
+async def _seed_one_theme(
+    session_factory: Any,
+    theme_name: str,
+    theme_config: dict[str, Any],
+) -> None:
+    """Upsert one system theme in its own independent transaction.
+
+    Async equivalent of ``superset_old/commands/theme/seed.py::_upsert_system_theme``
+    decorated with ``@transaction()``: each call opens, commits (or rolls back),
+    and closes its own DB session so that a failure on one theme never reverts a
+    previously committed sibling theme.
+    """
+    import json as _json
+
+    from sqlalchemy import select
+
+    from superset.models.core import Theme
+
+    async with session_factory() as _session:
+        # Handle UUID-only references by copying the referenced theme's
+        # definition — 1:1 with superset_old/commands/theme/seed.py:53-83.
+        if "uuid" in theme_config and len(theme_config) == 1:
+            original_uuid = theme_config["uuid"]
+            ref_stmt = select(Theme).where(Theme.uuid == original_uuid)
+            ref_result = await _session.execute(ref_stmt)
+            referenced_theme = ref_result.scalars().first()
+            if referenced_theme and referenced_theme.json_data:
+                try:
+                    theme_config = _json.loads(referenced_theme.json_data)
+                    theme_config["NOTE"] = (
+                        f"Copied at startup from theme UUID "
+                        f"{original_uuid} based on config reference"
+                    )
+                    logger.debug(
+                        "Copied theme definition from UUID %s for system theme %s",
+                        original_uuid,
+                        theme_name,
+                    )
+                except (ValueError, TypeError) as ex:
+                    logger.error(
+                        "Failed to parse theme JSON for UUID %s: %s",
+                        original_uuid,
+                        ex,
+                    )
+                    return
+            else:
+                logger.error(
+                    "Referenced theme with UUID %s not found for system theme %s",
+                    original_uuid,
+                    theme_name,
+                )
+                return
+
+        stmt = select(Theme).where(
+            Theme.theme_name == theme_name,
+            Theme.is_system.is_(True),
+        )
+        existing = (await _session.execute(stmt)).scalars().first()
+        json_data = _json.dumps(theme_config)
+        if existing:
+            existing.json_data = json_data
+        else:
+            _session.add(
+                Theme(
+                    theme_name=theme_name,
+                    json_data=json_data,
+                    is_system=True,
+                )
+            )
+        await _session.commit()
+
+
 async def on_startup(app: Litestar) -> None:  # noqa: C901
     settings: SupersetSettings = app.state.settings
 
@@ -217,10 +290,15 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
     # register them with the module-level ``i18n`` catalog so that
     # ``gettext`` / ``lazy_gettext`` calls work from the first request.
     try:
-        from superset.i18n import init_translations as _init_translations
+        from superset.i18n import (
+            init_plural_data as _init_plural_data,
+            init_translations as _init_translations,
+        )
 
         _translations_root = Path(__file__).parent / "translations"
         _catalogs: dict[str, dict[str, str]] = {}
+        _plural_tables: dict[str, dict[str, list[str]]] = {}
+        _plural_rules: dict[str, str] = {}
         if _translations_root.is_dir():
             for _lang_dir in _translations_root.iterdir():
                 _msg_file = _lang_dir / "LC_MESSAGES" / "messages.json"
@@ -243,13 +321,30 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
                             for _domain_msgs in _raw["locale_data"].values():
                                 if isinstance(_domain_msgs, dict):
                                     _domain_data.update(_domain_msgs)
+                            _plural_table: dict[str, list[str]] = {}
                             for _k, _v in _domain_data.items():
                                 if _k == "":
-                                    continue  # skip metadata entry
+                                    # metadata entry — extract Plural-Forms
+                                    if isinstance(_v, dict):
+                                        _pf = _v.get("plural_forms") or _v.get(
+                                            "Plural-Forms", ""
+                                        )
+                                        _m = re.search(
+                                            r"plural\s*=\s*(.+?);?\s*$", str(_pf)
+                                        )
+                                        if _m:
+                                            _plural_rules[_lang_dir.name] = _m.group(1)
+                                    continue
                                 if isinstance(_v, list) and len(_v) >= 1:
                                     _catalog[_k] = _v[0] if _v[0] else _k
+                                    if len(_v) >= 2:
+                                        _plural_table[_k] = [
+                                            _form if _form else "" for _form in _v
+                                        ]
                                 elif isinstance(_v, str):
                                     _catalog[_k] = _v
+                            if _plural_table:
+                                _plural_tables[_lang_dir.name] = _plural_table
                         else:
                             # raw or flat format
                             for _k, _v in _raw.items():
@@ -261,8 +356,13 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
                                     _catalog[_k] = _v
                         _catalogs[_lang_dir.name] = _catalog
                     except Exception:  # noqa: BLE001
-                        pass
+                        logger.debug(
+                            "Failed to load translation catalog %s",
+                            _lang_dir.name,
+                            exc_info=True,
+                        )
         _init_translations(_catalogs)
+        _init_plural_data(_plural_tables, _plural_rules)
         logger.info(
             "i18n: loaded %d language catalogs: %s",
             len(_catalogs),
@@ -285,8 +385,12 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
                 {
                     "LOG_LEVEL": getattr(settings, "log_level", "INFO"),
                     "LOG_FORMAT": getattr(settings, "log_format", ""),
-                    "ENABLE_TIME_ROTATE": getattr(settings, "enable_time_rotate", False),
-                    "TIME_ROTATE_LOG_LEVEL": getattr(settings, "time_rotate_log_level", 20),
+                    "ENABLE_TIME_ROTATE": getattr(
+                        settings, "enable_time_rotate", False
+                    ),
+                    "TIME_ROTATE_LOG_LEVEL": getattr(
+                        settings, "time_rotate_log_level", 20
+                    ),
                     "FILENAME": getattr(settings, "log_filename", ""),
                     "ROLLOVER": getattr(settings, "rollover", "midnight"),
                     "INTERVAL": getattr(settings, "log_interval", 1),
@@ -295,7 +399,10 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
                 getattr(settings, "debug", False),
             )
         except Exception:  # noqa: BLE001
-            pass  # fall through to structlog
+            logger.debug(
+                "LOGGING_CONFIGURATOR failed; falling through to structlog",
+                exc_info=True,
+            )
 
     configure_logging(settings)
 
@@ -349,8 +456,11 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
     # use that; otherwise we default to AsyncDBEventLogger(session_factory)
     # which persists audit rows to the metadata DB.
     try:
-        from superset.events import configure_event_logger, get_event_logger_from_cfg_value
         import superset.events as _events_mod
+        from superset.events import (
+            configure_event_logger,
+            get_event_logger_from_cfg_value,
+        )
 
         if event_logger_cfg is not None:
             # User supplied a custom EventLogger instance or class.
@@ -381,6 +491,19 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
             app.state.redis = None
     else:
         app.state.redis = None
+
+    # Initialize a dedicated Redis client for Global Async Query event streams.
+    # 1:1 with ``SupersetAppInitializer.configure_async_queries`` which only calls
+    # ``async_query_manager_factory.init_app(app)`` (and thus ``get_cache_backend``)
+    # when ``GLOBAL_ASYNC_QUERIES`` is enabled.  When disabled, we fall back to the
+    # shared auth-cache Redis (``app.state.redis``) so DI providers that read
+    # ``state.event_redis`` still work without a NoneType dereference.
+    if feature_flag_manager.is_feature_enabled("GLOBAL_ASYNC_QUERIES"):
+        # Raises UnsupportedCacheBackendError for unsupported CACHE_TYPE — 1:1 with
+        # the original hard startup failure on misconfiguration.
+        app.state.event_redis = _build_gaq_redis(settings)
+    else:
+        app.state.event_redis = app.state.redis
 
     # ── Step 16: configure_cache ───────────────────────────────────────────
     # Initialise the multi-cache holder used by ``utils.cache.memoized_func``,
@@ -492,41 +615,25 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
             theme_seeds.append(("THEME_DARK", theme_dark))
 
         if theme_seeds:
-            try:
-                import json as _json
-
-                from sqlalchemy import select
-
-                from superset.models.core import Theme
-
-                async with app.state.session_factory() as _session:
-                    for theme_name, theme_config in theme_seeds:
-                        if callable(theme_config):
-                            theme_config = theme_config()
-                        if not isinstance(theme_config, dict):
-                            continue
-                        stmt = select(Theme).where(
-                            Theme.theme_name == theme_name,
-                            Theme.is_system.is_(True),
-                        )
-                        existing = (await _session.execute(stmt)).scalars().first()
-                        json_data = _json.dumps(theme_config)
-                        if existing:
-                            existing.json_data = json_data
-                        else:
-                            _session.add(
-                                Theme(
-                                    theme_name=theme_name,
-                                    json_data=json_data,
-                                    is_system=True,
-                                )
-                            )
-                    await _session.commit()
-            except Exception:  # noqa: BLE001
-                logger.debug(
-                    "Theme seeding skipped (DB may not be migrated yet)",
-                    exc_info=True,
-                )
+            # Each theme is processed in its own independent transaction via
+            # _seed_one_theme(), matching superset_old/commands/theme/seed.py
+            # which decorates _upsert_system_theme with @transaction() so each
+            # call commits independently — partial success is preserved when one
+            # theme's DB operation fails and the other succeeds.
+            for theme_name, theme_config in theme_seeds:
+                if callable(theme_config):
+                    theme_config = theme_config()
+                if not isinstance(theme_config, dict):
+                    continue
+                try:
+                    await _seed_one_theme(
+                        app.state.session_factory, theme_name, theme_config
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "Theme seeding skipped (DB may not be migrated yet)",
+                        exc_info=True,
+                    )
     except Exception:  # noqa: BLE001
         logger.debug("sync_config_to_db failed (non-fatal)", exc_info=True)
 
@@ -544,8 +651,16 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
     # Initialize active WebSocket connections tracker
     app.state.active_websockets = {}
 
-    # Start periodic channel cleanup if Redis is available
-    if app.state.redis is not None:
+    # Start periodic channel cleanup only when GLOBAL_ASYNC_QUERIES is enabled.
+    # 1:1 with the original: ``configure_async_queries`` only calls ``init_app``
+    # (which registers the cleanup handler) when the feature flag is active.
+    # Starting the cleanup task when GAQ is disabled would sweep streams that
+    # were never written — harmless but diverges from the original contract.
+    _cleanup_redis = app.state.event_redis
+    if (
+        feature_flag_manager.is_feature_enabled("GLOBAL_ASYNC_QUERIES")
+        and _cleanup_redis is not None
+    ):
         import asyncio
 
         from superset.async_events.manager import AsyncEventManager
@@ -566,7 +681,7 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
             "async-events-",
         )
         manager = AsyncEventManager(
-            redis=app.state.redis,
+            redis=_cleanup_redis,
             stream_prefix=_aem_prefix,
             # Derive the firehose key from the prefix (1:1 upstream
             # ``f"{self._stream_prefix}full"``) so a custom prefix is honored
@@ -614,6 +729,15 @@ async def on_shutdown(app: Litestar) -> None:
     if hasattr(app.state, "engine"):
         await dispose_engine(app.state.engine)
         logger.info("Database engine disposed")
+    # Close the dedicated event Redis client (if distinct from the auth cache client).
+    event_redis = getattr(app.state, "event_redis", None)
+    main_redis = getattr(app.state, "redis", None)
+    if event_redis is not None and event_redis is not main_redis:
+        try:
+            await event_redis.close()
+            logger.info("Event Redis connection closed")
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to close event Redis connection", exc_info=True)
     if hasattr(app.state, "redis") and app.state.redis is not None:
         await app.state.redis.close()
         logger.info("Redis connection closed")
@@ -650,7 +774,11 @@ def _check_secret_key(settings: SupersetSettings) -> None:
         return
 
     # is_test(): mirrors ``superset_old/utils/core.py::is_test()``
-    _is_test = os.environ.get("SUPERSET_TESTENV", "false").lower() in ("true", "1", "yes")
+    _is_test = os.environ.get("SUPERSET_TESTENV", "false").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
     if settings.debug or _is_test:
         logger.warning("Debug mode identified with default secret key")
         _log_default_secret_key_warning()
@@ -700,6 +828,137 @@ def _validate_global_async_queries_config(settings: SupersetSettings) -> None:
         raise AsyncQueryTokenException(
             "Please provide a JWT secret at least 32 bytes long"
         )
+
+
+def _apply_ssl_kwargs(target: dict[str, Any], cache_config: dict[str, Any]) -> None:
+    """Merge SSL-related keys from *cache_config* into *target* in-place.
+
+    Shared by ``_build_redis_cache_client`` and ``_build_redis_sentinel_client``
+    to avoid duplicating the SSL-keyword logic.  Only sets keys whose config
+    values are non-empty/non-None, mirroring the conditional assignments in the
+    original ``get_cache_backend`` helper.
+    """
+    target["ssl"] = True
+    ssl_certfile = cache_config.get("CACHE_REDIS_SSL_CERTFILE") or None
+    ssl_keyfile = cache_config.get("CACHE_REDIS_SSL_KEYFILE") or None
+    ssl_cert_reqs = cache_config.get("CACHE_REDIS_SSL_CERT_REQS", "required")
+    ssl_ca_certs = cache_config.get("CACHE_REDIS_SSL_CA_CERTS") or None
+    if ssl_certfile:
+        target["ssl_certfile"] = ssl_certfile
+    if ssl_keyfile:
+        target["ssl_keyfile"] = ssl_keyfile
+    if ssl_cert_reqs:
+        target["ssl_cert_reqs"] = ssl_cert_reqs
+    if ssl_ca_certs:
+        target["ssl_ca_certs"] = ssl_ca_certs
+
+
+def _build_redis_cache_client(cache_config: dict[str, Any]) -> Any:
+    """Construct an ``redis.asyncio.Redis`` from a ``RedisCache`` config dict.
+
+    Extracted from ``_build_gaq_redis`` to reduce its cyclomatic complexity.
+    Behaviour is identical to the original inline block.
+    """
+    from redis.asyncio import Redis as AsyncRedis
+
+    host = cache_config.get("CACHE_REDIS_HOST", "localhost")
+    port = int(cache_config.get("CACHE_REDIS_PORT", 6379))
+    db = int(cache_config.get("CACHE_REDIS_DB", 0))
+    password = cache_config.get("CACHE_REDIS_PASSWORD") or None
+    username = cache_config.get("CACHE_REDIS_USER") or None
+    ssl = bool(cache_config.get("CACHE_REDIS_SSL", False))
+    kwargs: dict[str, Any] = {
+        "host": host,
+        "port": port,
+        "db": db,
+        "decode_responses": True,
+    }
+    if password:
+        kwargs["password"] = password
+    if username:
+        kwargs["username"] = username
+    if ssl:
+        _apply_ssl_kwargs(kwargs, cache_config)
+    logger.info(
+        "GAQ event stream: using RedisCache backend at %s:%s db=%s",
+        host,
+        port,
+        db,
+    )
+    return AsyncRedis(**kwargs)
+
+
+def _build_redis_sentinel_client(cache_config: dict[str, Any]) -> Any:
+    """Construct an ``redis.asyncio.Sentinel`` master handle from a
+    ``RedisSentinelCache`` config dict.
+
+    Extracted from ``_build_gaq_redis`` to reduce its cyclomatic complexity.
+    Behaviour is identical to the original inline block.
+    """
+    from redis.asyncio.sentinel import Sentinel as AsyncSentinel
+
+    sentinels: list[tuple[str, int]] = cache_config.get(
+        "CACHE_REDIS_SENTINELS", [("127.0.0.1", 26379)]
+    )
+    master: str = cache_config.get("CACHE_REDIS_SENTINEL_MASTER", "mymaster")
+    password = cache_config.get("CACHE_REDIS_PASSWORD") or None
+    sentinel_password = cache_config.get("CACHE_REDIS_SENTINEL_PASSWORD") or None
+    db = int(cache_config.get("CACHE_REDIS_DB", 0))
+    ssl = bool(cache_config.get("CACHE_REDIS_SSL", False))
+    sentinel_kwargs: dict[str, Any] = {}
+    if sentinel_password:
+        sentinel_kwargs["password"] = sentinel_password
+    # ``db`` reaches the master connection via connection kwargs in the
+    # original (superset_old/async_events/cache_backend.py:207 builds
+    # ``{"db": config.get("CACHE_REDIS_DB", 0)}`` and Sentinel forwards
+    # connection kwargs to ``master_for`` connections).
+    master_kwargs: dict[str, Any] = {"decode_responses": True, "db": db}
+    if password:
+        master_kwargs["password"] = password
+    if ssl:
+        _apply_ssl_kwargs(master_kwargs, cache_config)
+    sentinel = AsyncSentinel(sentinels, sentinel_kwargs=sentinel_kwargs)
+    logger.info(
+        "GAQ event stream: using RedisSentinelCache backend, master=%s sentinels=%s",
+        master,
+        sentinels,
+    )
+    return sentinel.master_for(master, **master_kwargs)
+
+
+def _build_gaq_redis(settings: SupersetSettings) -> Any:
+    """Build an async Redis client from GLOBAL_ASYNC_QUERIES_CACHE_BACKEND config.
+
+    1:1 port of ``superset_old/async_events/async_query_manager.py::get_cache_backend``
+    which reads the ``GLOBAL_ASYNC_QUERIES_CACHE_BACKEND`` dict and constructs a
+    ``RedisCacheBackend`` or ``RedisSentinelCacheBackend``.  Here we build the
+    async-native equivalent using ``redis.asyncio`` so the event streams work in
+    the ASGI process without blocking the event loop.
+
+    Supported ``CACHE_TYPE`` values:
+    - ``"RedisCache"``           → ``redis.asyncio.Redis`` (direct connection)
+    - ``"RedisSentinelCache"``   → ``redis.asyncio.Sentinel`` (HA topology)
+
+    Raises ``UnsupportedCacheBackendError`` for any other CACHE_TYPE (including
+    absent/None), 1:1 with the original ``get_cache_backend`` which raises
+    ``UnsupportedCacheBackendError("Unsupported cache backend configuration")``
+    as its final else-branch.  This is only called when GLOBAL_ASYNC_QUERIES is
+    enabled; callers are responsible for the feature-flag guard.
+    """
+    from superset.async_events.manager import UnsupportedCacheBackendError
+
+    cache_config: dict[str, Any] = (
+        getattr(settings, "global_async_queries_cache_backend", {}) or {}
+    )
+    cache_type = cache_config.get("CACHE_TYPE")
+
+    if cache_type == "RedisCache":
+        return _build_redis_cache_client(cache_config)
+
+    if cache_type == "RedisSentinelCache":
+        return _build_redis_sentinel_client(cache_config)
+
+    raise UnsupportedCacheBackendError("Unsupported cache backend configuration")
 
 
 def _build_cors_config(settings: SupersetSettings) -> CORSConfig | None:
@@ -921,6 +1180,22 @@ def create_app(  # noqa: C901
             key="assets_prefix",
             template_callable=lambda ctx: settings.static_assets_prefix,
         )
+        # Mirrors flask-talisman's ``app.jinja_env.globals['csp_nonce']``
+        # (talisman.py:193).  The SecurityHeadersMiddleware generates a per-request
+        # nonce and stores it under CSP_NONCE_SCOPE_KEY in scope["state"].  The
+        # template callable reads it back so spa.html / asset_bundle.html can emit
+        # `nonce="<value>"` on inline/async <script> tags.
+        from superset.middleware.security_headers import CSP_NONCE_SCOPE_KEY
+
+        def _csp_nonce(ctx: dict[str, Any]) -> str:
+            try:
+                request = ctx["request"]
+                scope_state = request.scope.get("state", {})
+                return scope_state.get(CSP_NONCE_SCOPE_KEY, "") or ""
+            except Exception:  # noqa: BLE001
+                return ""
+
+        engine.register_template_callable(key="csp_nonce", template_callable=_csp_nonce)
 
     route_handlers.extend(
         [
@@ -947,8 +1222,15 @@ def create_app(  # noqa: C901
             "global_async_queries_redis_stream_prefix",
             "async-events-",
         )
+        # Use the dedicated event_redis client (built from
+        # GLOBAL_ASYNC_QUERIES_CACHE_BACKEND) when available; fall back to
+        # the shared auth-cache Redis (state.redis).  1:1 with the original
+        # AsyncQueryManager.init_app which called get_cache_backend(app.config).
+        _event_redis = getattr(state, "event_redis", None) or getattr(
+            state, "redis", None
+        )
         return _aem_mod.AsyncEventManager(
-            redis=state.redis,
+            redis=_event_redis,
             stream_prefix=_aem_prefix,
             # Firehose key derived from the prefix (see startup-manager note).
             global_stream_key=f"{_aem_prefix}full",

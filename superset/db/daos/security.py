@@ -41,12 +41,22 @@ class AsyncRoleDAO:
     async def search(
         self,
         name_filter: str | None = None,
+        user_ids_filter: Any = None,
+        permission_ids_filter: Any = None,
+        group_ids_filter: Any = None,
         order_column: str = "id",
         order_direction: str = "asc",
         page: int = 0,
         page_size: int = 10,
     ) -> tuple[list[Any], int]:
-        """Search roles with optional name filter and pagination.
+        """Search roles with optional filters and pagination.
+
+        Mirrors original RoleRestAPI.get_list filter_dict logic
+        (security/api.py:305-319):
+        - ``name``: case-insensitive substring match on Role.name
+        - ``user_ids``: Role.user.any(id=value) — roles assigned to a user
+        - ``permission_ids``: Role.permissions.any(id=value)
+        - ``group_ids``: Role.groups.any(id=value)
 
         Returns:
             Tuple of (roles list, total count).
@@ -61,12 +71,28 @@ class AsyncRoleDAO:
         count_stmt = select(func.count()).select_from(Role)
 
         # Apply name filter (case-insensitive substring match)
+        # NOTE: raw interpolation matches superset_old/security/api.py:319 — no escaping
         if name_filter:
-            from superset.utils import escape_like
+            stmt = stmt.where(Role.name.ilike(f"%{name_filter}%"))
+            count_stmt = count_stmt.where(Role.name.ilike(f"%{name_filter}%"))
 
-            escaped = escape_like(name_filter)
-            stmt = stmt.where(Role.name.ilike(f"%{escaped}%"))
-            count_stmt = count_stmt.where(Role.name.ilike(f"%{escaped}%"))
+        # user_ids filter — mirrors Role.user.any(id=filter_dict["user_ids"])
+        if user_ids_filter is not None:
+            cond = Role.user.any(id=user_ids_filter)  # type: ignore[attr-defined]
+            stmt = stmt.where(cond)
+            count_stmt = count_stmt.where(cond)
+
+        # permission_ids filter
+        if permission_ids_filter is not None:
+            cond = Role.permissions.any(id=permission_ids_filter)
+            stmt = stmt.where(cond)
+            count_stmt = count_stmt.where(cond)
+
+        # group_ids filter
+        if group_ids_filter is not None:
+            cond = Role.groups.any(id=group_ids_filter)
+            stmt = stmt.where(cond)
+            count_stmt = count_stmt.where(cond)
 
         # Count
         total = await self.session.scalar(count_stmt) or 0
@@ -417,7 +443,7 @@ class AsyncGroupDAO:
             stmt = stmt.order_by(order_col.asc())
 
         stmt = stmt.options(
-            selectinload(Group.roles_),  # type: ignore[attr-defined]
+            selectinload(Group.roles),
             selectinload(Group.users),  # type: ignore[attr-defined]
         )
 
@@ -438,7 +464,7 @@ class AsyncGroupDAO:
             select(Group)
             .where(Group.id == group_id)
             .options(
-                selectinload(Group.roles_),  # type: ignore[attr-defined]
+                selectinload(Group.roles),
                 selectinload(Group.users),  # type: ignore[attr-defined]
             )
         )
@@ -461,7 +487,7 @@ class AsyncGroupDAO:
 
             role_stmt = select(Role).where(Role.id.in_(role_ids))
             result = await self.session.execute(role_stmt)
-            group.roles_ = list(result.scalars().all())  # type: ignore[attr-defined]
+            group.roles = list(result.scalars().all())
 
         if user_ids:
             from sqlalchemy import select
@@ -474,7 +500,7 @@ class AsyncGroupDAO:
 
         self.session.add(group)
         await self.session.flush()
-        await self.session.refresh(group, attribute_names=["roles_", "users"])
+        await self.session.refresh(group, attribute_names=["roles", "users"])
         return group
 
     async def update(self, group: Any, attributes: dict[str, Any]) -> Any:
@@ -492,7 +518,7 @@ class AsyncGroupDAO:
 
             role_stmt = select(Role).where(Role.id.in_(role_ids))
             result = await self.session.execute(role_stmt)
-            group.roles_ = list(result.scalars().all())
+            group.roles = list(result.scalars().all())
 
         if user_ids is not None:
             from sqlalchemy import select
@@ -504,7 +530,7 @@ class AsyncGroupDAO:
             group.users = list(result.scalars().all())
 
         await self.session.flush()
-        await self.session.refresh(group, attribute_names=["roles_", "users"])
+        await self.session.refresh(group, attribute_names=["roles", "users"])
         return group
 
     async def delete(self, group: Any) -> None:

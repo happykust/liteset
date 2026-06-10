@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from collections import defaultdict
 from typing import Any
 
 from sqlalchemy import (
@@ -36,7 +38,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import object_session, relationship
 
 from superset.models.helpers import (
     AuditMixinNullable,
@@ -128,6 +130,10 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
     is_managed_externally = Column(Boolean, nullable=False, default=False)
     external_url = Column(Text, nullable=True)
 
+    def __repr__(self) -> str:
+        # 1:1 superset_old/models/dashboard.py:184 — /related/ dropdown text.
+        return f"Dashboard<{self.id or self.slug}>"
+
     # -- relationships --------------------------------------------------------
 
     slices = relationship(
@@ -182,6 +188,62 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
         return f"/superset/dashboard/{self.slug or self.id}/"
 
     @property
+    def datasources(self) -> set[Any] | None:
+        """Enumerate all distinct datasource objects across the dashboard's slices.
+
+        Mirrors the original Dashboard.datasources property
+        (superset_old/models/dashboard.py:196-212). Groups slices by their
+        datasource model class (cls_model), then batch-queries each model to
+        return a deduplicated set of BaseDatasource instances.
+
+        In liteset, ``Slice.cls_model`` is not ported, but the only concrete
+        datasource type is SqlaTable, so we import it directly and batch-query
+        by datasource_id.
+
+        Returns ``None`` when the object is bound to an ``AsyncSession``.  In
+        that case synchronous I/O on the session's sync proxy raises
+        ``MissingGreenlet``; callers (security/manager.py ``raise_for_access``
+        and ``can_access_dashboard``) fall back to the async-safe
+        slice-iteration path when ``datasources is None``.
+        """
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_object_session
+
+        from superset.models.connectors import SqlaTable
+        from superset.models.sql_lab import Query, SavedQuery
+
+        # If this object is managed by an AsyncSession, synchronous I/O on the
+        # underlying sync_session raises MissingGreenlet.  Return None so that
+        # async callers use their own async-safe fallback path.
+        if async_object_session(self) is not None:
+            return None
+
+        session = object_session(self)
+        if session is None:
+            return set()
+
+        # Verbose but efficient database enumeration of dashboard datasources.
+        datasources_by_cls_model: dict[Any, set[int]] = defaultdict(set)
+
+        for slc in self.slices:
+            if slc.datasource_type == "table":
+                datasources_by_cls_model[SqlaTable].add(slc.datasource_id)
+            elif slc.datasource_type == "query":
+                datasources_by_cls_model[Query].add(slc.datasource_id)
+            elif slc.datasource_type == "saved_query":
+                datasources_by_cls_model[SavedQuery].add(slc.datasource_id)
+
+        result: set[Any] = set()
+        for cls_model, datasource_ids in datasources_by_cls_model.items():
+            if not datasource_ids:
+                continue
+            rows = session.execute(
+                select(cls_model).where(cls_model.id.in_(datasource_ids))
+            ).scalars()
+            result.update(rows)
+        return result
+
+    @property
     def status(self) -> str:
         return "published" if self.published else "draft"
 
@@ -205,7 +267,14 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
         may still carry one.
         """
         try:
-            parsed = json.loads(self.json_metadata or "{}")
+            raw = self.json_metadata or "{}"
+            # Strip trailing commas before closing braces/brackets so that
+            # legacy rows written by older tools (which allowed trailing commas)
+            # parse correctly, matching the original json_to_dict behaviour
+            # (superset_old/models/helpers.py:140-146).
+            raw = re.sub(r",[ \t\r\n]+}", "}", raw)
+            raw = re.sub(r",[ \t\r\n]+\]", "]", raw)
+            parsed = json.loads(raw)
         except (TypeError, json.JSONDecodeError):
             return {}
         return parsed if isinstance(parsed, dict) else {}
@@ -226,7 +295,7 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
         """Slice names of every attached chart, mirroring the original
         ``Dashboard.charts`` property used for thumbnail digest hashing.
         """
-        return [slc.slice_name for slc in (self.slices or [])]
+        return [slc.slice_name or "<empty>" for slc in (self.slices or [])]
 
     @property
     def changed_by_name(self) -> str:

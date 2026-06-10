@@ -69,93 +69,125 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Custom RISON filters for saved queries
 # ---------------------------------------------------------------------------
+def _filter_is_fav(current_user: Any, model_cls: Any, value: Any) -> Any:
+    from sqlalchemy import select as sa_select
+
+    from superset.models.core import FavStar
+
+    user_id = getattr(current_user, "id", None)
+    if user_id is None:
+        return None
+    fav_subq = sa_select(FavStar.obj_id).where(
+        FavStar.class_name == "query",
+        FavStar.user_id == user_id,
+    )
+    if value:
+        return model_cls.id.in_(fav_subq)
+    return ~model_cls.id.in_(fav_subq)
+
+
+def _filter_all_text(model_cls: Any, value: Any) -> Any:
+    """Full-text OR-search across schema, label, description and sql.
+
+    1:1 port of ``superset_old/queries/saved_queries/filters.py::
+    SavedQueryAllTextFilter``.
+    """
+    if not value:
+        return None
+    from sqlalchemy import or_
+
+    ilike_value = f"%{value}%"
+    return or_(
+        model_cls.schema.ilike(ilike_value),
+        model_cls.label.ilike(ilike_value),
+        model_cls.description.ilike(ilike_value),
+        model_cls.sql.ilike(ilike_value),
+    )
+
+
+def _filter_tags(model_cls: Any, value: Any) -> Any:
+    """Filter saved queries by tag name (substring match).
+
+    1:1 port of ``superset_old/queries/saved_queries/filters.py::
+    SavedQueryTagNameFilter`` which used ``BaseTagNameFilter``.  The
+    original joined via ``SavedQuery.tags`` → ``Tag.name.ilike``; we
+    replicate via the ``TaggedObject`` association table so we stay
+    portable across both the legacy ``M2M via SavedQuery.tags`` and
+    the newer ``TaggedObject`` approach.
+    """
+    if not value:
+        return None
+    from sqlalchemy import select as sa_select
+
+    from superset.models.tags import Tag, TaggedObject
+
+    ilike_value = f"%{value}%"
+    tag_id_subq = sa_select(Tag.id).where(Tag.name.ilike(ilike_value))
+    tagged_subq = sa_select(TaggedObject.object_id).where(
+        TaggedObject.object_type == "query",
+        TaggedObject.tag_id.in_(tag_id_subq),
+    )
+    return model_cls.id.in_(tagged_subq)
+
+
+def _filter_tag_id(model_cls: Any, value: Any) -> Any:
+    """Filter saved queries by tag ID.
+
+    1:1 port of ``superset_old/queries/saved_queries/filters.py::
+    SavedQueryTagIdFilter`` which used ``BaseTagIdFilter``.
+    """
+    if value is None:
+        return None
+    from sqlalchemy import select as sa_select
+
+    from superset.models.tags import TaggedObject
+
+    try:
+        tag_id_int = int(value)
+    except (TypeError, ValueError):
+        return None
+    tagged_subq = sa_select(TaggedObject.object_id).where(
+        TaggedObject.object_type == "query",
+        TaggedObject.tag_id == tag_id_int,
+    )
+    return model_cls.id.in_(tagged_subq)
+
+
 def _saved_query_custom_filters(current_user: Any) -> dict[str, Any]:
-    def _saved_query_is_fav(model_cls: Any, value: Any) -> Any:
-        from sqlalchemy import select as sa_select
-
-        from superset.models.core import FavStar
-
-        user_id = getattr(current_user, "id", None)
-        if user_id is None:
-            return None
-        fav_subq = sa_select(FavStar.obj_id).where(
-            FavStar.class_name == "query",
-            FavStar.user_id == user_id,
-        )
-        if value:
-            return model_cls.id.in_(fav_subq)
-        return ~model_cls.id.in_(fav_subq)
-
-    def _saved_query_all_text(model_cls: Any, value: Any) -> Any:
-        """Full-text OR-search across schema, label, description and sql.
-
-        1:1 port of ``superset_old/queries/saved_queries/filters.py::
-        SavedQueryAllTextFilter``.
-        """
-        if not value:
-            return None
-        from sqlalchemy import or_
-
-        ilike_value = f"%{value}%"
-        return or_(
-            model_cls.schema.ilike(ilike_value),
-            model_cls.label.ilike(ilike_value),
-            model_cls.description.ilike(ilike_value),
-            model_cls.sql.ilike(ilike_value),
-        )
-
-    def _saved_query_tags(model_cls: Any, value: Any) -> Any:
-        """Filter saved queries by tag name (substring match).
-
-        1:1 port of ``superset_old/queries/saved_queries/filters.py::
-        SavedQueryTagNameFilter`` which used ``BaseTagNameFilter``.  The
-        original joined via ``SavedQuery.tags`` → ``Tag.name.ilike``; we
-        replicate via the ``TaggedObject`` association table so we stay
-        portable across both the legacy ``M2M via SavedQuery.tags`` and
-        the newer ``TaggedObject`` approach.
-        """
-        if not value:
-            return None
-        from sqlalchemy import select as sa_select
-
-        from superset.models.tags import Tag, TaggedObject
-
-        ilike_value = f"%{value}%"
-        tag_id_subq = sa_select(Tag.id).where(Tag.name.ilike(ilike_value))
-        tagged_subq = sa_select(TaggedObject.object_id).where(
-            TaggedObject.object_type == "query",
-            TaggedObject.tag_id.in_(tag_id_subq),
-        )
-        return model_cls.id.in_(tagged_subq)
-
-    def _saved_query_tag_id(model_cls: Any, value: Any) -> Any:
-        """Filter saved queries by tag ID.
-
-        1:1 port of ``superset_old/queries/saved_queries/filters.py::
-        SavedQueryTagIdFilter`` which used ``BaseTagIdFilter``.
-        """
-        if value is None:
-            return None
-        from sqlalchemy import select as sa_select
-
-        from superset.models.tags import TaggedObject
-
-        try:
-            tag_id_int = int(value)
-        except (TypeError, ValueError):
-            return None
-        tagged_subq = sa_select(TaggedObject.object_id).where(
-            TaggedObject.object_type == "query",
-            TaggedObject.tag_id == tag_id_int,
-        )
-        return model_cls.id.in_(tagged_subq)
-
     return {
-        "saved_query_is_fav": _saved_query_is_fav,
-        "all_text": _saved_query_all_text,
-        "saved_query_tags": _saved_query_tags,
-        "saved_query_tag_id": _saved_query_tag_id,
+        "saved_query_is_fav": lambda m, v: _filter_is_fav(current_user, m, v),
+        "all_text": _filter_all_text,
+        "saved_query_tags": _filter_tags,
+        "saved_query_tag_id": _filter_tag_id,
     }
+
+
+def _saved_query_sql_tables(query: Any) -> list[dict[str, Any]]:
+    """Best-effort port of ``SavedQuery.sql_tables`` (via ``SqlTablesMixin``).
+
+    1:1 with ``superset_old/models/sql_lab.py:82-93``: the original
+    ``SqlTablesMixin.sql_tables`` property parses SQL via Jinja + sqlglot
+    and returns the referenced tables, falling back to ``[]`` on any
+    parse/security/template error. Serialises each ``Table`` dataclass to
+    ``{table, schema, catalog}`` matching the JSON shape the frontend
+    expects.
+    """
+    sql = getattr(query, "sql", None)
+    database = getattr(query, "database", None)
+    if not sql or database is None:
+        return []
+    try:
+        from jinja2.exceptions import TemplateError
+
+        from superset.exceptions import SupersetParseError, SupersetSecurityException
+        from superset.sql.parse import process_jinja_sql
+
+        tables = process_jinja_sql(sql, database).tables
+    except (SupersetSecurityException, SupersetParseError, TemplateError):
+        return []
+    return [
+        {"table": t.table, "schema": t.schema, "catalog": t.catalog} for t in tables
+    ]
 
 
 class SavedQueryController(Controller):
@@ -254,25 +286,36 @@ class SavedQueryController(Controller):
         for q in queries:
             last_run_map[q.id] = getattr(q, "last_run", None)
 
-        for row in payload.get("result", []):
+        for row, q in zip(payload.get("result", []), queries, strict=True):
             last_run = last_run_map.get(row.get("id"))
             row["last_run_delta_humanized"] = (
                 _humanize.naturaltime(now - last_run) if last_run else ""
             )
-            # sql_tables — full SQL parsing is complex; return empty list
-            row["sql_tables"] = []
+            # sql_tables — 1:1 with ``SqlTablesMixin.sql_tables`` in
+            # ``superset_old/models/sql_lab.py:82-93``: parse SQL via
+            # Jinja + sqlglot and return referenced tables, falling back
+            # to ``[]`` on any error.
+            row["sql_tables"] = _saved_query_sql_tables(q)
         return payload
 
     @get(
         "/_info",
         guards=[require_permission("can_read", "SavedQuery")],
     )
-    async def info(self, dao: CRUDDAOProtocol) -> dict[str, Any]:
+    async def info(
+        self,
+        dao: CRUDDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
         """GET /api/v1/saved_query/_info — API metadata for frontend."""
         return await get_info_payload(
             dao=dao,
             model_name="SavedQuery",
             permissions=["can_read", "can_write", "can_export"],
+            security_manager=security_manager,
+            current_user=current_user,
+            class_permission_name="SavedQuery",
         )
 
     @get(
@@ -364,7 +407,10 @@ class SavedQueryController(Controller):
                 raise ObjectNotFoundError("SavedQuery", pk)
         return SavedQueryGetResponse(
             id=query.id,
-            result=SavedQueryDetailResult.from_model(query),
+            result=SavedQueryDetailResult.from_model(
+                query,
+                sql_tables=_saved_query_sql_tables(query),
+            ),
         )
 
     @post(
@@ -496,11 +542,14 @@ class SavedQueryController(Controller):
         await event_logger.alog_with_context(
             "saved_query.bulk_delete", extra={"count": len(ids)}
         )
-        num = len(ids)
-        msg = (
-            f"Deleted {num} saved query"
-            if num == 1
-            else f"Deleted {num} saved queries"
+        # Mirror superset_old/queries/saved_queries/api.py ``bulk_delete``:
+        # locale-aware ngettext keyed on len(item_ids).
+        from superset.i18n import ngettext
+
+        msg = ngettext(
+            "Deleted %(num)d saved query",
+            "Deleted %(num)d saved queries",
+            num=len(ids),
         )
         return {"message": msg}
 
@@ -512,6 +561,8 @@ class SavedQueryController(Controller):
     async def export(
         self,
         dao: CRUDDAOProtocol,
+        security_manager: Any,
+        current_user: UserProtocol,
         rison_params: list[int] | dict[str, Any] | None,
         token: str | None = Parameter(query="token", default=None),
     ) -> Stream:
@@ -524,7 +575,12 @@ class SavedQueryController(Controller):
         # importer's ``remove_root`` (``parts[1:]``) strips it on re-import.
         timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         root = f"saved_query_export_{timestamp}"
-        cmd = ExportSavedQueriesCommand(model_ids=ids, dao=dao)
+        cmd = ExportSavedQueriesCommand(
+            model_ids=ids,
+            dao=dao,
+            security_manager=security_manager,
+            user=current_user,
+        )
         cmd._root = root  # noqa: SLF001
         buf = await cmd.execute()
         await event_logger.alog_with_context(

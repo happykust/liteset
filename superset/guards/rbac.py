@@ -25,9 +25,22 @@ from litestar.handlers import BaseRouteHandler
 
 GuardFn = Callable[[ASGIConnection[Any, Any, Any, Any], BaseRouteHandler], None]
 
+# Default admin role name — overridden by AUTH_ROLE_ADMIN config.  Read
+# fresh from ``connection.app.state.settings`` in guards that have access
+# to the connection; fall back to this constant only in code paths where
+# no connection is available (e.g. unit-test helpers).
+_DEFAULT_ADMIN_ROLE_NAME = "Admin"
 
-def is_admin(user: Any, admin_role_name: str = "Admin") -> bool:
-    """Check if user has the Admin role (bypasses all permission checks)."""
+
+def is_admin(user: Any, admin_role_name: str = _DEFAULT_ADMIN_ROLE_NAME) -> bool:
+    """Check if user has the Admin role (bypasses all permission checks).
+
+    :param user: The user object (must have a ``roles`` attribute).
+    :param admin_role_name: The configured admin role name (``AUTH_ROLE_ADMIN``).
+        Guards that have access to the Litestar connection should pass
+        ``connection.app.state.settings.auth_role_admin`` so that deployments
+        with a custom admin role value are always handled correctly.
+    """
     roles = getattr(user, "roles", [])
     return any(getattr(r, "name", None) == admin_role_name for r in roles)
 
@@ -40,20 +53,27 @@ def has_permissions(user: Any, required: set[tuple[str, str]]) -> bool:
 def require_authentication(
     connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandler
 ) -> None:
-    """Guard that requires authentication OR Public role permissions.
+    """Guard that requires a fully authenticated session.
 
-    Allows anonymous users if they have been granted permissions
-    via the Public role (``auth_role_public`` config). Rejects
-    anonymous users with no permissions at all.
+    Rejects ALL anonymous / unauthenticated users with HTTP 401 — including
+    anonymous users whose Public role carries some permissions — because this
+    guard has no knowledge of *which specific* permission the endpoint
+    requires.
+
+    This mirrors the original FAB behaviour: ``@protect()`` and
+    ``@has_access_api`` allow anonymous access only when the Public role
+    has the *specific* ``(action, resource)`` pair for the endpoint
+    (``is_item_public(permission_str, class_permission_name)``).  A guard
+    that cannot parameterise the required pair must therefore simply deny
+    all anonymous callers.
+
+    Endpoints that legitimately allow anonymous Public-role access must use
+    ``require_permission(action, resource)`` — that guard does perform the
+    correct per-endpoint Public-role check.
     """
     user = connection.user
-    if getattr(user, "is_authenticated", False):
-        return
-    # Allow anonymous users with Public role permissions
-    permissions: set[tuple[str, str]] = getattr(user, "permissions", set())
-    if permissions:
-        return
-    raise NotAuthorizedException(detail="Not authenticated")
+    if not getattr(user, "is_authenticated", False):
+        raise NotAuthorizedException(detail="Not authenticated")
 
 
 def require_authenticated_user(
@@ -136,14 +156,24 @@ def require_permission(action: str, resource: str) -> GuardFn:
         connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandler
     ) -> None:
         user = connection.user
+        # Read admin role name from app state settings (not a stale cached
+        # value) so deployments with a custom AUTH_ROLE_ADMIN are respected.
+        admin_role = getattr(
+            getattr(connection.app.state, "settings", None),
+            "auth_role_admin",
+            _DEFAULT_ADMIN_ROLE_NAME,
+        )
         # Check if user is authenticated
         if not getattr(user, "is_authenticated", False):
             # Allow anonymous users with matching Public role permission
             user_perms: set[tuple[str, str]] = getattr(user, "permissions", set())
             if permission_tuple in user_perms:
                 return
+            # Unauthenticated users without the required permission → 401.
+            # Mirrors original FAB behaviour: unauthenticated callers get
+            # redirected to login (HTTP 401), not a 403 Forbidden.
             raise NotAuthorizedException(detail="Not authenticated")
-        if is_admin(user):
+        if is_admin(user, admin_role_name=admin_role):
             return
         if not has_permissions(user, {permission_tuple}):
             raise PermissionDeniedException(

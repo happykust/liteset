@@ -134,17 +134,33 @@ def test_sqllab_bootstrap_with_data():
 
 
 def test_sqllab_permalink_body_default():
-    body = SqlLabPermalinkSchema()
-    assert body.state == {}
+    # 1:1 with original: dbId/name/sql are required (allow_none=False).
+    # Constructing without required fields must raise TypeError.
+    with pytest.raises(TypeError):
+        SqlLabPermalinkSchema()
+
+    # Optional fields default to None.
+    body = SqlLabPermalinkSchema(db_id=1, name="Tab 1", sql="SELECT 1")
+    assert body.schema is None
+    assert body.catalog is None
+    assert body.autorun is None
+    assert body.template_params is None
 
 
 def test_sqllab_permalink_body_with_state():
-    body = SqlLabPermalinkSchema(state={"sql": "SELECT 1", "dbId": 1})
-    assert body.state["sql"] == "SELECT 1"
+    # 1:1 with original: fields map directly (rename="camel" maps db_id→dbId
+    # on encode; constructor uses snake_case kwarg names).
+    body = SqlLabPermalinkSchema(db_id=1, name="My Tab", sql="SELECT 1")
+    assert body.db_id == 1
+    assert body.sql == "SELECT 1"
 
 
 def test_sqllab_permalink_body_json_roundtrip():
-    body = SqlLabPermalinkSchema(state={"key": "value"})
+    # 1:1 with original field set: dbId, name, sql round-trip via msgspec
+    # with rename="camel" (snake→camel on encode, camel→snake on decode).
+    body = SqlLabPermalinkSchema(db_id=5, name="My Tab", sql="SELECT 42")
     encoded = msgspec.json.encode(body)
     decoded = msgspec.json.decode(encoded, type=SqlLabPermalinkSchema)
-    assert decoded.state == {"key": "value"}
+    assert decoded.db_id == 5
+    assert decoded.name == "My Tab"
+    assert decoded.sql == "SELECT 42"

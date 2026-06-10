@@ -354,6 +354,12 @@ _STANDARD_VIEW_PERMISSIONS: list[tuple[str, str]] = [
     ("can_write", "Tag"),
     ("can_read", "Explore"),
     ("can_read", "Datasource"),
+    # FAB auto-registers DatasourceRestApi's @expose methods under the
+    # "Datasource" view menu (class_permission_name); can_get is in
+    # READ_ONLY_PERMISSION so Gamma/Alpha receive it, while
+    # can_get_column_values is not read-only -> Alpha+ only.
+    ("can_get", "Datasource"),
+    ("can_get_column_values", "Datasource"),
     ("can_read", "EmbeddedDashboard"),
     ("can_write", "EmbeddedDashboard"),
     ("can_read", "AvailableDomains"),
@@ -403,7 +409,11 @@ _STANDARD_VIEW_PERMISSIONS: list[tuple[str, str]] = [
     # Security
     ("can_grant_guest_token", "SecurityRestApi"),
     ("can_read", "SecurityRestApi"),
-    ("can_list_roles", "SecurityRestApi"),
+    # /security/roles/search lives on a SEPARATE class in the original —
+    # ``RoleRestAPI`` (superset_old/security/api.py:199-219). FAB registers
+    # the PVM under the class name, and "RoleRestAPI" is in
+    # ADMIN_ONLY_VIEW_MENUS, so this stays admin-only.
+    ("can_list_roles", "RoleRestAPI"),
     # FAB security CRUD REST APIs (AB_ADD_SECURITY_API). FAB's ModelRestApi
     # uses per-HTTP-method permission names (can_get/can_post/can_put/
     # can_delete/can_info), not Superset's can_read/can_write. These

@@ -22,10 +22,10 @@ from __future__ import annotations
 from typing import Any
 
 from litestar import Controller, delete, get, post, put
+from litestar.connection import Request
 from litestar.datastructures import State, UploadFile
 from litestar.di import Provide
-from litestar.enums import RequestEncodingType
-from litestar.params import Body, Parameter
+from litestar.params import Parameter
 from litestar.response import Stream
 
 from superset.commands.theme import (
@@ -56,7 +56,7 @@ from superset.i18n import gettext as _
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_theme_dao
 from superset.schemas.theme import ThemePostSchema, ThemePutSchema
-from superset.typing import CRUDDAOProtocol, UserProtocol
+from superset.typing import CRUDDAOProtocol, SecurityManagerProtocol, UserProtocol
 from superset.utils import filter_unset
 
 
@@ -75,9 +75,7 @@ def _guard_system_theme_admin(user: UserProtocol, state: State) -> None:
     settings = getattr(state, "settings", None)
     admin_role_name = getattr(settings, "auth_role_admin", "Admin")
     user_roles = getattr(user, "roles", [])
-    is_admin = any(
-        getattr(role, "name", "") == admin_role_name for role in user_roles
-    )
+    is_admin = any(getattr(role, "name", "") == admin_role_name for role in user_roles)
     if not is_admin:
         raise ForbiddenError(message="Only administrators can set system themes")
     if not getattr(settings, "enable_ui_theme_administration", False):
@@ -142,10 +140,10 @@ class ThemeController(Controller):
         )
         total = await dao.count(filters=rison_filters or None)
         await event_logger.alog_with_context("theme.list", user_id=current_user.id)
-        # 1:1 with upstream ``ThemeRestApi.list_columns`` — the Theme model has
-        # NO css/json_metadata/description columns (those were phantom and
-        # returned empty); expose the real fields (json_data/uuid/is_system*)
-        # the theme editor + export need.
+        # 1:1 with upstream ``ThemeRestApi.list_columns`` — includes
+        # ``changed_by_name`` (AuditMixinNullable @property returning the
+        # changer's full name) and ``created_on`` (SA datetime column) which
+        # the frontend list view uses for display/sorting.
         return serialize_list_response(
             themes,
             total,
@@ -161,6 +159,8 @@ class ThemeController(Controller):
                 "changed_by.first_name",
                 "changed_by.id",
                 "changed_by.last_name",
+                "changed_by_name",
+                "created_on",
                 "created_by.first_name",
                 "created_by.id",
                 "created_by.last_name",
@@ -300,10 +300,13 @@ class ThemeController(Controller):
         await event_logger.alog_with_context(
             "theme.update", object_ref=str(pk), user_id=current_user.id
         )
-        # Mirror FAB ``put_headless`` envelope: ``{"result": <edit_columns
-        # dump>}`` (no top-level ``id``). edit_columns = ["json_data",
-        # "theme_name"]; the values reflect the persisted record.
+        # Mirror superset_old/themes/api.py ``put``:
+        # ``self.response(200, id=changed_model.id, result=item)`` which
+        # produces ``{"id": <pk>, "result": {...}}``.  edit_columns =
+        # ["json_data", "theme_name"]; the values reflect the submitted
+        # payload (``item``), not the persisted record.
         return {
+            "id": theme.id,
             "result": {
                 "theme_name": theme.theme_name,
                 "json_data": getattr(theme, "json_data", "") or "",
@@ -378,7 +381,8 @@ class ThemeController(Controller):
         await event_logger.alog_with_context(
             "theme.unset_system_default", user_id=current_user.id
         )
-        return {"message": "OK"}
+        # Mirror superset_old/themes/api.py: response(200, result="success").
+        return {"result": "success"}
 
     @delete(
         "/",
@@ -451,7 +455,8 @@ class ThemeController(Controller):
         await event_logger.alog_with_context(
             "theme.unset_system_dark", user_id=current_user.id
         )
-        return {"message": "OK"}
+        # Mirror superset_old/themes/api.py: response(200, result="success").
+        return {"result": "success"}
 
     @get(
         "/export/",
@@ -476,17 +481,13 @@ class ThemeController(Controller):
         ids = extract_ids_required(rison_params)
         cmd = ExportThemesCommand(dao=dao, model_ids=ids)
         files = await cmd.execute()
-        await event_logger.alog_with_context(
-            "theme.export", extra={"count": len(ids)}
-        )
+        await event_logger.alog_with_context("theme.export", extra={"count": len(ids)})
 
         timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         root = f"theme_export_{timestamp}"
 
         metadata = (
-            "version: 1.0.0\n"
-            "type: Theme\n"
-            f"timestamp: '{datetime.now().isoformat()}'\n"
+            f"version: 1.0.0\ntype: Theme\ntimestamp: '{datetime.now().isoformat()}'\n"
         )
         buf = BytesIO()
         with ZipFile(buf, "w") as bundle:
@@ -505,13 +506,13 @@ class ThemeController(Controller):
     @post(
         "/import/",
         guards=[require_permission("can_write", "Theme")],
+        status_code=200,
     )
     async def import_themes(  # noqa: C901
         self,
+        request: Request[Any, Any, Any],
         dao: Any,
         current_user: UserProtocol,
-        data: UploadFile = Body(media_type=RequestEncodingType.MULTI_PART),  # noqa: B008
-        overwrite: bool = False,
     ) -> dict[str, Any]:
         """POST /api/v1/theme/import/ -- import themes from a ZIP file.
 
@@ -519,26 +520,74 @@ class ThemeController(Controller):
         Accepts a multipart/form-data upload containing a ZIP file with
         YAML theme definitions.  Each YAML file under ``themes/`` in the
         archive is parsed and imported via ``ImportThemesCommand``.
+
+        The original reads from ``request.files.get('formData')``.
+        We read the raw form and pick the first UploadFile regardless
+        of field name (matching the pattern in parse_import_request),
+        which is compatible with both 'formData' and 'data' field names.
         """
         from io import BytesIO
         from zipfile import ZipFile
 
         import yaml
+        from litestar.response import Response
 
-        file_bytes = await data.read()
+        # Read multipart form manually to be field-name agnostic — 1:1
+        # with superset_old/themes/api.py:537 which reads 'formData'.
+        form = await request.form()
+        upload = next((v for v in form.values() if isinstance(v, UploadFile)), None)
+        if upload is None:
+            return Response(  # type: ignore[return-value]
+                content={"message": "Arguments are not correct"},
+                status_code=400,
+            )
+        file_bytes = await upload.read()
+        overwrite = form.get("overwrite") == "true"
         if not file_bytes:
-            return {"message": "No file uploaded", "errors": ["Empty upload"]}
+            return Response(  # type: ignore[return-value]
+                content={"message": "Arguments are not correct"},
+                status_code=400,
+            )
+
+        from superset.commands.importers.exceptions import IncorrectVersionError
+        from superset.commands.importers.v1.utils import (
+            _check_is_safe_zip,
+            load_metadata,
+            validate_metadata_type,
+        )
+        from superset.exceptions import SupersetException
 
         # Parse ZIP contents into a dict of filename -> parsed YAML config
         contents: dict[str, Any] = {}
+        # Also collect raw YAML strings for metadata validation — mirrors the
+        # original's get_contents_from_bundle which passes ALL file contents
+        # (including metadata.yaml) to ImportThemesCommand.validate().
+        raw_metadata_contents: dict[str, str] = {}
         try:
             with ZipFile(BytesIO(file_bytes)) as bundle:
+                # Zip-bomb / path-traversal guard — mirrors the original's
+                # get_contents_from_bundle which calls check_is_safe_zip
+                # (superset_old/commands/importers/v1/utils.py:229-230).
+                # Raises SupersetException when uncompressed size exceeds
+                # ZIPPED_FILE_MAX_SIZE or compression ratio exceeds
+                # ZIP_FILE_MAX_COMPRESS_RATIO.
+                _check_is_safe_zip(bundle)
                 for zip_entry in bundle.namelist():
+                    parts = zip_entry.split("/")
+                    # Capture metadata.yaml at the export-bundle root level
+                    # (e.g. "theme_export_20240101T000000/metadata.yaml").
+                    # The original get_contents_from_bundle reads ALL files and
+                    # ImportModelsCommand.validate() checks metadata.yaml first
+                    # (superset_old/commands/importers/v1/__init__.py:98).
+                    if parts[-1] == "metadata.yaml":
+                        raw_metadata_contents["metadata.yaml"] = bundle.read(
+                            zip_entry
+                        ).decode("utf-8", errors="replace")
+                        continue
+
                     # Only process YAML files under themes/ paths
                     # Strip the root export directory prefix if present
                     # (e.g. "theme_export_20240101T000000/themes/My Theme.yaml")
-                    parts = zip_entry.split("/")
-                    # Find the "themes" segment and reconstruct relative path
                     relative_path: str | None = None
                     for i, part in enumerate(parts):
                         if part == "themes" and i + 1 < len(parts):
@@ -558,14 +607,32 @@ class ThemeController(Controller):
 
                     if isinstance(config, dict):
                         contents[relative_path] = config
+        except SupersetException:
+            raise
         except Exception:
             return {"message": "Invalid ZIP file", "errors": ["Could not read ZIP"]}
 
-        if not contents:
-            return {
-                "message": "No valid theme files found",
-                "errors": ["No YAML files under themes/ in the uploaded ZIP"],
-            }
+        # Validate metadata.yaml version and type — mirrors the original
+        # ImportModelsCommand.validate() → load_metadata() + validate_metadata_type()
+        # flow (superset_old/commands/importers/v1/__init__.py:93-133).
+        # IncorrectVersionError → CommandInvalidError (mirrors the dispatcher
+        # which catches IncorrectVersionError and raises CommandInvalidError).
+        from superset.exceptions import CommandInvalidError
+
+        try:
+            metadata = load_metadata(raw_metadata_contents)
+        except IncorrectVersionError as ex:
+            raise CommandInvalidError(str(ex)) from ex
+        exceptions: list[Exception] = []
+        validate_metadata_type(metadata, "Theme", exceptions)
+        if exceptions:
+            raise CommandInvalidError(str(exceptions[0])) from exceptions[0]
+
+        # NO early-return for "no themes/*.yaml" — the original
+        # ``get_contents_from_bundle`` returns ALL YAML files (including
+        # metadata.yaml), so a bundle with only a valid metadata.yaml still
+        # reaches ImportThemesCommand and yields HTTP 200
+        # "Theme imported successfully" (a no-op import).
 
         # Expose the current user so any audit-stamp path resolves the
         # importing user (mirrors the database-upload controller).
@@ -581,20 +648,28 @@ class ThemeController(Controller):
             overwrite=overwrite,
             current_user=current_user,
         )
-        count = await cmd.execute()
+        await cmd.execute()
         await event_logger.alog_with_context("theme.import", user_id=current_user.id)
-        return {"message": f"Imported {count} themes"}
+        return {"message": "Theme imported successfully"}
 
     @get(
         "/_info",
         guards=[require_permission("can_read", "Theme")],
     )
-    async def info(self, dao: CRUDDAOProtocol) -> dict[str, Any]:
+    async def info(
+        self,
+        dao: CRUDDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
         """GET /api/v1/theme/_info -- API metadata for frontend."""
         return await get_info_payload(
             dao=dao,
             model_name="Theme",
             permissions=["can_read", "can_write", "can_export"],
+            security_manager=security_manager,
+            current_user=current_user,
+            class_permission_name="Theme",
         )
 
     # ------------------------------------------------------------------
@@ -642,26 +717,30 @@ class ThemeController(Controller):
         #    security_manager.get_exclude_users_from_lists()
         # 3. Exclude matched usernames
         base_filters: list[Any] = []
+        query_hook: Any | None = None
         try:
             from superset.models.security import User
 
             settings = getattr(state, "settings", None)
 
-            # Step 1: Apply EXTRA_RELATED_QUERY_FILTERS["user"] hook
+            # Step 1: Apply EXTRA_RELATED_QUERY_FILTERS["user"] hook.
+            # Original contract (superset_old/views/filters.py:72-76):
+            #   query = extra_filters(query)  — Callable[[Query], Query]
+            # We pass the hook through to get_related_payload as query_hook
+            # so it receives the real Select statement and returns the
+            # modified Select, matching the original calling convention.
+            #
+            # IMPORTANT: The original only registers BaseFilterRelatedUsers
+            # (which applies this hook) for ``changed_by`` via
+            # ``base_related_field_filters``
+            # (superset_old/themes/api.py:150-152).  ``created_by`` has NO
+            # entry there, so the hook MUST NOT be applied to created_by.
             extra_related_filters: dict[str, Any] = (
                 getattr(settings, "extra_related_query_filters", {}) if settings else {}
             )
             user_extra_filter = extra_related_filters.get("user")
-            if callable(user_extra_filter):
-                # The hook is a callable that receives and returns a query;
-                # we store it for get_related_payload to apply as a stmt filter.
-                # Since our get_related_payload applies base_filters as WHERE
-                # clauses, and the original hook transforms a query, we need
-                # to capture the filter clause. For simple callable filters
-                # that return a clause, we pass it through.
-                result = user_extra_filter(None)
-                if result is not None:
-                    base_filters.append(result)
+            if callable(user_extra_filter) and column_name == "changed_by":
+                query_hook = user_extra_filter
 
             # Step 2: Determine exclude_users list with fallback
             # Original: EXCLUDE_USERS_FROM_LISTS is None -> call
@@ -679,8 +758,11 @@ class ThemeController(Controller):
                 if callable(get_exclude):
                     exclude_users = get_exclude()
 
-            # Step 3: Exclude matched usernames
-            if exclude_users:
+            # Step 3: Exclude matched usernames — original
+            # ``base_related_field_filters`` maps ONLY ``changed_by`` to
+            # ``BaseFilterRelatedUsers`` (superset_old/themes/api.py:150-152);
+            # ``created_by`` has no entry so the exclusion is NOT applied for it.
+            if exclude_users and column_name == "changed_by":
                 base_filters.append(User.username.not_in(exclude_users))
         except Exception:  # noqa: BLE001, S110
             pass
@@ -691,4 +773,5 @@ class ThemeController(Controller):
             rison_params=rison_params,
             allowed_fields=allowed_rel_fields,
             base_filters=base_filters if base_filters else None,
+            query_hook=query_hook,
         )

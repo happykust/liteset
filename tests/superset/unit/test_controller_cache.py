@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import msgspec
 import pytest
 
@@ -93,3 +95,48 @@ def test_cache_controller_path():
 def test_cache_controller_tags():
     """CacheController has expected tags."""
     assert CacheController.tags == ["Cache"]
+
+
+# ---------------------------------------------------------------------------
+# Event logger object_ref parity
+# ---------------------------------------------------------------------------
+
+
+async def test_do_invalidate_logs_object_ref():
+    """_do_invalidate must pass object_ref="CacheRestApi.invalidate" to
+    alog_with_context, mirroring the original
+    ``@event_logger.log_this_with_context(log_to_statsd=False)`` decorator
+    whose _wrapper computes
+    ``object_ref_str = None or f.__qualname__ = "CacheRestApi.invalidate"``
+    and passes it through to log_with_context.
+
+    Without this, the logs.json field is absent for every cache-invalidation
+    request — an admin-visible regression (audit finding).
+    """
+    controller = object.__new__(CacheController)
+
+    mock_dao = AsyncMock()
+    # _invalidate_body returns a 201 response with empty body when datasource_uids
+    # is empty; mock it out so _do_invalidate reaches the alog call.
+    from litestar.response import Response as LitestarResponse
+
+    empty_resp = LitestarResponse(
+        content=b"{}",
+        status_code=201,
+        media_type="application/json",
+    )
+
+    with patch.object(
+        controller, "_invalidate_body", AsyncMock(return_value=empty_resp)
+    ):
+        with patch("superset.controllers.cache.event_logger") as mock_event_logger:
+            mock_event_logger.alog_with_context = AsyncMock()
+
+            data = msgspec.convert({}, CacheInvalidateSchema)
+            await controller._do_invalidate(data, mock_dao)
+
+    mock_event_logger.alog_with_context.assert_called_once()
+    call_kwargs = mock_event_logger.alog_with_context.call_args
+    # object_ref must match f.__qualname__ from the original _wrapper computation
+    assert call_kwargs.kwargs.get("object_ref") == "CacheRestApi.invalidate"
+    assert call_kwargs.kwargs.get("log_to_statsd") is False

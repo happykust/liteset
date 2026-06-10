@@ -150,24 +150,30 @@ async def test_custom_cookie_name_honored():
     """Authentication succeeds with a non-default cookie name."""
     secret = "test-secret-key-that-is-32-bytes!"
     custom_cookie = "my-custom-async-token"
-    token = pyjwt.encode({"channel": "ch-custom", "sub": "99"}, secret, algorithm="HS256")
+    token = pyjwt.encode(
+        {"channel": "ch-custom", "sub": "99"}, secret, algorithm="HS256"
+    )
 
     # Present token under custom cookie name
     socket = _make_socket(headers={"cookie": f"{custom_cookie}={token}"})
-    result = await authenticate_websocket(socket, jwt_secret=secret, cookie_name=custom_cookie)
+    result = await authenticate_websocket(
+        socket, jwt_secret=secret, cookie_name=custom_cookie
+    )
     assert result is not None
     assert result.user_id == 99
     assert result.channel == "ch-custom"
 
 
 async def test_custom_cookie_name_mismatch_fails():
-    """Auth fails when cookie name does not match what authenticate_websocket looks for."""
+    """Auth fails when the cookie name does not match the expected one."""
     secret = "test-secret-key-that-is-32-bytes!"
     token = pyjwt.encode({"channel": "ch-x", "sub": "55"}, secret, algorithm="HS256")
 
     # Token is in "async-token" but caller says to look in "other-name"
     socket = _make_socket(headers={"cookie": f"async-token={token}"})
-    result = await authenticate_websocket(socket, jwt_secret=secret, cookie_name="other-name")
+    result = await authenticate_websocket(
+        socket, jwt_secret=secret, cookie_name="other-name"
+    )
     # No query param, wrong cookie name → falls to session-cookie fallback
     # Session cookie is also absent, so result is None
     assert result is None

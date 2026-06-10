@@ -23,14 +23,24 @@ from typing import Any, TYPE_CHECKING
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from superset.commands.base import AsyncBaseCommand
-from superset.exceptions import ObjectNotFoundError
-from superset.key_value.exceptions import KeyValueParseKeyError
+from superset.exceptions import CommandException, ObjectNotFoundError
+from superset.key_value.exceptions import (
+    KeyValueCodecDecodeException,
+    KeyValueGetFailedError,
+    KeyValueParseKeyError,
+)
 from superset.key_value.shared_entries import get_permalink_salt
 from superset.key_value.types import KeyValueResource, SharedKey
 from superset.key_value.utils import decode_permalink_id
 
 if TYPE_CHECKING:
     from superset.db.daos.key_value import AsyncKeyValueDAO
+
+
+class DashboardPermalinkGetFailedError(CommandException):
+    """1:1 port of ``superset_old/dashboards/permalink/exceptions.py:30``."""
+
+    message = "An error occurred while accessing the value."
 
 
 class GetDashboardPermalinkCommand(AsyncBaseCommand[dict[str, Any]]):
@@ -44,15 +54,25 @@ class GetDashboardPermalinkCommand(AsyncBaseCommand[dict[str, Any]]):
     async def run(self) -> dict[str, Any]:
         session: AsyncSession = self._dao.session
         salt = await get_permalink_salt(session, SharedKey.DASHBOARD_PERMALINK_SALT)
+        # 1:1 with the original run() except-clause (superset_old/commands/
+        # dashboard/permalink/get.py:51-57): parse/decode/get failures are
+        # DOMAIN errors → DashboardPermalinkGetFailedError (CommandException,
+        # HTTP 500) — NOT a 404 (404 is reserved for a missing/expired entry).
         try:
             entry_id = decode_permalink_id(self._key, salt=salt)
-        except (KeyValueParseKeyError, Exception) as ex:  # noqa: BLE001
-            raise ObjectNotFoundError("DashboardPermalink", self._key) from ex
+            value = await self._dao.get_value_by_key(
+                resource=KeyValueResource.DASHBOARD_PERMALINK.value,
+                key=entry_id,
+            )
+        except (
+            KeyValueCodecDecodeException,
+            KeyValueGetFailedError,
+            KeyValueParseKeyError,
+        ) as ex:
+            raise DashboardPermalinkGetFailedError(
+                message=getattr(ex, "message", str(ex))
+            ) from ex
 
-        value = await self._dao.get_value_by_key(
-            resource=KeyValueResource.DASHBOARD_PERMALINK.value,
-            key=entry_id,
-        )
         if value is None:
             raise ObjectNotFoundError("DashboardPermalink", self._key)
         if isinstance(value, dict):

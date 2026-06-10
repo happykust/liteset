@@ -150,12 +150,26 @@ async def test_export_saved_queries(mock_query_dao):
         "sqlalchemy_uri": "sqlite:///test.db",
     }
     mock_q.database = mock_db
+    # validate() now applies the user-scoped access filter (IDOR fix, 1:1 with
+    # the original ``ExportModelsCommand.validate`` → ``find_by_ids`` →
+    # ``SavedQueryFilter`` base_filter). It calls ``dao.count(filters=...)`` and
+    # raises ObjectNotFoundError unless the accessible count == requested count.
+    # Mock the count to report the single requested id as accessible (owned).
+    mock_query_dao.count = AsyncMock(return_value=1)
     # The export command loads the query via ``session.execute(...).scalars()
     # .one_or_none()`` (eager-loads database) — not ``find_by_id``.
     _res = MagicMock()
     _res.scalars.return_value.one_or_none.return_value = mock_q
     mock_query_dao.session.execute = AsyncMock(return_value=_res)
-    cmd = ExportSavedQueriesCommand(model_ids=[1], dao=mock_query_dao)
+    security_manager = AsyncMock()
+    user = MagicMock()
+    user.id = 1
+    cmd = ExportSavedQueriesCommand(
+        model_ids=[1],
+        dao=mock_query_dao,
+        security_manager=security_manager,
+        user=user,
+    )
     buf = await cmd.execute()
     assert isinstance(buf, io.BytesIO)
     with zipfile.ZipFile(buf) as zf:

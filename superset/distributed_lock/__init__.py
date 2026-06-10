@@ -36,7 +36,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta
 from typing import Any, TYPE_CHECKING
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, or_
 
 from superset.distributed_lock.utils import get_key
 from superset.exceptions import CreateKeyValueDistributedLockFailedException
@@ -95,13 +95,11 @@ async def KeyValueDistributedLock(  # pylint: disable=invalid-name  # noqa: N802
         logger.debug("Lock on namespace %s for key %s already taken", namespace, key)
         raise CreateKeyValueDistributedLockFailedException("Lock already taken") from ex
 
-    try:
-        yield key
-    finally:
-        await DeleteDistributedLock(
-            session=session, namespace=namespace, params=kwargs
-        ).run()
-        logger.debug("Removed lock on namespace %s for key %s", namespace, key)
+    yield key
+    await DeleteDistributedLock(
+        session=session, namespace=namespace, params=kwargs
+    ).run()
+    logger.debug("Removed lock on namespace %s for key %s", namespace, key)
 
 
 @contextmanager
@@ -109,7 +107,8 @@ def sync_key_value_distributed_lock(  # noqa: N802
     namespace: str,
     **kwargs: Any,
 ) -> Iterator[uuid.UUID]:
-    """Synchronous KV-backed distributed lock (sibling of :func:`KeyValueDistributedLock`).
+    """Synchronous KV-backed distributed lock (sibling of
+    :func:`KeyValueDistributedLock`).
 
     1:1 with the (originally synchronous) upstream
     ``superset_old/distributed_lock/__init__.py:KeyValueDistributedLock`` and
@@ -180,19 +179,17 @@ def sync_key_value_distributed_lock(  # noqa: N802
         session.flush()
         session.commit()
 
-        try:
-            yield key
-        finally:
-            # --- release (DeleteDistributedLock) ---
-            row = (
-                session.query(KeyValueEntry)
-                .filter(
-                    KeyValueEntry.resource == resource,
-                    KeyValueEntry.uuid == key,
-                )
-                .one_or_none()
+        yield key
+        # --- release (DeleteDistributedLock) ---
+        row = (
+            session.query(KeyValueEntry)
+            .filter(
+                KeyValueEntry.resource == resource,
+                KeyValueEntry.uuid == key,
             )
-            if row is not None:
-                session.delete(row)
-                session.commit()
-            logger.debug("Removed lock on namespace %s for key %s", namespace, key)
+            .one_or_none()
+        )
+        if row is not None:
+            session.delete(row)
+            session.commit()
+        logger.debug("Removed lock on namespace %s for key %s", namespace, key)

@@ -33,9 +33,7 @@ class FeatureFlagManager:
         self._get_feature_flags_func: (
             Callable[[dict[str, bool]], dict[str, bool]] | None
         ) = None
-        self._is_feature_enabled_func: (
-            Callable[[str, bool | None], bool] | None
-        ) = None
+        self._is_feature_enabled_func: Callable[[str, bool | None], bool] | None = None
         self._feature_flags: dict[str, bool] = {}
 
     def init_from_config(

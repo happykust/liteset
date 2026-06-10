@@ -28,14 +28,12 @@ degradation when Redis is unavailable.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import jwt as pyjwt
-import pytest
 
 from superset.middleware.async_token import _resolve_secret_key
 from superset.websocket.auth import authenticate_websocket
-
 
 # ---------------------------------------------------------------------------
 # Helper to build a mock settings object
@@ -44,8 +42,8 @@ from superset.websocket.auth import authenticate_websocket
 
 def _make_settings(
     *,
-    gaq_secret: str | None = "test-secret-change-me",
-    secret_key: str = "superset-secret-key-32-bytes!!!",
+    gaq_secret: str | None = "test-secret-change-me",  # noqa: S107
+    secret_key: str = "superset-secret-key-32-bytes!!!",  # noqa: S107
     cookie_name: str = "async-token",
     use_secret_str: bool = False,
 ) -> MagicMock:
@@ -84,7 +82,9 @@ def test_falls_back_to_secret_key_when_gaq_is_none():
 
 def test_secret_key_secretstr_unwrapped():
     """get_secret_value() is called on SecretStr-like secret_key fallback."""
-    settings = _make_settings(gaq_secret=None, secret_key="my-secret", use_secret_str=True)
+    settings = _make_settings(
+        gaq_secret=None, secret_key="my-secret", use_secret_str=True
+    )
     resolved = _resolve_secret_key(settings)
     assert resolved == "my-secret"
     settings.secret_key.get_secret_value.assert_called_once()

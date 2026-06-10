@@ -65,7 +65,9 @@ def update_api_docs() -> None:
 
     superset_dir = os.path.abspath(os.path.dirname(__file__))
     openapi_json = os.path.normpath(
-        os.path.join(superset_dir, "..", "..", "docs", "static", "resources", "openapi.json")
+        os.path.join(
+            superset_dir, "..", "..", "docs", "static", "resources", "openapi.json"
+        )
     )
     os.makedirs(os.path.dirname(openapi_json), exist_ok=True)
 

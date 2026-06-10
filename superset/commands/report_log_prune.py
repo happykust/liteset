@@ -85,8 +85,7 @@ class PruneReportScheduleLogCommand:
                     row_count = (
                         session.query(ReportExecutionLog)
                         .filter(
-                            ReportExecutionLog.report_schedule_id
-                            == report_schedule.id,
+                            ReportExecutionLog.report_schedule_id == report_schedule.id,
                             ReportExecutionLog.end_dttm < from_date,
                         )
                         .delete(synchronize_session="fetch")

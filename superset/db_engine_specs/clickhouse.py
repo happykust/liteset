@@ -274,6 +274,54 @@ except ImportError:  # ClickHouse Connect not installed, do nothing
     pass
 
 
+CLICKHOUSE_PARAMETERS_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "username": {
+            "type": "string",
+            "nullable": True,
+            "description": "Username",
+        },
+        "password": {
+            "type": "string",
+            "nullable": True,
+            "description": "Password",
+        },
+        "host": {
+            "type": "string",
+            "description": "Hostname or IP address",
+        },
+        "port": {
+            "type": "integer",
+            "nullable": True,
+            "description": "Database port",
+            "minimum": 0,
+            "maximum": 65535,
+        },
+        "database": {
+            "type": "string",
+            "nullable": True,
+            "description": "Database name",
+        },
+        "encryption": {
+            "type": "boolean",
+            "default": True,
+            "description": "Use an encrypted connection to the database",
+        },
+        "query": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Additional parameters",
+        },
+        "ssh": {
+            "type": "boolean",
+            "description": "Use an ssh tunnel connection to the database",
+        },
+    },
+    "required": ["host"],
+}
+
+
 class ClickHouseConnectEngineSpec(BasicParametersMixin, ClickHouseEngineSpec):
     """Engine spec for clickhouse-connect connector."""
 
@@ -286,6 +334,7 @@ class ClickHouseConnectEngineSpec(BasicParametersMixin, ClickHouseEngineSpec):
     sqlalchemy_uri_placeholder = (
         "clickhousedb://user:password@host[:port][/dbname][?secure=value&=value...]"
     )
+    parameters_schema: dict[str, Any] = CLICKHOUSE_PARAMETERS_JSON_SCHEMA
     encryption_parameters = {"secure": "true"}
 
     supports_dynamic_schema = True

@@ -16,7 +16,8 @@
 # under the License.
 """REMOTE_USER authentication backend.
 
-1:1 port of :pymeth:`flask_appbuilder.security.manager.BaseSecurityManager.auth_user_remote_user`
+1:1 port of :pymeth:`flask_appbuilder.security.manager
+.BaseSecurityManager.auth_user_remote_user`
 (``Flask-AppBuilder/flask_appbuilder/security/manager.py:1407-1435``)
 plus the corresponding view
 (``Flask-AppBuilder/flask_appbuilder/security/views.py:978-996``).
@@ -93,6 +94,4 @@ class RemoteUserAuthBackend:
         username = self.extract_username(headers, env_var)
         if not username:
             return None
-        return await self._sm.auth_user_remote_user(
-            username, settings=self._settings
-        )
+        return await self._sm.auth_user_remote_user(username, settings=self._settings)

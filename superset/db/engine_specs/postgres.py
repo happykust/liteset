@@ -230,9 +230,7 @@ class AsyncPostgresEngineSpec(BaseAsyncEngineSpec):
         results for postgres-wire engines (Postgres, Redshift, StarRocks-over-pg).
         """
         result = await conn.execute(
-            text(
-                "SELECT datname FROM pg_database WHERE datistemplate = false"
-            )
+            text("SELECT datname FROM pg_database WHERE datistemplate = false")
         )
         return {row[0] for row in result.fetchall()}
 

@@ -29,7 +29,12 @@ from superset.commands.tag import (
     DeleteTagCommand,
     UpdateTagCommand,
 )
-from superset.exceptions import CommandInvalidError, ObjectNotFoundError
+from superset.exceptions import (
+    CommandInvalidError,
+    ObjectNotFoundError,
+    SupersetValidationException,
+)
+from superset.schemas.tag import AddTagsToObjectProperties, AddTagsToObjectSchema
 
 
 @pytest.fixture
@@ -156,7 +161,84 @@ async def test_update_tag_success(mock_dao: AsyncMock) -> None:
     await cmd.validate()
     result = await cmd.run()
     assert result.name == "NewName"
-    mock_dao.update.assert_awaited_once_with(item, {"name": "NewName"})
+    # description is always passed to dao.update (None when absent), mirroring
+    # superset_old/commands/tag/update.py:48: ``self._model.description =
+    # self._properties.get('description')`` which writes NULL when absent.
+    mock_dao.update.assert_awaited_once_with(
+        item, {"name": "NewName", "description": None}
+    )
+
+
+async def test_update_tag_clears_description_when_absent(mock_dao: AsyncMock) -> None:
+    """PUT body without description must clear the column to NULL (original behaviour).
+
+    superset_old/commands/tag/update.py:48 always executes:
+        self._model.description = self._properties.get('description')
+    returning None when key is absent, which writes NULL.  The liteset
+    controller strips UNSET fields via filter_unset before calling the
+    command, so the command must re-inject description=None explicitly.
+    """
+    item = MagicMock()
+    item.id = 5
+    item.name = "ExistingTag"
+    item.description = "old description"
+    mock_dao.find_by_id.return_value = item
+    updated = MagicMock()
+    updated.id = 5
+    updated.name = "ExistingTag"
+    updated.description = None
+    mock_dao.update.return_value = updated
+
+    # Simulate controller calling filter_unset: description is absent
+    cmd = UpdateTagCommand(dao=mock_dao, pk=5, data={"name": "ExistingTag"})
+    await cmd.validate()
+    result = await cmd.run()
+
+    # dao.update must have received description=None to clear the column
+    call_args = mock_dao.update.call_args
+    assert call_args is not None
+    passed_data: dict = (
+        call_args.args[1]
+        if len(call_args.args) > 1
+        else call_args.kwargs.get("attributes", {})
+    )
+    assert "description" in passed_data, (
+        "description must always be passed to dao.update so the column is "
+        "explicitly cleared to NULL when omitted from the PUT body"
+    )
+    assert passed_data["description"] is None, (
+        "description must be None (NULL) when absent from the PUT body, "
+        "matching superset_old/commands/tag/update.py:48"
+    )
+    assert result.description is None
+
+
+async def test_update_tag_preserves_description_when_provided(
+    mock_dao: AsyncMock,
+) -> None:
+    """PUT body with description must pass that value through to dao.update."""
+    item = MagicMock()
+    item.id = 7
+    item.name = "MyTag"
+    mock_dao.find_by_id.return_value = item
+    updated = MagicMock()
+    updated.description = "new desc"
+    mock_dao.update.return_value = updated
+
+    cmd = UpdateTagCommand(
+        dao=mock_dao, pk=7, data={"name": "MyTag", "description": "new desc"}
+    )
+    await cmd.validate()
+    result = await cmd.run()
+
+    call_args = mock_dao.update.call_args
+    passed_data: dict = (
+        call_args.args[1]
+        if len(call_args.args) > 1
+        else call_args.kwargs.get("attributes", {})
+    )
+    assert passed_data.get("description") == "new desc"
+    assert result.description == "new desc"
 
 
 async def test_delete_tag_not_found(mock_dao: AsyncMock) -> None:
@@ -225,3 +307,80 @@ async def test_bulk_create_success(mock_dao: AsyncMock) -> None:
     result = await cmd.run()
     assert result == {"objects_tagged": [], "objects_skipped": []}
     assert mock_dao.get_by_name.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# add_objects: object_id == 0 guard
+# ---------------------------------------------------------------------------
+
+
+async def test_add_objects_zero_object_id_raises_422(mock_dao: AsyncMock) -> None:
+    """POST /{object_type}/{object_id}/ with object_id==0 must return 422.
+
+    1:1 with superset_old/commands/tag/create.py:55-64:
+    CreateCustomTagCommand.validate() appends TagCreateFailedError when
+    object_id==0 and raises TagInvalidError → api.py:407-408 returns 422
+    "Invalid tag".  The liteset controller must reproduce this guard so that
+    a client sending e.g. POST /api/v1/tag/2/0/ is rejected rather than
+    silently persisting TaggedObject(object_id=0).
+    """
+    from superset.controllers.tag import TagController
+
+    ctrl = TagController.__new__(TagController)
+    # Access the underlying async function via .fn (Litestar route handler
+    # attribute) so we can call it directly without the full ASGI machinery.
+    add_objects_fn = TagController.add_objects.fn
+
+    schema = AddTagsToObjectSchema(
+        properties=AddTagsToObjectProperties(tags=["some-tag"])
+    )
+    current_user = MagicMock(id=1)
+
+    with pytest.raises(SupersetValidationException, match="Invalid tag"):
+        await add_objects_fn(
+            ctrl,
+            object_type=2,  # ObjectType.chart
+            object_id=0,
+            data=schema,
+            dao=mock_dao,
+            current_user=current_user,
+        )
+
+    # DAO must NOT be called — the guard fires before any persistence.
+    mock_dao.create_custom_tagged_objects.assert_not_awaited()
+
+
+async def test_add_objects_nonzero_object_id_proceeds(mock_dao: AsyncMock) -> None:
+    """POST /{object_type}/{object_id}/ with object_id > 0 calls the DAO normally."""
+    from superset.controllers.tag import TagController
+
+    ctrl = TagController.__new__(TagController)
+    add_objects_fn = TagController.add_objects.fn
+
+    schema = AddTagsToObjectSchema(
+        properties=AddTagsToObjectProperties(tags=["some-tag"])
+    )
+    current_user = MagicMock(id=1)
+
+    # event_logger.alog_with_context is a real coroutine; mock it out.
+    from unittest.mock import patch
+
+    with patch(
+        "superset.controllers.tag.event_logger.alog_with_context",
+        new=AsyncMock(),
+    ):
+        result = await add_objects_fn(
+            ctrl,
+            object_type=2,  # ObjectType.chart
+            object_id=42,
+            data=schema,
+            dao=mock_dao,
+            current_user=current_user,
+        )
+
+    mock_dao.create_custom_tagged_objects.assert_awaited_once_with(
+        object_type="chart",
+        object_id=42,
+        tag_names=["some-tag"],
+    )
+    assert result == {"message": "OK"}

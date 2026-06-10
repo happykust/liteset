@@ -200,3 +200,59 @@ async def test_async_values_for_column_applies_mutator_percent_and_jinja(
     # (b) %%->% fixup ran on the mutated SQL.
     assert "x LIKE '%a%'" in executed["sql"]
     assert "%%" not in executed["sql"]
+
+
+# ---------------------------------------------------------------------------
+# Round-4 crit — async_query must RE-RAISE SupersetErrorException /
+# SupersetErrorsException (OAuth2RedirectError in particular) instead of
+# swallowing them into QueryResult(status='error'). 1:1 with
+# superset_old/connectors/sqla/models.py:1658-1662 ("...they should bubble up
+# ... so they are returned as proper SIP-40 errors ... important for database
+# OAuth2, see SIP-85").
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_query_reraises_superset_error_exception() -> None:
+    from unittest.mock import patch as _patch
+
+    from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+    from superset.exceptions import SupersetErrorException
+    from superset.models.connectors import SqlaTable
+
+    table = SqlaTable()
+    err = SupersetError(
+        error_type=SupersetErrorType.OAUTH2_REDIRECT,
+        message="OAuth2 redirect",
+        level=ErrorLevel.WARNING,
+        extra={"url": "https://auth", "tab_id": "t", "redirect_uri": "https://r"},
+    )
+
+    with _patch.object(
+        SqlaTable,
+        "_get_sqla_query_with_rls",
+        side_effect=SupersetErrorException(err),
+    ):
+        with pytest.raises(SupersetErrorException) as exc_info:
+            await table.async_query({"metrics": []})
+
+    assert exc_info.value.error.error_type == SupersetErrorType.OAUTH2_REDIRECT
+
+
+@pytest.mark.asyncio
+async def test_async_query_converts_generic_errors_to_query_result() -> None:
+    """Non-Superset exceptions keep the original behaviour: QueryResult(error)."""
+    from unittest.mock import patch as _patch
+
+    from superset.models.connectors import SqlaTable
+
+    table = SqlaTable()
+    with _patch.object(
+        SqlaTable,
+        "_get_sqla_query_with_rls",
+        side_effect=ValueError("boom"),
+    ):
+        result = await table.async_query({"metrics": []})
+
+    assert result.status == "error"
+    assert "boom" in (result.error_message or "")

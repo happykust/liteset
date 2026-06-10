@@ -25,8 +25,8 @@ configured validator fall back to the sqlglot-based parser used by
 
 from __future__ import annotations
 
-from . import base, postgres, presto_db
-from .base import BaseSQLValidator, SQLValidationAnnotation
+from superset.sql.validators import base, postgres, presto_db
+from superset.sql.validators.base import BaseSQLValidator, SQLValidationAnnotation
 
 
 def get_validator_by_name(name: str) -> type[BaseSQLValidator] | None:

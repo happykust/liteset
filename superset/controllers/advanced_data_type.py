@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from litestar import Controller, get, post
 from litestar.datastructures import State
@@ -26,6 +26,7 @@ from litestar.di import Provide
 from litestar.response import Response
 
 from superset.advanced_data_type.types import AdvancedDataType
+from superset.events import event_logger
 from superset.exceptions import SupersetValidationException
 from superset.guards.rbac import require_permission
 from superset.i18n import gettext as _
@@ -36,19 +37,17 @@ from superset.schemas.advanced_data_type import (
 
 
 def _get_registry(state: State) -> dict[str, Any]:
-    """Return the merged advanced_data_types registry with defaults.
+    """Return the advanced_data_types registry from config.
 
-    Mirrors original Superset's ``ADVANCED_DATA_TYPES`` config which
-    ships ``port`` and ``internet_address`` plugins out of the box (see
-    superset_old/config.py:2053-2056).
+    Mirrors the original ``app.config['ADVANCED_DATA_TYPES']`` read in
+    superset_old/advanced_data_type/api.py:96,148 — whatever the user
+    configured is returned as-is.  The built-in defaults
+    (``internet_address`` + ``port``) live in the field default in
+    ``superset/config.py``, not here.  Injecting them unconditionally
+    here would override a user's explicit ``ADVANCED_DATA_TYPES = {}``
+    with the built-ins, diverging from original behaviour.
     """
-    from superset.advanced_data_type.plugins.internet_address import internet_address
-    from superset.advanced_data_type.plugins.internet_port import internet_port
-
-    user_registry: dict[str, Any] = (
-        getattr(state.settings, "advanced_data_types", {}) or {}
-    )
-    return {"internet_address": internet_address, "port": internet_port, **user_registry}
+    return getattr(state.settings, "advanced_data_types", {}) or {}
 
 
 def _invoke_handler(handler: Any, adv_type: str, values: list[Any]) -> Any:
@@ -61,9 +60,10 @@ def _invoke_handler(handler: Any, adv_type: str, values: list[Any]) -> Any:
     - object exposing ``fetch_data(values)``
     """
     if isinstance(handler, AdvancedDataType):
-        return handler.translate_type(
-            {"advanced_data_type": adv_type, "values": values}
-        )
+        # 1:1 with the original call shape (superset_old/advanced_data_type/
+        # api.py:105-109): the request dict carries ONLY ``values`` — no
+        # extra ``advanced_data_type`` key that third-party plugins never saw.
+        return handler.translate_type({"values": values})
     if callable(handler):
         return handler(values)
     if hasattr(handler, "fetch_data"):
@@ -83,6 +83,10 @@ class AdvancedDataTypeController(Controller):
     @get("/types", guards=[require_permission("can_read", "AdvancedDataType")])
     async def get_types(self, state: State) -> dict[str, list[str]]:
         """GET /api/v1/advanced_data_type/types -- list registered types."""
+        await event_logger.alog_with_context(
+            action="AdvancedDataTypeRestApi.get",
+            log_to_statsd=False,
+        )
         registry = _get_registry(state)
         return {"result": list(registry.keys())}
 
@@ -101,9 +105,13 @@ class AdvancedDataTypeController(Controller):
         state: State,
     ) -> dict[str, Any] | Response[dict[str, Any]]:
         """POST /api/v1/advanced_data_type/convert -- convert values."""
+        await event_logger.alog_with_context(
+            action="AdvancedDataTypeRestApi.get",
+            log_to_statsd=False,
+        )
         registry = _get_registry(state)
         handler = registry.get(data.type)
-        if handler is None:
+        if not handler:
             # Mirror superset_old/advanced_data_type/api.py ``get``:
             # HTTP 400 "Invalid advanced data type: <type>".
             return Response(
@@ -127,20 +135,53 @@ class AdvancedDataTypeController(Controller):
         """GET /api/v1/advanced_data_type/convert -- convert via RISON params.
 
         Accepts ``type`` and ``values`` from the Rison query parameter,
-        matching the original Flask API signature.
+        matching the original Flask API signature.  The original uses
+        ``@rison(advanced_data_type_convert_schema)`` which validates
+        against a JSON Schema requiring both ``type`` (string) and
+        ``values`` (array, minItems: 1).
         """
+        await event_logger.alog_with_context(
+            action="AdvancedDataTypeRestApi.get",
+            log_to_statsd=False,
+        )
         params = rison_params or {}
-        adv_type: str = params.get("type", "")
-        values: list[str] = params.get("values", [])
-
-        if not adv_type:
-            raise SupersetValidationException(
-                "'type' is required in the RISON query parameter"
+        # The original @rison(advanced_data_type_convert_schema) requires the
+        # RISON parameter to be a JSON object ({"type": "object"}).  A list
+        # passes provide_rison_query but must be rejected here with 400, just
+        # as FAB's jsonschema.validate() returns 400 for a list input.
+        if not isinstance(params, dict):
+            return Response(
+                content={"message": "Not a valid rison schema"},
+                status_code=400,
             )
+
+        # Validate required fields matching the original JSON Schema:
+        # {"required": ["type", "values"], "properties": {"type": {"type": "string"},
+        #  "values": {"type": "array", "minItems": 1}}}
+        errors: list[str] = []
+        adv_type = params.get("type")
+        if adv_type is None or not isinstance(adv_type, str) or not adv_type:
+            errors.append("'type' is a required property")
+        values = params.get("values")
+        if values is None:
+            errors.append("'values' is a required property")
+        elif not isinstance(values, list):
+            errors.append("'values' must be an array")
+        elif len(values) < 1:
+            errors.append("'values' must contain at least 1 item")
+        if errors:
+            return Response(
+                content={"message": "; ".join(errors)},
+                status_code=400,
+            )
+        # At this point adv_type is a non-empty str and values is a list
+        # with at least 1 item.
+        adv_type = cast(str, adv_type)
+        values = cast(list[Any], values)
 
         registry = _get_registry(state)
         handler = registry.get(adv_type)
-        if handler is None:
+        if not handler:
             # Mirror superset_old/advanced_data_type/api.py ``get``:
             # HTTP 400 "Invalid advanced data type: <type>".
             return Response(

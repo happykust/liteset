@@ -70,7 +70,7 @@ class OAuthCallbackError(Exception):
     """Raised when the OAuth callback cannot be processed."""
 
 
-class OAuthProviderUnknown(Exception):
+class OAuthProviderUnknown(Exception):  # noqa: N818
     """Raised when no provider with the given name is configured."""
 
 
@@ -124,9 +124,7 @@ class OAuthAuthBackend:
         """Look up a provider by name, raising on miss."""
         return _find_provider(self.get_providers(), name)
 
-    async def _resolve_endpoints(
-        self, provider: dict[str, Any]
-    ) -> dict[str, str]:
+    async def _resolve_endpoints(self, provider: dict[str, Any]) -> dict[str, str]:
         """Resolve authorize / token / userinfo URLs.
 
         Uses ``server_metadata_url`` (OIDC discovery doc) when set,
@@ -134,7 +132,8 @@ class OAuthAuthBackend:
         """
         remote = _provider_remote_app(provider)
         endpoints: dict[str, str] = {
-            "authorize_url": remote.get("authorize_url", "") or remote.get("api_base_url", "") + "authorize",  # noqa: E501
+            "authorize_url": remote.get("authorize_url", "")
+            or remote.get("api_base_url", "") + "authorize",  # noqa: E501
             "access_token_url": remote.get("access_token_url", ""),
             "userinfo_url": remote.get("userinfo_endpoint", "")
             or remote.get("userinfo_url", ""),
@@ -147,8 +146,7 @@ class OAuthAuthBackend:
             metadata = await self._http_get_json(metadata_url)
             if metadata:
                 endpoints["authorize_url"] = (
-                    metadata.get("authorization_endpoint")
-                    or endpoints["authorize_url"]
+                    metadata.get("authorization_endpoint") or endpoints["authorize_url"]
                 )
                 endpoints["access_token_url"] = (
                     metadata.get("token_endpoint") or endpoints["access_token_url"]
@@ -193,9 +191,7 @@ class OAuthAuthBackend:
         Raises :class:`OAuthCallbackError` on signature/format failure.
         """
         try:
-            return pyjwt.decode(
-                token, self._state_secret(), algorithms=["HS256"]
-            )
+            return pyjwt.decode(token, self._state_secret(), algorithms=["HS256"])
         except pyjwt.PyJWTError as exc:
             raise OAuthCallbackError(f"Invalid OAuth state: {exc}") from exc
 
@@ -231,7 +227,11 @@ class OAuthAuthBackend:
                 f"Provider '{provider_name}' has no client_id configured"
             )
 
-        scope = scope or remote.get("client_kwargs", {}).get("scope") or "openid email profile"  # noqa: E501
+        scope = (
+            scope
+            or remote.get("client_kwargs", {}).get("scope")
+            or "openid email profile"
+        )  # noqa: E501
 
         state = self.sign_state({"provider": provider_name, "next": next_url})
 
@@ -309,9 +309,7 @@ class OAuthAuthBackend:
             import re
 
             if not any(re.search(pattern, email) for pattern in whitelist):
-                logger.info(
-                    "OAuth login denied: email '%s' not in whitelist", email
-                )
+                logger.info("OAuth login denied: email '%s' not in whitelist", email)
                 return None, next_url
 
         if not userinfo:
@@ -324,7 +322,7 @@ class OAuthAuthBackend:
     # User-info retrieval
     # ------------------------------------------------------------------
 
-    async def get_user_info(
+    async def get_user_info(  # noqa: C901
         self,
         *,
         provider_name: str,
@@ -357,8 +355,7 @@ class OAuthAuthBackend:
         # Twitter (1.1)
         if provider_name == "twitter":
             data = await self._http_get_json(
-                userinfo_url
-                or "https://api.twitter.com/1.1/account/settings.json",
+                userinfo_url or "https://api.twitter.com/1.1/account/settings.json",
                 bearer=access_token,
             )
             return {"username": "twitter_" + str(data.get("screen_name", ""))}
@@ -380,8 +377,7 @@ class OAuthAuthBackend:
         # Google
         if provider_name == "google":
             data = await self._http_get_json(
-                userinfo_url
-                or "https://openidconnect.googleapis.com/v1/userinfo",
+                userinfo_url or "https://openidconnect.googleapis.com/v1/userinfo",
                 bearer=access_token,
             )
             return {
@@ -404,9 +400,7 @@ class OAuthAuthBackend:
 
         # Okta
         if provider_name == "okta":
-            data = await self._http_get_json(
-                userinfo_url, bearer=access_token
-            )
+            data = await self._http_get_json(userinfo_url, bearer=access_token)
             if "error" in data:
                 logger.error(
                     "OAuth (okta) userinfo error: %s",
@@ -423,9 +417,7 @@ class OAuthAuthBackend:
 
         # Auth0
         if provider_name == "auth0":
-            data = await self._http_get_json(
-                userinfo_url, bearer=access_token
-            )
+            data = await self._http_get_json(userinfo_url, bearer=access_token)
             return {
                 "username": f"auth0_{data['sub']}",
                 "first_name": data.get("given_name", ""),
@@ -436,9 +428,7 @@ class OAuthAuthBackend:
 
         # Keycloak
         if provider_name in ("keycloak", "keycloak_before_17"):
-            data = await self._http_get_json(
-                userinfo_url, bearer=access_token
-            )
+            data = await self._http_get_json(userinfo_url, bearer=access_token)
             return {
                 "username": data.get("preferred_username", ""),
                 "first_name": data.get("given_name", ""),
@@ -521,9 +511,7 @@ class OAuthAuthBackend:
                 resp.status_code,
                 resp.text[:200],
             )
-            raise OAuthCallbackError(
-                f"Token exchange failed: {resp.status_code}"
-            )
+            raise OAuthCallbackError(f"Token exchange failed: {resp.status_code}")
         try:
             return resp.json()
         except ValueError:

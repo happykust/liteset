@@ -18,15 +18,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import create_engine as _create_sync_engine
-from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     AsyncEngine,
     AsyncSession,
     create_async_engine as _create_async_engine,
 )
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 
 def create_db_engine(
@@ -37,15 +35,31 @@ def create_db_engine(
     pool_timeout: int = 30,
     pool_recycle: int = 3600,
     pool_pre_ping: bool = True,
+    **extra_engine_options: Any,
 ) -> AsyncEngine:
+    """Create an async SQLAlchemy engine.
+
+    The named parameters represent the most common engine-creation knobs.
+    Any additional keyword arguments supplied via ``SQLALCHEMY_ENGINE_OPTIONS``
+    (e.g. ``isolation_level``, ``connect_args``, ``execution_options``) are
+    forwarded verbatim to ``create_async_engine`` via ``**extra_engine_options``.
+
+    No isolation_level is injected automatically.  The original
+    ``SupersetAppInitializer.set_db_default_isolation`` called
+    ``db.engine.execution_options(isolation_level=...)`` without storing the
+    returned OptionEngine, making it a silent no-op.  Callers who need a
+    specific isolation level must pass it explicitly via
+    ``SQLALCHEMY_ENGINE_OPTIONS``.
+    """
     global _engine  # noqa: PLW0603
-    kwargs: dict[str, Any] = {"echo": echo}
+    kwargs: dict[str, Any] = {"echo": echo, **extra_engine_options}
     if not url.startswith("sqlite"):
-        kwargs["pool_size"] = pool_size
-        kwargs["max_overflow"] = max_overflow
-        kwargs["pool_timeout"] = pool_timeout
-        kwargs["pool_recycle"] = pool_recycle
-        kwargs["pool_pre_ping"] = pool_pre_ping
+        kwargs.setdefault("pool_size", pool_size)
+        kwargs.setdefault("max_overflow", max_overflow)
+        kwargs.setdefault("pool_timeout", pool_timeout)
+        kwargs.setdefault("pool_recycle", pool_recycle)
+        kwargs.setdefault("pool_pre_ping", pool_pre_ping)
+
     engine = _create_async_engine(url, **kwargs)
     _engine = engine
     return engine
@@ -79,47 +93,17 @@ async def dispose_engine(engine: AsyncEngine) -> None:
 # Sync session helpers (for Celery workers)
 # ---------------------------------------------------------------------------
 
-_sync_engine: Engine | None = None
-_sync_session_factory: sessionmaker[Session] | None = None
-
-_ASYNC_TO_SYNC_DRIVERS: dict[str, str] = {
-    "postgresql+asyncpg": "postgresql+psycopg2",
-    "sqlite+aiosqlite": "sqlite",
-    "mysql+aiomysql": "mysql+pymysql",
-}
-
 
 def get_sync_session() -> Session:
-    """Create a sync :class:`~sqlalchemy.orm.Session` for Celery task execution.
+    """Return the thread-local sync Session (delegates to ``superset.db.session``).
 
-    The sync engine is lazily created on first call, converting the async
-    database URI from :class:`~superset.config.SupersetSettings` into its
-    synchronous equivalent (e.g. ``asyncpg`` -> ``psycopg2``).
-
-    The engine and session factory are cached at module level so that
-    subsequent calls reuse the same connection pool.
+    Historical duplicate: this module once built its OWN non-scoped
+    sessionmaker, handing every caller a brand-new Session with no
+    ``remove_sync_session()`` lifecycle — leaking pool connections for any
+    Celery-facing code that imported it from here. Delegate to the canonical
+    scoped-session registry instead so both entry points share one
+    thread-local Session.
     """
-    global _sync_engine, _sync_session_factory  # noqa: PLW0603
-    if _sync_engine is None:
-        if _engine is not None:
-            # ``str(engine.url)`` masks the password in SA 2.0+, which
-            # would silently break psycopg2 auth.  Render with the
-            # password preserved.
-            sync_uri = _engine.url.render_as_string(hide_password=False)
-        else:
-            # Celery workers / CLI: no Litestar startup hook ran, so the
-            # async engine is uninitialised.  Resolve the URI via
-            # SupersetSettings to honour both LITESET_* env vars and
-            # SUPERSET_CONFIG_PATH (avoid silently falling back to
-            # sqlite when the URI lives in superset_config.py).
-            from superset.config import SupersetSettings
+    from superset.db.session import get_sync_session as _canonical
 
-            sync_uri = SupersetSettings().sqlalchemy_database_uri  # type: ignore[call-arg]
-        for async_prefix, sync_prefix in _ASYNC_TO_SYNC_DRIVERS.items():
-            if sync_uri.startswith(async_prefix):
-                sync_uri = sync_uri.replace(async_prefix, sync_prefix, 1)
-                break
-        _sync_engine = _create_sync_engine(sync_uri)
-        _sync_session_factory = sessionmaker(bind=_sync_engine)
-    assert _sync_session_factory is not None  # noqa: S101
-    return _sync_session_factory()
+    return _canonical()

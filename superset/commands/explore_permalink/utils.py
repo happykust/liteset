@@ -36,7 +36,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from superset.exceptions import CommandInvalidError, ForbiddenError, ObjectNotFoundError
+from superset.exceptions import (
+    ForbiddenError,
+    ObjectNotFoundError,
+    SupersetGenericErrorException,
+)
 
 
 async def check_dataset_access(
@@ -98,11 +102,14 @@ async def check_query_access(
     1:1 with ``superset_old/explore/utils.py:check_query_access``.
     """
     if not query_id:
-        raise CommandInvalidError(f"Missing query id: {query_id}")
+        # 1:1 with original QueryNotFoundValidationError (marshmallow ValidationError
+        # subclass) → HTTP 400, caught by ``except ValidationError`` in the API layer.
+        raise SupersetGenericErrorException(f"Missing query id: {query_id}", status=400)
 
     query = await query_dao.find_by_id(query_id)
     if query is None:
-        raise CommandInvalidError(f"Query {query_id} not found")
+        # 1:1 with original QueryNotFoundValidationError → HTTP 400.
+        raise SupersetGenericErrorException(f"Query {query_id} not found", status=400)
 
     await security_manager.raise_for_access(query=query, user=user)
     return True
@@ -122,7 +129,10 @@ async def check_datasource_access(
     table.
     """
     if not datasource_id:
-        raise CommandInvalidError("Missing datasource id")
+        # 1:1 with original DatasourceNotFoundValidationError (marshmallow
+        # ValidationError subclass) → HTTP 400, caught by ``except ValidationError``
+        # in the API layer.
+        raise SupersetGenericErrorException("Missing datasource id", status=400)
 
     if datasource_type == "table":
         return await check_dataset_access(
@@ -138,7 +148,12 @@ async def check_datasource_access(
             security_manager=security_manager,
             user=user,
         )
-    raise CommandInvalidError(f"Invalid datasource type: {datasource_type}")
+    # 1:1 with original DatasourceTypeInvalidError (marshmallow ValidationError
+    # subclass, raised when datasource_type key is absent from ACCESS_FUNCTION_MAP)
+    # → HTTP 400.
+    raise SupersetGenericErrorException(
+        f"Invalid datasource type: {datasource_type}", status=400
+    )
 
 
 async def check_access(
@@ -183,12 +198,16 @@ async def check_access(
         chart_id, [selectinload(Slice.owners)]
     )
     if chart is None:
-        raise ObjectNotFoundError("Chart", chart_id)
+        # 1:1 with the original check_access which raises ChartNotFoundError
+        # (superset_old/explore/utils.py:95) — distinct from the dataset's
+        # ObjectNotFoundError: the permalink GET command wraps only
+        # dataset-not-found into a 500, while chart-not-found surfaces as 404.
+        from superset.exceptions import ChartNotFoundError
+
+        raise ChartNotFoundError()
 
     is_owner = security_manager.is_owner(chart, user)
-    can_read_chart = await security_manager.can_access(
-        "can_read", "Chart", user=user
-    )
+    can_read_chart = await security_manager.can_access("can_read", "Chart", user=user)
     if is_owner or can_read_chart:
         return True
     raise ForbiddenError(f"User has no access to chart {chart_id}")

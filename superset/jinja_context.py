@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading as _threading
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
@@ -36,6 +37,7 @@ from jinja2.exceptions import SecurityError, UndefinedError
 from jinja2.sandbox import SandboxedEnvironment
 from sqlalchemy import select
 from sqlalchemy.engine.interfaces import Dialect
+from sqlalchemy.exc import StatementError
 from sqlalchemy.sql.expression import bindparam
 from sqlalchemy.types import String
 
@@ -207,21 +209,50 @@ class ExtraCache:
         """
         Return sorted role names for the current user.
 
-        Original Superset uses security_manager.get_user_roles() which handles
-        guest/embedded user roles. In Liteset, we read from the user object
-        which should have roles populated by the auth middleware. Guest role
-        handling is done at the middleware/guard layer.
+        Original Superset uses security_manager.get_user_roles() which, for
+        anonymous users, returns ``[self.get_public_role()]`` when
+        ``AUTH_ROLE_PUBLIC`` is configured. We reproduce that behaviour here:
+        when no user is present (anonymous) and ``AUTH_ROLE_PUBLIC`` is set,
+        we return ``[public_role_name]``.
         """
         try:
             user = get_current_user()
-            if not user:
+            # Anonymous detection mirrors FAB get_user_roles' ``is_anonymous``
+            # branch: the middleware stores a truthy ``UnauthenticatedUser``
+            # (is_authenticated=False) in the ContextVar, so a plain
+            # truthiness check would skip the public-role branch. ORM users
+            # have no ``is_authenticated`` attribute -> default True.
+            if not user or getattr(user, "is_authenticated", True) is False:
+                # Mirror original: anonymous users get the public role
+                # if AUTH_ROLE_PUBLIC is configured. FAB get_public_role()
+                # queries the DB (sqla/manager.py:717-722) — a configured but
+                # DELETED role yields None, then ``None.name`` raises inside
+                # the original's try/except → None. Reproduce the existence
+                # check instead of trusting the raw config string.
+                public_role = _get_config("AUTH_ROLE_PUBLIC")
+                if not public_role or not _sync_role_exists(str(public_role)):
+                    return None
+                user_roles = [public_role]
+                if add_to_cache_keys:
+                    self.cache_key_wrapper(json.dumps(user_roles))
+                return user_roles
+            roles = getattr(user, "roles", None) or []
+            role_names: set[str] = {
+                role.name for role in roles if hasattr(role, "name")
+            }
+            # Mirror FAB base get_user_roles:
+            #   user.roles + [role for group in user.groups for role in group.roles]
+            # The group term is resolved via a sync query (same pattern as
+            # _sync_get_rls_rules) since Jinja rendering is synchronous.
+            user_id = getattr(user, "id", None)
+            if user_id is not None:
+                try:
+                    role_names.update(_sync_get_user_group_role_names(user_id))
+                except Exception:  # noqa: BLE001
+                    logger.debug("Failed to load user group role names", exc_info=True)
+            if not role_names:
                 return None
-            roles = getattr(user, "roles", None)
-            if not roles:
-                return None
-            user_roles = sorted([role.name for role in roles])
-            if not user_roles:
-                return None
+            user_roles = sorted(role_names)
             if add_to_cache_keys:
                 self.cache_key_wrapper(json.dumps(user_roles))
             return user_roles
@@ -232,7 +263,8 @@ class ExtraCache:
         """
         Return row level security rules for the current user and dataset.
 
-        Ported 1:1 from superset_old/jinja_context.py::ExtraCache.current_user_rls_rules.
+        Ported 1:1 from
+        superset_old/jinja_context.py::ExtraCache.current_user_rls_rules.
         The original called security_manager.get_rls_filters(self.table) (sync,
         because the original Flask SM was sync). In Liteset we reproduce the
         same query synchronously via _sync_get_rls_rules which uses a cached
@@ -719,7 +751,7 @@ class PrestoTemplateProcessor(JinjaTemplateProcessor):
         from superset.db_engine_specs.presto import PrestoEngineSpec
 
         table_name, schema = self._schema_table(table_name, self._schema)
-        return cast(PrestoEngineSpec, self._database.db_engine_spec).latest_partition(  # type: ignore[attr-defined]
+        return cast(PrestoEngineSpec, self._database.db_engine_spec).latest_partition(
             database=self._database, table=Table(table_name, schema)
         )[1]
 
@@ -730,7 +762,7 @@ class PrestoTemplateProcessor(JinjaTemplateProcessor):
 
         return cast(
             PrestoEngineSpec, self._database.db_engine_spec
-        ).latest_sub_partition(  # type: ignore[attr-defined]
+        ).latest_sub_partition(
             database=self._database, table=Table(table_name, schema), **kwargs
         )
 
@@ -810,8 +842,6 @@ def get_template_processor(
 # P1-3 fix: cache the engine at module level (keyed by DB URI) so we create
 # at most one engine per process — avoiding per-call connection pool leaks.
 # ---------------------------------------------------------------------------
-import threading as _threading
-
 _sync_engine_lock = _threading.Lock()
 _sync_engine_cache: dict[str, Any] = {}
 
@@ -841,21 +871,85 @@ def _get_sync_engine() -> Any:
 
 
 def _sync_find_dataset(dataset_id: int) -> Any:
-    """Synchronously find a dataset by ID using the shared sync engine."""
+    """Synchronously find a dataset by ID using the shared sync engine.
+
+    Mirrors ``BaseDAO.find_by_id`` (superset_old/daos/base.py lines 68-72):
+    ``StatementError`` (e.g. from a non-numeric *dataset_id* string reaching the
+    DB) is caught and ``None`` is returned, so callers raise a 404-level error
+    (``DatasetNotFoundError``) instead of propagating a 500.
+    """
     from sqlalchemy.orm import Session
 
     from superset.models.connectors import SqlaTable
 
     engine = _get_sync_engine()
-    with Session(engine) as session:
-        return (
-            session.execute(select(SqlaTable).where(SqlaTable.id == dataset_id))
-            .scalars()
-            .one_or_none()
-        )
+    try:
+        with Session(engine) as session:
+            return (
+                session.execute(select(SqlaTable).where(SqlaTable.id == dataset_id))
+                .scalars()
+                .one_or_none()
+            )
+    except StatementError:
+        return None
 
 
 _DATABASE_PERM_RE = re.compile(r"^\[.+\]\.\(id:(?P<id>\d+)\)$")
+
+
+def _collect_role_perm_rows(role_ids: list[int]) -> list[Any]:
+    """Query permission rows for the given role IDs from the sync engine."""
+    from sqlalchemy.orm import Session
+
+    from superset.models.security import (
+        ab_permission_view_role,
+        Permission,
+        PermissionView,
+        ViewMenu,
+    )
+
+    engine = _get_sync_engine()
+    with Session(engine) as session:
+        return session.execute(
+            select(Permission.name, ViewMenu.name)
+            .select_from(ab_permission_view_role)
+            .join(
+                PermissionView,
+                PermissionView.id == ab_permission_view_role.c.permission_view_id,
+            )
+            .join(Permission, Permission.id == PermissionView.permission_id)
+            .join(ViewMenu, ViewMenu.id == PermissionView.view_menu_id)
+            .where(ab_permission_view_role.c.role_id.in_(role_ids))
+        ).all()
+
+
+def _classify_perm_rows(
+    rows: list[Any],
+) -> tuple[bool, set[int], set[str], set[str], set[str]]:
+    """Classify permission rows into access sets.
+
+    Returns ``(has_global_access, db_ids, datasource_perms, schema_perms,
+    catalog_perms)``.  ``has_global_access`` is ``True`` when any row carries
+    ``all_database_access`` or ``all_datasource_access``.
+    """
+    db_ids: set[int] = set()
+    datasource_perms: set[str] = set()
+    schema_perms: set[str] = set()
+    catalog_perms: set[str] = set()
+    for perm_name, vm_name in rows:
+        if perm_name in ("all_database_access", "all_datasource_access"):
+            return True, db_ids, datasource_perms, schema_perms, catalog_perms
+        if perm_name == "database_access":
+            m = _DATABASE_PERM_RE.match(vm_name or "")
+            if m:
+                db_ids.add(int(m.group("id")))
+        elif perm_name == "datasource_access":
+            datasource_perms.add(vm_name)
+        elif perm_name == "schema_access":
+            schema_perms.add(vm_name)
+        elif perm_name == "catalog_access":
+            catalog_perms.add(vm_name)
+    return False, db_ids, datasource_perms, schema_perms, catalog_perms
 
 
 def _sync_user_can_access_dataset(
@@ -867,8 +961,10 @@ def _sync_user_can_access_dataset(
     → ``get_dataset_access_filters(SqlaTable)``: admins and holders of
     ``all_database_access``/``all_datasource_access`` see all; everyone else
     needs the dataset's database OR its ``perm``/``catalog_perm``/``schema_perm``
-    to be granted. Role-only, matching the precedent in ``_sync_get_rls_rules``
-    (group roles omitted in sync).
+    to be granted. Roles include FAB *group* membership — upstream
+    ``user_view_menu_names`` (superset_old/security/manager.py:841-880) joins
+    ``assoc_user_group``/``assoc_group_role`` so group-granted permissions
+    count in every check.
 
     ``skip_base_filter`` mirrors the upstream argument: ``metric_macro`` passes
     ``skip_base_filter=is_guest`` (embedded/guest access is validated at the
@@ -888,49 +984,31 @@ def _sync_user_can_access_dataset(
     if any(getattr(r, "name", None) == "Admin" for r in roles):
         return True
     role_ids = [r.id for r in roles if getattr(r, "id", None) is not None]
+
+    # Group-inherited roles — 1:1 with the assoc_user_group/assoc_group_role
+    # EXISTS terms of upstream ``user_view_menu_names`` and with FAB base
+    # ``get_user_roles`` (user.roles + roles of the user's groups).
+    user_id = getattr(user, "id", None)
+    if user_id is not None:
+        try:
+            group_roles = _sync_get_user_group_roles(int(user_id))
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to load user group roles", exc_info=True)
+            group_roles = []
+        if any(name == "Admin" for _, name in group_roles):
+            return True
+        seen_ids = set(role_ids)
+        role_ids.extend(rid for rid, _ in group_roles if rid not in seen_ids)
+
     if not role_ids:
         return False
 
-    from sqlalchemy.orm import Session
-
-    from superset.models.security import (
-        Permission,
-        PermissionView,
-        ViewMenu,
-        ab_permission_view_role,
+    rows = _collect_role_perm_rows(role_ids)
+    has_global, db_ids, datasource_perms, schema_perms, catalog_perms = (
+        _classify_perm_rows(rows)
     )
-
-    engine = _get_sync_engine()
-    with Session(engine) as session:
-        rows = session.execute(
-            select(Permission.name, ViewMenu.name)
-            .select_from(ab_permission_view_role)
-            .join(
-                PermissionView,
-                PermissionView.id == ab_permission_view_role.c.permission_view_id,
-            )
-            .join(Permission, Permission.id == PermissionView.permission_id)
-            .join(ViewMenu, ViewMenu.id == PermissionView.view_menu_id)
-            .where(ab_permission_view_role.c.role_id.in_(role_ids))
-        ).all()
-
-    db_ids: set[int] = set()
-    datasource_perms: set[str] = set()
-    schema_perms: set[str] = set()
-    catalog_perms: set[str] = set()
-    for perm_name, vm_name in rows:
-        if perm_name in ("all_database_access", "all_datasource_access"):
-            return True
-        if perm_name == "database_access":
-            m = _DATABASE_PERM_RE.match(vm_name or "")
-            if m:
-                db_ids.add(int(m.group("id")))
-        elif perm_name == "datasource_access":
-            datasource_perms.add(vm_name)
-        elif perm_name == "schema_access":
-            schema_perms.add(vm_name)
-        elif perm_name == "catalog_access":
-            catalog_perms.add(vm_name)
+    if has_global:
+        return True
 
     return (
         dataset.database_id in db_ids
@@ -938,6 +1016,53 @@ def _sync_user_can_access_dataset(
         or bool(dataset.catalog_perm and dataset.catalog_perm in catalog_perms)
         or bool(dataset.schema_perm and dataset.schema_perm in schema_perms)
     )
+
+
+def _sync_role_exists(role_name: str) -> bool:
+    """Check that a role row exists — sync analogue of FAB get_public_role().
+
+    Uses the same module-level sync engine as ``_sync_get_rls_rules`` since
+    Jinja rendering is synchronous.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.orm import Session
+
+    engine = _get_sync_engine()
+    with Session(engine) as session:
+        row = session.execute(
+            text("SELECT 1 FROM ab_role WHERE name = :name LIMIT 1"),
+            {"name": role_name},
+        ).first()
+    return row is not None
+
+
+def _sync_get_user_group_roles(user_id: int) -> list[tuple[int, str]]:
+    """Return ``(id, name)`` of roles inherited via FAB group membership.
+
+    Mirrors the group-role term of FAB base ``SecurityManager.get_user_roles``:
+    ``[role for group in user.groups for role in group.roles]``.
+
+    Uses the same module-level sync SQLAlchemy engine as ``_sync_get_rls_rules``
+    so that it is safe to call from synchronous Jinja template rendering.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.orm import Session
+
+    engine = _get_sync_engine()
+    stmt = text(
+        "SELECT DISTINCT r.id, r.name FROM ab_role r "
+        "JOIN ab_group_role gr ON gr.role_id = r.id "
+        "JOIN ab_user_group ug ON ug.group_id = gr.group_id "
+        "WHERE ug.user_id = :user_id"
+    )
+    with Session(engine) as session:
+        rows = session.execute(stmt, {"user_id": user_id}).all()
+    return [(row[0], row[1]) for row in rows if row[1]]
+
+
+def _sync_get_user_group_role_names(user_id: int) -> list[str]:
+    """Return role names inherited via FAB group membership for a user."""
+    return [name for _, name in _sync_get_user_group_roles(user_id)]
 
 
 def _sync_get_rls_rules(table: Any, user: Any) -> list[str]:
@@ -962,13 +1087,11 @@ def _sync_get_rls_rules(table: Any, user: Any) -> list[str]:
     from superset.utils.core import RowLevelSecurityFilterType
 
     # Guest user path: read RLS rules directly from the guest token attributes.
-    is_guest = False
-    try:
-        from superset.security.manager import AsyncSecurityManager
-
-        is_guest = AsyncSecurityManager.is_guest_user(None, user)  # static-like check
-    except Exception:  # noqa: BLE001
-        pass
+    # Inline the same check as AsyncSecurityManager.is_guest_user() to avoid
+    # needing a manager instance (Jinja rendering is synchronous).
+    is_guest = feature_flag_manager.is_feature_enabled("EMBEDDED_SUPERSET") and getattr(
+        user, "is_guest", False
+    )
 
     if is_guest:
         rls_rules: list[dict[str, Any]] = getattr(user, "rls_rules", [])
@@ -976,18 +1099,29 @@ def _sync_get_rls_rules(table: Any, user: Any) -> list[str]:
             rule["clause"]
             for rule in rls_rules
             if rule.get("clause")
-            and (
-                not rule.get("dataset")
-                or str(rule.get("dataset")) == str(table.id)
-            )
+            and (not rule.get("dataset") or str(rule.get("dataset")) == str(table.id))
         ]
         return sorted(clauses)
 
     # Authenticated user path: query the RowLevelSecurityFilter table.
+    # Role set mirrors FAB get_user_roles: direct roles + roles inherited
+    # via group membership (superset_old/security/manager.py:2598 →
+    # flask_appbuilder/security/manager.py:1828).
     try:
         user_role_ids = [r.id for r in getattr(user, "roles", []) or []]
     except Exception:  # noqa: BLE001
         user_role_ids = []
+    try:
+        user_id = getattr(user, "id", None)
+        if user_id is not None:
+            direct_ids = set(user_role_ids)
+            user_role_ids.extend(
+                role_id
+                for role_id, _ in _sync_get_user_group_roles(int(user_id))
+                if role_id not in direct_ids
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to resolve group roles for RLS", exc_info=True)
 
     if not user_role_ids:
         return []
@@ -1084,21 +1218,110 @@ def dataset_macro(
     return f"(\n{sql}\n) AS dataset_{dataset_id}"
 
 
+def _loads_request_json(data: str | None) -> dict[str, Any]:
+    """JSON-decode a string, returning ``{}`` on failure.
+
+    1:1 with ``superset_old/views/utils.py::loads_request_json``.
+    """
+    if not data:
+        return {}
+    try:
+        return json.loads(data)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+
+
+def _merge_payload_into_form_data(
+    payload: dict[str, Any],
+    form_data: dict[str, Any],
+) -> int | None:
+    """Process the request payload and merge into *form_data* in-place.
+
+    Returns the dataset ID if an early-return path (``datasource.id``) is
+    found, otherwise ``None``.  Mirrors original lines 1042-1046.
+    """
+    # Early return: top-level ``datasource.id`` in JSON body
+    # (chart-data API path — original line 1042-1043).
+    # Guard with isinstance: in task contexts payload may come from
+    # Slice.form_data where "datasource" is a string like "5__table",
+    # not a dict — calling .get("id") on a string raises AttributeError.
+    _datasource_val = payload.get("datasource")
+    if isinstance(_datasource_val, dict):
+        if dataset_id := _datasource_val.get("id"):
+            return dataset_id
+
+    # Merge nested ``form_data`` from the JSON body (original line 1044).
+    nested_form_data = payload.get("form_data")
+    if isinstance(nested_form_data, dict):
+        form_data.update(nested_form_data)
+    elif isinstance(nested_form_data, str):
+        # form-encoded body: middleware yields {"form_data": "<json>"}
+        form_data.update(_loads_request_json(nested_form_data))
+    return None
+
+
+def _merge_query_string_into_form_data(form_data: dict[str, Any]) -> None:
+    """Merge ``form_data`` from query-string into *form_data* in-place.
+
+    Mirrors original lines 1047-1048 (``request.args.get("form_data")``).
+    """
+    _request = get_current_request()
+    if _request is None:
+        return
+    _query_params = getattr(_request, "query_params", None)
+    if _query_params is None:
+        return
+    args_form_data = _query_params.get("form_data")
+    if args_form_data:
+        form_data.update(_loads_request_json(args_form_data))
+
+
+def _dataset_id_from_chart(chart_id: Any, exc_message: str) -> int:
+    """Look up a chart by ID and return its datasource_id synchronously.
+
+    Mirrors ``ChartDAO.find_by_id`` (superset_old/daos/base.py lines 68-72):
+    ``ValueError`` from ``int(chart_id)`` for a non-numeric *chart_id*, or
+    ``StatementError`` from the DB for an invalid parameter type, are both caught
+    so that the caller raises ``SupersetTemplateException`` (400-level) instead
+    of propagating a 500.
+    """
+    from sqlalchemy.orm import Session
+
+    from superset.models.slice import Slice
+
+    engine = _get_sync_engine()
+    try:
+        chart_id_int = int(chart_id)
+    except (ValueError, TypeError):
+        raise SupersetTemplateException(exc_message) from None
+    try:
+        with Session(engine) as session:
+            chart = (
+                session.execute(select(Slice).where(Slice.id == chart_id_int))
+                .scalars()
+                .one_or_none()
+            )
+    except StatementError:
+        raise SupersetTemplateException(exc_message) from None
+    if not chart:
+        raise SupersetTemplateException(exc_message)
+    return chart.datasource_id  # type: ignore[return-value]
+
+
 def get_dataset_id_from_context(metric_key: str) -> int:
     """
     Retrieves the Dataset ID from the template context.
 
-    In the original Superset this reads from Flask request context (JSON body,
-    form data, request args, g.form_data). In Liteset we first read from the
-    request-scoped form_data ContextVar populated by the request_context
-    middleware, then fall back to :func:`superset.utils.core.get_form_data`
-    which mirrors the original ``g.form_data`` slot — this is the path used
-    by Celery tasks (``async_queries``) and the ``warm_up_cache`` command,
-    neither of which run inside an HTTP request.
+    1:1 with ``superset_old/jinja_context.py::get_dataset_id_from_context``.
+    The original reads the Flask request JSON body, ``request.form``,
+    ``request.args`` and ``g.form_data``.  In Liteset the request-scoped
+    ``_form_data_ctx`` ContextVar (set by the ``request_context``
+    middleware to the full JSON body) is the primary source.  We also
+    check ``request.query_params["form_data"]`` (Litestar equivalent of
+    ``request.args.get("form_data")``) and merge a nested ``form_data``
+    dict from the payload, exactly like the original does.  The Celery
+    task path (``get_task_form_data``) mirrors ``g.form_data``.
     """
-    # Lazy import avoids a top-level cycle (utils.core imports nothing
-    # from jinja_context, but downstream callers import from utils.core
-    # all over the place during module initialisation).
     from superset.utils.core import get_form_data as get_task_form_data
 
     exc_message = (
@@ -1106,42 +1329,58 @@ def get_dataset_id_from_context(metric_key: str) -> int:
         f"metric in the Jinja macro."
     )
 
-    form_data = get_form_data() or get_task_form_data()
+    # --- Build merged form_data, mirroring the original ----------------
+    # Original lines 1034-1048:
+    #   form_data = {}
+    #   if has_request_context():
+    #       payload = request.get_json(...)
+    #       if payload.datasource.id -> early return
+    #       form_data.update(payload.get("form_data", {}))
+    #       form_data.update(loads_request_json(request.form.get("form_data")))
+    #       form_data.update(loads_request_json(request.args.get("form_data")))
+    #   form_data = form_data or g.form_data
+    form_data: dict[str, Any] = {}
+
+    # The middleware sets _form_data_ctx to the full JSON body (or the
+    # form-url-encoded key/value dict).  This mirrors ``payload``.
+    payload = get_form_data()
+
+    if payload:
+        early_id = _merge_payload_into_form_data(payload, form_data)
+        if early_id is not None:
+            return early_id
+
+    _merge_query_string_into_form_data(form_data)
+
+    # Original line 1050: ``form_data = form_data or g.form_data``
+    # In the original, ``g.form_data`` is the chart's flat form_data dict
+    # set by warm_up_cache (e.g. ``{'datasource': '5__table', ...}``).
+    # In liteset, ``_form_data_ctx`` serves BOTH as the HTTP request body
+    # envelope AND as the flat form_data from warm_up_cache.
+    # ``_merge_payload_into_form_data`` handles the HTTP envelope case but
+    # leaves ``form_data`` empty when ``payload`` IS already the flat dict
+    # (because it looks for nested ``payload["form_data"]`` or a dict-typed
+    # ``payload["datasource"]`` -- neither present in the flat case).
+    # So if ``form_data`` is still empty after the merge, fall back to using
+    # ``payload`` directly (mirrors ``g.form_data`` from the original).
+    if not form_data:
+        form_data = payload or get_task_form_data()
+
     if not form_data:
         raise SupersetTemplateException(exc_message)
 
     # Check datasource field (can be dict or "id__type" string)
     if datasource_info := form_data.get("datasource"):
         if isinstance(datasource_info, dict):
-            if ds_id := datasource_info.get("id"):
-                return ds_id
-        elif isinstance(datasource_info, str) and "__" in datasource_info:
-            return int(datasource_info.split("__")[0])
+            return datasource_info["id"]
+        return datasource_info.split("__")[0]
 
-    # Check queries[0].url_params.datasource_id
-    queries = form_data.get("queries", [{}])
-    if queries:
-        url_params = queries[0].get("url_params", {})
-        if dataset_id := url_params.get("datasource_id"):
-            return int(dataset_id)
-
-        # Check slice_id -> chart -> datasource_id
-        slice_id = form_data.get("slice_id") or url_params.get("slice_id")
-        if slice_id:
-            # Synchronous fallback for chart lookup — use cached engine (P1-3 fix)
-            from sqlalchemy.orm import Session
-
-            from superset.models.slice import Slice
-
-            engine = _get_sync_engine()
-            with Session(engine) as session:
-                chart = (
-                    session.execute(select(Slice).where(Slice.id == int(slice_id)))
-                    .scalars()
-                    .one_or_none()
-                )
-                if chart:
-                    return int(chart.datasource_id)
+    url_params = form_data.get("queries", [{}])[0].get("url_params", {})
+    if dataset_id := url_params.get("datasource_id"):
+        return dataset_id
+    if chart_id := (form_data.get("slice_id") or url_params.get("slice_id")):
+        # Synchronous fallback for chart lookup — use cached engine.
+        return _dataset_id_from_chart(chart_id, exc_message)
 
     raise SupersetTemplateException(exc_message)
 
@@ -1164,13 +1403,11 @@ def metric_macro(
     # ``{{ metric('m', <id>) }}`` would leak metric expressions from datasets
     # the caller cannot access.
     user = get_current_user()
-    is_guest = False
-    try:
-        from superset.security.manager import AsyncSecurityManager
-
-        is_guest = AsyncSecurityManager.is_guest_user(None, user)
-    except Exception:  # noqa: BLE001
-        pass
+    # Inline the same check as AsyncSecurityManager.is_guest_user() to avoid
+    # needing a manager instance (Jinja rendering is synchronous).
+    is_guest = feature_flag_manager.is_feature_enabled("EMBEDDED_SUPERSET") and getattr(
+        user, "is_guest", False
+    )
     dataset = _sync_find_dataset(dataset_id)
     if not dataset or not _sync_user_can_access_dataset(
         dataset, user, skip_base_filter=is_guest

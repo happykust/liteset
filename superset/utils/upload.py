@@ -188,7 +188,12 @@ def parse_upload_form(form: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             parsed[key] = str(value)
 
     # --- bools -------------------------------------------------------------
-    for key in ("dataframe_index", "day_first", "skip_blank_lines", "skip_initial_space"):
+    for key in (
+        "dataframe_index",
+        "day_first",
+        "skip_blank_lines",
+        "skip_initial_space",
+    ):
         coerced = _coerce_bool(form.get(key))
         if coerced is not None:
             parsed[key] = coerced
@@ -214,9 +219,7 @@ def parse_upload_form(form: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             try:
                 parsed["column_data_types"] = _json.loads(raw_cdt)
             except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    "Invalid JSON format for column_data_types"
-                ) from exc
+                raise ValueError("Invalid JSON format for column_data_types") from exc
 
     return parsed
 

@@ -69,11 +69,30 @@ class BaseAsyncEngineSpec(ABC):
     _time_grain_expressions: dict[str | None, str] = {}  # noqa: RUF012 — safe: __init_subclass__ copies per-subclass; do not mutate base class dict after import
     _custom_errors: list[tuple[re.Pattern[str], str]] = []  # noqa: RUF012
 
+    # Safety-critical query params to enforce on connections, keyed by driver.
+    # 1:1 with ``BaseEngineSpec.enforce_uri_query_params`` in
+    # ``superset_old/db_engine_specs/base.py:385``.
+    enforce_uri_query_params: dict[str, dict[str, Any]] = {}  # noqa: RUF012
+
+    # Whether to strip schema prefixes from table/view names.
+    # 1:1 with ``BaseEngineSpec.try_remove_schema_from_table_name`` in
+    # ``superset_old/db_engine_specs/base.py:390``.
+    try_remove_schema_from_table_name = True
+
     # SQL expression template converting epoch seconds to datetime.
-    # Subclasses override this classmethod with engine-specific SQL.
+    # Subclasses MUST override this classmethod with engine-specific SQL.
+    # 1:1 with ``BaseEngineSpec.epoch_to_dttm`` in
+    # ``superset_old/db_engine_specs/base.py:1039-1047``.
     @classmethod
     def epoch_to_dttm(cls) -> str:
-        return "{col}"
+        raise NotImplementedError()
+
+    # SQL expression converting epoch milliseconds to datetime.
+    # 1:1 with ``BaseEngineSpec.epoch_ms_to_dttm`` in
+    # ``superset_old/db_engine_specs/base.py:1049-1057``.
+    @classmethod
+    def epoch_ms_to_dttm(cls) -> str:
+        return cls.epoch_to_dttm().replace("{col}", "({col}/1000)")
 
     @classmethod
     def get_datatype(cls, type_code: Any) -> str | None:
@@ -213,6 +232,11 @@ class BaseAsyncEngineSpec(ABC):
     # Subclasses override this to handle vendor-specific types.
     column_type_mappings: tuple[ColumnTypeMapping, ...] = ()  # noqa: RUF012
 
+    # Per-type mutator functions applied to fetched values.
+    # 1:1 with ``BaseEngineSpec.column_type_mutators`` in
+    # ``superset_old/db_engine_specs/base.py``.
+    column_type_mutators: dict[type[TypeEngine[Any]], Callable[[Any], Any]] = {}  # noqa: RUF012
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         # Ensure each subclass gets its own copy of mutable class-level
@@ -246,11 +270,48 @@ class BaseAsyncEngineSpec(ABC):
         query: str,
         limit: int | None = None,
     ) -> list[tuple[Any, ...]]:
-        """Default fetch_data implementation for subclasses to reuse."""
-        result = await conn.execute(text(query))
-        if limit is not None:
-            return [tuple(row) for row in result.fetchmany(limit)]
-        return [tuple(row) for row in result.fetchall()]
+        """Default fetch_data implementation for subclasses to reuse.
+
+        Applies ``column_type_mutators`` (1:1 with
+        ``BaseEngineSpec.fetch_data`` in
+        ``superset_old/db_engine_specs/base.py:973-1011``).
+        """
+        try:
+            result = await conn.execute(text(query))
+
+            # Capture cursor description before fetchall() since SA 2.0
+            # calls _soft_close() after returning all rows.
+            cursor = result.cursor
+            description = getattr(cursor, "description", None) or []
+
+            if limit is not None:
+                data = [tuple(row) for row in result.fetchmany(limit)]
+            else:
+                data = [tuple(row) for row in result.fetchall()]
+
+            if cls.column_type_mutators and data:
+                # Build a mapping of column-index -> mutator function based on
+                # cursor.description type codes, exactly as the original does.
+                column_mutators: dict[int, Callable[[Any], Any]] = {}
+                for idx, row in enumerate(description):
+                    type_code = row[1]
+                    datatype = cls.get_datatype(type_code)
+                    sqla_type = cls.get_sqla_column_type(datatype)
+                    if sqla_type is not None:
+                        func = cls.column_type_mutators.get(type(sqla_type))
+                        if func is not None:
+                            column_mutators[idx] = func
+
+                if column_mutators:
+                    for row_idx, row_data in enumerate(data):
+                        new_row = list(row_data)
+                        for col_idx, func in column_mutators.items():
+                            new_row[col_idx] = func(row_data[col_idx])
+                        data[row_idx] = tuple(new_row)
+
+            return data
+        except Exception as ex:
+            raise cls.get_dbapi_mapped_exception(ex) from ex
 
     @classmethod
     @abstractmethod
@@ -312,6 +373,10 @@ class BaseAsyncEngineSpec(ABC):
 
         Uses SQLAlchemy Inspector (same as the original Superset)
         via ``run_sync`` to bridge the async connection.
+
+        1:1 with ``BaseEngineSpec.get_table_names`` in
+        ``superset_old/db_engine_specs/base.py:1459-1466``: strips
+        schema prefixes when ``try_remove_schema_from_table_name`` is True.
         """
         from sqlalchemy import inspect as sa_inspect
 
@@ -319,7 +384,13 @@ class BaseAsyncEngineSpec(ABC):
             inspector = sa_inspect(sync_conn)
             return set(inspector.get_table_names(schema))
 
-        return await conn.run_sync(_get)
+        try:
+            tables = await conn.run_sync(_get)
+        except Exception as ex:
+            raise cls.get_dbapi_mapped_exception(ex) from ex
+        if schema and cls.try_remove_schema_from_table_name:
+            tables = {re.sub(f"^{schema}\\.", "", table) for table in tables}
+        return tables
 
     @classmethod
     async def get_view_names(
@@ -330,6 +401,10 @@ class BaseAsyncEngineSpec(ABC):
         """Return view names in the given schema.
 
         Uses SQLAlchemy Inspector via ``run_sync``.
+
+        1:1 with ``BaseEngineSpec.get_view_names`` in
+        ``superset_old/db_engine_specs/base.py:1487-1494``: strips
+        schema prefixes when ``try_remove_schema_from_table_name`` is True.
         """
         from sqlalchemy import inspect as sa_inspect
 
@@ -337,7 +412,13 @@ class BaseAsyncEngineSpec(ABC):
             inspector = sa_inspect(sync_conn)
             return set(inspector.get_view_names(schema))
 
-        return await conn.run_sync(_get)
+        try:
+            views = await conn.run_sync(_get)
+        except Exception as ex:
+            raise cls.get_dbapi_mapped_exception(ex) from ex
+        if schema and cls.try_remove_schema_from_table_name:
+            views = {re.sub(f"^{schema}\\.", "", view) for view in views}
+        return views
 
     @classmethod
     async def get_columns(
@@ -367,9 +448,151 @@ class BaseAsyncEngineSpec(ABC):
         ]
 
     @classmethod
+    def _sort_time_grains(
+        cls, val: tuple[str | None, str], index: int
+    ) -> float | int | str:
+        """Return an ordered time-based value of a portion of a time grain
+        for sorting.
+
+        1:1 with ``BaseEngineSpec._sort_time_grains`` in
+        ``superset_old/db_engine_specs/base.py:884-943``.
+        """
+        pos = {
+            "FIRST": 0,
+            "SECOND": 1,
+            "THIRD": 2,
+            "LAST": 3,
+        }
+
+        if val[0] is None:
+            return pos["FIRST"]
+
+        prog = re.compile(r"(.*\/)?(P|PT)([0-9\.]+)(S|M|H|D|W|M|Y)(\/.*)?")
+        result = prog.match(val[0])
+
+        # for any time grains that don't match the format, put them at the end
+        if result is None:
+            return pos["LAST"]
+
+        second_minute_hour = ["S", "M", "H"]
+        day_week_month_year = ["D", "W", "M", "Y"]
+        is_less_than_day = result.group(2) == "PT"
+        interval = result.group(4)
+        epoch_time_start_string = result.group(1) or result.group(5)
+        has_starting_or_ending = bool(len(epoch_time_start_string or ""))
+
+        def sort_day_week() -> int:
+            if has_starting_or_ending:
+                return pos["LAST"]
+            if is_less_than_day:
+                return pos["SECOND"]
+            return pos["THIRD"]
+
+        def sort_interval() -> float:
+            if is_less_than_day:
+                return second_minute_hour.index(interval)
+            return day_week_month_year.index(interval)
+
+        # 0: all "PT" values should come before "P" values (i.e, PT10M)
+        # 1: order values within the above arrays ("D" before "W")
+        # 2: sort by numeric value (PT10M before PT15M)
+        # 3: sort by any week starting/ending values
+        plist = {
+            0: sort_day_week(),
+            1: pos["SECOND"] if is_less_than_day else pos["THIRD"],
+            2: sort_interval(),
+            3: float(result.group(3)),
+        }
+
+        return plist.get(index, 0)
+
+    @classmethod
     def get_time_grain_expressions(cls) -> dict[str | None, str]:
-        """Return time grain expressions for this engine."""
-        return cls._time_grain_expressions
+        """Return time grain expressions for this engine.
+
+        1:1 with ``BaseEngineSpec.get_time_grain_expressions`` in
+        ``superset_old/db_engine_specs/base.py:946-971``: copies
+        ``_time_grain_expressions``, merges ``TIME_GRAIN_ADDON_EXPRESSIONS``
+        for the engine, removes ``TIME_GRAIN_DENYLIST`` entries, and sorts
+        via ``_sort_time_grains``.
+        """
+        # Mirror original app.config["TIME_GRAIN_ADDON_EXPRESSIONS"] (default {})
+        # and app.config["TIME_GRAIN_DENYLIST"] (default []).
+        # SupersetSettings() needs required env vars; fall back to defaults
+        # when they are absent (e.g. isolated unit-test context).
+        grain_addon_expressions: dict[str, dict[str, str]] = {}
+        denylist: list[str] = []
+        try:
+            from pydantic import ValidationError as _PydanticValidationError
+
+            from superset.config import SupersetSettings
+
+            _settings = SupersetSettings()
+            grain_addon_expressions = _settings.time_grain_addon_expressions
+            denylist = _settings.time_grain_denylist
+        except _PydanticValidationError:
+            pass
+
+        time_grain_expressions = cls._time_grain_expressions.copy()
+        time_grain_expressions.update(grain_addon_expressions.get(cls.engine, {}))
+        for key in denylist:
+            time_grain_expressions.pop(key, None)
+
+        return dict(
+            sorted(
+                time_grain_expressions.items(),
+                key=lambda x: (
+                    cls._sort_time_grains(x, 0),
+                    cls._sort_time_grains(x, 1),
+                    cls._sort_time_grains(x, 2),
+                    cls._sort_time_grains(x, 3),
+                ),
+            )
+        )
+
+    @classmethod
+    def get_dbapi_exception_mapping(cls) -> dict[type[Exception], type[Exception]]:
+        """Map driver-specific exceptions to Superset DBAPI exception types.
+
+        Subclasses override this to handle engine-specific exceptions.
+
+        1:1 with ``BaseEngineSpec.get_dbapi_exception_mapping`` in
+        ``superset_old/db_engine_specs/base.py:751-761``.
+
+        :return: A map of driver specific exception to superset custom exceptions
+        """
+        return {}
+
+    @classmethod
+    def parse_error_exception(cls, exception: Exception) -> Exception:
+        """Parse a driver-specific exception string.
+
+        Subclasses override to return an exception with a cleaned-up message.
+
+        1:1 with ``BaseEngineSpec.parse_error_exception`` in
+        ``superset_old/db_engine_specs/base.py:763-770``.
+
+        :return: An Exception with a parsed string off the original exception
+        """
+        return exception
+
+    @classmethod
+    def get_dbapi_mapped_exception(cls, exception: Exception) -> Exception:
+        """Map a driver-specific exception to a Superset DBAPI exception type.
+
+        Checks ``get_dbapi_exception_mapping`` for an exact type match; falls
+        back to ``parse_error_exception`` when no mapping is found.
+
+        1:1 with ``BaseEngineSpec.get_dbapi_mapped_exception`` in
+        ``superset_old/db_engine_specs/base.py:772-786``.
+
+        :param exception: The driver specific exception
+        :return: Superset custom DBAPI exception
+        """
+        new_exception = cls.get_dbapi_exception_mapping().get(type(exception))
+        if not new_exception:
+            return cls.parse_error_exception(exception)
+        return new_exception(str(exception))
 
     @classmethod
     def extract_errors(cls, ex: Exception) -> list[dict[str, Any]]:
@@ -397,9 +620,20 @@ class BaseAsyncEngineSpec(ABC):
     ) -> tuple[str, dict[str, Any]]:
         """Adjust engine connection parameters.
 
+        Merges ``enforce_uri_query_params`` for the driver (1:1 with
+        ``BaseEngineSpec.adjust_engine_params`` in
+        ``superset_old/db_engine_specs/base.py:1358-1386``).
+
         Subclasses can override to add engine-specific connection args.
         """
-        return uri, connect_args or {}
+        from sqlalchemy.engine import make_url
+
+        url = make_url(uri)
+        driver = url.get_driver_name()
+        return uri, {
+            **(connect_args or {}),
+            **cls.enforce_uri_query_params.get(driver, {}),
+        }
 
     # ------------------------------------------------------------------
     # Column-type introspection

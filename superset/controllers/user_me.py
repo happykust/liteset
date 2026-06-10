@@ -39,6 +39,64 @@ def _provide_user_dao(session: Any) -> Any:
     return AsyncUserDAO(session)
 
 
+def _user_is_active(user: Any) -> bool:
+    """Resolve FAB's ``is_active`` for CachedUser/ORM users.
+
+    FAB ``User.is_active`` is a property over the ``active`` column
+    (flask_appbuilder/security/sqla/models.py:222-224); neither CachedUser
+    nor the liteset ORM model defines ``is_active``, so fall back to
+    ``active`` instead of a hardcoded True.
+    """
+    value = getattr(user, "is_active", None)
+    if value is None:
+        value = getattr(user, "active", True)
+    return bool(value)
+
+
+def _build_roles_map(
+    current_user: Any,
+) -> dict[str, list[tuple[str, str]]]:
+    """Build role->permissions map from user roles.
+
+    Handles both CachedUser (flat permissions set) and ORM User
+    (roles with .permissions PermissionView objects).
+    Mirrors security_manager.get_user_roles_permissions().
+    """
+
+    # 1:1 with FAB security_manager.get_user_roles() at
+    # flask_appbuilder/security/manager.py:1828:
+    # ``return user.roles + [role for group in user.groups for role in group.roles]``
+    # Groups contribute additional roles that must be included.
+    direct_roles = list(getattr(current_user, "roles", []) or [])
+    group_roles = [
+        role
+        for group in (getattr(current_user, "groups", None) or [])
+        for role in (getattr(group, "roles", None) or [])
+    ]
+    user_roles = direct_roles + group_roles
+    roles: dict[str, list[tuple[str, str]]] = {}
+
+    for role in user_roles:
+        role_name = getattr(role, "name", "")
+        role_perms: list[tuple[str, str]] = []
+        for pvm in getattr(role, "permissions", []):
+            perm_name = getattr(
+                getattr(pvm, "permission", None),
+                "name",
+                "",
+            )
+            view_name = getattr(
+                getattr(pvm, "view_menu", None),
+                "name",
+                "",
+            )
+            if perm_name and view_name:
+                role_perms.append((perm_name, view_name))
+        roles[role_name] = role_perms
+
+    return roles
+
+
 class CurrentUserController(Controller):
     path = "/api/v1/me"
     tags = ["Current User"]
@@ -51,92 +109,135 @@ class CurrentUserController(Controller):
         """GET /api/v1/me/ — get current user info.
 
         Mirrors original ``UserResponseSchema`` at
-        superset_old/views/users/schemas.py:30 — returns only
-        ``email``/``first_name``/``last_name``/``is_active``/
-        ``is_anonymous``/``username``/``login_count``. ``id``/``roles``
-        are intentionally absent (use ``/me/roles/`` for the latter).
+        superset_old/views/users/schemas.py:30-38 — returns
+        ``id``/``username``/``email``/``first_name``/``last_name``/
+        ``is_active``/``is_anonymous``/``login_count``.
         """
         return {
             "result": {
+                "id": current_user.id,
                 "username": current_user.username,
                 "first_name": getattr(current_user, "first_name", ""),
                 "last_name": getattr(current_user, "last_name", ""),
                 "email": getattr(current_user, "email", ""),
-                "is_active": getattr(current_user, "is_active", True),
+                "is_active": _user_is_active(current_user),
                 "is_anonymous": not current_user.is_authenticated,
                 "login_count": int(getattr(current_user, "login_count", 0) or 0),
             }
         }
 
     @get("/roles/", guards=[require_authentication])
-    async def get_my_roles(self, current_user: UserProtocol) -> dict[str, Any]:
+    async def get_my_roles(
+        self, current_user: UserProtocol, user_dao: Any
+    ) -> dict[str, Any]:
         """GET /api/v1/me/roles/ — get current user roles and permissions.
 
-        Returns bootstrap_user_data-compatible payload including roles
-        (with their permissions) and a flat permissions dict.
+        Returns bootstrap_user_data-compatible payload. Ported 1:1 from
+        superset_old/views/utils.py::bootstrap_user_data (lines 99-129)
+        and superset_old/views/utils.py::get_permissions (lines 137-152).
 
-        Handles both ORM User objects (roles have .permissions with
-        PermissionView objects) and CachedUser objects (_CachedRole with
-        only id/name — permissions are on the user object directly).
+        Key behaviors:
+        - For regular (non-anonymous, non-guest) users includes
+          ``createdOn`` and ``loginCount`` (bootstrap_user_data:119-122).
+        - The ``permissions`` dict is filtered to only
+          ``datasource_access`` and ``database_access`` entries
+          (get_permissions:146-148).
+        - ``roles`` dict contains ALL role permissions (unfiltered).
         """
+        from collections import defaultdict
+
         from superset.middleware.auth import CachedUser
 
-        user_roles = getattr(current_user, "roles", [])
+        is_anonymous = not current_user.is_authenticated
+        is_guest = getattr(current_user, "is_guest", False)
 
-        roles: dict[str, list[tuple[str, str]]] = {}
-        permissions: dict[str, list[str]] = {}
-
-        # CachedUser: roles are _CachedRole (id + name only, no
-        # .permissions attribute).  Use the flat user.permissions set
-        # and assign to every role (same approach as _build_user_data).
+        # Load full ORM user to get proper per-role permissions mapping.
+        # The eager-load chain (roles/groups -> permissions -> permission/
+        # view_menu) is required: _build_roles_map traverses all of it, and
+        # async lazy loads raise MissingGreenlet.
         if isinstance(current_user, CachedUser):
-            user_perms: set[tuple[str, str]] = getattr(
-                current_user, "permissions", set()
+            current_user = await user_dao.get_by_id_with_role_permissions(
+                current_user.id
             )
-            sorted_perms = sorted(user_perms)
-            for role in user_roles:
-                role_name = getattr(role, "name", "")
-                roles[role_name] = list(sorted_perms)
-            for action, resource in sorted_perms:
-                permissions.setdefault(action, [])
-                if resource not in permissions[action]:
-                    permissions[action].append(resource)
-        else:
-            # ORM User: roles have .permissions (PermissionView objects)
-            for role in user_roles:
-                role_name = getattr(role, "name", "")
-                role_perms: list[tuple[str, str]] = []
-                for pvm in getattr(role, "permissions", []):
-                    perm_name = getattr(
-                        getattr(pvm, "permission", None),
-                        "name",
-                        "",
-                    )
-                    view_name = getattr(
-                        getattr(pvm, "view_menu", None),
-                        "name",
-                        "",
-                    )
-                    if perm_name and view_name:
-                        role_perms.append((perm_name, view_name))
-                        permissions.setdefault(perm_name, [])
-                        if view_name not in permissions[perm_name]:
-                            permissions[perm_name].append(view_name)
-                roles[role_name] = role_perms
+            roles = _build_roles_map(current_user)
+        elif is_guest:
+            # GuestUser carries lightweight ``_CachedRole`` stubs without
+            # ``.permissions``; the original GuestUser.__init__ receives REAL
+            # ORM Roles (superset_old/security/guest_token.py:81), so
+            # get_user_roles_permissions returns the Guest role's actual DB
+            # permissions. Reload the Role rows with the perm chain.
+            from types import SimpleNamespace
 
-        return {
-            "result": {
+            role_ids = [
+                rid
+                for rid in (
+                    getattr(r, "id", None)
+                    for r in (getattr(current_user, "roles", None) or [])
+                )
+                if rid
+            ]
+            orm_roles = (
+                await user_dao.get_roles_with_permissions(role_ids)
+                if role_ids
+                else []
+            )
+            roles = _build_roles_map(SimpleNamespace(roles=orm_roles, groups=[]))
+        else:
+            roles = _build_roles_map(current_user)
+
+        # Filter permissions to only datasource_access / database_access
+        # mirrors get_permissions (superset_old/views/utils.py:143-152):
+        #   for _, permissions in roles_permissions.items():
+        #       for permission in permissions:
+        #           if permission[0] in ("datasource_access", "database_access"):
+        #               data_permissions[permission[0]].add(permission[1])
+        _data_access = {"datasource_access", "database_access"}
+        data_permissions: dict[str, set[str]] = defaultdict(set)
+        for _role_perms in roles.values():
+            for perm_name, view_name in _role_perms:
+                if perm_name in _data_access:
+                    data_permissions[perm_name].add(view_name)
+        permissions: dict[str, list[str]] = {
+            k: list(v) for k, v in data_permissions.items()
+        }
+
+        # Build payload — mirrors bootstrap_user_data structure
+        if is_anonymous:
+            payload: dict[str, Any] = {}
+        elif is_guest:
+            payload = {
+                "username": current_user.username,
+                "firstName": getattr(current_user, "first_name", ""),
+                "lastName": getattr(current_user, "last_name", ""),
+                "isActive": _user_is_active(current_user),
+                "isAnonymous": False,
+            }
+        else:
+            # Regular authenticated user — includes createdOn + loginCount
+            # (superset_old/views/utils.py:111-122)
+            created_on_raw = getattr(current_user, "created_on", None)
+            # CachedUser stores created_on as an already-serialised ISO string
+            # (middleware/auth.py:517-524); ORM Users carry a datetime. Handle both.
+            if isinstance(created_on_raw, str):
+                created_on_str: str | None = created_on_raw or None
+            else:
+                created_on_str = created_on_raw.isoformat() if created_on_raw else None
+            payload = {
                 "username": current_user.username,
                 "firstName": getattr(current_user, "first_name", ""),
                 "lastName": getattr(current_user, "last_name", ""),
                 "userId": current_user.id,
-                "isActive": getattr(current_user, "is_active", True),
-                "isAnonymous": not current_user.is_authenticated,
+                "isActive": _user_is_active(current_user),
+                "isAnonymous": False,
+                "createdOn": created_on_str,
                 "email": getattr(current_user, "email", ""),
-                "roles": roles,
-                "permissions": permissions,
+                "loginCount": int(getattr(current_user, "login_count", 0) or 0),
             }
-        }
+
+        payload["roles"] = roles
+        payload["permissions"] = permissions
+
+        return {"result": payload}
 
     @put("/", guards=[require_authentication])
     async def update_me(
@@ -160,9 +261,13 @@ class CurrentUserController(Controller):
         if data.last_name is not None:
             updates["last_name"] = data.last_name
 
-        has_password = data.password is not None
+        # KEY presence counts: ``{"password": ""}`` passes the "at least one
+        # field" guard in the original (the Marshmallow-loaded dict is truthy)
+        # — pre_update then skips hashing for the falsy value but still
+        # touches changed_on/changed_by_fk (superset_old/views/users/api.py).
+        password_provided = data.password is not None
 
-        if not updates and not has_password:
+        if not updates and not password_provided:
             # Upstream uses ``self.response_400`` here, not 422.
             raise HTTPException(
                 status_code=400,
@@ -170,7 +275,7 @@ class CurrentUserController(Controller):
             )
 
         hashed_password: str | None = None
-        if has_password:
+        if data.password:
             from superset.utils.password import (
                 default_password_complexity,
                 generate_password_hash,
@@ -189,16 +294,29 @@ class CurrentUserController(Controller):
                         default_password_complexity(data.password or "")
                 except Exception as exc:
                     raise HTTPException(
-                        status_code=422,
+                        status_code=400,
                         detail={"password": [str(exc)]},
                     ) from exc
 
-            hashed_password = generate_password_hash(data.password or "")
+            # Read FAB_PASSWORD_HASH_METHOD / FAB_PASSWORD_HASH_SALT_LENGTH from
+            # config — mirrors pre_update (superset_old/views/users/api.py:52-56).
+            hash_method = (
+                getattr(settings, "fab_password_hash_method", "scrypt") or "scrypt"
+            )
+            salt_length = getattr(settings, "fab_password_hash_salt_length", 16) or 16
+            hashed_password = generate_password_hash(
+                data.password or "",
+                method=hash_method,
+                salt_length=salt_length,
+            )
 
+        # Pass changed_by_fk — mirrors pre_update
+        # (superset_old/views/users/api.py:49-50)
         await user_dao.update_profile(
             user_id=current_user.id,
             attributes=updates,
             hashed_password=hashed_password,
+            changed_by_fk=current_user.id,
         )
 
         # Re-read so we serialise the persisted state (mirrors upstream's
@@ -212,7 +330,7 @@ class CurrentUserController(Controller):
                 "email": getattr(fresh, "email", ""),
                 "first_name": getattr(fresh, "first_name", ""),
                 "last_name": getattr(fresh, "last_name", ""),
-                "is_active": bool(getattr(fresh, "is_active", True)),
+                "is_active": _user_is_active(fresh),
                 "is_anonymous": False,
                 "login_count": int(getattr(fresh, "login_count", 0) or 0),
             }

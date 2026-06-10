@@ -27,6 +27,7 @@ from superset.commands.utils import compute_owner_list
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.tags.core import sync_owner_tags_after_update
 
+
 def validate_folders(
     folders: list[dict[str, Any]],
     metrics: list[Any],
@@ -56,16 +57,14 @@ def validate_folders(
         uuid, name = str(obj.get("uuid", "")), obj.get("name")
 
         if uuid in path:
-            raise CommandInvalidError(
-                f"Cycle detected: {uuid} appears in its ancestry"
-            )
+            raise CommandInvalidError(f"Cycle detected: {uuid} appears in its ancestry")
         if uuid in seen_uuids:
             raise CommandInvalidError(f"Duplicate UUID in folder structure: {uuid}")
         seen_uuids.add(uuid)
 
         # folders can share a name as long as they're not siblings
         if name:
-            fqn = tuple([*path, name])
+            fqn = (*path, name)
             if fqn in seen_fqns:
                 raise CommandInvalidError(f"Duplicate folder name: {name}")
             seen_fqns.add(fqn)
@@ -326,9 +325,7 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             except SupersetParseError as ex:
                 message = ex.error.message if getattr(ex, "error", None) else str(ex)
                 exceptions.append(
-                    DatasetValidationError(
-                        f"Invalid SQL: {message}", field_name="sql"
-                    )
+                    DatasetValidationError(f"Invalid SQL: {message}", field_name="sql")
                 )
 
         # Validate/resolve owners here (not run()) so a bad owner id surfaces as
@@ -399,6 +396,11 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 update_attrs[key] = value
         if self._user_id is not None:
             update_attrs["changed_by_fk"] = self._user_id
+        # 1:1 with superset_old/commands/dataset/update.py:68
+        # (``self._properties["override_columns"] = override_columns``) — the
+        # DAO's ``update_columns`` reads this flag to pick the
+        # delete-all-and-reinsert override path.
+        update_attrs["override_columns"] = self._override_columns
         await self._dao.update(self._dataset, update_attrs)
         await self._dao.session.flush()
 

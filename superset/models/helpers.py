@@ -42,7 +42,7 @@ from jinja2.exceptions import TemplateError
 from sqlalchemy import and_, or_, Text, types as sa_types
 from sqlalchemy.dialects.mysql import LONGTEXT, MEDIUMTEXT
 from sqlalchemy.ext.declarative import declared_attr
-from sqlalchemy.orm import DeclarativeBase, relationship
+from sqlalchemy.orm import DeclarativeBase, relationship, validates
 from sqlalchemy.sql.elements import ColumnElement, literal_column, TextClause
 from sqlalchemy.sql.expression import Label, Select, TextAsFrom
 from sqlalchemy.sql.selectable import Alias, TableClause
@@ -286,6 +286,16 @@ class AuditMixinNullable:
             return str(self.changed_by)
         return ""
 
+    def creator(self) -> str:
+        """Return the formatted name of the user who created this object.
+
+        Mirrors Flask-AppBuilder's AuditMixin.creator() which is used by
+        Superset's entity serializers (e.g., Dashboard/Slice tags).
+        """
+        if self.created_by:
+            return str(self.created_by)
+        return ""
+
 
 class ImportExportMixin(UUIDMixin):
     """Marker mixin for models that support YAML import/export.
@@ -414,13 +424,16 @@ class ExtraJSONMixin:
     string, ``extra`` is a property that parses/serialises it as a dict.
     """
 
-    extra_json = sa.Column("extra_json", Text, default="{}")
+    extra_json = sa.Column("extra_json", MediumText(), default="{}")
 
     @property
     def extra(self) -> dict[str, Any]:
         try:
             return json.loads(self.extra_json or "{}") or {}
-        except (TypeError, json.JSONDecodeError):
+        except (TypeError, json.JSONDecodeError) as exc:
+            logger.error(
+                "Unable to load an extra json: %r. Leaving empty.", exc, exc_info=True
+            )
             return {}
 
     @extra.setter
@@ -433,16 +446,47 @@ class ExtraJSONMixin:
         extra[key] = value
         self.extra_json = json.dumps(extra)
 
+    @validates("extra_json")
+    def ensure_extra_json_is_not_none(
+        self,
+        _: str,
+        value: dict[str, Any] | None,
+    ) -> Any:
+        if value is None:
+            return "{}"
+        return value
+
     def get_extra_dict(self) -> dict[str, Any]:
         """Alias for the ``extra`` property — used by callers that expect a method."""
         return self.extra
 
 
 class CertificationMixin:
-    """Certification tracking columns."""
+    """Mixin to add extra certification fields"""
 
-    certified_by = sa.Column(Text, nullable=True)
-    certification_details = sa.Column(Text, nullable=True)
+    extra = sa.Column(sa.Text, default="{}")
+
+    def get_extra_dict(self) -> dict[str, Any]:
+        try:
+            return json.loads(self.extra)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+
+    @property
+    def is_certified(self) -> bool:
+        return bool(self.get_extra_dict().get("certification"))
+
+    @property
+    def certified_by(self) -> str | None:
+        return self.get_extra_dict().get("certification", {}).get("certified_by")
+
+    @property
+    def certification_details(self) -> str | None:
+        return self.get_extra_dict().get("certification", {}).get("details")
+
+    @property
+    def warning_markdown(self) -> str | None:
+        return self.get_extra_dict().get("warning_markdown")
 
 
 # ---------------------------------------------------------------------------
@@ -1136,9 +1180,7 @@ class ExploreMixin:
         """
         # Support both camelCase (frontend payload) and snake_case
         # (msgspec ``rename="camel"`` decoded structs).
-        expression_type = metric.get("expressionType") or metric.get(
-            "expression_type"
-        )
+        expression_type = metric.get("expressionType") or metric.get("expression_type")
         label = get_metric_name(metric)
 
         if expression_type == AdhocMetricExpressionType.SIMPLE:

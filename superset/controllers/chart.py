@@ -164,6 +164,8 @@ def _render_chart_data_payload(  # noqa: C901
     result: dict[str, Any],
     *,
     is_guest: bool,
+    form_data: dict[str, Any] | None = None,
+    datasource: Any | None = None,
 ) -> Response[bytes]:
     """Serialize ``ChartDataCommand`` output as
     ``{"result": [<query>, ...]}``.
@@ -175,6 +177,11 @@ def _render_chart_data_payload(  # noqa: C901
     Decimal/numpy/NaN/datetime values inside row dicts, and emits the
     response through ``msgspec`` with the same ``json_int_dttm_ser``
     fallback the original Flask serializer used.
+
+    When ``form_data`` and ``datasource`` are supplied and the result type
+    is ``post_processed``, ``apply_client_processing`` is applied — 1:1
+    with the original ``_send_chart_response`` pivot/table transforms
+    (used by email reports for Pivot Table v2 / Table charts).
     """
     from datetime import date as _date_t, datetime as _datetime_t
     from decimal import Decimal
@@ -257,9 +264,32 @@ def _render_chart_data_payload(  # noqa: C901
                     elif isinstance(val, _date_t):
                         row[key] = (val - epoch_date).total_seconds() * 1000
 
-    # 3. ensure indexnames is present
+    # 2b. Post-processing (pivot_table_v2 / table) — 1:1 with
+    # ``_send_chart_response``: when ``result_type == post_processed``
+    # the materialized ``query["data"]`` is pivoted/reshaped via
+    # ``apply_client_processing(result, form_data, datasource)``.
+    qc = result.get("query_context")
+    _result_type = getattr(qc, "result_type", None) or ""
+    if str(_result_type).lower() == "post_processed" and form_data is not None:
+        from superset.charts.post_processing import apply_client_processing
+
+        apply_client_processing(result, form_data=form_data, datasource=datasource)
+        # ``apply_client_processing`` may produce dict-of-dicts output
+        # (``processed_df.to_dict()`` yields ``{col: {idx: val}}``);
+        # clean NaN/Inf/numpy/Decimal/datetime in those nested values so
+        # the msgspec encoder doesn't 500.
+        for q in queries:
+            if isinstance(q, dict) and isinstance(q.get("data"), dict):
+                for _col, _col_map in q["data"].items():
+                    if isinstance(_col_map, dict):
+                        for _k, _val in list(_col_map.items()):
+                            _col_map[_k] = _normalize_post_processed_value(
+                                _val, epoch_date
+                            )
+
+    # 3. ensure indexnames is present for non-post-processed queries
     for q in queries:
-        if isinstance(q, dict):
+        if isinstance(q, dict) and "indexnames" not in q:
             q["indexnames"] = list(range(len(q.get("data", []))))
 
     # 4. result_type=results truncation — 1:1 with the original ``_get_full``
@@ -776,12 +806,22 @@ class ChartController(Controller):
         "/_info",
         guards=[require_permission("can_read", "Chart")],
     )
-    async def info(self, dao: ChartDAOProtocol) -> dict[str, Any]:
+    async def info(
+        self,
+        dao: ChartDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+        rison_params: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         """GET /api/v1/chart/_info — API metadata for frontend."""
         return await get_info_payload(
             dao=dao,
             model_name="Chart",
             permissions=["can_warm_up_cache", "can_read", "can_write", "can_export"],
+            security_manager=security_manager,
+            current_user=current_user,
+            class_permission_name="Chart",
+            rison_params=rison_params,
         )
 
     @get(
@@ -1083,12 +1123,6 @@ class ChartController(Controller):
 
         from sqlalchemy.orm import selectinload
 
-        from superset.models.slice import Slice
-        from superset.utils.screenshots import (
-            ChartScreenshot,
-            ScreenshotCachePayload,
-        )
-
         # Eager-load the datasource (``table``) so ``chart.digest`` →
         # get_chart_digest can read ``chart.datasource`` without a sync
         # lazy-load (MissingGreenlet) on the async session (this endpoint is
@@ -1098,6 +1132,11 @@ class ChartController(Controller):
         # otherwise serve images / trigger Celery compute for a chart the user
         # cannot access.
         from superset.db.filters import chart_access_filters
+        from superset.models.slice import Slice
+        from superset.utils.screenshots import (
+            ChartScreenshot,
+            ScreenshotCachePayload,
+        )
 
         _base = await chart_access_filters(security_manager, current_user)
         _found = await dao.find_all(
@@ -1200,17 +1239,16 @@ class ChartController(Controller):
                 media_type="application/json",
             )
 
-        from superset.utils.screenshots import (
-            ChartScreenshot,
-            ScreenshotImageNotAvailableException,
-            StatusValues,
-        )
-
         # Access-scoped lookup (1:1 upstream → 404) — this endpoint serves the
         # cached PNG bytes, so it must not return an image for a chart the user
         # cannot access.
         from superset.db.filters import chart_access_filters
         from superset.models.slice import Slice
+        from superset.utils.screenshots import (
+            ChartScreenshot,
+            ScreenshotImageNotAvailableException,
+            StatusValues,
+        )
 
         _base = await chart_access_filters(security_manager, current_user)
         _found = await dao.find_all(
@@ -1289,17 +1327,16 @@ class ChartController(Controller):
 
         from sqlalchemy.orm import selectinload
 
+        # Eager-load the datasource (``table``) so the ``chart.digest`` read
+        # below doesn't trip a sync lazy-load (MissingGreenlet).
+        # Access-scoped lookup (1:1 upstream → 404 for an inaccessible chart).
+        from superset.db.filters import chart_access_filters
         from superset.models.slice import Slice
         from superset.utils.screenshots import (
             ChartScreenshot,
             ScreenshotCachePayload,
             ScreenshotImageNotAvailableException,
         )
-
-        # Eager-load the datasource (``table``) so the ``chart.digest`` read
-        # below doesn't trip a sync lazy-load (MissingGreenlet).
-        # Access-scoped lookup (1:1 upstream → 404 for an inaccessible chart).
-        from superset.db.filters import chart_access_filters
 
         _base = await chart_access_filters(security_manager, current_user)
         _found = await dao.find_all(
@@ -1378,6 +1415,8 @@ class ChartController(Controller):
         self,
         dao: ChartDAOProtocol,
         rison_params: list[int] | dict[str, Any] | None,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
         token: str | None = Parameter(query="token", default=None),
     ) -> Stream:
         ids = extract_ids(rison_params)
@@ -1393,7 +1432,12 @@ class ChartController(Controller):
 
         timestamp = _datetime.now().strftime("%Y%m%dT%H%M%S")
         root = f"chart_export_{timestamp}"
-        cmd = ExportChartsCommand(model_ids=ids, dao=cast("AsyncChartDAO", dao))
+        cmd = ExportChartsCommand(
+            model_ids=ids,
+            dao=cast("AsyncChartDAO", dao),
+            security_manager=security_manager,
+            user=current_user,
+        )
         cmd._root = root  # noqa: SLF001
         buf = await cmd.execute()
         await event_logger.alog_with_context("chart.export", extra={"count": len(ids)})
@@ -1810,8 +1854,7 @@ class ChartController(Controller):
         # Apply query param overrides
         if format is not None:
             qc_data["result_format"] = format
-        if type is not None:
-            qc_data["result_type"] = type
+        qc_data["result_type"] = type or "full"
         if force is not None:
             qc_data["force"] = force.lower() in ("true", "1", "yes")
 
@@ -1851,6 +1894,16 @@ class ChartController(Controller):
         cmd = ChartDataCommand(query_context=query_context, processor=processor)
         result = await cmd.execute()
 
+        # 1:1 with the original GET endpoint (charts/data/api.py:171-178):
+        # extract ``form_data`` from ``chart.params`` and pass it through
+        # to ``_send_chart_response`` so that ``apply_client_processing``
+        # runs when ``result_type == post_processed`` (pivot table / table
+        # chart email reports).
+        try:
+            form_data = _json.loads(chart.params) if chart.params else {}
+        except (TypeError, ValueError):
+            form_data = {}
+
         await event_logger.alog_with_context(
             "chart.data",
             object_ref=f"chart:{pk}",
@@ -1859,6 +1912,8 @@ class ChartController(Controller):
         return _render_chart_data_payload(
             result,
             is_guest=security_manager.is_guest_user(current_user),
+            form_data=form_data,
+            datasource=datasource,
         )
 
     @post(

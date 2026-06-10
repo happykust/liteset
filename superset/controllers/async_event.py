@@ -40,7 +40,7 @@ from litestar import Controller, get, Request
 from litestar.exceptions import NotAuthorizedException
 
 from superset.async_events.manager import AsyncEventManager
-from superset.guards.rbac import require_authentication
+from superset.guards.rbac import require_permission
 from superset.middleware.async_token import resolve_async_channel_id_from_request
 from superset.typing import UserProtocol
 
@@ -54,10 +54,10 @@ class AsyncEventController(Controller):
 
     path = "/api/v1/async_event"
 
-    @get("/", guards=[require_authentication])
+    @get("/", guards=[require_permission("can_list", "AsyncEventsRestApi")])
     async def get_events(
         self,
-        request: Request,
+        request: Request[Any, Any, Any],
         event_manager: AsyncEventManager,
         current_user: UserProtocol,
         last_id: str | None = None,

@@ -46,6 +46,7 @@ from superset.schemas.annotation import (
     AnnotationLayerPostSchema,
     AnnotationLayerPutSchema,
 )
+from superset.typing import SecurityManagerProtocol, UserProtocol
 from superset.utils import filter_unset
 
 
@@ -70,11 +71,10 @@ class AnnotationLayerController(Controller):
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """GET /api/v1/annotation_layer/ — list annotation layers."""
+        from sqlalchemy import or_
         from sqlalchemy.orm import selectinload
 
         from superset.models.annotations import AnnotationLayer
-
-        from sqlalchemy import or_
 
         def _annotation_layer_all_text(model: Any, value: Any) -> Any:
             """``AnnotationLayerAllTextFilter`` — free-text over name + descr
@@ -135,21 +135,18 @@ class AnnotationLayerController(Controller):
         layer = await dao.find_by_id(pk)
         if not layer:
             raise ObjectNotFoundError("AnnotationLayer", pk)
-        changed_on = getattr(layer, "changed_on", None)
-        created_on = getattr(layer, "created_on", None)
         await event_logger.alog_with_context(
             "annotation_layer.get", object_ref=f"annotation_layer:{pk}"
         )
+        # Upstream show_columns = ["id", "name", "descr"] — no timestamps.
+        # ``descr`` is nullable; FAB serializes NULL as JSON null (no ""
+        # coercion).
         return {
             "id": layer.id,
             "result": {
-                # ``id`` is in upstream's show_columns ([id, name, descr]) so it
-                # belongs inside ``result`` too, not only the FAB envelope.
                 "id": layer.id,
                 "name": layer.name,
-                "descr": getattr(layer, "descr", "") or "",
-                "created_on": created_on.isoformat() if created_on else None,
-                "changed_on": changed_on.isoformat() if changed_on else None,
+                "descr": getattr(layer, "descr", None),
             },
         }
 
@@ -167,9 +164,14 @@ class AnnotationLayerController(Controller):
         dao: Any,
     ) -> dict[str, Any]:
         """POST /api/v1/annotation_layer/ — create annotation layer."""
+        # Absent ``descr`` stays out of the create payload so the column keeps
+        # its SQL default (NULL) — 1:1 with Marshmallow load semantics; the
+        # 201 body echoes the loaded request dict (``result=item``,
+        # superset_old/annotation_layers/api.py:213).
+        create_data = filter_unset({"name": data.name, "descr": data.descr})
         cmd = CreateAnnotationLayerCommand(
             dao=dao,
-            data={"name": data.name, "descr": data.descr},
+            data=create_data,
         )
         layer = await cmd.execute()
         await event_logger.alog_with_context(
@@ -177,10 +179,7 @@ class AnnotationLayerController(Controller):
         )
         return {
             "id": layer.id,
-            "result": {
-                "name": layer.name,
-                "descr": getattr(layer, "descr", "") or "",
-            },
+            "result": dict(create_data),
         }
 
     # ------------------------------------------------------------------
@@ -200,19 +199,16 @@ class AnnotationLayerController(Controller):
         update_data = filter_unset({"name": data.name, "descr": data.descr})
         cmd = UpdateAnnotationLayerCommand(dao=dao, pk=pk, data=update_data)
         layer = await cmd.execute()
-        changed_on = getattr(layer, "changed_on", None)
-        created_on = getattr(layer, "created_on", None)
         await event_logger.alog_with_context(
             "annotation_layer.update", object_ref=f"annotation_layer:{pk}"
         )
+        # Upstream PUT returns result=item where item["layer"] = pk was added before
+        # returning (superset_old/annotation_layers/api.py:278).  Mirror that exactly.
+        result_item = dict(update_data)
+        result_item["layer"] = pk
         return {
             "id": layer.id,
-            "result": {
-                "name": layer.name,
-                "descr": getattr(layer, "descr", "") or "",
-                "created_on": created_on.isoformat() if created_on else None,
-                "changed_on": changed_on.isoformat() if changed_on else None,
-            },
+            "result": result_item,
         }
 
     # ------------------------------------------------------------------
@@ -268,12 +264,20 @@ class AnnotationLayerController(Controller):
         "/_info",
         guards=[require_permission("can_read", "Annotation")],
     )
-    async def info(self, dao: Any) -> dict[str, Any]:
+    async def info(
+        self,
+        dao: Any,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
         """GET /api/v1/annotation_layer/_info -- API metadata for frontend."""
         return await get_info_payload(
             dao=dao,
             model_name="AnnotationLayer",
             permissions=["can_read", "can_write"],
+            security_manager=security_manager,
+            current_user=current_user,
+            class_permission_name="Annotation",
         )
 
     @get(

@@ -35,7 +35,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from litestar import Litestar
-from litestar.datastructures import State
 
 # ---------------------------------------------------------------------------
 # Workaround: tell Litestar to skip msgspec validation for DI parameters.
@@ -60,6 +59,7 @@ from litestar.datastructures import State
 from litestar._signature.model import (
     _normalize_annotation as _norm_fn,  # noqa: F401 – only used to reach __globals__
 )
+from litestar.datastructures import State
 from litestar.di import Provide
 from litestar.middleware import ASGIMiddleware
 from litestar.types import ASGIApp, Receive, Scope, Send

@@ -383,7 +383,9 @@ class AsyncPermissionManager:
             session, DATABASE_ACCESS, new_db_perm
         )
         if existing_new:
-            # Target already exists -- delete the old one
+            # Target already exists -- delete the old database_access PVM AND all
+            # schema_access / catalog_access PVMs that reference the old database name.
+            # Mirrors original _delete_vm_database_access (manager.py:1498-1525).
             logger.info(
                 "New database perm '%s' already exists; deleting old '%s'",
                 new_db_perm,
@@ -392,6 +394,22 @@ class AsyncPermissionManager:
             await AsyncPermissionManager.del_permission_view_menu(
                 session, DATABASE_ACCESS, old_db_perm
             )
+            # Clean up stale schema_access and catalog_access PVMs for the old name
+            db_prefix = f"[{old_database_name}].[%]"
+            schema_catalog_pvms = await session.execute(
+                select(PermissionView)
+                .join(Permission, PermissionView.permission_id == Permission.id)
+                .join(ViewMenu, PermissionView.view_menu_id == ViewMenu.id)
+                .where(
+                    or_(
+                        Permission.name == SCHEMA_ACCESS,
+                        Permission.name == CATALOG_ACCESS,
+                    )
+                )
+                .where(ViewMenu.name.like(db_prefix))
+            )
+            for pvm in schema_catalog_pvms.scalars().all():
+                await AsyncPermissionManager._delete_pvm(session, pvm)
         else:
             old_pvm = await AsyncPermissionManager._find_permission_view_menu(
                 session, DATABASE_ACCESS, old_db_perm
@@ -662,15 +680,44 @@ class AsyncPermissionManager:
             old_perm = get_dataset_perm(dataset.id, eff_old_table_name, eff_old_db_name)
             new_perm = get_dataset_perm(dataset.id, current_table_name, current_db_name)
 
-            # Check if new perm already exists
+            # Check if new perm already exists.
+            # Original superset_old/security/manager.py:1969-1971:
+            #   if new_dataset_view_menu: return
+            # When the target ViewMenu already exists there is nothing to do
+            # — skip all subsequent rename/update work just like the original.
             existing_new_vm = await AsyncPermissionManager._find_view_menu(
                 session, new_perm
             )
-            if not existing_new_vm:
+            if existing_new_vm:
+                # New ViewMenu already in place — no rename or perm-field
+                # updates needed; mirrors original early-return behaviour.
+                pass
+            else:
                 old_vm = await AsyncPermissionManager._find_view_menu(session, old_perm)
                 if old_vm:
                     await AsyncPermissionManager._rename_view_menu(
                         session, old_perm, new_perm
+                    )
+
+                    # Update SqlaTable.perm — only on the RENAME path; the
+                    # original ``_update_dataset_perm`` early-returns right
+                    # after ``_insert_pvm_on_sqla_event`` when the old VM is
+                    # missing (superset_old/security/manager.py:1973-1980),
+                    # never touching SqlaTable.perm / Slice.perm.
+                    await session.execute(
+                        update(SqlaTable)
+                        .where(SqlaTable.id == dataset.id)
+                        .values(perm=new_perm)
+                    )
+
+                    # Update Slice.perm for charts using this dataset
+                    await session.execute(
+                        update(Slice)
+                        .where(
+                            Slice.datasource_id == dataset.id,
+                            Slice.datasource_type == "table",
+                        )
+                        .values(perm=new_perm)
                     )
                 else:
                     logger.warning(
@@ -680,23 +727,6 @@ class AsyncPermissionManager:
                     await AsyncPermissionManager.add_permission_view_menu(
                         session, DATASOURCE_ACCESS, new_perm
                     )
-
-            # Update SqlaTable.perm
-            await session.execute(
-                update(SqlaTable)
-                .where(SqlaTable.id == dataset.id)
-                .values(perm=new_perm)
-            )
-
-            # Update Slice.perm for charts using this dataset
-            await session.execute(
-                update(Slice)
-                .where(
-                    Slice.datasource_id == dataset.id,
-                    Slice.datasource_type == "table",
-                )
-                .values(perm=new_perm)
-            )
 
         # ------------------------------------------------------------------
         # 2. Update schema/catalog PVMs if schema, catalog, or database changed

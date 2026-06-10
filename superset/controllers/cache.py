@@ -23,6 +23,7 @@ Litestar + async SQLAlchemy.
 from __future__ import annotations
 
 import logging
+from timeit import default_timer
 
 import msgspec
 from litestar import Controller, post
@@ -33,7 +34,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from superset.db.daos.cache import AsyncCacheKeyDAO
 from superset.events import event_logger
+from superset.extensions import stats_logger_manager
 from superset.guards.rbac import require_permission
+from superset.utils.core import DatasourceType
 
 logger = logging.getLogger(__name__)
 
@@ -43,20 +46,29 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class DatasourceRef(msgspec.Struct):
+class DatasourceRef(msgspec.Struct, kw_only=True):
     """A datasource identified by name rather than UID.
 
     NB: NO ``rename="camel"`` — upstream ``Datasource`` (marshmallow) uses
     snake_case wire fields (``database_name``/``datasource_name``/
     ``datasource_type``), which is also what the published OpenAPI spec
     documents. Camel-renaming would silently drop the documented payload.
+
+    ``kw_only=True`` is required here because ``datasource_type`` is a
+    required field (no default) that follows optional fields with defaults —
+    msgspec mandates kw_only when required fields are not all first.
     """
 
     database_name: str = ""
     datasource_name: str = ""
-    datasource_type: str = "table"
+    # required; 1:1 with original Marshmallow required=True +
+    # validate.OneOf([ds.value for ds in DatasourceType])
+    datasource_type: DatasourceType
     catalog: str | None = None
-    schema: str | None = None
+    # ``schema`` has NO allow_none upstream (superset_old/cachekeys/
+    # schemas.py:39-41) — an explicit null must be rejected (→ 400), only
+    # absence is allowed; ``catalog`` above IS allow_none=True.
+    schema: str | msgspec.UnsetType = msgspec.UNSET
 
 
 class CacheInvalidateSchema(msgspec.Struct):
@@ -114,39 +126,83 @@ class CacheController(Controller):
 
         This is a 1:1 port of the original Flask endpoint.
         """
-        # -- 1. Resolve datasource UIDs --------------------------------
-        datasource_uids: set[str] = set(data.datasource_uids)
+        # -- statsd_metrics parity (superset_old/views/base_api.py:112-131) --
+        # The original ``@statsd_metrics`` decorator wraps the entire method
+        # and emits ``CacheRestApi.invalidate.{success|warning|error}``
+        # counters plus ``CacheRestApi.invalidate.time`` timing.
+        # We use the original class name ``CacheRestApi`` for metric key
+        # continuity with existing monitoring dashboards.
+        _metric_prefix = "CacheRestApi.invalidate"
+        start = default_timer()
+        try:
+            response = await self._do_invalidate(data, dao)
+        except Exception as ex:
+            # 1:1 with @statsd_metrics exception branch
+            if hasattr(ex, "status") and ex.status < 500:
+                stats_logger_manager.instance.incr(f"{_metric_prefix}.warning")
+            else:
+                stats_logger_manager.instance.incr(f"{_metric_prefix}.error")
+            raise
 
-        for ds in data.datasources:
-            uid = await dao.resolve_datasource_uid(
-                database_name=ds.database_name,
-                datasource_name=ds.datasource_name,
-                catalog=ds.catalog,
-                schema=ds.schema,
-            )
-            if uid is not None:
-                datasource_uids.add(uid)
+        # 1:1 with @statsd_metrics send_stats_metrics
+        duration_ms = (default_timer() - start) * 1000.0
+        if 200 <= response.status_code < 400:
+            stats_logger_manager.instance.incr(f"{_metric_prefix}.success")
+        elif 400 <= response.status_code < 500:
+            stats_logger_manager.instance.incr(f"{_metric_prefix}.warning")
+        else:
+            stats_logger_manager.instance.incr(f"{_metric_prefix}.error")
+        stats_logger_manager.instance.timing(f"{_metric_prefix}.time", duration_ms)
 
-        if not datasource_uids:
-            # Original falls through to ``self.response(201)`` (empty body).
-            return Response(content=b"", status_code=201, media_type="application/json")
+        return response
 
-        # -- 2. Find matching CacheKey rows ----------------------------
-        cache_keys = await dao.find_keys_by_datasource_uids(datasource_uids)
+    async def _do_invalidate(
+        self,
+        data: CacheInvalidateSchema,
+        dao: AsyncCacheKeyDAO,
+    ) -> Response[None]:
+        """Inner body of ``invalidate``, separated for metrics/logging wrapping.
 
-        if not cache_keys:
-            # Original falls through to ``self.response(201)`` (empty body).
-            return Response(content=b"", status_code=201, media_type="application/json")
+        The event logger fires only on successful (non-exception) return,
+        mirroring the original
+        ``@event_logger.log_this_with_context(log_to_statsd=False)``
+        decorator whose ``log_context`` contextmanager has no ``try/finally``
+        around its ``yield`` — so code after ``yield`` (the ``log_with_context``
+        call) is never reached when the decorated function raises
+        (``superset_old/utils/log.py:271-278``).
+        """
+        # 1:1 with @event_logger.log_this_with_context(log_to_statsd=False):
+        # the original log_context contextmanager only logs when the decorated
+        # function returns normally (no try/finally around yield), so we must
+        # NOT use a finally block here — we only log on success.
+        from datetime import datetime
 
-        # -- 3. Actively evict keys from cache backend -----------------
-        # Mirrors the original Flask ``cache_manager.cache.delete_many(*cache_keys)``
-        # call in ``superset_old/cachekeys/api.py:103``.  We iterate and call
-        # ``delete`` per key because the async cache protocol exposes a single-key
-        # ``delete`` method (no ``delete_many`` batch endpoint on the protocol).
-        # Best-effort: log misses but continue to the DB cleanup step.
+        start = datetime.now()
+        result = await self._invalidate_body(data, dao)
+        duration = datetime.now() - start
+        # Pass object_ref="CacheRestApi.invalidate" to mirror the original
+        # _wrapper computation: ``None or f.__qualname__`` = "CacheRestApi.invalidate"
+        # (log_this_with_context with object_ref=None default).
+        # Without this, _alog_with_context's ``if object_ref:`` guard is False
+        # and the field is absent from logs.json — an admin-visible regression.
+        await event_logger.alog_with_context(
+            "invalidate",
+            duration=duration,
+            object_ref="CacheRestApi.invalidate",
+            log_to_statsd=False,
+        )
+        return result
+
+    async def _evict_from_cache_backend(self, cache_keys: list[str]) -> int:
+        """Best-effort eviction of *cache_keys* from the cache backend.
+
+        Returns the number of keys successfully deleted.  Never raises —
+        failures are logged and the caller continues to the DB cleanup step,
+        mirroring the original ``cache_manager.cache.delete_many(*cache_keys)``
+        best-effort semantics in ``superset_old/cachekeys/api.py:103``.
+        """
         backend_deleted = 0
         try:
-            # Try to get the async cache manager from the app state
             _cache_manager = None
             try:
                 # The process-wide cache_manager singleton (set up in extensions.py)
@@ -170,7 +226,47 @@ class CacheController(Controller):
                     "Cache manager not available; backend eviction deferred to TTL"
                 )
         except Exception:  # noqa: BLE001
-            logger.debug("Cache backend eviction failed; deferring to TTL", exc_info=True)
+            logger.debug(
+                "Cache backend eviction failed; deferring to TTL", exc_info=True
+            )
+        return backend_deleted
+
+    async def _invalidate_body(
+        self,
+        data: CacheInvalidateSchema,
+        dao: AsyncCacheKeyDAO,
+    ) -> Response[None]:
+        """Core invalidation logic."""
+        # -- 1. Resolve datasource UIDs --------------------------------
+        datasource_uids: set[str] = set(data.datasource_uids)
+
+        for ds in data.datasources:
+            uid = await dao.resolve_datasource_uid(
+                database_name=ds.database_name,
+                datasource_name=ds.datasource_name,
+                catalog=ds.catalog,
+                schema=None if ds.schema is msgspec.UNSET else ds.schema,
+            )
+            if uid is not None:
+                datasource_uids.add(uid)
+
+        if not datasource_uids:
+            # Original falls through to ``self.response(201)`` (empty body).
+            return Response(
+                content=b"{}", status_code=201, media_type="application/json"
+            )
+
+        # -- 2. Find matching CacheKey rows ----------------------------
+        cache_keys = await dao.find_keys_by_datasource_uids(datasource_uids)
+
+        if not cache_keys:
+            # Original falls through to ``self.response(201)`` (empty body).
+            return Response(
+                content=b"{}", status_code=201, media_type="application/json"
+            )
+
+        # -- 3. Actively evict keys from cache backend -----------------
+        backend_deleted = await self._evict_from_cache_backend(cache_keys)
 
         logger.info(
             "Cache invalidation: %d/%d keys evicted from backend for %d datasources",
@@ -183,33 +279,25 @@ class CacheController(Controller):
         try:
             deleted = await dao.delete_by_cache_keys(cache_keys)
             # 1:1 with upstream: emit the invalidation gauge on success.
-            from superset.extensions import stats_logger_manager
-
             stats_logger_manager.instance.gauge("invalidated_cache", len(cache_keys))
             logger.info(
                 "Invalidated %d cache records for %d datasources",
                 deleted,
                 len(datasource_uids),
             )
-        except SQLAlchemyError:
-            logger.exception("Failed to delete cache key records")
-            # Roll back the poisoned/aborted transaction before returning — the
-            # request wrapper COMMITS a returned Response, so without this the
-            # commit hits an aborted asyncpg txn and raises at commit-time,
-            # turning a clean 500 into an unhandled error. 1:1 with upstream's
-            # ``db.session.rollback()`` in this branch (same class as 93fcc89e3e).
+        except SQLAlchemyError as ex:
+            # 1:1 with superset_old/cachekeys/api.py:128-131:
+            #   ``db.session.rollback(); logger.error(ex, exc_info=True);
+            #   return self.response_500(str(ex))``
+            # FAB's response_500 returns {"message": str(ex)}, so we must
+            # pass the actual exception text — not a fixed string — to match
+            # the client-visible response body.
             await dao.session.rollback()
+            logger.error(ex, exc_info=True)
             return Response(
-                content={"message": "Failed to delete cache key records"},
+                content={"message": str(ex)},
                 status_code=500,
             )
 
-        await event_logger.alog_with_context(
-            "cache.invalidate",
-            extra={
-                "datasource_uids": list(datasource_uids),
-                "keys_invalidated": len(cache_keys),
-            },
-        )
         # 1:1 with the original ``return self.response(201)`` — empty body.
-        return Response(content=b"", status_code=201, media_type="application/json")
+        return Response(content=b"{}", status_code=201, media_type="application/json")

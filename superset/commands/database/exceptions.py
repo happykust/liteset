@@ -44,6 +44,16 @@ class DatabaseNotFoundError(ObjectNotFoundError):
         super().__init__("Database", database_id)
 
 
+class DatabaseParametersInvalidError(CommandInvalidError):
+    """Parameters are invalid.
+
+    1:1 with ``superset_old.commands.database.exceptions
+    .DatabaseParametersInvalidError``.
+    """
+
+    status_code = 400
+
+
 class UserNotFoundInSessionError(CommandException):
     """1:1 with ``superset_old/commands/database/exceptions.py``."""
 
@@ -115,6 +125,7 @@ __all__ = (
     "DatabaseDeleteDatasetsExistFailedError",
     "DatabaseDeleteFailedReportsExistError",
     "DatabaseNotFoundError",
+    "DatabaseParametersInvalidError",
     "DatabaseSchemaUploadNotAllowed",
     "DatabaseTablesUnexpectedError",
     "DatabaseTestConnectionDriverError",

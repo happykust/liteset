@@ -23,7 +23,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from superset.controllers.embedded_dashboard import EmbeddedDashboardController
-from superset.exceptions import SupersetNotFoundError
 
 # ---------------------------------------------------------------------------
 # Helpers — Litestar decorators wrap methods; access the raw fn for unit tests.
@@ -48,22 +47,44 @@ def controller():
     return EmbeddedDashboardController(owner=MagicMock())
 
 
-async def test_embedded_disabled(controller):
-    state = MagicMock()
-    state.settings.feature_flags = {}
-    with pytest.raises(SupersetNotFoundError, match="not enabled"):
-        await _get_embedded(
-            controller, uuid="test-uuid", state=state, embedded_dao=MagicMock()
-        )
+def test_embedded_disabled(monkeypatch):
+    """EMBEDDED_SUPERSET off → controller-level guard raises 404.
+
+    Mirrors the original ``@before_request ensure_embedded_enabled`` hook
+    (superset_old/embedded/api.py:43-46) which gates every route with a 404.
+    """
+    from litestar.exceptions import NotFoundException
+
+    from superset.utils.feature_flags import feature_flag_manager
+
+    monkeypatch.setattr(
+        feature_flag_manager, "is_feature_enabled", lambda feature: False
+    )
+    assert EmbeddedDashboardController.guards, (
+        "controller must carry a feature-flag guard"
+    )
+    guard = EmbeddedDashboardController.guards[0]
+    with pytest.raises(NotFoundException):
+        guard(MagicMock(), MagicMock())
 
 
-async def test_embedded_disabled_explicit_false(controller):
-    state = MagicMock()
-    state.settings.feature_flags = {"EMBEDDED_SUPERSET": False}
-    with pytest.raises(SupersetNotFoundError, match="not enabled"):
-        await _get_embedded(
-            controller, uuid="test-uuid", state=state, embedded_dao=MagicMock()
-        )
+def test_embedded_disabled_explicit_false(monkeypatch):
+    """Guard consults exactly the EMBEDDED_SUPERSET flag."""
+    from litestar.exceptions import NotFoundException
+
+    from superset.utils.feature_flags import feature_flag_manager
+
+    seen: list[str] = []
+
+    def _is_enabled(feature: str) -> bool:
+        seen.append(feature)
+        return False
+
+    monkeypatch.setattr(feature_flag_manager, "is_feature_enabled", _is_enabled)
+    guard = EmbeddedDashboardController.guards[0]
+    with pytest.raises(NotFoundException):
+        guard(MagicMock(), MagicMock())
+    assert seen == ["EMBEDDED_SUPERSET"]
 
 
 async def test_embedded_enabled(controller):

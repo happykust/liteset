@@ -69,9 +69,7 @@ class RemoveFavoriteChartCommand(AsyncBaseCommand[None]):
         # included.)
         if self._security_manager is not None:
             try:
-                await self._security_manager.raise_for_ownership(
-                    chart, self._user_id
-                )
+                await self._security_manager.raise_for_ownership(chart, self._user_id)
             except SupersetSecurityException as ex:
                 raise ForbiddenError(
                     f"User is not an owner of chart {self._chart_id}"

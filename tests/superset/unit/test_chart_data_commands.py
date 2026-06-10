@@ -55,4 +55,3 @@ async def test_chart_data_command_runs(mock_processor, query_context):
     result = await cmd.execute()
     assert "queries" in result
     assert len(result["queries"]) == 1
-

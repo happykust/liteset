@@ -350,8 +350,14 @@ async def test_export_databases_produces_zip(mock_dao, mock_database):
     mock_dao.find_by_id = AsyncMock(return_value=mock_database)
     mock_dao.get_ssh_tunnel = AsyncMock(return_value=None)
     mock_dao.get_datasets = AsyncMock(return_value=[])
+    # validate() calls dao.count to verify the user can access the requested IDs.
+    mock_dao.count = AsyncMock(return_value=1)
     cmd = ExportDatabasesCommand(model_ids=[1], dao=mock_dao)
-    buf = await cmd.execute()
+    with patch(
+        "superset.db.filters.database_access_filters",
+        AsyncMock(return_value=[]),
+    ):
+        buf = await cmd.execute()
     assert isinstance(buf, io.BytesIO)
     with zipfile.ZipFile(buf) as zf:
         names = zf.namelist()
@@ -365,16 +371,122 @@ async def test_export_databases_produces_zip(mock_dao, mock_database):
 
 
 async def test_export_databases_not_found(mock_dao):
-    mock_dao.find_by_id = AsyncMock(return_value=None)
-    cmd = ExportDatabasesCommand(model_ids=[999], dao=mock_dao)
-    with pytest.raises(ObjectNotFoundError):
-        await cmd.execute()
+    # count=0 makes validate() raise ObjectNotFoundError (inaccessible ID).
+    mock_dao.count = AsyncMock(return_value=0)
+    cmd = ExportDatabasesCommand(
+        model_ids=[999], dao=mock_dao, security_manager=MagicMock()
+    )
+    with patch(
+        "superset.db.filters.database_access_filters",
+        AsyncMock(return_value=[]),
+    ):
+        with pytest.raises(ObjectNotFoundError):
+            await cmd.execute()
+
+
+async def test_export_databases_denies_inaccessible_id(mock_dao):
+    """validate() raises ObjectNotFoundError when dao.count returns fewer rows
+    than requested — i.e. the user is not permitted to see the database."""
+    mock_dao.count = AsyncMock(return_value=0)
+    cmd = ExportDatabasesCommand(
+        model_ids=[42], dao=mock_dao, security_manager=MagicMock()
+    )
+    with patch(
+        "superset.db.filters.database_access_filters",
+        AsyncMock(return_value=[]),
+    ):
+        with pytest.raises(ObjectNotFoundError):
+            await cmd.validate()
 
 
 async def test_export_databases_no_dao():
     cmd = ExportDatabasesCommand(model_ids=[1], dao=None)
     with pytest.raises(CommandInvalidError, match="DAO not provided"):
         await cmd.execute()
+
+
+async def test_export_databases_dataset_json_fields_are_raw_strings(
+    mock_dao, mock_database
+):
+    """1:1 parity with original superset_old/commands/database/export.py:122-129.
+
+    The original _export() sets only ``version`` and ``database_uuid`` on the
+    dataset payload — it does NOT decode JSON string fields (params,
+    template_params, extra, or per-metric/column extra).  Only
+    ExportDatasetsCommand._file_content() does that decoding.
+
+    Regression guard: the liteset _export_single previously called json.loads()
+    on those fields, producing decoded dicts in the YAML where the original
+    produces raw JSON-encoded strings.  This test asserts that after the fix
+    the values remain as-is (raw strings).
+    """
+    raw_params = '{"time_grain_sqla": "P1D"}'
+    raw_template_params = '{"foo": "bar"}'
+    raw_extra = '{"certification": {"certified_by": "core team"}}'
+    raw_metric_extra = '{"warning_markdown": ""}'
+
+    mock_database.export_to_dict.return_value = {
+        "database_name": "test_db",
+        "sqlalchemy_uri": "sqlite:///test.db",
+    }
+    mock_database.uuid = "11111111-1111-1111-1111-111111111111"
+
+    mock_dataset = MagicMock()
+    mock_dataset.id = 10
+    mock_dataset.table_name = "sales"
+    mock_dataset.export_to_dict.return_value = {
+        "table_name": "sales",
+        "params": raw_params,
+        "template_params": raw_template_params,
+        "extra": raw_extra,
+        "metrics": [
+            {"metric_name": "count", "extra": raw_metric_extra},
+        ],
+        "columns": [
+            {"column_name": "id", "extra": raw_metric_extra},
+        ],
+    }
+
+    mock_dao.find_by_id = AsyncMock(return_value=mock_database)
+    mock_dao.get_ssh_tunnel = AsyncMock(return_value=None)
+    mock_dao.get_datasets = AsyncMock(return_value=[mock_dataset])
+    mock_dao.count = AsyncMock(return_value=1)
+
+    cmd = ExportDatabasesCommand(model_ids=[1], dao=mock_dao)
+    with patch(
+        "superset.db.filters.database_access_filters",
+        AsyncMock(return_value=[]),
+    ):
+        buf = await cmd.execute()
+
+    with zipfile.ZipFile(buf) as zf:
+        ds_files = [n for n in zf.namelist() if n.startswith("datasets/")]
+        assert ds_files, "expected at least one dataset YAML in the bundle"
+        ds_content = yaml.safe_load(zf.read(ds_files[0]))
+
+    # Original behaviour: JSON-string fields are written verbatim, not decoded.
+    assert ds_content["params"] == raw_params, (
+        "params must remain a raw JSON string (no json.loads decoding)"
+    )
+    assert ds_content["template_params"] == raw_template_params, (
+        "template_params must remain a raw JSON string"
+    )
+    assert ds_content["extra"] == raw_extra, "extra must remain a raw JSON string"
+    # Nested metric/column extra must also stay as raw strings.
+    assert ds_content["metrics"][0]["extra"] == raw_metric_extra, (
+        "metric.extra must remain a raw JSON string"
+    )
+    assert ds_content["columns"][0]["extra"] == raw_metric_extra, (
+        "column.extra must remain a raw JSON string"
+    )
+    # Confirm the values are NOT dicts/lists (i.e., no json.loads was applied).
+    assert isinstance(ds_content["params"], str)
+    assert isinstance(ds_content["extra"], str)
+    assert isinstance(ds_content["metrics"][0]["extra"], str)
+
+    # Mandatory version + database_uuid stamps are still present.
+    assert "version" in ds_content
+    assert ds_content["database_uuid"] == str(mock_database.uuid)
 
 
 # ---------------------------------------------------------------------------
@@ -754,3 +866,47 @@ async def test_delete_database_with_report_schedules_raises(mock_dao, mock_datab
     cmd = DeleteDatabaseCommand(dao=mock_dao, database_id=1)
     with pytest.raises(CommandInvalidError, match="associated alerts or reports"):
         await cmd.validate()
+
+
+async def test_create_database_dynamic_form_passes_masked_encrypted_extra(mock_dao):
+    """Credentials must reach ``build_sqlalchemy_uri`` via
+    ``masked_encrypted_extra``.
+
+    1:1 with the original pre_load flow: validation reads
+    ``data.get("masked_encrypted_extra")`` (superset_old/databases/
+    schemas.py:352) — the rename to ``encrypted_extra`` only happens at
+    persistence time inside ``_create_database`` (superset_old/commands/
+    database/create.py:157-160). An early controller-side rename starved
+    BigQuery-style specs of credentials ("Missing service credentials").
+    """
+    import json as _json
+
+    mock_dao.validate_uniqueness = AsyncMock(return_value=True)
+    creds = {"credentials_info": {"project_id": "p1"}}
+
+    captured: dict = {}
+
+    class _Spec:
+        parameters_schema = object()
+
+        @staticmethod
+        def build_sqlalchemy_uri(parameters, encrypted_extra):
+            captured["parameters"] = parameters
+            captured["encrypted_extra"] = encrypted_extra
+            return "bigquery://p1"
+
+    cmd = CreateDatabaseCommand(
+        dao=mock_dao,
+        data={
+            "database_name": "bq",
+            "configuration_method": "dynamic_form",
+            "engine": "bigquery",
+            "parameters": {"project_id": "p1"},
+            "masked_encrypted_extra": _json.dumps(creds),
+        },
+    )
+    with patch("superset.db_engine_specs.get_engine_spec", return_value=_Spec):
+        await cmd.validate()
+
+    assert captured["encrypted_extra"] == creds
+    assert cmd._data["sqlalchemy_uri"] == "bigquery://p1"

@@ -340,11 +340,13 @@ async def test_inactive_user_rejected(db_engine):
 
 
 async def test_csrf_token_endpoint():
-    """CSRF token endpoint requires auth (1:1 upstream ``@protect()``).
+    """CSRF token endpoint requires ``can_read on SecurityRestApi``.
 
-    The handler is guarded by ``require_authentication``; supply an
-    authenticated user via middleware so the request reaches the handler and
-    returns a token.
+    1:1 upstream ``@protect()`` + ``@permission_name("read")``
+    (superset_old/security/api.py:111-115); the PVM is part of
+    ``_STANDARD_VIEW_PERMISSIONS`` (sync_roles.py:405) so every standard
+    role carries it. Supply an authenticated user holding the PVM via
+    middleware so the request reaches the handler and returns a token.
     """
     from litestar.middleware import ASGIMiddleware
 
@@ -354,7 +356,7 @@ async def test_csrf_token_endpoint():
                 user = MagicMock()
                 user.is_authenticated = True
                 user.id = 1
-                user.permissions = set()
+                user.permissions = {("can_read", "SecurityRestApi")}
                 scope["user"] = user
                 scope["auth"] = "mock"
             await next_app(scope, receive, send)

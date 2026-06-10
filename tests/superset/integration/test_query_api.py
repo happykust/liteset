@@ -55,6 +55,43 @@ async def test_get_query_info(app):
         assert "can_read" in data["permissions"]
 
 
+async def test_get_query_info_keys_filter():
+    """_info handler forwards rison_params to get_info_payload so the keys filter works.
+
+    1:1 with FAB set_response_key_mappings (flask_appbuilder/api/__init__.py:741-757):
+    when the client sends ``keys`` in the rison payload the response is filtered to
+    include only the requested top-level keys.  Without the fix the full payload was
+    returned regardless of the ``keys`` parameter (rison_params was never forwarded).
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from superset.controllers.query import QueryController
+
+    # Invoke the underlying handler function directly (bypassing HTTP/DI layer)
+    # so that we can pass rison_params explicitly and verify the filter is applied.
+    info_fn = QueryController.info.fn
+
+    mock_dao = MagicMock()
+    mock_sm = MagicMock()
+    mock_sm.can_access = AsyncMock(return_value=True)
+    mock_user = MagicMock()
+    mock_user.id = 1
+
+    result = await info_fn(
+        self=None,
+        dao=mock_dao,
+        security_manager=mock_sm,
+        current_user=mock_user,
+        rison_params={"keys": ["permissions"]},
+    )
+
+    # Only the requested key must be present (keys filter activated)
+    assert list(result.keys()) == ["permissions"], (
+        f"Expected only 'permissions' key in result, got: {list(result.keys())}"
+    )
+    assert "can_read" in result["permissions"]
+
+
 async def test_get_query_updated_since(app):
     """GET /api/v1/query/updated_since returns result list."""
     async with AsyncTestClient(app=app) as client:

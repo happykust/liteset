@@ -257,6 +257,11 @@ def test_rls_post_schema_valid() -> None:
     assert body.name == "Test"
     assert body.tables == [10]
     assert body.roles == []
+    # Optional fields absent from the input must be UNSET (not None) so
+    # that filter_unset() can exclude them from the create-response result,
+    # matching Marshmallow 3 Schema.load() which omits absent optional fields.
+    assert body.description is msgspec.UNSET
+    assert body.group_key is msgspec.UNSET
 
 
 def test_rls_post_schema_roles_required() -> None:
@@ -313,6 +318,63 @@ def test_rls_post_schema_filter_type_oneof() -> None:
 def test_rls_post_schema_name_max_length() -> None:
     with pytest.raises(msgspec.ValidationError):
         msgspec.convert({**_BASE_POST, "name": "x" * 256}, RLSPostSchema)
+
+
+def test_rls_post_schema_absent_optional_fields_are_unset() -> None:
+    """Absent optional fields produce UNSET, not None.
+
+    This is the key invariant: filter_unset() can then strip them from the
+    create-response payload to match the Marshmallow 3 Schema.load() contract
+    (original Superset only includes keys that were present in the request).
+    """
+    body = msgspec.convert(_BASE_POST, RLSPostSchema)
+    assert body.description is msgspec.UNSET
+    assert body.group_key is msgspec.UNSET
+
+
+def test_create_response_result_excludes_absent_optional_fields() -> None:
+    """POST result must NOT include ``description``/``group_key`` when absent.
+
+    Original Superset (Marshmallow 3): ``item = schema.load(request.json)``
+    only returns keys that were present in the input.  Sending
+    ``{"name":"t", "clause":"1=1", "filter_type":"Regular",
+    "tables":[1], "roles":[]}`` yields a result without ``description`` or
+    ``group_key``.
+
+    Regression: _msgspec_to_dict iterated all __struct_fields__ (including
+    defaulted-None description/group_key) so those keys always appeared.
+    Fix: RLSPostSchema uses UNSET for optional fields + filter_unset() in
+    create().
+    """
+    from superset.controllers.rls import _msgspec_to_dict
+    from superset.utils import filter_unset
+
+    body = msgspec.convert(_BASE_POST, RLSPostSchema)
+    result = filter_unset(_msgspec_to_dict(body))
+
+    assert "description" not in result
+    assert "group_key" not in result
+    assert result["name"] == "Test"
+    assert result["clause"] == "1=1"
+    assert result["tables"] == [10]
+
+
+def test_create_response_result_includes_explicit_null_optional_fields() -> None:
+    """Explicitly-null optional fields MUST appear in the result.
+
+    When the client sends ``"description": null``, the result must include
+    ``"description": null`` — Marshmallow 3 includes null values that are
+    explicitly provided (``allow_none=True``).
+    """
+    from superset.controllers.rls import _msgspec_to_dict
+    from superset.utils import filter_unset
+
+    body = msgspec.convert({**_BASE_POST, "description": None}, RLSPostSchema)
+    result = filter_unset(_msgspec_to_dict(body))
+
+    assert "description" in result
+    assert result["description"] is None
+    assert "group_key" not in result  # still absent
 
 
 def test_rls_put_schema_all_unset() -> None:

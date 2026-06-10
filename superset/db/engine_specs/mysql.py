@@ -167,6 +167,16 @@ class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
             re.compile(r"Unknown database '(?P<database>.*?)'"),
             "Unknown database: {database}",
         ),
+        (
+            re.compile(
+                # NOTE: no closing quote after the capture group — 1:1 with
+                # SYNTAX_ERROR_REGEX (superset_old/db_engine_specs/mysql.py:59-61).
+                r"check the manual that corresponds to your MySQL server "
+                r"version for the right syntax to use near '(?P<server_error>.*)"
+            ),
+            'Please check your query for syntax errors near "{server_error}". '
+            "Then, try running your query again.",
+        ),
     ]
 
     @classmethod
@@ -203,11 +213,11 @@ class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
 
         Uses STR_TO_DATE for safe parsing on the MySQL side.
         """
-        sqla_type = target_type.upper().strip()
+        sqla_type = cls.get_sqla_column_type(target_type)
 
-        if sqla_type == "DATE":
+        if isinstance(sqla_type, types.Date):
             return f"STR_TO_DATE('{dttm.date().isoformat()}', '%Y-%m-%d')"
-        if sqla_type in {"DATETIME", "TIMESTAMP"}:
+        if isinstance(sqla_type, types.DateTime):
             datetime_formatted = dttm.isoformat(sep=" ", timespec="microseconds")
             return f"STR_TO_DATE('{datetime_formatted}', '%Y-%m-%d %H:%i:%s.%f')"
         return None
@@ -257,7 +267,11 @@ class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
         uri: str,
         connect_args: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
-        args = connect_args.copy() if connect_args else {}
+        # Call super() first so enforce_uri_query_params (including
+        # {"asyncmy": {"local_infile": 0}}) is merged — matches original
+        # MySQLEngineSpec.adjust_engine_params calling super() in
+        # superset_old/db_engine_specs/mysql.py:215.
+        uri, args = super().adjust_engine_params(uri, connect_args)
         args.setdefault("charset", "utf8mb4")
         args.setdefault("connect_timeout", 10)
         return uri, args

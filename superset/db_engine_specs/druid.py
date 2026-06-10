@@ -32,6 +32,7 @@ from sqlalchemy import types
 from superset.constants import TimeGrain
 from superset.db_engine_specs.base import BaseEngineSpec
 from superset.db_engine_specs.exceptions import SupersetDBAPIConnectionError
+from superset.exceptions import SupersetException
 from superset.utils import json as json_utils
 from superset.utils.feature_flags import feature_flag_manager
 
@@ -93,7 +94,7 @@ class DruidEngineSpec(BaseEngineSpec):
         try:
             extra = json_utils.loads(database.extra or "{}")
         except json_utils.JSONDecodeError as ex:
-            raise ValueError("Unable to parse database extras") from ex
+            raise SupersetException("Unable to parse database extras") from ex
 
         if database.server_cert:
             from superset.utils.core import create_ssl_cert_file

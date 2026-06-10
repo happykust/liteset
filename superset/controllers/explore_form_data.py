@@ -24,6 +24,7 @@ serialized value in a KV table keyed by a UUID.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID, uuid3, uuid4
@@ -54,6 +55,8 @@ from superset.typing import (
     UserProtocol,
 )
 
+logger = logging.getLogger(__name__)
+
 # Namespace UUID for derive contextual-key UUIDs (one per explore session+tab).
 # Using "explore_form_data_contextual" matches the approach of
 # ``SupersetMetastoreCache.get_key()``, which does
@@ -75,10 +78,8 @@ def _form_data_expires_on() -> datetime:
     try:
         from superset.config import settings as _settings
 
-        timeout: int = (
-            _settings.explore_form_data_cache_config.get(
-                "CACHE_DEFAULT_TIMEOUT", 604800
-            )
+        timeout: int = _settings.explore_form_data_cache_config.get(
+            "CACHE_DEFAULT_TIMEOUT", 604800
         )
     except Exception:  # noqa: BLE001
         timeout = 604800  # 7 days fallback
@@ -116,6 +117,7 @@ def _contextual_uuid(ctx_key: str) -> str:
     """
     return str(uuid3(_FORM_DATA_CONTEXTUAL_NS, ctx_key))
 
+
 DatasourceType = Literal["table", "dataset", "query", "saved_query", "view"]
 
 
@@ -137,9 +139,7 @@ def _validate_form_data_json(form_data: str | None) -> None:
         try:
             validate_json(form_data)
         except JSONDecodeError as ex:
-            raise SupersetGenericErrorException(
-                "JSON not valid", status=400
-            ) from ex
+            raise SupersetGenericErrorException("JSON not valid", status=400) from ex
 
 
 class FormDataPostSchema(msgspec.Struct):
@@ -240,17 +240,19 @@ class ExploreFormDataController(Controller):
                     )
                 )
             except Exception:  # noqa: BLE001
-                pass
+                logger.debug(
+                    "Failed to read REFRESH_TIMEOUT_ON_RETRIEVAL", exc_info=True
+                )
             if _refresh:
                 await kv_dao.set_value(
                     resource=self.resource,
                     resource_id=0,
                     key=key,
                     value=raw,
-                    expires_on=_form_data_expires_on(),  # type: ignore[call-arg]
+                    expires_on=_form_data_expires_on(),
                 )
-            if "value" in entry:
-                return {"form_data": entry["value"]}
+            if "form_data" in entry:
+                return {"form_data": entry["form_data"]}
 
         return {"form_data": raw}
 
@@ -322,43 +324,49 @@ class ExploreFormDataController(Controller):
             resource_id=0,
             key=ctx_uuid,
         )
-        if existing_key_raw and tab_id:
+        # ``tab_id is not None`` — the original reads request.args.get("tab_id")
+        # as a STRING, so "0" is truthy; an int 0 here must also reuse the key.
+        if existing_key_raw and tab_id is not None:
             # Reuse the stored form_data UUID key.
             key = existing_key_raw.strip()
         else:
             key = str(uuid4())
 
-        expires_on = _form_data_expires_on()
-        envelope = json.dumps(
-            {
-                "owner": current_user.id,
-                "datasource_id": data.datasource_id,
-                "datasource_type": data.datasource_type,
-                "chart_id": data.chart_id,
-                "tab_id": tab_id,
-                "value": data.form_data,
-            }
-        )
-        # Store form_data under the (possibly reused) UUID key with TTL.
-        # 1:1 with ``cache_manager.explore_form_data_cache.set(key, state)``.
-        await kv_dao.set_value(
-            resource=self.resource,
-            resource_id=0,
-            key=key,
-            value=envelope,
-            user_id=current_user.id,  # type: ignore[call-arg]
-            expires_on=expires_on,  # type: ignore[call-arg]
-        )
-        # Store/refresh the contextual → form_data key mapping with same TTL.
-        # 1:1 with ``cache_manager.explore_form_data_cache.set(contextual_key, key)``.
-        await kv_dao.set_value(
-            resource=self.resource,
-            resource_id=0,
-            key=ctx_uuid,
-            value=key,
-            user_id=current_user.id,  # type: ignore[call-arg]
-            expires_on=expires_on,  # type: ignore[call-arg]
-        )
+        # 1:1 with create.py:55 — only persist the envelope + contextual
+        # mapping when ``form_data`` is truthy; when empty the original
+        # returns the key without any cache write.
+        if data.form_data:
+            expires_on = _form_data_expires_on()
+            envelope = json.dumps(
+                {
+                    "owner": current_user.id,
+                    "datasource_id": data.datasource_id,
+                    "datasource_type": data.datasource_type,
+                    "chart_id": data.chart_id,
+                    "form_data": data.form_data,
+                }
+            )
+            # Store form_data under the (possibly reused) UUID key with TTL.
+            # 1:1 with ``cache_manager.explore_form_data_cache.set(key, state)``.
+            await kv_dao.set_value(
+                resource=self.resource,
+                resource_id=0,
+                key=key,
+                value=envelope,
+                user_id=current_user.id,
+                expires_on=expires_on,
+            )
+            # Store/refresh the contextual → form_data key mapping with same TTL.
+            # 1:1 with
+            # ``cache_manager.explore_form_data_cache.set(contextual_key, key)``.
+            await kv_dao.set_value(
+                resource=self.resource,
+                resource_id=0,
+                key=ctx_uuid,
+                value=key,
+                user_id=current_user.id,
+                expires_on=expires_on,
+            )
         await event_logger.alog_with_context(
             "explore_form_data.create",
             user_id=current_user.id,
@@ -402,8 +410,11 @@ class ExploreFormDataController(Controller):
             resource_id=0,
             key=key,
         )
-        if existing is None:
-            raise ObjectNotFoundError(self.resource, key)
+        # When the KV entry is absent (cache miss / expired), the original
+        # UpdateFormDataCommand.run() falls through the ``if state and form_data``
+        # guard and returns the original key unchanged → HTTP 200 (not 404).
+        # Do NOT raise here; let the guard at ``if entry and data.form_data`` below
+        # handle the miss path identically to the original.
 
         # Datasource + chart access check — mirrors UpdateFormDataCommand.
         await check_access(
@@ -417,76 +428,86 @@ class ExploreFormDataController(Controller):
             user=current_user,
         )
 
-        # Owner check — original raises TemporaryCacheAccessDeniedError
-        # when state["owner"] != get_user_id().
+        # Parse the existing envelope — used for the ``state and form_data``
+        # guard (1:1 with update.py:57-61).
         try:
             entry = json.loads(existing)
         except (json.JSONDecodeError, TypeError):
             entry = {}
-        owner = entry.get("owner")
-        if owner is not None and owner != current_user.id:
-            raise PermissionDeniedException(
-                detail="You don't have access to this resource"
+
+        # 1:1 with update.py:61 ``if state and form_data:`` — when the state
+        # exists but form_data is falsy (empty string), the original returns
+        # the original key unchanged without modifying the cache.
+        # ``isinstance(entry, dict)`` matches the GET/DELETE guards: a
+        # corrupted non-dict JSON value must not 500 on ``entry.get(...)``.
+        if entry and isinstance(entry, dict) and data.form_data:
+            # Owner check — 1:1 with update.py:62:
+            #   ``if state["owner"] != owner: raise TemporaryCacheAccessDeniedError()``
+            # The original is unconditional: None (anon-owned entry) != any
+            # authenticated user_id → raises.  Do NOT guard on ``owner is not
+            # None``; that would silently skip the check for None-owner entries.
+            owner = entry.get("owner")
+            if owner != current_user.id:
+                raise PermissionDeniedException(
+                    detail="You don't have access to this resource"
+                )
+
+            # --- Contextual key reuse / rotation (1:1 with update.py:65-73) ---
+            # Generate a new key if tab_id is falsy or the contextual key lookup
+            # returns nothing.  When a new key is minted, the contextual mapping
+            # is stored so subsequent saves for the same tab reuse the new key.
+            session_id: str = request.cookies.get("session", "")
+            ctx_str = _contextual_key_str(
+                session_id,
+                tab_id,
+                data.datasource_id,
+                data.chart_id,
+                data.datasource_type,
             )
+            ctx_uuid = _contextual_uuid(ctx_str)
+            existing_ctx_key = await kv_dao.get_value(
+                resource=self.resource,
+                resource_id=0,
+                key=ctx_uuid,
+            )
+            # As in create: "0" is a truthy tab id in the original.
+            if existing_ctx_key and tab_id is not None:
+                # Reuse the contextual key's mapped UUID.
+                key = existing_ctx_key.strip()
+            else:
+                # Mint a fresh UUID and persist the contextual mapping.
+                key = str(uuid4())
+                # 1:1 with update.py:73 — only store the contextual mapping
+                # when a new key is minted.
+                await kv_dao.set_value(
+                    resource=self.resource,
+                    resource_id=0,
+                    key=ctx_uuid,
+                    value=key,
+                    user_id=current_user.id,
+                    expires_on=_form_data_expires_on(),
+                )
 
-        # --- Contextual key reuse / rotation (1:1 with update.py:65-73) ---
-        # Generate a new key if tab_id is falsy or the contextual key lookup
-        # returns nothing.  When a new key is minted, the contextual mapping
-        # is stored so subsequent saves for the same tab reuse the new key.
-        session_id: str = request.cookies.get("session", "")
-        ctx_str = _contextual_key_str(
-            session_id,
-            tab_id,
-            data.datasource_id,
-            data.chart_id,
-            data.datasource_type,
-        )
-        ctx_uuid = _contextual_uuid(ctx_str)
-        existing_ctx_key = await kv_dao.get_value(
-            resource=self.resource,
-            resource_id=0,
-            key=ctx_uuid,
-        )
-        if existing_ctx_key and tab_id:
-            # Reuse the contextual key's mapped UUID.
-            key = existing_ctx_key.strip()
-        else:
-            # Mint a fresh UUID and persist the contextual mapping.
-            key = str(uuid4())
-
-        expires_on = _form_data_expires_on()
-        envelope = json.dumps(
-            {
-                "owner": current_user.id,
-                "datasource_id": data.datasource_id,
-                "datasource_type": data.datasource_type,
-                "chart_id": data.chart_id,
-                "tab_id": tab_id,
-                "value": data.form_data,
-            }
-        )
-        # Store form_data under the (possibly rotated) UUID key with TTL.
-        # 1:1 with ``cache_manager.explore_form_data_cache.set(key, new_state)``.
-        await kv_dao.set_value(
-            resource=self.resource,
-            resource_id=0,
-            key=key,
-            value=envelope,
-            user_id=current_user.id,  # type: ignore[call-arg]
-            expires_on=expires_on,  # type: ignore[call-arg]
-        )
-        # Store/refresh the contextual → form_data key mapping with same TTL.
-        # 1:1 with ``cache_manager.explore_form_data_cache.set(contextual_key, key)``
-        # (only on the new-key branch in the original, but refreshing TTL on
-        # every write is harmless and keeps the contextual entry alive).
-        await kv_dao.set_value(
-            resource=self.resource,
-            resource_id=0,
-            key=ctx_uuid,
-            value=key,
-            user_id=current_user.id,  # type: ignore[call-arg]
-            expires_on=expires_on,  # type: ignore[call-arg]
-        )
+            expires_on = _form_data_expires_on()
+            envelope = json.dumps(
+                {
+                    "owner": current_user.id,
+                    "datasource_id": data.datasource_id,
+                    "datasource_type": data.datasource_type,
+                    "chart_id": data.chart_id,
+                    "form_data": data.form_data,
+                }
+            )
+            # Store form_data under the (possibly rotated) UUID key with TTL.
+            # 1:1 with ``cache_manager.explore_form_data_cache.set(key, new_state)``.
+            await kv_dao.set_value(
+                resource=self.resource,
+                resource_id=0,
+                key=key,
+                value=envelope,
+                user_id=current_user.id,
+                expires_on=expires_on,
+            )
         await event_logger.alog_with_context(
             "explore_form_data.update",
             user_id=current_user.id,
@@ -551,10 +572,15 @@ class ExploreFormDataController(Controller):
                 security_manager=security_manager,
                 user=current_user,
             )
-            # Owner check — original raises TemporaryCacheAccessDeniedError
-            # when state["owner"] != get_user_id().
+            # Owner check — 1:1 with delete.py:54:
+            #   ``if state["owner"] != get_user_id():``
+            #       ``raise TemporaryCacheAccessDeniedError()``
+            # The original is unconditional: None (anon-owned entry) != any
+            # authenticated user_id → raises.  Do NOT guard on
+            # ``owner is not None``; that skips the check for None-owner
+            # entries, allowing any caller to delete them.
             owner = entry.get("owner")
-            if owner is not None and owner != current_user.id:
+            if owner != current_user.id:
                 raise PermissionDeniedException(
                     detail="You don't have access to this resource"
                 )

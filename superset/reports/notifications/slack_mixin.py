@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from superset.i18n import gettext as __
 from superset.reports.notifications.base import NotificationContent
 
 # Slack only allows Markdown messages up to 4k chars
@@ -30,16 +31,34 @@ class SlackMixin:
         content: NotificationContent,
         table: str = "",
     ) -> str:
-        return (
-            f"*{content.name}*\n\n"
-            f"{content.description or ''}\n\n"
-            f"<{content.url}|Explore in Superset>\n\n"
-            f"{table}\n"
+        return __(
+            """*%(name)s*
+
+%(description)s
+
+<%(url)s|Explore in Superset>
+
+%(table)s
+""",
+            name=content.name,
+            description=content.description or "",
+            url=content.url,
+            table=table,
         )
 
     @staticmethod
     def _error_template(name: str, description: str, text: str) -> str:
-        return f"*{name}*\n\n    {description}\n\n    Error: {text}\n    "
+        return __(
+            """*%(name)s*
+
+    %(description)s
+
+    Error: %(text)s
+    """,
+            name=name,
+            description=description,
+            text=text,
+        )
 
     def _get_body(self, content: NotificationContent) -> str:
         if content.text:

@@ -47,11 +47,11 @@ _PASSWORD_COMPLEXITY_RE = re.compile(
     re.VERBOSE,
 )
 
-_PASSWORD_COMPLEXITY_MSG = (
-    "Must have at least two capital letters,"
+_PASSWORD_COMPLEXITY_MSG = (  # noqa: S105
+    "Must have at least two capital letters,"  # noqa: S105
     " one special character, two digits, three lower case letters and"
     " a minimal length of 10."
-)
+)  # noqa: S105
 
 
 class PasswordComplexityError(ValueError):

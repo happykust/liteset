@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from litestar import Controller, delete, get, post, put
+from litestar.datastructures import State
 from litestar.di import Provide
 
 from superset.commands.css_template import (
@@ -46,7 +47,7 @@ from superset.schemas.css_template import (
     CssTemplatePostSchema,
     CssTemplatePutSchema,
 )
-from superset.typing import CRUDDAOProtocol, UserProtocol
+from superset.typing import CRUDDAOProtocol, SecurityManagerProtocol, UserProtocol
 from superset.utils import filter_unset
 
 
@@ -68,11 +69,10 @@ class CssTemplateController(Controller):
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """GET /api/v1/css_template/ — list CSS templates with optional pagination."""
+        from sqlalchemy import or_
         from sqlalchemy.orm import selectinload
 
         from superset.models.core import CssTemplate
-
-        from sqlalchemy import or_
 
         def _css_template_all_text(model: Any, value: Any) -> Any:
             """``CssTemplateAllTextFilter`` — free-text over template_name + css
@@ -116,6 +116,7 @@ class CssTemplateController(Controller):
                 "created_by.last_name",
             ],
             list_title="List Css Template",
+            order_columns=["template_name"],
         )
 
     @get(
@@ -301,12 +302,20 @@ class CssTemplateController(Controller):
         "/_info",
         guards=[require_permission("can_read", "CssTemplate")],
     )
-    async def info(self, dao: CRUDDAOProtocol) -> dict[str, Any]:
+    async def info(
+        self,
+        dao: CRUDDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
         """GET /api/v1/css_template/_info -- API metadata for frontend."""
         return await get_info_payload(
             dao=dao,
             model_name="CssTemplate",
             permissions=["can_read", "can_write"],
+            security_manager=security_manager,
+            current_user=current_user,
+            class_permission_name="CssTemplate",
         )
 
     @get(
@@ -318,11 +327,73 @@ class CssTemplateController(Controller):
         column_name: str,
         dao: CRUDDAOProtocol,
         rison_params: dict[str, Any] | None,
+        state: State,
+        security_manager: Any,
     ) -> dict[str, Any]:
-        """GET /api/v1/css_template/related/{column_name}."""
+        """GET /api/v1/css_template/related/{column_name}.
+
+        Mirrors ``CssTemplateRestApi.base_related_field_filters`` which applies
+        ``BaseFilterRelatedUsers`` (superset_old/views/filters.py:56-87) on the
+        ``changed_by`` field, excluding users in ``EXCLUDE_USERS_FROM_LISTS`` and
+        applying the ``EXTRA_RELATED_QUERY_FILTERS["user"]`` hook.
+        """
+        allowed_rel_fields = frozenset({"created_by", "changed_by"})
+
+        # Apply BaseFilterRelatedUsers logic for changed_by only
+        # (original base_related_field_filters only covers changed_by).
+        base_filters: list[Any] = []
+        query_hook: Any | None = None
+        if column_name == "changed_by":
+            from superset.models.security import User
+
+            settings = getattr(state, "settings", None)
+
+            # Step 1: Apply EXTRA_RELATED_QUERY_FILTERS["user"] hook.
+            # Original contract (superset_old/views/filters.py:72-76):
+            #   query = extra_filters(query)  — Callable[[Query], Query]
+            # We pass the hook through to get_related_payload as query_hook
+            # so it receives the real Select statement and returns the
+            # modified Select, matching the original calling convention.
+            # Original BaseFilterRelatedUsers.apply() has no try/except —
+            # any exception propagates as HTTP 500 (mirrors original behaviour).
+            extra_related_filters: dict[str, Any] = (
+                getattr(settings, "extra_related_query_filters", {}) if settings else {}
+            )
+            user_extra_filter = extra_related_filters.get("user")
+            if callable(user_extra_filter):
+                query_hook = user_extra_filter
+
+            # Step 2: Determine exclude_users list with fallback
+            # Original: EXCLUDE_USERS_FROM_LISTS is None -> call
+            # security_manager.get_exclude_users_from_lists()
+            exclude_users: list[str] | None = (
+                getattr(settings, "exclude_users_from_lists", None)
+                if settings
+                else None
+            )
+            if exclude_users is None:
+                get_exclude = getattr(
+                    security_manager, "get_exclude_users_from_lists", None
+                )
+                if callable(get_exclude):
+                    exclude_users = get_exclude()
+
+            # Step 3: Exclude matched usernames
+            if exclude_users:
+                base_filters.append(User.username.not_in(exclude_users))
+
+        # Original suppresses text filter for 'created_by' because it has no
+        # entry in related_field_filters
+        # (superset_old/css_templates/api.py:99-101 covers changed_by only).
+        if column_name == "created_by" and rison_params and "filter" in rison_params:
+            rison_params = dict(rison_params)
+            rison_params.pop("filter")
+
         return await get_related_payload(
             dao=dao,
             column_name=column_name,
             rison_params=rison_params,
-            allowed_fields=frozenset({"created_by", "changed_by"}),
+            allowed_fields=allowed_rel_fields,
+            base_filters=base_filters if base_filters else None,
+            query_hook=query_hook,
         )

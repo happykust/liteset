@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 superset_config_module = environ.get(
     "SUPERSET_CONFIG", "tests.integration_tests.superset_test_config"
 )
-app = create_app(superset_config_module=superset_config_module)
+app = create_app()
 
 
 def login(

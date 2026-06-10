@@ -38,6 +38,17 @@ from redis.asyncio import Redis
 logger = logging.getLogger(__name__)
 
 
+class UnsupportedCacheBackendError(Exception):  # noqa: N818
+    """Raised when GLOBAL_ASYNC_QUERIES_CACHE_BACKEND uses an unsupported CACHE_TYPE.
+
+    1:1 port of
+    ``superset_old/async_events/async_query_manager.py::UnsupportedCacheBackendError``.
+    The original raises this in ``get_cache_backend()`` for any CACHE_TYPE that is
+    not ``'RedisCache'`` or ``'RedisSentinelCache'``, causing the app to refuse to
+    start.
+    """
+
+
 def build_job_metadata(
     channel_id: str,
     job_id: str,
@@ -65,9 +76,7 @@ async def extract_guest_token(request: Any, settings: Any) -> str | None:
     second ``request.form()`` after the controller already read it is safe.
     """
     header_name = getattr(settings, "guest_token_header_name", "X-GuestToken")
-    token = request.headers.get(header_name) or request.headers.get(
-        header_name.lower()
-    )
+    token = request.headers.get(header_name) or request.headers.get(header_name.lower())
     if token:
         return token
     try:

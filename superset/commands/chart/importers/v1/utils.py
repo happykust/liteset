@@ -461,9 +461,8 @@ async def add_permissions(  # noqa: C901
 
     if supports_catalog:
         try:
-            if (
-                getattr(spec, "supports_cross_catalog_queries", False)
-                or getattr(database, "allow_multi_catalog", False)
+            if getattr(spec, "supports_cross_catalog_queries", False) or getattr(
+                database, "allow_multi_catalog", False
             ):
 
                 def _fetch_catalogs() -> set[str]:

@@ -20,8 +20,6 @@
 Pure SQLAlchemy -- no Flask dependencies.
 """
 
-from __future__ import annotations
-
 import enum
 import json
 from collections.abc import Hashable
@@ -40,7 +38,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import backref as sa_backref, relationship
 
 from superset.models.connectors import AsyncQueryExecutionMixin
 from superset.models.helpers import (
@@ -152,6 +150,8 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
     database = relationship(
         "Database",
         foreign_keys=[database_id],
+        # 1:1 with superset_old/models/sql_lab.py:156-160 — ORM cascade.
+        backref=sa_backref("queries", cascade="all, delete-orphan"),
     )
     user = relationship(
         "User",
@@ -196,13 +196,13 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
 
         state = sa_inspect(self)
 
-        user_label = ""
+        # Use a distinct local name to avoid shadowing the imported
+        # ``user_label`` function (which would cause TypeError on line 2).
+        from superset.utils.core import user_label as _user_label_fn
+
+        _user_label: str | None = None
         if "user" not in state.unloaded and self.user:
-            user_label = (
-                getattr(self.user, "username", None)
-                or getattr(self.user, "email", None)
-                or str(self.user)
-            )
+            _user_label = _user_label_fn(self.user)
 
         db_name = None
         if "database" not in state.unloaded and self.database is not None:
@@ -241,7 +241,7 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
             "tempSchema": self.tmp_schema_name,
             "tempTable": self.tmp_table_name,
             "userId": self.user_id,
-            "user": user_label,
+            "user": _user_label,
             "resultsKey": self.results_key,
             "trackingUrl": self.tracking_url,
             "extra": self.extra,
@@ -460,21 +460,30 @@ class SavedQuery(Base, AuditMixinNullable, ExtraJSONMixin, ImportExportMixin):
     rows = Column(Integer)
     last_run = Column(DateTime)
 
+    def __repr__(self) -> str:
+        # 1:1 superset_old/models/sql_lab.py:439 — /related/ dropdown text.
+        return str(self.label)
+
     # -- relationships --------------------------------------------------------
 
     user = relationship(
         "User",
         foreign_keys=[user_id],
+        # 1:1 with superset_old/models/sql_lab.py:408-410 — ORM cascade.
+        backref=sa_backref("saved_queries", cascade="all, delete-orphan"),
     )
     database = relationship(
         "Database",
         foreign_keys=[db_id],
+        # 1:1 with superset_old/models/sql_lab.py:413-416 — ORM cascade.
+        backref=sa_backref("saved_queries", cascade="all, delete-orphan"),
     )
     tags = relationship(
         "Tag",
         secondary="tagged_object",
+        overlaps="objects,tag,tags",
         primaryjoin="and_(SavedQuery.id == foreign(TaggedObject.object_id), "
-        "TaggedObject.object_type == 'saved_query')",
+        "TaggedObject.object_type == 'query')",
         secondaryjoin="Tag.id == foreign(TaggedObject.tag_id)",
         viewonly=True,
     )
@@ -487,6 +496,14 @@ class SavedQuery(Base, AuditMixinNullable, ExtraJSONMixin, ImportExportMixin):
         "description",
         "sql",
     ]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+        }
+
+    def url(self) -> str:
+        return f"/sqllab?savedQueryId={self.id}"
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +553,7 @@ class TabState(AuditMixinNullable, ExtraJSONMixin, Base):
         "TableSchema",
         cascade="all, delete-orphan",
         backref="tab_state",
+        passive_deletes=True,
     )
     latest_query = relationship(
         "Query",

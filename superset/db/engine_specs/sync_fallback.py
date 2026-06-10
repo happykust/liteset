@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import Connection, inspect
@@ -178,30 +179,65 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
     ) -> list[tuple[Any, ...]]:
         def _run(sync_conn: Connection) -> list[tuple[Any, ...]]:
             result = sync_conn.execute(text(query))
+            # Capture cursor.description before fetchall() because SA 2.0
+            # calls _soft_close() after fetchall which sets result.cursor=None.
+            # fetchmany() does not soft-close on a partial fetch, so it is safe
+            # either way, but capturing early is harmless for both paths.
+            # (Original superset_old/db_engine_specs/base.py:986-987 uses a raw
+            # DBAPI cursor that remains open after fetchall, so it never hits this.)
+            description = result.cursor.description if result.cursor else None
             if limit is not None:
-                return [tuple(row) for row in result.fetchmany(limit)]
-            return [tuple(row) for row in result.fetchall()]
+                data = [tuple(row) for row in result.fetchmany(limit)]
+            else:
+                data = [tuple(row) for row in result.fetchall()]
+
+            # Apply column_type_mutators (1:1 with BaseEngineSpec.fetch_data
+            # in superset_old/db_engine_specs/base.py:973-1011).
+            if cls.column_type_mutators and data:
+                description = description or []
+                column_mutators: dict[int, Callable[[Any], Any]] = {}
+                for idx, row in enumerate(description):
+                    type_code = row[1]
+                    datatype = cls.get_datatype(type_code)
+                    sqla_type = cls.get_sqla_column_type(datatype)
+                    if sqla_type is not None:
+                        func = cls.column_type_mutators.get(type(sqla_type))
+                        if func is not None:
+                            column_mutators[idx] = func
+
+                if column_mutators:
+                    for row_idx, row_data in enumerate(data):
+                        new_row = list(row_data)
+                        for col_idx, func in column_mutators.items():
+                            new_row[col_idx] = func(row_data[col_idx])
+                        data[row_idx] = tuple(new_row)
+
+            return data
 
         return await conn.run_sync(_run)
 
     @classmethod
     def extract_errors(cls, ex: Exception) -> list[dict[str, Any]]:
-        if _is_overridden(cls._sync_spec, "extract_errors"):
-            try:
-                sync_errors = cls._sync_spec.extract_errors(ex)
-                return [
-                    {
-                        "message": str(getattr(e, "message", str(e))),
-                        "error_type": getattr(e, "error_type", type(ex).__name__),
-                    }
-                    for e in sync_errors
-                ]
-            except Exception:
-                logger.debug(
-                    "Failed to extract errors via sync spec %s",
-                    cls._sync_spec.__name__,
-                    exc_info=True,
-                )
+        # Always delegate to the sync spec's extract_errors first.
+        # Even when the sync spec does not override extract_errors itself,
+        # the base BaseEngineSpec.extract_errors uses cls.custom_errors
+        # which may be populated on the sync spec (e.g. BigQuery, Snowflake).
+        # Using _is_overridden would miss those engines.
+        try:
+            sync_errors = cls._sync_spec.extract_errors(ex)
+            return [
+                {
+                    "message": str(getattr(e, "message", str(e))),
+                    "error_type": getattr(e, "error_type", type(ex).__name__),
+                }
+                for e in sync_errors
+            ]
+        except Exception:
+            logger.debug(
+                "Failed to extract errors via sync spec %s",
+                cls._sync_spec.__name__,
+                exc_info=True,
+            )
         return super().extract_errors(ex)
 
     @classmethod
@@ -227,6 +263,25 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
 
             return await conn.run_sync(_run)
         return await super().get_view_names(conn, schema=schema)
+
+    @classmethod
+    def get_datatype(cls, type_code: Any) -> str | None:
+        """Delegate to the wrapped sync spec's get_datatype.
+
+        Engine-specific DBAPI drivers (e.g. MySQLdb) return integer OID codes
+        in cursor.description, not strings.  The sync spec's get_datatype maps
+        those integers to type-name strings so that column_type_mutators can be
+        applied.  Without this delegation the mutators would never fire because
+        BaseAsyncEngineSpec.get_datatype returns None for non-string codes.
+
+        1:1 with BaseEngineSpec.fetch_data calling ``cls.get_datatype`` where
+        ``cls`` is the engine spec class itself
+        (superset_old/db_engine_specs/base.py:996).
+        """
+        sync_spec = getattr(cls, "_sync_spec", None)
+        if sync_spec is not None:
+            return sync_spec.get_datatype(type_code)
+        return super().get_datatype(type_code)
 
     @classmethod
     def convert_dttm(
@@ -265,6 +320,8 @@ def make_async_spec(
     for attr in (
         "epoch_to_dttm",
         "column_type_mappings",
+        "column_type_mutators",
+        "enforce_uri_query_params",
         "supports_dynamic_schema",
         "supports_catalog",
         "get_allow_cost_estimate",

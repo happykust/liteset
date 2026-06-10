@@ -232,9 +232,7 @@ async def test_import_groups_by_type(manager: AsyncFullAssetManager) -> None:
         zf.writestr(
             "assets_export_test/metadata.yaml", yaml.safe_dump({"version": "1.0.0"})
         )
-        zf.writestr(
-            "assets_export_test/charts/c1.yaml", yaml.safe_dump({"name": "c1"})
-        )
+        zf.writestr("assets_export_test/charts/c1.yaml", yaml.safe_dump({"name": "c1"}))
         zf.writestr(
             "assets_export_test/dashboards/d1.yaml", yaml.safe_dump({"name": "d1"})
         )

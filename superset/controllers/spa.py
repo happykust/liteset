@@ -33,10 +33,13 @@ from typing import Any
 from litestar import Controller, get, post, Request
 from litestar.datastructures import State
 from litestar.response import Redirect, Response, Template
+from sqlalchemy import select
 
 from superset.commands.dashboard.create import CreateDashboardCommand
 from superset.db.daos.dashboard import AsyncDashboardDAO
 from superset.db.daos.log import AsyncLogDAO
+from superset.guards.rbac import require_permission
+from superset.i18n import get_locale
 
 SPA_ROUTE_PREFIXES: frozenset[str] = frozenset(
     {
@@ -425,7 +428,7 @@ def _build_menu_data(user: Any, settings: Any) -> dict[str, Any]:
             "user_info_url": None if hide_user_info else "/user_info/",
             "user_login_url": "/login/",
             "user_logout_url": "/logout/",
-            "locale": "en",
+            "locale": get_locale(),
         },
         # React builds settings from menu (Security/Data/Manage categories).
         "settings": [],
@@ -569,6 +572,10 @@ def _build_theme_data(settings: Any) -> dict[str, Any]:
     the caller should use ``_build_theme_data_async`` instead to load
     themes from DB via ``AsyncThemeDAO``.
     """
+    from superset.commands.theme import _is_valid_theme
+
+    logger = _log.getLogger(__name__)
+
     default_theme = getattr(settings, "theme_default", {"algorithm": "default"})
     dark_theme = getattr(settings, "theme_dark", {"algorithm": "dark"})
     enable_ui_admin = getattr(
@@ -581,6 +588,23 @@ def _build_theme_data(settings: Any) -> dict[str, Any]:
         default_theme = default_theme()
     if callable(dark_theme):
         dark_theme = dark_theme()
+
+    # Validate theme configurations — 1:1 with original
+    # get_theme_bootstrap_data() which calls is_valid_theme() and
+    # replaces invalid themes with {}.
+    if not _is_valid_theme(default_theme):
+        logger.warning(
+            "Invalid default theme configuration: %s, using empty theme",
+            default_theme,
+        )
+        default_theme = {}
+
+    if not _is_valid_theme(dark_theme):
+        logger.warning(
+            "Invalid dark theme configuration: %s, using empty theme",
+            dark_theme,
+        )
+        dark_theme = {}
 
     return {
         "default": default_theme if isinstance(default_theme, dict) else {},
@@ -612,6 +636,10 @@ async def _build_theme_data_async(
     when ``ENABLE_UI_THEME_ADMINISTRATION`` is True, loads themes from DB
     via ``AsyncThemeDAO`` (falling back to config if no DB row is found).
     """
+    from superset.commands.theme import _is_valid_theme
+
+    logger = _log.getLogger(__name__)
+
     enable_ui_admin = getattr(
         settings,
         "enable_ui_theme_administration",
@@ -641,10 +669,27 @@ async def _build_theme_data_async(
                 await theme_dao.find_system_dark(), dark_theme
             )
     except Exception:
-        _log.getLogger(__name__).debug(
+        logger.debug(
             "Failed to load themes from DB, using config values",
             exc_info=True,
         )
+
+    # Validate theme configurations — 1:1 with original
+    # get_theme_bootstrap_data() which calls is_valid_theme() after
+    # both the DB and config fallback paths.
+    if not _is_valid_theme(default_theme):
+        logger.warning(
+            "Invalid default theme configuration: %s, using empty theme",
+            default_theme,
+        )
+        default_theme = {}
+
+    if not _is_valid_theme(dark_theme):
+        logger.warning(
+            "Invalid dark theme configuration: %s, using empty theme",
+            dark_theme,
+        )
+        dark_theme = {}
 
     return {
         "default": default_theme if isinstance(default_theme, dict) else {},
@@ -751,13 +796,16 @@ def _build_bootstrap_data(user: Any, settings: Any, **kw: Any) -> dict[str, Any]
     # --- theme ---
     theme = _build_theme_data(settings)
 
+    # --- locale (resolved per-request by LocaleMiddleware) ---
+    language = get_locale()
+
     # --- common ---
     common: dict[str, Any] = {
         "application_root": getattr(settings, "application_root", "/"),
         "static_assets_prefix": getattr(settings, "static_assets_prefix", ""),
         "flash_messages": kw.get("flash_messages", []),
         "conf": frontend_config,
-        "locale": "en",
+        "locale": language,
         "feature_flags": feature_flags,
         "language_pack": {
             "domain": "superset",
@@ -765,7 +813,7 @@ def _build_bootstrap_data(user: Any, settings: Any, **kw: Any) -> dict[str, Any]
                 "superset": {
                     "": {
                         "domain": "superset",
-                        "lang": "en",
+                        "lang": language,
                         "plural_forms": "",
                     },
                 },
@@ -804,13 +852,123 @@ def _build_bootstrap_data(user: Any, settings: Any, **kw: Any) -> dict[str, Any]
     return result
 
 
+async def _render_welcome_dashboard(
+    user: Any,
+    user_id: int,
+    session_factory: Any,
+    state: Any,
+    settings: Any,
+    request: Any,
+) -> Any:
+    """Render the SPA shell for the user's configured welcome dashboard.
+
+    Mirrors ``Superset.welcome() → self.dashboard()`` from
+    superset_old/views/core.py:926-931 + 795-837.
+
+    Returns a :class:`~litestar.response.Template` (200) if the dashboard
+    is found and accessible, a 404 :class:`~litestar.response.Response`
+    when the dashboard is missing or the user is denied, or ``None`` when
+    no ``welcome_dashboard_id`` is set (caller falls through to the generic
+    welcome page).
+    """
+    from superset.exceptions import SupersetSecurityException
+    from superset.models.user import UserAttribute
+
+    # No try/except around the two queries — 1:1 with the original
+    # (superset_old/views/core.py:926-930 ``db.session.query(...).scalar()``
+    # and ``Dashboard.get()`` via ``qry.one_or_none()``): a genuine DB error
+    # propagates as a 500, it is NOT downgraded to a 404/welcome-page.
+    async with session_factory() as _wa_session:
+        welcome_dashboard_id = (
+            await _wa_session.execute(
+                select(UserAttribute.welcome_dashboard_id).filter_by(
+                    user_id=user_id,
+                )
+            )
+        ).scalar()
+
+    if not welcome_dashboard_id:
+        return None
+
+    # Load the dashboard (mirrors Dashboard.get() in original).
+    async with session_factory() as _dash_session:
+        _welcome_dash = await AsyncDashboardDAO(_dash_session).get_by_id_or_slug(
+            str(welcome_dashboard_id)
+        )
+
+    if _welcome_dash is None:
+        # Mirrors original: abort(404) for authenticated user when not found.
+        return Response(content=b"Not Found", status_code=404)
+
+    # Access check (mirrors dashboard.raise_for_access() + can_dashboard perm check).
+    try:
+        async with session_factory() as _sec_session:
+            from superset.dependencies import provide_security_manager
+
+            _sec_mgr = await provide_security_manager(_sec_session, state)
+
+            # View-level permission check: 1:1 with @has_access on Superset.dashboard
+            if not await _sec_mgr.has_access("can_dashboard", "Superset", user):
+                return Response(content=b"Not Found", status_code=404)
+
+            await _sec_mgr.raise_for_access(dashboard=_welcome_dash, user=user)
+    except SupersetSecurityException:
+        # Mirrors original: abort(404) for authenticated user on access denial
+        # (superset_old/views/core.py:809-812).
+        return Response(content=b"Not Found", status_code=404)
+    except Exception:
+        _log.getLogger(__name__).debug(
+            "Access check failed for welcome dashboard %s",
+            welcome_dashboard_id,
+            exc_info=True,
+        )
+        return Response(content=b"Not Found", status_code=404)
+
+    # Render the SPA shell at /superset/welcome/ with the dashboard title.
+    # 1:1 with self.dashboard() return: title=dashboard.dashboard_title,
+    # same bootstrap payload, browser URL stays at /superset/welcome/.
+    # ``standalone_mode`` mirrors ``ReservedUrlParameters.is_standalone_mode()``
+    # (superset_old/utils/core.py:347-352): truthy unless absent/"false"/"0".
+    _standalone_param = request.query_params.get("standalone")
+    _standalone_mode = bool(
+        _standalone_param and _standalone_param != "false" and _standalone_param != "0"
+    )
+    _bootstrap = _build_bootstrap_data(user, settings)
+    if getattr(settings, "enable_ui_theme_administration", False):
+        try:
+            _theme = await _build_theme_data_async(settings, session_factory)
+            _bootstrap["common"]["theme"] = _theme
+        except Exception:
+            _log.getLogger(__name__).debug(
+                "Async theme lookup failed (welcome dashboard)",
+                exc_info=True,
+            )
+    return Template(
+        template_name="spa.html",
+        context={
+            "bootstrap_data": json.dumps(_bootstrap),
+            "entry": "spa",
+            "title": _welcome_dash.dashboard_title or "Superset",
+            "assets_prefix": getattr(settings, "static_assets_prefix", ""),
+            "standalone_mode": _standalone_mode,
+            "favicons": [{"href": "/static/assets/images/favicon.png"}],
+            "csrf_token": _get_csrf_token(
+                settings,
+                session_id=request.cookies.get(
+                    getattr(settings, "session_cookie_name", "session"), ""
+                ),
+            ),
+        },
+    )
+
+
 class SPAController(Controller):
     path = "/"
 
     @get(
         ["/superset/language_pack/{lang:str}/", "/superset/language_pack/{lang:str}"],
         media_type="application/json",
-        opt={"exclude_from_auth": True},
+        guards=[require_permission("can_language_pack", "Superset")],
     )
     async def language_pack(self, lang: str) -> Response[Any]:
         """GET /superset/language_pack/<lang>/ — serve a JSON translation pack.
@@ -846,16 +1004,14 @@ class SPAController(Controller):
                 pass
 
         return Response(
-            content=json.dumps(
-                {"error": "Language pack doesn't exist on the server"}
-            ),
+            content=json.dumps({"error": "Language pack doesn't exist on the server"}),
             status_code=404,
             media_type="application/json",
         )
 
     @get(
         ["/dashboard/new/", "/dashboard/new"],
-        guards=[],
+        guards=[require_permission("can_write", "Dashboard")],
     )
     async def new_dashboard(
         self,
@@ -865,8 +1021,11 @@ class SPAController(Controller):
     ) -> Any:
         """GET /dashboard/new/ — create blank dashboard and redirect to edit mode.
 
-        Mirrors the original Flask ``Dashboard.new`` view:
-        creates a row with title ``[ untitled dashboard ]``,
+        Mirrors the original Flask ``Dashboard.new`` view which uses
+        ``@has_access`` with ``method_permission_name = {"new": "write"}``
+        and ``class_permission_name = "Dashboard"``, requiring
+        ``can_write`` on ``Dashboard``.
+        Creates a row with title ``[ untitled dashboard ]``,
         assigns current user as owner, then 302-redirects to
         ``/superset/dashboard/{id}/?edit=true``.
         """
@@ -884,6 +1043,192 @@ class SPAController(Controller):
         )
         dashboard = await cmd.execute()
         return Redirect(path=f"/superset/dashboard/{dashboard.id}/?edit=true")
+
+    @get(
+        [
+            "/register/activation/{activation_hash:str}/",
+            "/register/activation/{activation_hash:str}",
+        ],
+        media_type="text/html",
+        exclude_from_auth=True,
+    )
+    async def register_activation(
+        self,
+        activation_hash: str,
+        request: Request[Any, Any, Any],
+        state: State,
+    ) -> Any:
+        """GET /register/activation/<activation_hash>/ -- activate pending registration.
+
+        Mirrors ``SupersetRegisterUserView.activation`` from
+        ``superset_old/views/auth.py:59-91``:
+
+        1. Look up the pending ``RegisterUser`` row by ``registration_hash``.
+        2. If not found: flash "Registration not found" (danger) and redirect
+           to index (/).
+        3. Call ``add_user`` to create the actual ``ab_user`` row with the
+           registration data (hashed_password is stored as-is).
+        4. If ``add_user`` fails: flash generic error (danger) and redirect
+           to index (/).
+        5. On success: delete the ``RegisterUser`` row and render the SPA
+           shell with ``username``, ``first_name``, ``last_name`` in
+           bootstrap_data (mirrors ``render_app_template`` extra context).
+        """
+        import urllib.parse
+
+        from litestar.datastructures import Cookie
+
+        from superset.models.security import RegisterUser, Role, User
+
+        _logger = _log.getLogger(__name__)
+
+        # --- Error message constants (mirrors FAB / SupersetRegisterUserView) ---
+        _error_message = "Not possible to register you at the moment, try again later"
+        _false_error_message = "Registration not found"
+        _logmsg_err_no_hash = "Attempt to activate user with false hash: %s"
+
+        settings = state.settings
+        session_factory = state.session_factory
+
+        reg_data: dict[str, Any] | None = None
+
+        # Step 1: find_register_user(activation_hash) -- mirrors sm.find_register_user
+        try:
+            async with session_factory() as session:
+                stmt = select(RegisterUser).where(
+                    RegisterUser.registration_hash == activation_hash
+                )
+                result = await session.execute(stmt)
+                reg = result.scalars().one_or_none()
+                if reg is not None:
+                    reg_data = {
+                        "username": reg.username,
+                        "email": reg.email,
+                        "first_name": reg.first_name,
+                        "last_name": reg.last_name,
+                        "password": reg.password,
+                        "id": reg.id,
+                    }
+        except Exception:  # noqa: BLE001
+            _logger.exception("Error looking up registration hash %s", activation_hash)
+            raise  # DB error propagates as 500 -- mirrors original (no try/except)
+
+        # Step 2: not found -> flash + redirect
+        if reg_data is None:
+            _logger.error(_logmsg_err_no_hash, activation_hash)
+            flash_cookie = Cookie(
+                key="_flash_danger",  # mirrors flash(msg, "danger")
+                value=urllib.parse.quote(_false_error_message),
+                max_age=60,
+                path="/",
+                httponly=True,
+                samesite="lax",
+            )
+            redirect_resp = Redirect(path="/")
+            redirect_resp.cookies.append(flash_cookie)
+            return redirect_resp
+
+        # Step 3: add_user -- mirrors sm.add_user(username, email, first_name,
+        # last_name, role=sm.find_role(sm.auth_user_registration_role),
+        # hashed_password=reg.password)
+        auth_user_registration_role: str = getattr(
+            settings, "auth_user_registration_role", "Public"
+        )
+        user_created = False
+        try:
+            async with session_factory() as session:
+                # find_role (mirrors sm.find_role)
+                role_stmt = select(Role).where(Role.name == auth_user_registration_role)
+                role_result = await session.execute(role_stmt)
+                role = role_result.scalars().one_or_none()
+
+                # add_user: create User row with hashed_password stored as-is
+                # (mirrors FAB add_user with hashed_password kwarg)
+                new_user = User()
+                new_user.first_name = reg_data["first_name"]
+                new_user.last_name = reg_data["last_name"]
+                new_user.username = reg_data["username"]
+                new_user.email = reg_data["email"]
+                new_user.active = True
+                new_user.roles = [role] if role is not None else []
+                # password is already hashed (stored by add_register_user)
+                new_user.password = reg_data["password"]
+                session.add(new_user)
+                # pre-init lazy-load collection to avoid SA lazy-load error
+                new_user.groups = []
+                await session.commit()
+                user_created = True
+        except Exception:  # noqa: BLE001
+            _logger.exception(
+                "Failed to create user from registration hash %s", activation_hash
+            )
+
+        # Step 4: add_user failed -> flash + redirect
+        if not user_created:
+            flash_cookie = Cookie(
+                key="_flash_danger",  # mirrors flash(msg, "danger")
+                value=urllib.parse.quote(_error_message),
+                max_age=60,
+                path="/",
+                httponly=True,
+                samesite="lax",
+            )
+            redirect_resp = Redirect(path="/")
+            redirect_resp.cookies.append(flash_cookie)
+            return redirect_resp
+
+        # Step 5: del_register_user + render SPA with extra context
+        # mirrors: sm.del_register_user(reg) + render_app_template({username, ...})
+        try:
+            async with session_factory() as session:
+                del_stmt = select(RegisterUser).where(
+                    RegisterUser.registration_hash == activation_hash
+                )
+                del_result = await session.execute(del_stmt)
+                reg_to_delete = del_result.scalars().one_or_none()
+                if reg_to_delete is not None:
+                    await session.delete(reg_to_delete)
+                    await session.commit()
+        except Exception:  # noqa: BLE001
+            _logger.exception(
+                "Failed to delete registration after activation for hash %s",
+                activation_hash,
+            )
+
+        # Build SPA shell with extra bootstrap context (username/first_name/last_name).
+        # Mirrors render_app_template({"username": ..., "first_name": ...,
+        # "last_name": ...}) which merges the dict into bootstrap_data.
+        user = getattr(request, "user", None)
+        bootstrap = _build_bootstrap_data(
+            user,
+            settings,
+            extra={
+                "username": reg_data["username"],
+                "first_name": reg_data["first_name"],
+                "last_name": reg_data["last_name"],
+            },
+        )
+
+        import json
+
+        return Template(
+            template_name="spa.html",
+            context={
+                "bootstrap_data": json.dumps(bootstrap),
+                "entry": "spa",
+                "title": "Superset",
+                "assets_prefix": getattr(settings, "static_assets_prefix", ""),
+                "standalone_mode": False,
+                "favicons": [{"href": "/static/assets/images/favicon.png"}],
+                "csrf_token": _get_csrf_token(
+                    settings,
+                    session_id=request.cookies.get(
+                        getattr(settings, "session_cookie_name", "session"),
+                        "",
+                    ),
+                ),
+            },
+        )
 
     @get(
         _SPA_PATHS,
@@ -917,6 +1262,20 @@ class SPAController(Controller):
         if request_path.rstrip("/") == "/superset/welcome":
             if not is_auth:
                 return Redirect(path="/login/")
+
+            # If the user has a welcome_dashboard_id configured in
+            # UserAttribute, render the dashboard SPA shell in-place at
+            # /superset/welcome/ (NO redirect).
+            # Mirrors Superset.welcome() → self.dashboard() in
+            # superset_old/views/core.py:926-931 + 795-837.
+            _uid = getattr(user, "id", None)
+            _sf = getattr(state, "session_factory", None)
+            if _uid is not None and _sf is not None:
+                _resp = await _render_welcome_dashboard(
+                    user, _uid, _sf, state, settings, request
+                )
+                if _resp is not None:
+                    return _resp
 
         # Other SPA paths: anonymous users without Public perms -> login.
         # Anonymous users with Public perms fall through and render SPA;
@@ -973,7 +1332,7 @@ class SPAController(Controller):
 
     @post(
         ["/superset/log/", "/superset/log"],
-        exclude_from_auth=True,
+        guards=[require_permission("can_log", "Superset")],
         opt={"exclude_from_csrf": True},
         status_code=200,
     )
@@ -981,8 +1340,12 @@ class SPAController(Controller):
         self,
         request: Request[Any, Any, Any],
         state: State,
-    ) -> dict[str, str]:
+    ) -> Response[None]:
         """POST /superset/log/ -- frontend event logging.
+
+        Mirrors the original ``Superset.log`` (superset_old/views/core.py:868-873)
+        which is decorated with ``@api``, ``@has_access``, ``@event_logger.log_this``
+        and returns ``Response(status=200)`` (empty body).
 
         The React frontend fires analytics events here.
         ``?explode=events`` sends a JSON array of event
@@ -1000,43 +1363,42 @@ class SPAController(Controller):
             else:
                 events = [dict(form)]
 
-            if not events:
-                return {"status": "OK"}
+            if events:
+                session_factory = state.session_factory
+                user = getattr(request, "user", None)
+                user_id = getattr(user, "id", None)
 
-            session_factory = state.session_factory
-            user = getattr(request, "user", None)
-            user_id = getattr(user, "id", None)
+                # Upstream writes action="log" (the Flask view function name) for
+                # ALL frontend events.  The per-event "event_name" (e.g.
+                # "mount_dashboard") lives inside the json column, not in action.
+                # recent_activity queries: action=="log" AND json contains event_name.
+                referrer_raw = request.headers.get("Referer") or request.headers.get(
+                    "referrer"
+                )
+                referrer = referrer_raw[:1000] if referrer_raw else None
 
-            # Upstream writes action="log" (the Flask view function name) for
-            # ALL frontend events.  The per-event "event_name" (e.g.
-            # "mount_dashboard") lives inside the json column, not in action.
-            # recent_activity queries: action=="log" AND json contains event_name.
-            referrer_raw = request.headers.get("Referer") or request.headers.get(
-                "referrer"
-            )
-            referrer = referrer_raw[:1000] if referrer_raw else None
+                async with session_factory() as session:
+                    log_dao = AsyncLogDAO(session)
+                    for evt in events:
+                        await log_dao.create_log(
+                            {
+                                "action": "log",
+                                "json": json.dumps(evt),
+                                "user_id": user_id,
+                                "dashboard_id": evt.get("dashboard_id"),
+                                "slice_id": evt.get("slice_id"),
+                                "duration_ms": 0,
+                                "referrer": referrer,
+                            }
+                        )
+                    await session.commit()
 
-            async with session_factory() as session:
-                log_dao = AsyncLogDAO(session)
-                for evt in events:
-                    await log_dao.create_log(
-                        {
-                            "action": "log",
-                            "json": json.dumps(evt),
-                            "user_id": user_id,
-                            "dashboard_id": evt.get("dashboard_id"),
-                            "slice_id": evt.get("slice_id"),
-                            "duration_ms": 0,
-                            "referrer": referrer,
-                        }
-                    )
-                await session.commit()
-
-            logger.debug(
-                "Logged %d frontend events",
-                len(events),
-            )
+                logger.debug(
+                    "Logged %d frontend events",
+                    len(events),
+                )
         except Exception:  # noqa: BLE001
             logger.debug("Frontend log failed", exc_info=True)
 
-        return {"status": "OK"}
+        # 1:1 with original: Response(status=200) — empty body.
+        return Response(content=None, status_code=200)

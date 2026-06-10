@@ -92,9 +92,7 @@ def scheduler(self: Task) -> None:  # pylint: disable=unused-argument
             else datetime.now(tz=timezone.utc)
         )
         active_schedules = (
-            session.query(ReportSchedule)
-            .filter(ReportSchedule.active.is_(True))
-            .all()
+            session.query(ReportSchedule).filter(ReportSchedule.active.is_(True)).all()
         )
         for active_schedule in active_schedules:
             for schedule in cron_schedule_window(

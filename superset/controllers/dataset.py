@@ -271,7 +271,12 @@ class DatasetController(Controller):
         "/_info",
         guards=[require_permission("can_read", "Dataset")],
     )
-    async def info(self, dao: DatasetDAOProtocol) -> dict[str, Any]:
+    async def info(
+        self,
+        dao: DatasetDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
         """GET /api/v1/dataset/_info — API metadata for frontend."""
         return await get_info_payload(
             dao=dao,
@@ -285,6 +290,9 @@ class DatasetController(Controller):
                 "can_get_or_create_dataset",
                 "can_write",
             ],
+            security_manager=security_manager,
+            current_user=current_user,
+            class_permission_name="Dataset",
         )
 
     @get(
@@ -387,41 +395,16 @@ class DatasetController(Controller):
         dataset = results[0]
 
         detail = DatasetDetailResult.from_model(dataset)
+        # Strip 'folders' from the response when the DATASET_FOLDERS feature
+        # flag is disabled — 1:1 with superset_old/datasets/api.py:1173-1179.
+        # The frontend inspects this key's presence as a feature-detection
+        # signal; omitting it tells the UI not to render folder controls.
+        from superset.utils.feature_flags import feature_flag_manager
+
+        if not feature_flag_manager.is_feature_enabled("DATASET_FOLDERS"):
+            detail.folders = msgspec.UNSET
         if include_rendered_sql:
-            # Render Jinja in ``sql`` AND each metric/column ``expression`` →
-            # ``rendered_sql``/``rendered_expression`` — 1:1 with upstream
-            # ``render_dataset_fields``. A template error must PROPAGATE as a
-            # 422 ``SupersetTemplateException`` (the port previously rendered
-            # only the top-level sql and silently swallowed errors → returned
-            # raw SQL, masking broken templates and never rendering metric/
-            # column expressions).
-            from jinja2 import TemplateError
-
-            from superset.exceptions import (
-                SupersetTemplateException,
-                SupersetTemplateParamsErrorException,
-            )
-            from superset.jinja_context import get_template_processor
-
-            tp = get_template_processor(database=dataset.database, table=dataset)
-            try:
-                raw_sql = getattr(dataset, "sql", None)
-                if raw_sql:
-                    detail.rendered_sql = tp.process_template(raw_sql)
-                for m in detail.metrics:
-                    if m.expression:
-                        m.rendered_expression = tp.process_template(m.expression)
-                for c in detail.columns:
-                    if c.expression:
-                        c.rendered_expression = tp.process_template(c.expression)
-            except (
-                TemplateError,
-                SupersetTemplateException,
-                SupersetTemplateParamsErrorException,
-            ) as ex:
-                raise SupersetTemplateException(
-                    "Unable to render expression from dataset."
-                ) from ex
+            self._apply_rendered_sql(dataset, detail)
         return DatasetGetResponse(
             id=dataset.id,
             result=detail,
@@ -563,15 +546,15 @@ class DatasetController(Controller):
             ]
 
         # Always run UpdateDatasetCommand (saves metrics/owners/description/etc.).
-        # When override_columns=true, ALSO run RefreshDatasetCommand afterwards
-        # to resync columns from the physical DB — skipping user-provided
-        # column edits (they're already overridden by the refresh).
+        # When override_columns=true, ALSO run RefreshDatasetCommand afterwards.
         # Mirrors superset_old/datasets/api.py:441-443:
         #     changed_model = UpdateDatasetCommand(pk, item, override_columns).run()
         #     if override_columns:
         #         RefreshDatasetCommand(pk).run()
-        if override_columns:
-            update_data.pop("columns", None)
+        # The body ``columns`` are passed THROUGH — the original applies them
+        # first (delete-all + reinsert in the DAO override path) and the
+        # subsequent refresh only updates types, preserving user-provided
+        # metadata and virtual (expression) columns.
         cmd = UpdateDatasetCommand(
             dao=cast("AsyncDatasetDAO", dao),
             dataset_id=pk,
@@ -790,6 +773,8 @@ class DatasetController(Controller):
         self,
         dao: DatasetDAOProtocol,
         rison_params: list[int] | dict[str, Any] | None,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
         token: str | None = Parameter(query="token", default=None),
     ) -> Stream:
         ids = extract_ids(rison_params)
@@ -805,7 +790,12 @@ class DatasetController(Controller):
 
         timestamp = _datetime.now().strftime("%Y%m%dT%H%M%S")
         root = f"dataset_export_{timestamp}"
-        cmd = ExportDatasetsCommand(model_ids=ids, dao=cast("AsyncDatasetDAO", dao))
+        cmd = ExportDatasetsCommand(
+            model_ids=ids,
+            dao=cast("AsyncDatasetDAO", dao),
+            security_manager=security_manager,
+            user=current_user,
+        )
         cmd._root = root  # noqa: SLF001
         buf = await cmd.execute()
         await event_logger.alog_with_context(
@@ -843,15 +833,16 @@ class DatasetController(Controller):
             ssh_private_key_passwords_dict,
         ) = await parse_import_request(request)
         contents = _buf.getvalue()
-        # sync_columns / sync_metrics are extra multipart fields (default True;
-        # only an explicit ``false`` disables). The form is cached by Litestar.
+        # sync_columns / sync_metrics are extra multipart fields (default False;
+        # only an explicit ``"true"`` enables — matches original
+        # ``request.form.get("sync_columns") == "true"``).
         _form = await request.form()
 
-        def _form_bool(name: str, default: bool = True) -> bool:
+        def _form_bool(name: str, default: bool = False) -> bool:
             raw = _form.get(name)
             if raw is None:
                 return default
-            return str(raw).strip().lower() not in ("false", "0", "no", "off")
+            return str(raw).strip().lower() == "true"
 
         sync_columns = _form_bool("sync_columns")
         sync_metrics = _form_bool("sync_metrics")
@@ -1019,8 +1010,11 @@ class DatasetController(Controller):
             options=drill_options,
         )
         if results:
-            return {"result": self._dump_drill_info(results[0], security_manager,
-                                                     current_user)}
+            return {
+                "result": self._dump_drill_info(
+                    results[0], security_manager, current_user
+                )
+            }
 
         # Embedded (guest) user must pass a dashboard id.
         if not dashboard_id and security_manager.is_guest_user(current_user):
@@ -1055,8 +1049,46 @@ class DatasetController(Controller):
         dataset = await dao.find_by_id_with_options(pk, options=drill_options)
         if not dataset:
             raise ObjectNotFoundError("Dataset", pk)
-        return {"result": self._dump_drill_info(dataset, security_manager,
-                                                current_user)}
+        return {
+            "result": self._dump_drill_info(dataset, security_manager, current_user)
+        }
+
+    @staticmethod
+    def _apply_rendered_sql(dataset: Any, detail: Any) -> None:
+        """Render Jinja in ``sql`` and each metric/column ``expression``.
+
+        Populates ``detail.rendered_sql`` and per-item
+        ``rendered_expression`` fields — 1:1 with upstream
+        ``render_dataset_fields`` (``superset_old/datasets/api.py``).
+        A template error propagates as a 422
+        ``SupersetTemplateException``.
+        """
+        from jinja2.exceptions import TemplateSyntaxError
+
+        from superset.exceptions import (
+            SupersetSyntaxErrorException,
+            SupersetTemplateException,
+        )
+        from superset.jinja_context import get_template_processor
+
+        tp = get_template_processor(database=dataset.database)
+        try:
+            raw_sql = getattr(dataset, "sql", None)
+            if raw_sql:
+                detail.rendered_sql = tp.process_template(raw_sql)
+            for m in detail.metrics:
+                if m.expression:
+                    m.rendered_expression = tp.process_template(m.expression)
+            for c in detail.columns:
+                if c.expression:
+                    c.rendered_expression = tp.process_template(c.expression)
+        except (
+            TemplateSyntaxError,
+            SupersetSyntaxErrorException,
+        ) as ex:
+            raise SupersetTemplateException(
+                "Unable to render expression from dataset."
+            ) from ex
 
     @staticmethod
     def _parse_drill_dashboard_id(q: str | None) -> int | None:
@@ -1084,7 +1116,7 @@ class DatasetController(Controller):
         """Build an ``AsyncDashboardDAO`` bound to the dataset DAO's session."""
         from superset.db.daos.dashboard import AsyncDashboardDAO
 
-        return AsyncDashboardDAO(dataset_dao.session)  # type: ignore[attr-defined]
+        return AsyncDashboardDAO(dataset_dao.session)
 
     @staticmethod
     def _dump_drill_info(

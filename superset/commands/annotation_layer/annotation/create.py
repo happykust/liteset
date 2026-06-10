@@ -67,9 +67,7 @@ class CreateAnnotationCommand(AsyncBaseCommand["Annotation"]):
         start_dttm = self._data.get("start_dttm")
         end_dttm = self._data.get("end_dttm")
         if start_dttm and end_dttm and end_dttm < start_dttm:
-            raise CommandInvalidError(
-                "end_dttm must be greater or equal to start_dttm"
-            )
+            raise CommandInvalidError("end_dttm must be greater or equal to start_dttm")
 
         # Validate json_metadata is valid JSON — 1:1 with upstream
         # ``AnnotationPostSchema.json_metadata`` which carries
@@ -79,6 +77,7 @@ class CreateAnnotationCommand(AsyncBaseCommand["Annotation"]):
         json_metadata = self._data.get("json_metadata")
         if json_metadata not in (None, ""):
             import json as _json
+
             try:
                 _json.loads(json_metadata)
             except (TypeError, ValueError) as ex:

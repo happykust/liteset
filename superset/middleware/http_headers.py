@@ -60,7 +60,7 @@ class HTTPHeadersMiddleware(ASGIMiddleware):
     overrides pushed via ``superset_config.py`` reach every response.
     """
 
-    async def handle(
+    async def handle(  # noqa: C901
         self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp
     ) -> None:
         if scope["type"] != "http":
@@ -72,13 +72,9 @@ class HTTPHeadersMiddleware(ASGIMiddleware):
         if app is not None:
             settings = getattr(getattr(app, "state", None), "settings", None)
 
-        override: dict[str, Any] = (
-            getattr(settings, "override_http_headers", {}) or {}
-        )
+        override: dict[str, Any] = getattr(settings, "override_http_headers", {}) or {}
         merged: dict[str, Any] = getattr(settings, "http_headers", {}) or {}
-        defaults: dict[str, Any] = (
-            getattr(settings, "default_http_headers", {}) or {}
-        )
+        defaults: dict[str, Any] = getattr(settings, "default_http_headers", {}) or {}
 
         if not override and not merged and not defaults:
             await next_app(scope, receive, send)
@@ -98,15 +94,11 @@ class HTTPHeadersMiddleware(ASGIMiddleware):
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                existing: list[tuple[bytes, bytes]] = list(
-                    message.get("headers", [])
-                )
+                existing: list[tuple[bytes, bytes]] = list(message.get("headers", []))
                 # OVERRIDE_HTTP_HEADERS / HTTP_HEADERS — replace any
                 # existing headers with the same (case-insensitive) name.
                 for name, value in unconditional:
-                    existing = [
-                        (k, v) for k, v in existing if k.lower() != name
-                    ]
+                    existing = [(k, v) for k, v in existing if k.lower() != name]
                     existing.append((name, value))
                 # DEFAULT_HTTP_HEADERS — only added when missing.
                 existing_names = {k.lower() for k, _ in existing}

@@ -24,10 +24,11 @@ auto-generated integer ids and a Hashids-encoded short key for URLs.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 import msgspec
-from litestar import Controller, get, post
+from litestar import Controller, get, post, Request
 from litestar.di import Provide
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,6 +54,7 @@ from superset.typing import (
     SecurityManagerProtocol,
     UserProtocol,
 )
+from superset.utils.core import DatasourceType
 
 
 class ExplorePermalinkCreateSchema(msgspec.Struct, rename="camel"):
@@ -65,7 +67,10 @@ class ExplorePermalinkCreateSchema(msgspec.Struct, rename="camel"):
     """
 
     form_data: dict[str, Any]
-    url_params: list[list[str]] | None = None
+    # ``urlParams`` is ``allow_none=True`` upstream: an EXPLICIT null is kept
+    # in the loaded dict (and thus in the stored state), while an absent field
+    # is omitted — hence UNSET, not None, as the absent marker.
+    url_params: list[list[str]] | None | msgspec.UnsetType = msgspec.UNSET
 
 
 class ExplorePermalinkController(Controller):
@@ -85,6 +90,7 @@ class ExplorePermalinkController(Controller):
     )
     async def create_permalink(
         self,
+        request: Request[Any, Any, Any],
         data: ExplorePermalinkCreateSchema,
         kv_dao: KeyValueDAOProtocol,
         chart_dao: ChartDAOProtocol,
@@ -123,7 +129,12 @@ class ExplorePermalinkController(Controller):
 
         d_id, d_type = datasource_str.split("__")
         datasource_id = int(d_id)
-        datasource_type = d_type
+        # 1:1 with original: validate datasource type via DatasourceType enum.
+        # The original ``CreateExplorePermalinkCommand.run()`` calls
+        # ``DatasourceType(d_type)`` which raises ValueError for unknown types.
+        # This is caught by the @safe decorator and returns 500. We preserve
+        # the same validation behavior for parity.
+        datasource_type = DatasourceType(d_type).value
         chart_id: int | None = form_data.get("slice_id")
 
         # 1:1 with original: check_chart_access before storing the permalink.
@@ -138,10 +149,12 @@ class ExplorePermalinkController(Controller):
             user=current_user,
         )
 
-        state = {
-            "formData": form_data,
-            "urlParams": data.url_params or [],
-        }
+        # 1:1 with original Marshmallow schema: urlParams is only included when
+        # provided — but an EXPLICIT ``urlParams: null`` IS provided
+        # (allow_none=True keeps it in the loaded dict) and must be stored.
+        state: dict[str, Any] = {"formData": form_data}
+        if data.url_params is not msgspec.UNSET:
+            state["urlParams"] = data.url_params
         payload = {
             "chartId": chart_id,
             "datasourceId": datasource_id,
@@ -174,10 +187,10 @@ class ExplorePermalinkController(Controller):
             "explore_permalink.create", user_id=current_user.id
         )
         # 1:1 with upstream ``url_for("ExplorePermalinkView.permalink", ...)``
-        # whose ``route_base="/superset"`` yields ``/superset/explore/p/<key>/``
-        # (matches the frontend SPA route). The port previously dropped the
-        # ``/superset`` prefix → "Copy permalink" produced a non-routing URL.
-        return {"key": key, "url": f"/superset/explore/p/{key}/"}
+        # with ``_external=True`` which generates an absolute URL like
+        # ``http://example.com/superset/explore/p/<key>/``.
+        base_url = str(request.base_url).rstrip("/")
+        return {"key": key, "url": f"{base_url}/superset/explore/p/{key}/"}
 
     @get(
         "/{key:str}",
@@ -204,24 +217,43 @@ class ExplorePermalinkController(Controller):
         directly into the response (``**value``), so the frontend
         receives ``{chartId, datasourceId, datasource, state, ...}``.
         """
+        # 1:1 with original GetExplorePermalinkCommand.run():
+        # decode_permalink_id raises KeyValueParseKeyError for an invalid key.
+        # The original command wraps it in ExplorePermalinkGetFailedError
+        # (CommandException, status=500), which is NOT caught by the Flask
+        # handler, so @safe returns HTTP 500.  We must NOT convert this to a
+        # 404 — let KeyValueParseKeyError propagate; the superset_exception_handler
+        # will return HTTP 500 matching the original behaviour.
         salt = await get_permalink_salt(session, SharedKey.EXPLORE_PERMALINK_SALT)
-        try:
-            entry_id = decode_permalink_id(key, salt=salt)
-        except Exception as ex:  # noqa: BLE001
-            raise ObjectNotFoundError("ExplorePermalink", key) from ex
+        entry_id = decode_permalink_id(key, salt=salt)
 
         dao = AsyncKeyValueDAO(session)
         entry = await dao.get_entry_by_key(
             resource=KeyValueResource.EXPLORE_PERMALINK.value,
             key=entry_id,
         )
-        if entry is None:
+        # 1:1 with original KeyValueDAO.get_value
+        # (superset_old/daos/key_value.py:56-58):
+        #   if not entry or entry.is_expired(): return None
+        # Expired entries must be treated as non-existent (→ 404).
+        if entry is None or (
+            entry.expires_on is not None and entry.expires_on <= datetime.now()
+        ):
             raise ObjectNotFoundError("ExplorePermalink", key)
 
-        try:
-            payload = json.loads(entry.value.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            payload = {}
+        # No try/except — 1:1 with the original GetExplorePermalinkCommand:
+        # a corrupted stored value raises json.JSONDecodeError (a ValueError),
+        # which propagates uncaught to ``@safe`` → HTTP 500 (NOT a silent
+        # ``payload = {}`` that would surface as a misleading 400).
+        payload = json.loads(entry.value.decode("utf-8"))
+
+        # Audit log — the original endpoint is decorated with
+        # ``@event_logger.log_this_with_context(action="...get")``
+        # (superset_old/explore/permalink/api.py), so every permalink read
+        # emits a log entry.
+        await event_logger.alog_with_context(
+            "explore_permalink.get", user_id=getattr(current_user, "id", None)
+        )
 
         # 1:1 with original GetExplorePermalinkCommand: re-validate datasource
         # access for every GET so that permission revocations are honoured.
@@ -245,15 +277,32 @@ class ExplorePermalinkController(Controller):
             # value exists (with ``datasourceId or datasetId or 0``). The falsy
             # ``datasource_id == 0`` case is rejected inside
             # ``check_datasource_access`` rather than being silently skipped.
-            await check_chart_access(
-                datasource_id=datasource_id,
-                chart_id=chart_id,
-                datasource_type=datasource_type,
-                dataset_dao=dataset_dao,
-                query_dao=query_dao,
-                chart_dao=chart_dao,
-                security_manager=security_manager,
-                user=current_user,
-            )
+            from superset.exceptions import DatasetNotFoundError, SupersetException
+
+            try:
+                await check_chart_access(
+                    datasource_id=datasource_id,
+                    chart_id=chart_id,
+                    datasource_type=datasource_type,
+                    dataset_dao=dataset_dao,
+                    query_dao=query_dao,
+                    chart_dao=chart_dao,
+                    security_manager=security_manager,
+                    user=current_user,
+                )
+            except (ObjectNotFoundError, DatasetNotFoundError) as ex:
+                # Faithful 500: the original GetExplorePermalinkCommand wraps
+                # DatasetNotFoundError into ExplorePermalinkGetFailedError
+                # (superset_old/commands/explore/permalink/get.py:60-66), which
+                # the API handler does NOT catch -> @safe -> HTTP 500 (its own
+                # DatasetNotFoundError->404 arm is dead code for this path).
+                # The DATASET branch of check_chart_access raises
+                # ObjectNotFoundError ("Dataset") here; a missing CHART raises
+                # ChartNotFoundError, which is NOT caught — it propagates as
+                # 404, exactly like the original command (ChartNotFoundError
+                # is absent from its except list, api.py:163-164 maps it 404).
+                raise SupersetException(
+                    message=getattr(ex, "message", str(ex)), status=500
+                ) from ex
             return payload
         return {"value": payload}

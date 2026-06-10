@@ -24,6 +24,7 @@ from litestar import Controller, get
 from litestar.di import Provide
 
 from superset.controllers.base import (
+    _serialize_item,
     build_rison_query_params,
     serialize_list_response,
 )
@@ -90,6 +91,14 @@ class ReportExecutionLogController(Controller):
             total,
             _LIST_COLUMNS,
             list_title="List Report Log",
+            order_columns=[
+                "state",
+                "value",
+                "error_message",
+                "end_dttm",
+                "start_dttm",
+                "scheduled_dttm",
+            ],
         )
 
     @get(
@@ -106,6 +115,12 @@ class ReportExecutionLogController(Controller):
         item = await dao.find_by_id(log_id)
         if item is None:
             raise ObjectNotFoundError("ReportExecutionLog", log_id)
-        if getattr(item, "report_schedule_id", None) != pk:
-            raise ObjectNotFoundError("ReportExecutionLog", log_id)
-        return {"result": item}
+        # 1:1 with original ``self.get_headless(log_id, **kwargs)`` which
+        # fetches by log_id using only self._base_filters (empty for this API
+        # -- ReportExecutionLogRestApi never sets base_filters).  The rison
+        # filter added by _apply_layered_relation_to_rison is consumed only by
+        # _handle_columns_args (column selection), NOT by the DB lookup.
+        # Therefore, a valid log_id belonging to a *different* report schedule
+        # than pk is returned as 200 in the original, not 404.
+        # (superset_old/reports/logs/api.py:207-208 → FAB api/__init__.py:1485-1490)
+        return {"id": log_id, "result": _serialize_item(item, _LIST_COLUMNS)}

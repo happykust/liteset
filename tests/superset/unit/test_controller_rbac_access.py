@@ -322,6 +322,7 @@ async def test_explore_datasource_denied_returns_403():
         chart_dao=MagicMock(),
         dataset_dao=dataset_dao,
         kv_dao=MagicMock(),
+        query_dao=MagicMock(),
         security_manager=sm,
         current_user=MagicMock(),
         session=AsyncMock(),

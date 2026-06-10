@@ -128,8 +128,7 @@ async def test_binary_cache_default_is_non_decoding():
     default_async = mgr._default_async_redis
     assert default_async is not None
     assert (
-        default_async.connection_pool.connection_kwargs.get("decode_responses")
-        is False
+        default_async.connection_pool.connection_kwargs.get("decode_responses") is False
     )
     # The binary cache slot uses the non-decoding default, not the auth client.
     assert getattr(mgr._cache, "_redis", None) is default_async

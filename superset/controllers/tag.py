@@ -71,11 +71,24 @@ class TagController(Controller):
     ) -> dict[str, Any]:
         from sqlalchemy.orm import selectinload
 
-        from superset.models.tags import Tag
+        from superset.models.tags import Tag, TagType
+
+        def _user_created_tag_type_filter(model_cls: type[Any], value: Any) -> Any:
+            """1:1 with ``UserCreatedTagTypeFilter``
+            (superset_old/tags/filters.py:33-48): when ``value`` is truthy
+            return only custom tags; when ``False`` return only non-custom
+            (system) tags; otherwise no-op (``None``).
+            """
+            if value:
+                return Tag.type == TagType.custom
+            if value is False:
+                return Tag.type != TagType.custom
+            return None
 
         rison_filters, order_by, page, page_size = build_rison_query_params(
             Tag,
             rison_params,
+            custom_filters={"custom_tag": _user_created_tag_type_filter},
         )
         items = await dao.find_all(
             filters=rison_filters or None,
@@ -144,7 +157,7 @@ class TagController(Controller):
                     "created_by.first_name",
                     "created_by.last_name",
                 ],
-            )
+            ),
         }
 
     @post("/", guards=[require_permission("can_write", "Tag")], status_code=201)
@@ -329,7 +342,11 @@ class TagController(Controller):
         fav_ids = await dao.favorited_ids([pk], current_user.id)
         return {"result": {"id": pk, "value": pk in fav_ids}}
 
-    @post("/{pk:int}/favorites/", status_code=200)
+    @post(
+        "/{pk:int}/favorites/",
+        guards=[require_permission("can_read", "Tag")],
+        status_code=200,
+    )
     async def add_favorite(
         self,
         pk: int,
@@ -350,7 +367,11 @@ class TagController(Controller):
         )
         return {"result": "OK"}
 
-    @delete("/{pk:int}/favorites/", status_code=200)
+    @delete(
+        "/{pk:int}/favorites/",
+        guards=[require_permission("can_read", "Tag")],
+        status_code=200,
+    )
     async def remove_favorite(
         self,
         pk: int,
@@ -389,11 +410,31 @@ class TagController(Controller):
         """
         from superset.models.tags import ObjectType
 
+        # 1:1 with superset_old/tags/api.py:397-408 — the original accesses
+        # ``request.json["properties"]["tags"]`` directly and catches
+        # ``KeyError`` → 400 with ``"Missing required field 'tags' in
+        # 'properties'"``. Our msgspec schema defaults both ``properties``
+        # and ``tags`` to empty values, so an empty/missing body silently
+        # succeeds. Guard against that here.
+        if data.properties.tags is None:
+            from litestar.exceptions import HTTPException
+
+            raise HTTPException(
+                detail="Missing required field 'tags' in 'properties'",
+                status_code=400,
+            )
+
+        # 1:1 with superset_old/commands/tag/create.py:55-56
+        # CreateCustomTagCommand.validate() blocks object_id==0 with
+        # TagCreateFailedError → TagInvalidError → api.py:407-408 returns 422
+        # "Invalid tag".  Missing guard caused silent TaggedObject(object_id=0)
+        # insert since the column has no FK constraint.
+        if object_id == 0:
+            raise SupersetValidationException("Invalid tag")
+
         try:
             obj_type = ObjectType(object_type)
         except ValueError as exc:
-            from superset.exceptions import SupersetValidationException
-
             # 1:1 with superset_old/tags/api.py:407-408 — a TagInvalidError
             # surfaces as 422 with the "Invalid tag" message.
             raise SupersetValidationException("Invalid tag") from exc
@@ -440,11 +481,20 @@ class TagController(Controller):
             # from dao.delete_tagged_object below.
             raise SupersetValidationException("Invalid tag") from exc
 
-        await dao.delete_tagged_object(
-            object_type=obj_type.name,
-            object_id=object_id,
-            tag_name=tag,
-        )
+        # 1:1 with superset_old/commands/tag/delete.py:53-86 + api.py:462-463:
+        # the original command wraps both "tag not found" and "tagged-object
+        # not found" as TaggedObjectDeleteFailedError / TaggedObjectNotFoundError
+        # inside a TagInvalidError (CommandInvalidError → 422), so the API
+        # always returns 422 for those cases.  The liteset DAO raises
+        # ObjectNotFoundError (404), so re-map it here.
+        try:
+            await dao.delete_tagged_object(
+                object_type=obj_type.name,
+                object_id=object_id,
+                tag_name=tag,
+            )
+        except ObjectNotFoundError as exc:
+            raise SupersetValidationException(str(exc)) from exc
         await event_logger.alog_with_context(
             "tag.delete_object",
             extra={
@@ -477,12 +527,20 @@ class TagController(Controller):
     # GET /_info -- API metadata
     # ------------------------------------------------------------------
     @get("/_info", guards=[require_permission("can_read", "Tag")])
-    async def info(self, dao: Any) -> dict[str, Any]:
+    async def info(
+        self,
+        dao: Any,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
         """GET /api/v1/tag/_info -- API metadata for frontend."""
         return await get_info_payload(
             dao=dao,
             model_name="Tag",
             permissions=["can_read", "can_write"],
+            security_manager=security_manager,
+            current_user=current_user,
+            class_permission_name="Tag",
         )
 
     # ------------------------------------------------------------------

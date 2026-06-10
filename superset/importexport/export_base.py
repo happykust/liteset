@@ -24,6 +24,7 @@ import zipfile
 from abc import abstractmethod
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
+from typing import Any
 
 import yaml
 
@@ -37,7 +38,14 @@ class AsyncExportModelsCommand(AsyncBaseCommand[io.BytesIO]):
 
     _resource_type: str = ""  # Override in subclasses
 
-    def __init__(self, model_ids: list[int], root: str | None = None) -> None:
+    def __init__(
+        self,
+        model_ids: list[int],
+        root: str | None = None,
+        security_manager: Any = None,
+        user: Any = None,
+        export_related: bool = True,
+    ) -> None:
         self._model_ids = model_ids
         # Optional root folder under which every ZIP entry is nested. The
         # original API handlers (e.g.
@@ -46,9 +54,53 @@ class AsyncExportModelsCommand(AsyncBaseCommand[io.BytesIO]):
         # ``f"{root}/{file_name}"``; the importer strips it back off via
         # ``remove_root`` (``parts[1:]``).
         self._root = root
+        self._security_manager = security_manager
+        self._user = user
+        # 1:1 with superset_old/commands/export/models.py:39 — stored so
+        # subclasses can gate related-resource emission on this flag
+        # (e.g. tags.yaml is skipped in full-bundle exports).
+        self._export_related = export_related
 
     async def validate(self) -> None:
-        pass
+        """No-op at the base level; subclasses override with ``_validate_access``."""
+
+    async def _validate_access(
+        self,
+        dao: Any,
+        model_cls: Any,
+        access_filters: Any,
+        not_found_name: str,
+    ) -> None:
+        """Restrict the export to IDs the current user is allowed to see.
+
+        1:1 with ``superset_old/commands/export/models.py:validate()`` which
+        calls ``dao.find_by_ids(model_ids)`` — that applies the DAO
+        ``base_filter`` (``ChartFilter`` / ``DashboardAccessFilter`` /
+        ``DatabaseFilter`` / ``DatasourceFilter``), restricting results to
+        models the user can access, and raises ``not_found`` when the number
+        found differs from the number requested.  Without this an authenticated
+        user holding only ``can_export`` could export objects they cannot read
+        (information disclosure / IDOR).
+        """
+        from superset.exceptions import CommandInvalidError, ObjectNotFoundError
+
+        if dao is None:
+            raise CommandInvalidError("DAO not provided for export")
+        # CLI callers (e.g. superset/cli/importexport.py) do not inject a
+        # security_manager — they run as the OS process with admin-level DB
+        # access.  The original CLI (superset_old/cli/importexport.py:76) set
+        # g.user=admin which made every access-filter return [] immediately.
+        # Guard here to reproduce that behaviour: no security_manager → skip
+        # the filter check and allow all requested IDs.
+        if self._security_manager is None:
+            return
+        base_filters = await access_filters(self._security_manager, self._user)
+        filters = [model_cls.id.in_(self._model_ids)]
+        if base_filters:
+            filters.extend(base_filters)
+        accessible_count = await dao.count(filters=filters)
+        if accessible_count != len(self._model_ids):
+            raise ObjectNotFoundError(not_found_name, None)
 
     async def run(self) -> io.BytesIO:
         buf = io.BytesIO()

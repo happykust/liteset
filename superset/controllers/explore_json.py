@@ -387,9 +387,7 @@ class ExploreJsonController(Controller):
 
         # --- GLOBAL_ASYNC_QUERIES branch (JSON only) ---------------------
         if getattr(settings, "global_async_queries", False) and response_type == "json":
-            datasource = await self._load_datasource(
-                session, cast(int, datasource_id)
-            )
+            datasource = await self._load_datasource(session, cast(int, datasource_id))
             if datasource is None:
                 return Response(
                     content={"error": "Datasource not found"},
@@ -570,9 +568,7 @@ class ExploreJsonController(Controller):
         response_type = cached.get("response_type") or "json"
 
         try:
-            datasource_id, datasource_type = get_datasource_info(
-                None, None, form_data
-            )
+            datasource_id, datasource_type = get_datasource_info(None, None, form_data)
         except SupersetException as ex:
             return Response(
                 content={"error": str(ex)},

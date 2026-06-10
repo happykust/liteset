@@ -469,3 +469,60 @@ async def test_create_tag_relationship(async_session: AsyncSession) -> None:
     await async_session.flush()
     objs2 = await dao.get_tagged_objects_by_tag_ids([tag.id])
     assert len(objs2) == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests for AsyncTagDAO._serialize_created_by — verifies that the wire format
+# matches what the original Marshmallow 3 serialisation of ``created_by_fk``
+# (an integer FK) through ``UserSchema(exclude=["username"])`` would produce.
+#
+# Marshmallow 3 behaviour confirmed via python3 -c:
+#   Schema.dump(None)  → {}  (bare dump, but Nested._serialize short-circuits to None)
+#   Nested(Schema)._serialize(None, ...) → None  → "null" in JSON
+#   Schema.dump(42)    → {}  (all getattr misses → every field omitted)
+#
+# superset_old/daos/tag.py:190/213/236 store ``obj.created_by_fk`` (int or None)
+# which Marshmallow then serialises:
+#   integer FK → {}
+#   None        → null
+# ---------------------------------------------------------------------------
+
+
+def test_serialize_created_by_none_returns_null() -> None:
+    """None input (no creator) → null in JSON, matching original."""
+    from superset.db.daos.tag import AsyncTagDAO
+
+    assert AsyncTagDAO._serialize_created_by(None) is None
+
+
+def test_serialize_created_by_integer_fk_returns_empty_dict() -> None:
+    """Integer FK (created_by_fk value) → {} in JSON.
+
+    Original passes ``obj.created_by_fk`` (e.g. ``5``) through
+    ``UserSchema(exclude=["username"])``.  Marshmallow 3 misses every
+    attribute on an integer and emits ``{}``.  liteset must reproduce this.
+    """
+    from superset.db.daos.tag import AsyncTagDAO
+
+    assert AsyncTagDAO._serialize_created_by(5) == {}
+    assert AsyncTagDAO._serialize_created_by(1) == {}
+
+
+def test_serialize_created_by_user_object_returns_user_dict() -> None:
+    """User relationship object → {id, first_name, last_name} dict."""
+    from types import SimpleNamespace
+
+    from superset.db.daos.tag import AsyncTagDAO
+
+    user = SimpleNamespace(id=7, first_name="Alice", last_name="Smith")
+    result = AsyncTagDAO._serialize_created_by(user)
+    assert result == {"id": 7, "first_name": "Alice", "last_name": "Smith"}
+
+
+def test_serialize_created_by_string_returns_empty_dict() -> None:
+    """A plain string (e.g. from creator() result) → {} just like an integer FK."""
+    from superset.db.daos.tag import AsyncTagDAO
+
+    # strings also lack .id/.first_name/.last_name
+    assert AsyncTagDAO._serialize_created_by("John Doe") == {}
+    assert AsyncTagDAO._serialize_created_by("") == {}

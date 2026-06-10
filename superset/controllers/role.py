@@ -121,22 +121,42 @@ class RoleController(Controller):
         - ``filters`` with ``col=name`` for name substring matching
         """
         params = rison_params or {}
-        page, page_size = extract_pagination(rison_params)
+        page, page_size = extract_pagination(rison_params, default_page_size=10)
         order_column = params.get("order_column", "id")
         order_direction = params.get("order_direction", "asc")
 
-        # Extract name filter from rison filters list
-        name_filter: str | None = None
-        for f in params.get("filters", []):
-            if f.get("col") == "name":
-                name_filter = f.get("value")
+        # Original returns 400 for invalid order_column (security/api.py:289-292)
+        valid_columns = ("id", "name")
+        if order_column not in valid_columns:
+            from litestar.exceptions import HTTPException
 
-        # Validate order_column to prevent arbitrary column access
-        if order_column not in ("id", "name"):
-            order_column = "id"
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid order column: {order_column}",
+            )
+
+        # Extract filters — mirrors original filter_dict loop (security/api.py:305-319)
+        name_filter: str | None = None
+        user_ids_filter: str | None = None
+        permission_ids_filter: str | None = None
+        group_ids_filter: str | None = None
+        for f in params.get("filters", []):
+            col = f.get("col")
+            value = f.get("value")
+            if col == "name":
+                name_filter = value
+            elif col == "user_ids":
+                user_ids_filter = value
+            elif col == "permission_ids":
+                permission_ids_filter = value
+            elif col == "group_ids":
+                group_ids_filter = value
 
         roles, total = await role_dao.search(
             name_filter=name_filter,
+            user_ids_filter=user_ids_filter,
+            permission_ids_filter=permission_ids_filter,
+            group_ids_filter=group_ids_filter,
             order_column=order_column,
             order_direction=order_direction,
             page=page,

@@ -20,7 +20,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import func, update
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,13 +55,79 @@ class AsyncUserDAO:
         """Get a user by ID."""
         return await self.session.get(self.user_model, user_id)
 
+    async def get_by_id_with_role_permissions(self, user_id: int) -> Any | None:
+        """Get a user by ID with the full role/permission chain eager-loaded.
+
+        Loads ``roles`` and ``groups -> roles`` down to each PermissionView's
+        ``permission`` and ``view_menu`` so callers (e.g. ``get_my_roles``)
+        can traverse the chain without triggering async lazy loads
+        (``MissingGreenlet``).
+        """
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.security import Group, PermissionView, Role
+
+        stmt = (
+            select(self.user_model)
+            .where(self.user_model.id == user_id)
+            .options(
+                selectinload(self.user_model.roles)
+                .selectinload(Role.permissions)
+                .options(
+                    selectinload(PermissionView.permission),
+                    selectinload(PermissionView.view_menu),
+                ),
+                selectinload(self.user_model.groups)
+                .selectinload(Group.roles)
+                .selectinload(Role.permissions)
+                .options(
+                    selectinload(PermissionView.permission),
+                    selectinload(PermissionView.view_menu),
+                ),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().unique().one_or_none()
+
+    async def get_roles_with_permissions(self, role_ids: list[int]) -> list[Any]:
+        """Load Role rows by id with the permission chain eager-loaded.
+
+        Used for GuestUser callers of ``/me/roles/``: the middleware stores
+        lightweight ``_CachedRole`` stubs without ``.permissions``, while the
+        original ``GuestUser.__init__`` receives real ORM Roles
+        (superset_old/security/guest_token.py:81).
+        """
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from superset.models.security import PermissionView, Role
+
+        stmt = (
+            select(Role)
+            .where(Role.id.in_(role_ids))
+            .options(
+                selectinload(Role.permissions).options(
+                    selectinload(PermissionView.permission),
+                    selectinload(PermissionView.view_menu),
+                )
+            )
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().unique().all())
+
     async def update_profile(
         self,
         user_id: int,
         attributes: dict[str, Any],
         hashed_password: str | None = None,
+        changed_by_fk: int | None = None,
     ) -> bool:
         """Update user profile attributes and optionally set a new password.
+
+        Mirrors original pre_update (superset_old/views/users/api.py:48-56):
+        - sets ``changed_on`` to ``datetime.now()``
+        - sets ``changed_by_fk`` to the ID of the requesting user
 
         Returns True if the user was found and updated, False otherwise.
         """
@@ -72,6 +138,10 @@ class AsyncUserDAO:
             setattr(user, attr, value)
         if hashed_password is not None:
             user.password = hashed_password
+        # Audit trail — mirrors pre_update side effects
+        user.changed_on = datetime.now()
+        if changed_by_fk is not None:
+            user.changed_by_fk = changed_by_fk
         await self.session.flush()
         return True
 
@@ -122,7 +192,7 @@ class AsyncUserDAO:
         await self.session.execute(
             update(User)
             .where(User.id == user_id)
-            .values(fail_login_count=User.fail_login_count + 1)
+            .values(fail_login_count=func.coalesce(User.fail_login_count, 0) + 1)
         )
 
     async def record_successful_login(self, user_id: int) -> None:
@@ -137,7 +207,7 @@ class AsyncUserDAO:
             .where(User.id == user_id)
             .values(
                 last_login=datetime.now(),
-                login_count=User.login_count + 1,
+                login_count=func.coalesce(User.login_count, 0) + 1,
                 fail_login_count=0,
             )
         )

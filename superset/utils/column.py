@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -26,6 +28,8 @@ from typing import Any
 # that used to be defined here has been removed; importers that pull this symbol
 # from superset.utils.column (e.g. viz.py) now transparently get the correct one.
 from superset.utils.core import get_time_filter_status  # noqa: F401
+
+logger = logging.getLogger(__name__)
 
 # Type aliases matching superset's typing
 Column = str | dict[str, Any]
@@ -211,40 +215,159 @@ def get_x_axis_label(columns: list[Column] | None) -> str | None:
     return labels[0] if labels else None
 
 
+# ---------------------------------------------------------------------------
+# SQL type → inferred pandas type mapping.
+# 1:1 port of superset_old/utils/core.py:132-156.
+# ---------------------------------------------------------------------------
+_TYPE_MAPPING = {
+    re.compile(r"INT", re.IGNORECASE): "integer",
+    re.compile(r"CHAR|TEXT|VARCHAR", re.IGNORECASE): "string",
+    re.compile(r"DECIMAL|NUMERIC|FLOAT|DOUBLE", re.IGNORECASE): "floating",
+    re.compile(r"BOOL", re.IGNORECASE): "boolean",
+    re.compile(r"DATE|TIME", re.IGNORECASE): "datetime64",
+}
+
+_METRIC_MAP_TYPE = {
+    "SUM": "floating",
+    "AVG": "floating",
+    "COUNT": "floating",
+    "COUNT_DISTINCT": "floating",
+    "MIN": "numeric",
+    "MAX": "numeric",
+    "FIRST": "string",
+    "LAST": "string",
+    "GROUP_CONCAT": "string",
+    "ARRAY_AGG": "string",
+    "STRING_AGG": "string",
+    "MEDIAN": "floating",
+    "PERCENTILE": "floating",
+    "VARIANCE": "floating",
+    "STDDEV": "floating",
+}
+
+
+def _map_sql_type_to_inferred_type(sql_type: str | None) -> str:
+    """Map a SQL type string to a pandas inferred type string.
+
+    1:1 port of ``superset_old/utils/core.py:1540-1564``
+    (``map_sql_type_to_inferred_type``).
+    """
+    if not sql_type:
+        return "string"
+
+    for pattern, inferred_type in _TYPE_MAPPING.items():
+        if pattern.search(sql_type):
+            return inferred_type
+
+    return "string"
+
+
+def _get_metric_type_from_column(column: Any, datasource: Any) -> str:
+    """Determine the metric type from a given column in a datasource.
+
+    1:1 port of ``superset_old/utils/core.py:1567-1604``
+    (``get_metric_type_from_column``).
+    """
+    from superset.models.connectors import SqlMetric
+
+    metric: SqlMetric = next(
+        (m for m in datasource.metrics if m.metric_name == column),
+        SqlMetric(metric_name=""),
+    )
+
+    if metric.metric_name == "":
+        return ""
+
+    expression: str = metric.expression
+
+    match = re.match(
+        r"(SUM|AVG|COUNT|COUNT_DISTINCT|MIN|MAX|FIRST|LAST)\((.*)\)", expression
+    )
+
+    if match:
+        operation = match.group(1)
+        return _METRIC_MAP_TYPE.get(operation, "")
+
+    logger.warning("Unexpected metric expression type: %s", expression)
+    return ""
+
+
 def extract_dataframe_dtypes(
     df: Any,
     datasource: Any | None = None,
 ) -> list[int]:
-    """Map DataFrame column types to GenericDataType enum values.
+    """Serialize pandas/numpy dtypes to generic types.
+
+    1:1 port of ``superset_old/utils/core.py:1607-1662``.
+
+    Handles:
+    1. Building ``columns_by_name`` from ``datasource.columns`` (both dict
+       and ORM objects).
+    2. All-NaN columns: falls back to ``datasource.columns_types`` +
+       ``map_sql_type_to_inferred_type``, or ``get_metric_type_from_column``
+       (using ``METRIC_MAP_TYPE`` dict with SQL aggregation regex matching).
+    3. Non-NaN columns: uses ``pandas.api.types.infer_dtype()`` for
+       content-based type detection, mapped through ``inferred_type_map``.
+    4. ``is_dttm`` override on datasource column objects.
 
     :param df: pandas DataFrame
     :param datasource: optional datasource with column metadata
-    :return: list of GenericDataType values for each column
+    :return: list of GenericDataType int values for each column
     """
-    import pandas as pd
+    from pandas.api.types import infer_dtype
 
     from superset.typing import GenericDataType
 
-    result: list[int] = []
-    for col in df.columns:
-        # First check datasource column metadata
-        if datasource is not None and hasattr(datasource, "get_column"):
-            ds_col = datasource.get_column(col)
-            if ds_col and getattr(ds_col, "is_dttm", False):
-                result.append(GenericDataType.TEMPORAL)
-                continue
+    # omitting string types as those will be the default type
+    inferred_type_map: dict[str, GenericDataType] = {
+        "floating": GenericDataType.NUMERIC,
+        "integer": GenericDataType.NUMERIC,
+        "mixed-integer-float": GenericDataType.NUMERIC,
+        "decimal": GenericDataType.NUMERIC,
+        "boolean": GenericDataType.BOOLEAN,
+        "datetime64": GenericDataType.TEMPORAL,
+        "datetime": GenericDataType.TEMPORAL,
+        "date": GenericDataType.TEMPORAL,
+    }
 
-        # Fall back to DataFrame dtype
-        dtype = df[col].dtype
-        if pd.api.types.is_datetime64_any_dtype(dtype):
-            result.append(GenericDataType.TEMPORAL)
-        elif pd.api.types.is_bool_dtype(dtype):
-            result.append(GenericDataType.BOOLEAN)
-        elif pd.api.types.is_numeric_dtype(dtype):
-            result.append(GenericDataType.NUMERIC)
+    columns_by_name: dict[str, Any] = {}
+    if datasource:
+        for column in datasource.columns:
+            if isinstance(column, dict):
+                columns_by_name[column.get("column_name")] = column
+            else:
+                columns_by_name[column.column_name] = column
+
+    generic_types: list[int] = []
+    for column in df.columns:
+        column_object = columns_by_name.get(column)
+        series = df[column]
+        inferred_type: str = ""
+        if series.isna().all():
+            sql_type: str | None = ""
+            if datasource and hasattr(datasource, "columns_types"):
+                if column in datasource.columns_types:
+                    sql_type = datasource.columns_types.get(column)
+                    inferred_type = _map_sql_type_to_inferred_type(sql_type)
+                else:
+                    inferred_type = _get_metric_type_from_column(column, datasource)
         else:
-            result.append(GenericDataType.STRING)
-    return result
+            inferred_type = infer_dtype(series)
+        if isinstance(column_object, dict):
+            generic_type = (
+                GenericDataType.TEMPORAL
+                if column_object and column_object.get("is_dttm")
+                else inferred_type_map.get(inferred_type, GenericDataType.STRING)
+            )
+        else:
+            generic_type = (
+                GenericDataType.TEMPORAL
+                if column_object and column_object.is_dttm
+                else inferred_type_map.get(inferred_type, GenericDataType.STRING)
+            )
+        generic_types.append(generic_type)
+
+    return generic_types
 
 
 # ---------------------------------------------------------------------------
@@ -276,52 +399,88 @@ def remove_duplicates(
 
 
 def cast_to_num(value: float | int | str | None) -> float | int | None:
-    """Cast a value to a numeric type if possible.
+    """Casts a value to an int/float
 
-    :param value: value to cast
-    :return: numeric value or None
+    >>> cast_to_num('1 ')
+    1.0
+    >>> cast_to_num(' 2')
+    2.0
+    >>> cast_to_num('5')
+    5
+    >>> cast_to_num('5.2')
+    5.2
+    >>> cast_to_num(10)
+    10
+    >>> cast_to_num(10.1)
+    10.1
+    >>> cast_to_num(None) is None
+    True
+    >>> cast_to_num('this is not a string') is None
+    True
+
+    :param value: value to be converted to numeric representation
+    :returns: value cast to `int` if value is all digits, `float` if `value` is
+              decimal value and `None`` if it can't be converted
     """
     if value is None:
         return None
     if isinstance(value, (int, float)):
         return value
-    try:
+    if value.isdigit():
         return int(value)
-    except (ValueError, TypeError):
-        pass
     try:
         return float(value)
-    except (ValueError, TypeError):
+    except ValueError:
         return None
 
 
 def cast_to_boolean(value: Any) -> bool | None:
-    """Cast a value to a boolean if possible.
+    """Casts a value to an int/float
 
-    :param value: value to cast
-    :return: boolean or None
+    >>> cast_to_boolean(1)
+    True
+    >>> cast_to_boolean(0)
+    False
+    >>> cast_to_boolean(0.5)
+    True
+    >>> cast_to_boolean('true')
+    True
+    >>> cast_to_boolean('false')
+    False
+    >>> cast_to_boolean('False')
+    False
+    >>> cast_to_boolean(None)
+
+    :param value: value to be converted to boolean representation
+    :returns: value cast to `bool`. when value is 'true' or value that are not 0
+              converted into True. Return `None` if value is `None`
     """
     if value is None:
         return None
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
-        return bool(value)
+        return value != 0
     if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in ("true", "t", "1", "yes", "y", "on"):
-            return True
-        if lowered in ("false", "f", "0", "no", "n", "off"):
-            return False
-    return None
+        return value.strip().lower() == "true"
+    return False
 
 
 def error_msg_from_exception(ex: Exception) -> str:
-    """Extract an error message from an exception.
+    """Translate an exception into a human-readable error message.
+
+    Database drivers expose error info in different ways – this function
+    inspects ``ex.message`` (which may be a dict for Presto and similar
+    drivers) and falls back to ``str(ex)`` when nothing more specific is
+    available.
 
     :param ex: exception
     :return: error message string
     """
+    msg: Any = ""
     if hasattr(ex, "message"):
-        return ex.message
-    return str(ex) or ex.__class__.__name__
+        if isinstance(ex.message, dict):
+            msg = ex.message.get("message")
+        elif ex.message:
+            msg = ex.message
+    return str(msg) or str(ex)

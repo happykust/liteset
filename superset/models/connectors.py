@@ -24,6 +24,7 @@ Includes async_query() for chart data execution via the async engine specs.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import Hashable
 from dataclasses import dataclass, field
@@ -57,6 +58,7 @@ from superset.models.helpers import (
     metadata,
 )
 from superset.utils.core import (
+    error_msg_from_exception,
     RowLevelSecurityFilterType as _RowLevelSecurityFilterType,
 )
 
@@ -222,6 +224,7 @@ class QueryResult:
     to_dttm: datetime | None = None
     applied_filter_columns: list[Any] = field(default_factory=list)
     rejected_filter_columns: list[Any] = field(default_factory=list)
+    errors: list[dict[str, Any]] = field(default_factory=list)
     applied_template_filters: list[str] = field(default_factory=list)
     labels_expected: list[str] = field(default_factory=list)
     prequeries: list[str] = field(default_factory=list)
@@ -360,6 +363,10 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
 
     __tablename__ = "table_columns"
     __table_args__ = (UniqueConstraint("table_id", "column_name"),)
+
+    def __repr__(self) -> str:
+        # 1:1 superset_old/connectors/sqla/models.py:823.
+        return str(self.column_name)
 
     id = Column(Integer, primary_key=True)
     column_name = Column(String(255), nullable=False)
@@ -651,6 +658,10 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
 
     __tablename__ = "sql_metrics"
     __table_args__ = (UniqueConstraint("table_id", "metric_name"),)
+
+    def __repr__(self) -> str:
+        # 1:1 superset_old/connectors/sqla/models.py:1024.
+        return str(self.metric_name)
 
     id = Column(Integer, primary_key=True)
     metric_name = Column(String(255), nullable=False)
@@ -1092,17 +1103,39 @@ class AsyncQueryExecutionMixin:
                 prequeries=list(sqla_query.prequeries),
             )
         except Exception as ex:
+            from superset.exceptions import (
+                SupersetErrorException,
+                SupersetErrorsException,
+            )
+
+            if isinstance(ex, (SupersetErrorException, SupersetErrorsException)):
+                raise
+
             logger.warning(
                 "async_query failed for datasource %s: %s",
                 getattr(self, "table_name", None),
                 ex,
                 exc_info=True,
             )
+            # Mirror the original sync query() error path
+            # (superset_old/connectors/sqla/models.py:1663-1687):
+            # populate ``errors`` via db_engine_spec.extract_errors so the
+            # viz payload has a non-empty errors list and the UI shows the
+            # error instead of silently showing no data.
+            _db_engine_spec = getattr(self, "db_engine_spec", None)
+            if _db_engine_spec is not None:
+                errors = [
+                    dataclasses.asdict(error)
+                    for error in _db_engine_spec.extract_errors(ex)
+                ]
+            else:
+                errors = [{"message": str(ex), "error_type": type(ex).__name__}]
             return QueryResult(
                 df=pd.DataFrame(),
                 query="",
                 status="error",
-                error_message=str(ex),
+                error_message=error_msg_from_exception(ex),
+                errors=errors,
             )
 
 
@@ -1124,6 +1157,10 @@ class SqlaTable(
     type = "table"
     query_language = "sql"
     is_rls_supported = True
+
+    def __repr__(self) -> str:
+        # 1:1 superset_old/connectors/sqla/models.py:1186 — dropdown text.
+        return self.name
 
     __tablename__ = "tables"
     __table_args__ = (
@@ -1383,9 +1420,7 @@ class SqlaTable(
                     # path (``get_datatype``).  Persisting the raw int code would
                     # crash on the VARCHAR ``TableColumn.type`` column.
                     type_repr = spec.get_datatype(col[1]) if len(col) > 1 else None
-                    columns.append(
-                        {"column_name": col[0], "type": type_repr}
-                    )
+                    columns.append({"column_name": col[0], "type": type_repr})
                 return columns
         except Exception as ex:
             raise SupersetGenericDBErrorException(message=f"Invalid SQL: {ex}") from ex
@@ -1711,17 +1746,13 @@ class SqlaTable(
             }
             for metric in metrics:
                 if is_adhoc_metric(metric) and (
-                    sql := (
-                        metric.get("sqlExpression") or metric.get("sql_expression")
-                    )
+                    sql := (metric.get("sqlExpression") or metric.get("sql_expression"))
                 ):
                     templatable_statements.append(sql)
                 elif isinstance(metric, str) and metric in metrics_by_name:
                     templatable_statements.append(metrics_by_name[metric])
         if self.is_rls_supported:
-            templatable_statements += [
-                clause for clause in self._get_rls_clause_strings()
-            ]
+            templatable_statements += list(self._get_rls_clause_strings())
         for statement in templatable_statements:
             if statement and ExtraCache.regex.search(statement):
                 return True
@@ -1991,9 +2022,7 @@ class SqlaTable(
         # Support both camelCase (frontend payload, original Apache Superset
         # convention) and snake_case (msgspec ``rename="camel"`` round-trips
         # may surface either form).
-        expression_type = metric.get("expressionType") or metric.get(
-            "expression_type"
-        )
+        expression_type = metric.get("expressionType") or metric.get("expression_type")
         # 1:1 with original — passes the dataset's ``verbose_map`` so
         # SIMPLE adhoc metrics that reference a TableColumn render
         # with the user-friendly verbose name when one is configured.
@@ -2794,6 +2823,7 @@ class SqlaTable(
             return []
         values = df["column_values"].replace({np.nan: None}).tolist()
         return values
+
 
 # ---------------------------------------------------------------------------
 # RowLevelSecurityFilter

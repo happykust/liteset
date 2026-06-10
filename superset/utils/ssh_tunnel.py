@@ -139,9 +139,7 @@ class SSHManager:
                 settings, "ssh_tunnel_local_bind_address", "127.0.0.1"
             ),
             tunnel_timeout=getattr(settings, "ssh_tunnel_timeout_sec", 10.0),
-            packet_timeout=getattr(
-                settings, "ssh_tunnel_packet_timeout_sec", 1.0
-            ),
+            packet_timeout=getattr(settings, "ssh_tunnel_packet_timeout_sec", 1.0),
         )
 
     def build_sqla_url(
@@ -172,7 +170,6 @@ class SSHManager:
         """
         import sshtunnel
         from paramiko import RSAKey
-
         from sqlalchemy.engine import make_url
 
         url = make_url(sqlalchemy_database_uri)
@@ -243,9 +240,7 @@ class SSHManagerFactory:
                     settings, "ssh_tunnel_local_bind_address", "127.0.0.1"
                 ),
                 tunnel_timeout=getattr(settings, "ssh_tunnel_timeout_sec", 10.0),
-                packet_timeout=getattr(
-                    settings, "ssh_tunnel_packet_timeout_sec", 1.0
-                ),
+                packet_timeout=getattr(settings, "ssh_tunnel_packet_timeout_sec", 1.0),
             )
 
     @property
@@ -253,6 +248,7 @@ class SSHManagerFactory:
         if self._ssh_manager is None:
             raise RuntimeError(
                 "SSHManagerFactory.init_app() has not been called yet. "
-                "Ensure on_startup has run before accessing ssh_manager_factory.instance."
+                "Ensure on_startup has run before accessing "
+                "ssh_manager_factory.instance."
             )
         return self._ssh_manager

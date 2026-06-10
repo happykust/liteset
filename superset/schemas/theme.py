@@ -42,9 +42,7 @@ def _validate_theme_json(value: Any) -> None:
     try:
         _json.loads(value)
     except (ValueError, TypeError) as ex:
-        raise msgspec.ValidationError(
-            f"json_data is not valid JSON: {ex}"
-        ) from ex
+        raise msgspec.ValidationError(f"json_data is not valid JSON: {ex}") from ex
 
 
 class ThemePostSchema(msgspec.Struct):

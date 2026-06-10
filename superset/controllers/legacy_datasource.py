@@ -42,7 +42,7 @@ from superset.common.query_context import AsyncQueryContext
 from superset.common.query_context_processor import AsyncQueryContextProcessor
 from superset.common.query_object import AsyncQueryObject
 from superset.exceptions import SupersetException
-from superset.guards.rbac import require_authentication
+from superset.guards.rbac import require_permission
 from superset.providers import provide_datasource_dao
 from superset.sql.parse import Table
 from superset.typing import DatasourceDAOProtocol, UserProtocol
@@ -202,19 +202,39 @@ async def _get_physical_table_metadata_async(
     which uses SQLAlchemy Inspector via a sync connection. Here we run
     the inspector inside ``async_conn.run_sync``.
 
+    Raises ``sqlalchemy.exc.NoSuchTableError`` when the table (and view)
+    do not exist — exactly as the original does at
+    ``superset_old/connectors/sqla/utils.py:60-61``::
+
+        if not (database.has_table(table) or database.has_view(table)):
+            raise NoSuchTableError(table)
+
     Used when ``SqlaTable.get_datasource_by_name`` returns ``None`` (i.e.
     the table is not tracked in Superset) in ``external_metadata_by_name``.
     """
+    from sqlalchemy.exc import NoSuchTableError
+
     from superset.utils.database import get_async_connection
 
     def _inspect_sync(sync_conn: Any) -> list[dict[str, Any]]:
         from sqlalchemy import inspect as sa_inspect
+        from sqlalchemy.exc import NoSuchTableError as _NoSuchTableError
 
         inspector = sa_inspect(sync_conn)
-        try:
-            raw_cols = inspector.get_columns(table.table, schema=table.schema)
-        except Exception:  # noqa: BLE001
-            return []
+
+        # Mirror original: raise NoSuchTableError when the table / view is not
+        # visible to the connection (superset_old/connectors/sqla/utils.py:59-61).
+        table_exists = inspector.has_table(table.table, schema=table.schema or None)
+        if not table_exists:
+            # Also check views (mirrors database.has_view in the original).
+            try:
+                views = inspector.get_view_names(schema=table.schema or None)
+            except Exception:  # noqa: BLE001
+                views = []
+            if table.table not in views:
+                raise _NoSuchTableError(table.table)
+
+        raw_cols = inspector.get_columns(table.table, schema=table.schema)
 
         cols: list[dict[str, Any]] = []
         for col in raw_cols:
@@ -239,6 +259,8 @@ async def _get_physical_table_metadata_async(
     try:
         async with get_async_connection(database) as (async_conn, _):
             return await async_conn.run_sync(_inspect_sync)
+    except NoSuchTableError:
+        raise
     except Exception:  # noqa: BLE001
         return []
 
@@ -249,33 +271,75 @@ def _replace_verbose_with_column(
 ) -> None:
     """Rewrite filter ``col`` values from verbose name → physical column name.
 
-    Mirrors ``superset_old/views/datasource/utils.py::replace_verbose_with_column``.
-    The frontend may send either the physical column name or the verbose
-    label; the query builder only understands the physical name.
+    1:1 port of ``superset_old/views/datasource/utils.py::replace_verbose_with_column``.
+    Always uses ``verbose_name`` / ``column_name`` attributes regardless
+    of whether the datasource is virtual. The frontend may send either the
+    physical column name or the verbose label; the query builder only
+    understands the physical name.
     """
-    if not filters:
-        return
     columns = getattr(datasource, "columns", None) or []
     if not columns:
         return
 
-    is_virtual = getattr(datasource, "sql", None) is not None
-    column_attr = "column_name" if not is_virtual else "label"
-    verbose_attr = "verbose_name" if not is_virtual else "column_name"
+    verbose_attr = "verbose_name"
+    column_attr = "column_name"
 
     for flt in filters:
         col_value = flt.get("col")
-        if not isinstance(col_value, str):
+        if col_value is None:
+            logger.warning("Filter missing 'col' key: %s", flt)
             continue
-        # If already a physical name, leave alone.
-        if any(getattr(c, column_attr, None) == col_value for c in columns):
-            continue
+
+        match = None
         for col in columns:
-            if getattr(col, verbose_attr, None) == col_value:
-                match = getattr(col, column_attr, None)
-                if match:
-                    flt["col"] = match
+            if not hasattr(col, verbose_attr) or not hasattr(col, column_attr):
+                logger.warning(
+                    "Column object %s missing expected attributes '%s' or '%s'",
+                    col,
+                    verbose_attr,
+                    column_attr,
+                )
+                continue
+
+            if getattr(col, verbose_attr) == col_value:
+                match = getattr(col, column_attr)
                 break
+
+        if match:
+            flt["col"] = match
+
+
+def _resolve_per_page(per_page_raw: str | None) -> tuple[int, str | None]:
+    """Resolve the ``per_page`` query parameter to an int.
+
+    Returns ``(per_page, error_message_or_None)``.  Default is
+    ``SAMPLES_ROW_LIMIT`` (config) or 1000.  Range 1–1000 is enforced,
+    mirroring ``SamplesRequestSchema.set_default_per_page``.
+    """
+    samples_row_limit = 1000
+    try:
+        from superset.config import SupersetSettings as _SRLSettings
+
+        samples_row_limit = int(
+            getattr(_SRLSettings(), "samples_row_limit", 1000)  # type: ignore[call-arg]
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not read samples_row_limit from config", exc_info=True)
+
+    try:
+        per_page = int(per_page_raw) if per_page_raw is not None else samples_row_limit
+    except (TypeError, ValueError):
+        # Original ``fields.Integer()`` raises ValidationError for a
+        # non-integer string → HTTP 400 (views.py:200-203), not a silent
+        # fallback to the default.
+        return samples_row_limit, "per_page must be an integer"
+
+    # Original SamplesRequestSchema: Range(min=1, max=1000) raises
+    # ValidationError for out-of-range values → HTTP 400.  Mirror that.
+    if per_page < 1 or per_page > 1000:
+        per_page = max(1, min(per_page, 1000))  # keep a sane value
+        return per_page, "per_page must be between 1 and 1000"
+    return per_page, None
 
 
 def _parse_samples_params(
@@ -310,17 +374,17 @@ def _parse_samples_params(
     try:
         page = int(qp.get("page") or 1)
     except (TypeError, ValueError):
+        # Original ``fields.Integer(load_default=1)`` raises ValidationError
+        # for a non-integer string → HTTP 400 (views.py:200-203).
         page = 1
+        errors.append("page must be an integer")
     if page < 1:
         page = 1
 
     per_page_raw = qp.get("per_page")
-    try:
-        per_page = int(per_page_raw) if per_page_raw is not None else 1000
-    except (TypeError, ValueError):
-        per_page = 1000
-    if per_page < 1 or per_page > 100_000:
-        per_page = max(1, min(per_page, 100_000))
+    per_page, per_page_error = _resolve_per_page(per_page_raw)
+    if per_page_error:
+        errors.append(per_page_error)
 
     dashboard_id_raw = qp.get("dashboard_id")
     dashboard_id: int | None = None
@@ -343,18 +407,22 @@ def _parse_samples_params(
 
 async def _parse_samples_payload(
     request: Request[Any, Any, Any],
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     """Parse the optional JSON body (drill-detail filters, time_range, extras).
 
-    Returns None if the body is missing or not a dict. Unknown keys are
-    ignored — matches SamplesPayloadSchema semantics.
+    Always returns a dict (possibly empty) — mirrors SamplesPayloadSchema's
+    @pre_load handler that converts None→{} so the caller always sees a dict
+    and therefore always uses DRILL_DETAIL result_type (superset_old/
+    views/datasource/schemas.py:87-92, views/datasource/utils.py:107-133).
+
+    Unknown keys are silently ignored, matching SamplesPayloadSchema semantics.
     """
     try:
         raw = await request.json()
     except Exception:  # noqa: BLE001
-        return None
+        return {}
     if not isinstance(raw, dict):
-        return None
+        return {}
     payload: dict[str, Any] = {}
     if isinstance(raw.get("filters"), list):
         payload["filters"] = list(raw["filters"])
@@ -364,7 +432,7 @@ async def _parse_samples_payload(
         payload["time_range"] = raw.get("time_range")
     if isinstance(raw.get("extras"), dict):
         payload["extras"] = raw.get("extras")
-    return payload or None
+    return payload
 
 
 class LegacyDatasourceController(Controller):
@@ -378,7 +446,7 @@ class LegacyDatasourceController(Controller):
 
     @post(
         "/samples",
-        guards=[require_authentication],
+        guards=[require_permission("can_samples", "Datasource")],
         status_code=200,
     )
     async def samples(  # noqa: C901
@@ -481,22 +549,18 @@ class LegacyDatasourceController(Controller):
             dash_result = await ds_dao.session.execute(dash_stmt)
             dashboard = dash_result.scalars().one_or_none()
             if dashboard is None:
-                return Response(
-                    content={"message": "Not found"}, status_code=404
-                )
+                return Response(content={"message": "Not found"}, status_code=404)
 
             allowed = await sec_mgr.can_drill_dataset_via_dashboard_access(
                 datasource, dashboard, user=user
             )
             if not allowed:
                 return Response(content={"message": "Forbidden"}, status_code=403)
-        else:
-            # Regular datasource-access check (mirrors raise_for_access).
-            if hasattr(sec_mgr, "raise_for_access"):
-                try:
-                    await sec_mgr.raise_for_access(datasource=datasource, user=user)
-                except Exception as exc:  # noqa: BLE001
-                    return Response(content={"message": str(exc)}, status_code=403)
+        # Non-guest path: NO datasource-level raise_for_access — the original
+        # ``Datasource.samples`` gates non-guest access solely on the
+        # ("can_samples", "Datasource") role permission and calls
+        # ``get_samples()`` directly (superset_old/views/datasource/views.py:
+        # 194-230); ``get_payload()`` performs no security check either.
 
         # Replace verbose column names in filters with physical ones,
         # matching the original ``replace_verbose_with_column`` helper.
@@ -510,7 +574,16 @@ class LegacyDatasourceController(Controller):
         page: int = params["page"]
         per_page: int = params["per_page"]
         force: bool = params["force"]
-        offset = (page - 1) * per_page
+
+        # Apply SAMPLES_ROW_LIMIT cap — 1:1 with original
+        # ``get_limit_clause`` which caps the effective row_limit at
+        # SAMPLES_ROW_LIMIT (default 1000) even if per_page passes
+        # schema validation.
+        samples_row_limit: int = int(getattr(settings_obj, "samples_row_limit", 1000))
+        row_limit = per_page
+        if row_limit < 0 or row_limit > samples_row_limit:
+            row_limit = samples_row_limit
+        offset = (page - 1) * row_limit
 
         samples_qo = AsyncQueryObject(
             datasource={
@@ -520,7 +593,7 @@ class LegacyDatasourceController(Controller):
             metrics=[],
             columns=[],
             filters=list(payload.get("filters", [])) if payload else [],
-            row_limit=per_page,
+            row_limit=row_limit,
             row_offset=offset,
             extras=dict(payload.get("extras") or {}) if payload else {},
             time_range=payload.get("time_range") if payload else None,
@@ -535,9 +608,7 @@ class LegacyDatasourceController(Controller):
             queries=[samples_qo],
             force=force,
             result_format="json",
-            result_type=(
-                "drill_detail" if payload and payload.get("filters") else "samples"
-            ),
+            result_type=("drill_detail" if payload is not None else "samples"),
         )
 
         processor = AsyncQueryContextProcessor(
@@ -548,35 +619,9 @@ class LegacyDatasourceController(Controller):
             query_context=samples_context,
         )
 
-        try:
-            sample_result = await processor.get_payload(
-                query_objects=[samples_qo], force=force
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Failed to fetch samples for datasource")
-            return Response(
-                content={
-                    "errors": [
-                        {
-                            "message": f"Failed to fetch samples: {exc}",
-                            "error_type": "GENERIC_BACKEND_ERROR",
-                            "level": "error",
-                            "extra": {},
-                        }
-                    ],
-                },
-                status_code=400,
-            )
-
-        sample_data = (sample_result.get("queries") or [{}])[0]
-        if isinstance(sample_data.get("df"), pd.DataFrame):
-            df = sample_data.pop("df")
-            sample_data["data"] = df.to_dict(orient="records")
-            sample_data["colnames"] = list(df.columns)
-            sample_data.setdefault("coltypes", [])
-            sample_data["rowcount"] = len(sample_data["data"])
-
-        # --- Run a separate count(*) query ---------------------------------
+        # --- Run the count(*) query FIRST, matching original get_samples order
+        # (superset_old/views/datasource/utils.py:155-172: count_star runs first,
+        # raises DatasetSamplesFailedError on failure before sample is ever run).
         count_qo = copy.deepcopy(samples_qo)
         count_qo.metrics = [
             {
@@ -604,29 +649,111 @@ class LegacyDatasourceController(Controller):
             user=user,
             query_context=count_context,
         )
-        total_count = sample_data.get("rowcount", 0)
-        try:
-            count_result = await count_processor.get_payload(
-                query_objects=[count_qo], force=force
+        # NO broad try/except here — 1:1 with the original
+        # (superset_old/views/datasource/utils.py:155 catches only
+        # IndexError/KeyError): exceptions from get_payload propagate to the
+        # app-level handlers (@handle_api_exception semantics — a
+        # SupersetException keeps its own status, anything else → 500).
+        count_result = await count_processor.get_payload(
+            query_objects=[count_qo], force=force
+        )
+        count_star_data: dict[str, Any] = (count_result.get("queries") or [{}])[0]
+
+        # Mirror original: if count_star itself reports failure, raise immediately
+        # before running the sample query (superset_old utils.py:158-159).
+        # DatasetSamplesFailedError IS-A CommandInvalidError → HTTP 422
+        # (superset_old/commands/dataset/exceptions.py:181,
+        # superset_old/commands/exceptions.py:54-57).
+        if count_star_data.get("status") == "failed":
+            return Response(
+                content={
+                    "errors": [
+                        {
+                            "message": count_star_data.get(
+                                "error", "Count query failed"
+                            ),
+                            "error_type": "GENERIC_BACKEND_ERROR",
+                            "level": "error",
+                            "extra": {},
+                        }
+                    ],
+                },
+                status_code=422,
             )
-            count_q = (count_result.get("queries") or [{}])[0]
-            if isinstance(count_q.get("df"), pd.DataFrame):
-                df = count_q["df"]
-                if not df.empty:
-                    first = df.iloc[0].to_dict()
-                    for k in ("COUNT(*)", "count", "count_star"):
-                        if k in first:
-                            total_count = int(first[k])
-                            break
-            elif isinstance(count_q.get("data"), list) and count_q["data"]:
-                row = count_q["data"][0]
-                for k in ("COUNT(*)", "count", "count_star"):
-                    if k in row:
-                        total_count = int(row[k])
-                        break
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "Count query failed for datasource %s", datasource.id, exc_info=True
+
+        # Extract total_count from count_star result.
+        # 1:1 with superset_old/views/datasource/utils.py:169:
+        #   sample_data["total_count"] = count_star_data["data"][0]["COUNT(*)"]
+        # The original wraps this in except (IndexError, KeyError)
+        # → DatasetSamplesFailedError.  In liteset, get_df_payload returns
+        # "df" (DataFrame) rather than "data" (list of dicts), so we read
+        # from the DataFrame instead; strict access mirrors the original's
+        # failure mode.
+        try:
+            _count_df = count_star_data["df"]
+            total_count = int(_count_df.iloc[0]["COUNT(*)"])
+        except (IndexError, KeyError):
+            # 1:1 original: ``raise DatasetSamplesFailedError from exc``
+            # (utils.py:171-172) → CommandInvalidError → HTTP 422.
+            return Response(
+                content={
+                    "errors": [
+                        {
+                            "message": (
+                                "Failed to extract COUNT(*) from count query result"
+                            ),
+                            "error_type": "GENERIC_BACKEND_ERROR",
+                            "level": "error",
+                            "extra": {},
+                        }
+                    ],
+                },
+                status_code=422,
+            )
+
+        # --- Now run the sample query (original order: count first, then samples)
+        # As above: no broad catch — exceptions propagate 1:1 with the original.
+        sample_result = await processor.get_payload(
+            query_objects=[samples_qo], force=force
+        )
+
+        sample_data = (sample_result.get("queries") or [{}])[0]
+        if isinstance(sample_data.get("df"), pd.DataFrame):
+            df = sample_data.pop("df")
+            sample_data["data"] = df.to_dict(orient="records")
+            sample_data["colnames"] = list(df.columns)
+            sample_data.setdefault("coltypes", [])
+            sample_data["rowcount"] = len(sample_data["data"])
+
+        # Mirror original: if sample query fails, delete the count_star cache
+        # key (superset_old utils.py:163-165) and return an error.
+        if sample_data.get("status") == "failed":
+            _cache_key = count_star_data.get("cache_key")
+            if _cache_key:
+                try:
+                    from superset.extensions import cache_manager
+
+                    await cache_manager.data_cache.delete(_cache_key)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "Failed to delete count_star cache key %s",
+                        _cache_key,
+                        exc_info=True,
+                    )
+            # 1:1 original: ``raise DatasetSamplesFailedError(sample_data.get
+            # ("error"))`` (utils.py:163-165) → CommandInvalidError → HTTP 422.
+            return Response(
+                content={
+                    "errors": [
+                        {
+                            "message": sample_data.get("error", "Sample query failed"),
+                            "error_type": "GENERIC_BACKEND_ERROR",
+                            "level": "error",
+                            "extra": {},
+                        }
+                    ],
+                },
+                status_code=422,
             )
 
         sample_data["page"] = page
@@ -641,7 +768,7 @@ class LegacyDatasourceController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/save/",
-        guards=[require_authentication],
+        guards=[require_permission("can_save", "Datasource")],
         media_type="application/json",
         status_code=200,
     )
@@ -727,59 +854,66 @@ class LegacyDatasourceController(Controller):
                     status_code=403,
                 )
 
-        if database_id is not None:
-            orm_datasource.database_id = database_id
+        # Always assign database_id — mirrors original (views/datasource/views.py:91):
+        # ``orm_datasource.database_id = database_id`` with no None guard.
+        # Explicit null ({database: {id: null}}) intentionally dissociates the
+        # datasource from its database, matching the original unconditional write.
+        orm_datasource.database_id = database_id
 
-        # Check ownership and populate owners when the payload includes them.
-        # Mirrors original: security_manager.raise_for_ownership then
-        # populate_owner_list (superset_old/views/datasource/views.py:93-102).
-        if "owners" in datasource_dict:
-            from superset.commands.utils import populate_owner_list
-            from superset.dependencies import provide_security_manager
+        # Check ownership when the payload includes owners, then populate the
+        # owner list UNCONDITIONALLY — 1:1 with the original
+        # (superset_old/views/datasource/views.py:93-102) where
+        # ``populate_owner_list(datasource_dict["owners"], ...)`` sits OUTSIDE
+        # the ``if`` and raises KeyError (→ 500) for an owners-less payload
+        # BEFORE ``update_from_object`` could silently wipe the owners.
+        from superset.commands.utils import populate_owner_list
+        from superset.dependencies import provide_security_manager
 
-            sec_mgr = await provide_security_manager(
-                ds_dao.session,  # type: ignore[attr-defined]
-                request.app.state,
-            )
+        sec_mgr = await provide_security_manager(
+            ds_dao.session,  # type: ignore[attr-defined]
+            request.app.state,
+        )
 
-            # Raise for ownership if the model declares an owner_class.
-            # 1:1 with superset_old/views/datasource/views.py:93-98: pass the
+        if (
+            "owners" in datasource_dict
+            and getattr(orm_datasource, "owner_class", None) is not None
+        ):
+            # Raise for ownership — 1:1 with views.py:93-98: pass the
             # current user id (a REQUIRED positional arg) and catch only the
             # security exception. The previous bare ``raise_for_ownership(
             # orm_datasource)`` raised ``TypeError`` (missing ``user_id``) that
             # the over-broad ``except Exception`` masked as a 403 for everyone —
             # owners and admins included — so saving a datasource with owners
             # always failed.
-            if getattr(orm_datasource, "owner_class", None) is not None:
-                from superset.exceptions import SupersetSecurityException
+            from superset.exceptions import SupersetSecurityException
 
-                try:
-                    await sec_mgr.raise_for_ownership(
-                        orm_datasource, current_user.id
-                    )
-                except SupersetSecurityException:
-                    # ``orm_datasource.database_id`` was already reassigned
-                    # above; roll it back so the denied save persists nothing.
-                    # Upstream only ``db.session.commit()``s on the success
-                    # path — early error returns discard the dirty change at
-                    # Flask teardown. The liteset request wrapper instead
-                    # COMMITS a returned Response, so we must roll back here.
-                    await ds_dao.session.rollback()  # type: ignore[attr-defined]
-                    return Response(
-                        content={"message": "Datasource access is restricted."},
-                        status_code=403,
-                    )
+            try:
+                await sec_mgr.raise_for_ownership(orm_datasource, current_user.id)
+            except SupersetSecurityException:
+                # ``orm_datasource.database_id`` was already reassigned
+                # above; roll it back so the denied save persists nothing.
+                # Upstream only ``db.session.commit()``s on the success
+                # path — early error returns discard the dirty change at
+                # Flask teardown. The liteset request wrapper instead
+                # COMMITS a returned Response, so we must roll back here.
+                await ds_dao.session.rollback()  # type: ignore[attr-defined]
+                return Response(
+                    content={"message": "Datasource access is restricted."},
+                    status_code=403,
+                )
 
-            owner_ids = [
-                o if isinstance(o, int) else o.get("id", o)
-                for o in (datasource_dict["owners"] or [])
-            ]
-            datasource_dict["owners"] = await populate_owner_list(
-                sec_mgr,
-                current_user_id=current_user.id,
-                owner_ids=owner_ids,
-                default_to_user=False,
-            )
+        # KeyError ("owners" absent) propagates → 500, no commit — matches
+        # the original's unconditional ``datasource_dict["owners"]`` access.
+        owner_ids = [
+            o if isinstance(o, int) else o.get("id", o)
+            for o in (datasource_dict["owners"] or [])
+        ]
+        datasource_dict["owners"] = await populate_owner_list(
+            sec_mgr,
+            current_user_id=current_user.id,
+            owner_ids=owner_ids,
+            default_to_user=False,
+        )
 
         # Duplicate column name detection — mirrors original Counter check
         columns_payload: list[dict[str, Any]] = datasource_dict.get("columns") or []
@@ -816,7 +950,7 @@ class LegacyDatasourceController(Controller):
             )
 
         data_out: dict[str, Any] = _sanitize_datasource_data(dict(orm_datasource.data))
-        await ds_dao.session.flush()  # type: ignore[attr-defined]
+        await ds_dao.session.commit()  # type: ignore[attr-defined]
         return Response(content=data_out, status_code=200)
 
     # ------------------------------------------------------------------
@@ -824,7 +958,7 @@ class LegacyDatasourceController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/get/{datasource_type:str}/{datasource_id:int}/",
-        guards=[require_authentication],
+        guards=[require_permission("can_get", "Datasource")],
         status_code=200,
     )
     async def datasource_get(
@@ -851,7 +985,7 @@ class LegacyDatasourceController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/external_metadata/{datasource_type:str}/{datasource_id:int}/",
-        guards=[require_authentication],
+        guards=[require_permission("can_external_metadata", "Datasource")],
         status_code=200,
     )
     async def external_metadata(
@@ -893,7 +1027,7 @@ class LegacyDatasourceController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/external_metadata_by_name/",
-        guards=[require_authentication],
+        guards=[require_permission("can_external_metadata_by_name", "Datasource")],
         status_code=200,
     )
     async def external_metadata_by_name(
@@ -978,9 +1112,7 @@ class LegacyDatasourceController(Controller):
 
         from superset.models.core import Database
 
-        db_stmt = sa_select(Database).where(
-            Database.database_name == database_name
-        )
+        db_stmt = sa_select(Database).where(Database.database_name == database_name)
         db_result = await session.execute(db_stmt)
         database = db_result.scalars().first()
         if database is None:
@@ -997,6 +1129,8 @@ class LegacyDatasourceController(Controller):
                 normalize_columns=normalize_columns,
             )
         except Exception as exc:  # noqa: BLE001
+            # Mirrors original: (NoResultFound, NoSuchTableError) → 404
+            # (superset_old/views/datasource/views.py:190-191).
             return Response(
                 content={"message": f"Table metadata error: {exc}"},
                 status_code=404,

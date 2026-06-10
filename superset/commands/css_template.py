@@ -18,13 +18,22 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, TYPE_CHECKING
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from superset.commands.base import AsyncBaseCommand
-from superset.exceptions import CommandInvalidError, ObjectNotFoundError
+from superset.exceptions import (
+    CommandInvalidError,
+    CssTemplateDeleteFailedError,
+    ObjectNotFoundError,
+)
 
 if TYPE_CHECKING:
     pass
+
+logger = logging.getLogger(__name__)
 
 
 class CreateCssTemplateCommand(AsyncBaseCommand[Any]):
@@ -98,9 +107,24 @@ class BulkDeleteCssTemplateCommand(AsyncBaseCommand[None]):
         self._templates = await self._dao.find_by_ids(self._ids)
         found_ids = {int(t.id) for t in self._templates}
         missing = set(self._ids) - found_ids
-        if missing:
-            raise ObjectNotFoundError("CssTemplate", str(sorted(missing)))
+        # Mirror original: ``len(self._models) != len(self._model_ids)`` also
+        # fires when duplicate IDs are passed — SQL IN deduplicates at DB level
+        # so found count < requested count → 404, matching superset_old behaviour.
+        if missing or len(self._templates) != len(self._ids):
+            raise ObjectNotFoundError(
+                "CssTemplate", str(sorted(missing)) if missing else None
+            )
 
     async def run(self) -> None:
-        await self._dao.delete(self._templates)
-        await self._dao.session.flush()
+        # Mirrors ``superset_old/commands/css/delete.py`` which wraps with
+        # ``@transaction(on_error=partial(on_error,
+        #     reraise=CssTemplateDeleteFailedError))``.
+        # Any DB error during deletion is re-raised as
+        # ``CssTemplateDeleteFailedError`` so the controller can surface
+        # HTTP 422 (not 500).
+        try:
+            await self._dao.delete(self._templates)
+            await self._dao.session.flush()
+        except SQLAlchemyError as ex:
+            logger.exception("Failed to bulk delete CSS templates")
+            raise CssTemplateDeleteFailedError() from ex

@@ -57,21 +57,16 @@ from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.sql.expression import ColumnClause, Select
 
 from superset.common.query_status import QueryStatus
+from superset.db_engine_specs.base import ResultSetColumnType
 from superset.db_engine_specs.exceptions import SupersetDBAPIProgrammingError
 from superset.db_engine_specs.trino import (
-    Array,
     CONNECTION_ACCESS_DENIED_REGEX,
     CONNECTION_HOST_DOWN_REGEX,
     CONNECTION_INVALID_HOSTNAME_REGEX,
     CONNECTION_PORT_CLOSED_REGEX,
     CONNECTION_UNKNOWN_DATABASE_ERROR,
-    Interval,
-    Map,
     PrestoBaseEngineSpec,
-    Row,
-    TinyInteger,
 )
-from superset.db_engine_specs.base import ResultSetColumnType
 from superset.exceptions import SupersetTemplateException
 from superset.result_set import destringify
 from superset.utils import core as utils, json

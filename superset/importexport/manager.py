@@ -263,7 +263,7 @@ class AsyncFullAssetManager:
         if not ids:
             return []
 
-        cmd = export_cls(model_ids=ids, dao=dao)
+        cmd = export_cls(model_ids=ids, dao=dao, export_related=False)
 
         # ``AsyncExportModelsCommand._export_single`` is the per-id
         # generator we want — calling ``run()`` would re-build a

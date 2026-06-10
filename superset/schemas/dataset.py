@@ -49,9 +49,7 @@ def _validate_uuid_field(field_name: str, value: Any) -> None:
     try:
         _uuid.UUID(value)
     except (ValueError, TypeError) as ex:
-        raise msgspec.ValidationError(
-            f"{field_name} is not a valid UUID: {ex}"
-        ) from ex
+        raise msgspec.ValidationError(f"{field_name} is not a valid UUID: {ex}") from ex
 
 
 class DatasetPostSchema(msgspec.Struct):
@@ -88,6 +86,25 @@ class DatasetColumnsPut(msgspec.Struct):
     id: int | None = None
     uuid: str | None = None
     advanced_data_type: str | None = None
+
+    def __post_init__(self) -> None:
+        # 1:1 with original DatasetColumnsPutSchema.column_name:
+        # fields.String(required=True, validate=Length(1, 255))
+        # DatasetPutSchema.handle_error (superset_old/datasets/schemas.py:182-191)
+        # converts ALL schema validation errors into SupersetMarshmallowValidationError
+        # (status=422), which is caught by superset_exception_handler and returned as
+        # HTTP 422. Raising msgspec.ValidationError here instead would be caught by
+        # Litestar's validation_error_handler and mapped to 400 (not 422), so we raise
+        # SupersetMarshmallowValidationError directly to preserve the original
+        # status code.
+        if not self.column_name or len(self.column_name) > 255:
+            from superset.exceptions import SupersetMarshmallowValidationError
+
+            raise SupersetMarshmallowValidationError(
+                messages={
+                    "column_name": ["column_name must be between 1 and 255 characters"]
+                }
+            )
 
 
 class DatasetMetricCurrency(msgspec.Struct, rename="camel"):
@@ -302,6 +319,7 @@ class DatabaseRef(ModelStruct):
     database_name: str = ""
     uuid: str | None = None
     backend: str | None = None
+    allow_multi_catalog: bool = False
 
 
 class DatasetDetailResult(ModelStruct):
@@ -334,7 +352,7 @@ class DatasetDetailResult(ModelStruct):
     is_sqllab_view: bool = False
     extra: str | None = None
     is_managed_externally: bool = False
-    folders: Any = None
+    folders: Any | msgspec.UnsetType = None
     select_star: str | None = None
     # --- audit timestamps ---
     created_on: str | None = None

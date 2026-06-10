@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
+from superset.i18n import lazy_gettext as _
+
 
 class SupersetErrorType(str, Enum):
     """
@@ -117,57 +119,57 @@ class ErrorLevel(str, Enum):
 # Ported 1:1 from ``superset_old/errors.py::ISSUE_CODES``; the numbers are
 # load-bearing because they appear in Cypress snapshots and the frontend
 # error documentation links point at them.
-ISSUE_CODES: dict[int, str] = {
-    1000: "The datasource is too large to query.",
-    1001: "The database is under an unusual load.",
-    1002: "The database returned an unexpected error.",
-    1003: (
+ISSUE_CODES: dict[int, Any] = {
+    1000: _("The datasource is too large to query."),
+    1001: _("The database is under an unusual load."),
+    1002: _("The database returned an unexpected error."),
+    1003: _(
         "There is a syntax error in the SQL query. "
         "Perhaps there was a misspelling or a typo."
     ),
-    1004: "The column was deleted or renamed in the database.",
-    1005: "The table was deleted or renamed in the database.",
-    1006: "One or more parameters specified in the query are missing.",
-    1007: "The hostname provided can't be resolved.",
-    1008: "The port is closed.",
-    1009: "The host might be down, and can't be reached on the provided port.",
-    1010: "Superset encountered an error while running a command.",
-    1011: "Superset encountered an unexpected error.",
-    1012: "The username provided when connecting to a database is not valid.",
-    1013: "The password provided when connecting to a database is not valid.",
-    1014: "Either the username or the password is wrong.",
-    1015: "Either the database is spelled incorrectly or does not exist.",
-    1016: "The schema was deleted or renamed in the database.",
-    1017: "User doesn't have the proper permissions.",
-    1018: "One or more parameters needed to configure a database are missing.",
-    1019: "The submitted payload has the incorrect format.",
-    1020: "The submitted payload has the incorrect schema.",
-    1021: "Results backend needed for asynchronous queries is not configured.",
-    1022: "Database does not allow data manipulation.",
-    1023: (
+    1004: _("The column was deleted or renamed in the database."),
+    1005: _("The table was deleted or renamed in the database."),
+    1006: _("One or more parameters specified in the query are missing."),
+    1007: _("The hostname provided can't be resolved."),
+    1008: _("The port is closed."),
+    1009: _("The host might be down, and can't be reached on the provided port."),
+    1010: _("Superset encountered an error while running a command."),
+    1011: _("Superset encountered an unexpected error."),
+    1012: _("The username provided when connecting to a database is not valid."),
+    1013: _("The password provided when connecting to a database is not valid."),
+    1014: _("Either the username or the password is wrong."),
+    1015: _("Either the database is spelled incorrectly or does not exist."),
+    1016: _("The schema was deleted or renamed in the database."),
+    1017: _("User doesn't have the proper permissions."),
+    1018: _("One or more parameters needed to configure a database are missing."),
+    1019: _("The submitted payload has the incorrect format."),
+    1020: _("The submitted payload has the incorrect schema."),
+    1021: _("Results backend needed for asynchronous queries is not configured."),
+    1022: _("Database does not allow data manipulation."),
+    1023: _(
         "The CTAS (create table as select) doesn't have a "
         "SELECT statement at the end. Please make sure your query has a "
         "SELECT as its last statement. Then, try running your query again."
     ),
-    1024: "CVAS (create view as select) query has more than one statement.",
-    1025: "CVAS (create view as select) query is not a SELECT statement.",
-    1026: "Query is too complex and takes too long to run.",
-    1027: "The database is currently running too many queries.",
-    1028: "One or more parameters specified in the query are malformed.",
-    1029: "The object does not exist in the given database.",
-    1030: "The query has a syntax error.",
-    1031: "The results backend no longer has the data from the query.",
-    1032: "The query associated with the results was deleted.",
-    1033: (
+    1024: _("CVAS (create view as select) query has more than one statement."),
+    1025: _("CVAS (create view as select) query is not a SELECT statement."),
+    1026: _("Query is too complex and takes too long to run."),
+    1027: _("The database is currently running too many queries."),
+    1028: _("One or more parameters specified in the query are malformed."),
+    1029: _("The object does not exist in the given database."),
+    1030: _("The query has a syntax error."),
+    1031: _("The results backend no longer has the data from the query."),
+    1032: _("The query associated with the results was deleted."),
+    1033: _(
         "The results stored in the backend were stored in a "
         "different format, and no longer can be deserialized."
     ),
-    1034: "The port number is invalid.",
-    1035: "Failed to start remote query on a worker.",
-    1036: "The database was deleted.",
-    1037: "Custom SQL fields cannot contain sub-queries.",
-    1040: "The submitted payload failed validation.",
-    1041: "The result size exceeds the allowed limit.",
+    1034: _("The port number is invalid."),
+    1035: _("Failed to start remote query on a worker."),
+    1036: _("The database was deleted."),
+    1037: _("Custom SQL fields cannot contain sub-queries."),
+    1040: _("The submitted payload failed validation."),
+    1041: _("The result size exceeds the allowed limit."),
 }
 
 
@@ -230,17 +232,21 @@ class SupersetError:
         test fixtures snapshot them — so they must be present on any
         client-facing error response.
         """
-        issue_codes = ERROR_TYPES_TO_ISSUE_CODES_MAPPING.get(self.error_type)
-        if issue_codes:
+        if issue_codes := ERROR_TYPES_TO_ISSUE_CODES_MAPPING.get(self.error_type):
             self.extra = self.extra or {}
-            if "issue_codes" not in self.extra:
-                self.extra["issue_codes"] = [
-                    {
-                        "code": code,
-                        "message": f"Issue {code} - {ISSUE_CODES[code]}",
-                    }
-                    for code in issue_codes
-                ]
+            self.extra.update(
+                {
+                    "issue_codes": [
+                        {
+                            "code": issue_code,
+                            "message": (
+                                f"Issue {issue_code} - {ISSUE_CODES[issue_code]}"
+                            ),
+                        }
+                        for issue_code in issue_codes
+                    ]
+                }
+            )
 
     def to_dict(self) -> dict[str, Any]:
         rv: dict[str, Any] = {

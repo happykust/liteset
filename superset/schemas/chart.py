@@ -89,9 +89,9 @@ class ChartPutSchema(msgspec.Struct):
     slice_name: (
         Annotated[str, Meta(min_length=1, max_length=250)] | None | msgspec.UnsetType
     ) = msgspec.UNSET
-    viz_type: (
-        Annotated[str, Meta(max_length=250)] | None | msgspec.UnsetType
-    ) = msgspec.UNSET
+    viz_type: Annotated[str, Meta(max_length=250)] | None | msgspec.UnsetType = (
+        msgspec.UNSET
+    )
     datasource_id: int | None | msgspec.UnsetType = msgspec.UNSET
     datasource_type: (
         Literal["table", "query", "saved_query", "dataset", "view"]

@@ -75,7 +75,7 @@ def _group_to_response(group: Any) -> GroupResponse:
     """Convert a Group model instance to a GroupResponse schema."""
     roles = [
         GroupRoleRef(id=r.id, name=r.name)
-        for r in (getattr(group, "roles_", None) or [])
+        for r in (getattr(group, "roles", None) or [])
     ]
     users = [
         GroupUserRef(id=u.id, username=u.username)
@@ -173,8 +173,11 @@ class GroupController(Controller):
         )
 
         result = [_group_to_response(g) for g in groups]
+        ids = [g.id for g in groups]
         await event_logger.alog_with_context("group.list")
-        return msgspec.to_builtins(GroupsSearchResponse(result=result, count=total))
+        return msgspec.to_builtins(
+            GroupsSearchResponse(result=result, count=total, ids=ids)
+        )
 
     # ------------------------------------------------------------------
     # GET /{pk} — single group

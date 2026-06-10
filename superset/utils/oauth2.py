@@ -267,21 +267,17 @@ def encode_oauth2_state(state: dict[str, Any]) -> str:
 def decode_oauth2_state(encoded_state: str) -> dict[str, Any]:
     """Decode and validate a JWT produced by :func:`encode_oauth2_state`.
 
-    Raises :class:`OAuth2Error` when the signature is invalid, the token
-    has expired, or the payload fails schema validation.
+    JWT exceptions (``jwt.ExpiredSignatureError``, ``jwt.InvalidTokenError``)
+    propagate to the caller unmodified — 1:1 with the original
+    ``superset_old/utils/oauth2.py:decode_oauth2_state``.
     """
     # Reverse the period-escape applied during encoding.
     encoded_state = encoded_state.replace("%2E", ".")
-    try:
-        payload = jwt.decode(
-            jwt=encoded_state,
-            key=_get_secret_key(),
-            algorithms=[_get_jwt_algorithm()],
-        )
-    except jwt.ExpiredSignatureError as ex:
-        raise OAuth2Error("OAuth2 state token expired") from ex
-    except jwt.InvalidTokenError as ex:
-        raise OAuth2Error("Invalid OAuth2 state token") from ex
+    payload = jwt.decode(
+        jwt=encoded_state,
+        key=_get_secret_key(),
+        algorithms=[_get_jwt_algorithm()],
+    )
 
     if not isinstance(payload, dict):
         raise OAuth2Error("Invalid OAuth2 state payload")
@@ -414,7 +410,7 @@ async def refresh_oauth2_token(
 
         token.access_token = token_response["access_token"]
         token.access_token_expiration = datetime.now() + timedelta(
-            seconds=int(token_response.get("expires_in", 0))
+            seconds=token_response["expires_in"]
         )
         session.add(token)
         await session.flush()
@@ -469,7 +465,7 @@ def sync_refresh_oauth2_token(
 
         token.access_token = token_response["access_token"]
         token.access_token_expiration = datetime.now() + timedelta(
-            seconds=int(token_response.get("expires_in", 0))
+            seconds=token_response["expires_in"]
         )
         session.add(token)
         session.commit()

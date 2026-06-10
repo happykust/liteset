@@ -207,28 +207,11 @@ def import_dashboards(path: str, username: Optional[str]) -> None:
         import io as _io
 
         from superset.commands.dashboard.importers.v1 import ImportDashboardsCommand
-        from superset.commands.importers.v1.utils import get_contents_from_bundle
         from superset.db.daos.dashboard import AsyncDashboardDAO
 
         session_factory, engine = _make_session()
 
         try:
-            if username is not None:
-                from sqlalchemy import select
-
-                from superset.models.security import User
-
-                async with session_factory() as session:
-                    stmt = select(User).where(User.username == username)
-                    user = (await session.execute(stmt)).scalars().first()
-                    if user is None:
-                        click.secho(
-                            f"User not found: {username}", fg="red", err=True
-                        )
-                        await engine.dispose()
-                        sys.exit(1)
-                        return
-
             if is_zipfile(path):
                 with open(path, "rb") as fp:
                     buf = _io.BytesIO(fp.read())
@@ -243,11 +226,36 @@ def import_dashboards(path: str, username: Optional[str]) -> None:
                 buf.seek(0)
 
             async with session_factory() as session:
+                # Resolve --username inside the import session so the ORM user
+                # can be attached as owner — mirrors the original's
+                # ``g.user = security_manager.find_user(username=...)`` before
+                # ImportDashboardsCommand (superset_old/cli/importexport.py:
+                # 149-164); without it imports are owner-less.
+                user = None
+                if username is not None:
+                    from sqlalchemy import select
+
+                    from superset.models.security import User
+
+                    stmt = select(User).where(User.username == username)
+                    user = (await session.execute(stmt)).scalars().first()
+                    if user is None:
+                        # FAB ``find_user`` returns None silently on a miss
+                        # and the original proceeds with an owner-less import
+                        # (superset_old/cli/importexport.py:149-150) — do NOT
+                        # abort. ``import_datasources`` below behaves the same.
+                        click.secho(
+                            f"User not found: {username}; importing without owner",
+                            fg="yellow",
+                            err=True,
+                        )
+
                 dao = AsyncDashboardDAO(session)
                 cmd = ImportDashboardsCommand(
                     buf,
                     dao=dao,
                     overwrite=True,
+                    current_user=user,
                 )
                 try:
                     await cmd.execute()
@@ -284,7 +292,8 @@ def import_dashboards(path: str, username: Optional[str]) -> None:
 def import_datasources(path: str, username: Optional[str] = "admin") -> None:
     """Import datasources from ZIP file"""
     # 1:1 port of superset_old/cli/importexport.py import_datasources.
-    # Original: override_user + get_contents_from_bundle -> ImportDatasetsCommand(contents).run()
+    # Original: override_user + get_contents_from_bundle
+    # -> ImportDatasetsCommand(contents).run()
     # Port: read zip as BytesIO -> ImportDatasetsCommand(buf).execute()
     import anyio
 
@@ -365,7 +374,9 @@ def import_directory(directory: str, overwrite: bool, force: bool) -> None:
     """Imports configs from a given directory"""
     # 1:1 port of superset_old/cli/importexport.py import_directory which
     # delegates to superset.examples.utils.load_configs_from_directory.
-    from superset.examples.utils import load_configs_from_directory  # pylint: disable=import-outside-toplevel
+    from superset.examples.utils import (
+        load_configs_from_directory,  # pylint: disable=import-outside-toplevel
+    )
 
     load_configs_from_directory(
         root=Path(directory),

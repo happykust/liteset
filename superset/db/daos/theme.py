@@ -16,12 +16,15 @@
 # under the License.
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 
 from sqlalchemy import select
 
 from superset.db.base_dao import BaseAsyncDAO
 from superset.models.core import Theme
+
+logger = logging.getLogger(__name__)
 
 
 class AsyncThemeDAO(BaseAsyncDAO[Theme]):
@@ -36,12 +39,27 @@ class AsyncThemeDAO(BaseAsyncDAO[Theme]):
         return await self.find_one_or_none(uuid=uuid_val)
 
     async def find_system_default(self) -> Theme | None:
-        """Find the system default theme."""
+        """Find the current system default theme.
+
+        First looks for a theme with is_system_default=True.
+        If not found or multiple found, falls back to is_system=True theme
+        with name 'THEME_DEFAULT'.
+
+        1:1 with superset_old/daos/theme.py::ThemeDAO.find_system_default.
+        """
         stmt = select(Theme).where(Theme.is_system_default.is_(True))
         result = await self.session.execute(stmt)
-        theme = result.scalars().first()
-        if theme:
-            return theme
+        system_defaults = list(result.scalars().all())
+
+        if len(system_defaults) == 1:
+            return system_defaults[0]
+
+        if len(system_defaults) > 1:
+            logger.warning(
+                "Multiple system default themes found (%d), "
+                "falling back to config theme",
+                len(system_defaults),
+            )
 
         # Fallback: look for system theme named THEME_DEFAULT
         stmt = select(Theme).where(
@@ -52,7 +70,31 @@ class AsyncThemeDAO(BaseAsyncDAO[Theme]):
         return result.scalars().first()
 
     async def find_system_dark(self) -> Theme | None:
-        """Find the system dark theme."""
+        """Find the current system dark theme.
+
+        First looks for a theme with is_system_dark=True.
+        If not found or multiple found, falls back to is_system=True theme
+        with name 'THEME_DARK'.
+
+        1:1 with superset_old/daos/theme.py::ThemeDAO.find_system_dark.
+        """
         stmt = select(Theme).where(Theme.is_system_dark.is_(True))
+        result = await self.session.execute(stmt)
+        system_darks = list(result.scalars().all())
+
+        if len(system_darks) == 1:
+            return system_darks[0]
+
+        if len(system_darks) > 1:
+            logger.warning(
+                "Multiple system dark themes found (%d), falling back to config theme",
+                len(system_darks),
+            )
+
+        # Fallback: look for system theme named THEME_DARK
+        stmt = select(Theme).where(
+            Theme.is_system.is_(True),
+            Theme.theme_name == "THEME_DARK",
+        )
         result = await self.session.execute(stmt)
         return result.scalars().first()

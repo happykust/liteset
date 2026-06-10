@@ -15,9 +15,10 @@
 # specific language governing permissions and limitations
 # under the License.
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import NoSuchTableError
 
 from superset.db.engine_specs.trino import AsyncTrinoEngineSpec
 
@@ -50,16 +51,38 @@ def test_trino_table_not_found_error():
     assert len(errors) >= 1
 
 
-def test_trino_adjust_engine_params():
-    uri, args = AsyncTrinoEngineSpec.adjust_engine_params("trino://host:8080/catalog")
-    assert args["http_scheme"] == "https"
+def test_trino_adjust_engine_params_no_forced_https():
+    """adjust_engine_params must NOT force http_scheme=https by default.
+
+    The original Trino spec does NOT override adjust_engine_params and only sets
+    http_scheme=https when server_cert is present (get_extra_params) or when
+    auth_method is configured (update_params_from_encrypted_extra).
+    A plain HTTP Trino server (no cert, no auth) must connect over HTTP.
+    """
+    # Mock make_url (loaded inside the function) to avoid loading the trino
+    # SQLAlchemy dialect which is not installed in the unit-test environment.
+    mock_url = MagicMock()
+    mock_url.get_driver_name.return_value = "aiotrino"
+
+    with patch("sqlalchemy.engine.make_url", return_value=mock_url):
+        uri, args = AsyncTrinoEngineSpec.adjust_engine_params(
+            "trino+aiotrino://host:8080/catalog"
+        )
+
+    assert "http_scheme" not in args
 
 
-def test_trino_adjust_engine_params_preserves():
-    uri, args = AsyncTrinoEngineSpec.adjust_engine_params(
-        "trino://host:8080/catalog",
-        connect_args={"http_scheme": "http"},
-    )
+def test_trino_adjust_engine_params_preserves_explicit_scheme():
+    """Explicit http_scheme in connect_args must pass through unchanged."""
+    mock_url = MagicMock()
+    mock_url.get_driver_name.return_value = "aiotrino"
+
+    with patch("sqlalchemy.engine.make_url", return_value=mock_url):
+        uri, args = AsyncTrinoEngineSpec.adjust_engine_params(
+            "trino+aiotrino://host:8080/catalog",
+            connect_args={"http_scheme": "http"},
+        )
+
     assert args["http_scheme"] == "http"
 
 
@@ -84,9 +107,7 @@ def test_sync_trino_get_extra_params_source_user_agent() -> None:
     database.extra = "{}"
     database.server_cert = None
 
-    with patch(
-        "superset.utils.core.get_user_agent", return_value="Apache Superset"
-    ):
+    with patch("superset.utils.core.get_user_agent", return_value="Apache Superset"):
         extra = TrinoEngineSpec.get_extra_params(database)
 
     connect_args = extra.get("engine_params", {}).get("connect_args", {})
@@ -104,9 +125,7 @@ def test_sync_trino_get_extra_params_source_not_overwritten() -> None:
     )
     database.server_cert = None
 
-    with patch(
-        "superset.utils.core.get_user_agent", return_value="Apache Superset"
-    ):
+    with patch("superset.utils.core.get_user_agent", return_value="Apache Superset"):
         extra = TrinoEngineSpec.get_extra_params(database)
 
     connect_args = extra.get("engine_params", {}).get("connect_args", {})
@@ -135,9 +154,7 @@ def test_sync_trino_custom_auth_allowed() -> None:
     )
 
     mock_settings = MagicMock()
-    mock_settings.allowed_extra_authentications = {
-        "trino": {"custom_auth": auth_class}
-    }
+    mock_settings.allowed_extra_authentications = {"trino": {"custom_auth": auth_class}}
 
     with patch("superset.config.SupersetSettings", return_value=mock_settings):
         params: dict[str, Any] = {}
@@ -164,6 +181,59 @@ def test_sync_trino_custom_auth_denied() -> None:
     mock_settings = MagicMock()
     mock_settings.allowed_extra_authentications = {"trino": {}}
 
+    expected = "must be listed in 'ALLOWED_EXTRA_AUTHENTICATIONS' config"
     with patch("superset.config.SupersetSettings", return_value=mock_settings):
-        with pytest.raises(ValueError, match="must be listed in 'ALLOWED_EXTRA_AUTHENTICATIONS' config"):
+        with pytest.raises(ValueError, match=expected):
             TrinoEngineSpec.update_params_from_encrypted_extra(database, {})
+
+
+# ---------------------------------------------------------------------------
+# AsyncTrinoEngineSpec.get_columns — NoSuchTableError fallback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_trino_get_columns_falls_back_on_no_such_table() -> None:
+    """get_columns must fall back to SHOW COLUMNS when NoSuchTableError is raised.
+
+    1:1 with superset_old/db_engine_specs/trino.py:459 — only NoSuchTableError
+    triggers the SHOW COLUMNS fallback; other exceptions must propagate.
+    """
+    mock_conn = AsyncMock()
+
+    # Simulate base get_columns raising NoSuchTableError (empty Trino table quirk)
+    with patch.object(
+        AsyncTrinoEngineSpec.__bases__[0],
+        "get_columns",
+        new_callable=AsyncMock,
+        side_effect=NoSuchTableError("mytable"),
+    ):
+        show_result = MagicMock()
+        show_result.fetchall.return_value = [("col1", "varchar"), ("col2", "bigint")]
+        mock_conn.execute = AsyncMock(return_value=show_result)
+
+        cols = await AsyncTrinoEngineSpec.get_columns(mock_conn, "mytable", "myschema")
+
+    assert len(cols) == 2
+    assert cols[0]["column_name"] == "col1"
+    assert cols[1]["column_name"] == "col2"
+
+
+@pytest.mark.asyncio
+async def test_trino_get_columns_propagates_other_errors() -> None:
+    """Non-NoSuchTableError exceptions must propagate, not be silently swallowed.
+
+    1:1 with superset_old/db_engine_specs/trino.py:459 — the original only
+    catches NoSuchTableError; connection failures, permission errors, etc.
+    must reach the caller.
+    """
+    mock_conn = AsyncMock()
+
+    with patch.object(
+        AsyncTrinoEngineSpec.__bases__[0],
+        "get_columns",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("connection refused"),
+    ):
+        with pytest.raises(RuntimeError, match="connection refused"):
+            await AsyncTrinoEngineSpec.get_columns(mock_conn, "mytable", "myschema")

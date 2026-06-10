@@ -66,7 +66,7 @@ class AsyncLogDAO(BaseAsyncDAO[Log]):
         actions: list[str],
         distinct: bool = True,
         page: int = 0,
-        page_size: int = 25,
+        page_size: int = 20,
     ) -> list[Log]:
         """Get recent activity logs for a user filtered by actions.
 

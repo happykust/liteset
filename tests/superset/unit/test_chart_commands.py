@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import io
 import zipfile
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
@@ -228,8 +228,15 @@ async def test_export_charts_produces_zip(mock_dao, mock_chart):
         "viz_type": "table",
     }
     _exec_returns(mock_dao, one=mock_chart)
-    cmd = ExportChartsCommand(model_ids=[1], dao=mock_dao)
-    buf = await cmd.execute()
+    # Access gate: count() must equal len(model_ids); filter patched so no
+    # real security_manager is needed.
+    mock_dao.count = AsyncMock(return_value=1)
+    with patch(
+        "superset.db.filters.chart_access_filters",
+        AsyncMock(return_value=[]),
+    ):
+        cmd = ExportChartsCommand(model_ids=[1], dao=mock_dao)
+        buf = await cmd.execute()
     assert isinstance(buf, io.BytesIO)
     with zipfile.ZipFile(buf) as zf:
         names = zf.namelist()
@@ -418,6 +425,177 @@ async def test_create_chart_run_user_not_found(mock_dao):
     sm.find_user_by_id.assert_awaited_with(99)
     # owners should not have been set (no user found)
     assert result.owners == []
+
+
+async def test_export_charts_denies_inaccessible_id(mock_dao):
+    """ExportChartsCommand.validate() raises ObjectNotFoundError when the
+    access-control gate returns fewer rows than the requested ids — i.e. the
+    caller has no permission to at least one of the requested charts."""
+    # count() returns 0 → none of the requested ids are accessible.
+    mock_dao.count = AsyncMock(return_value=0)
+    with patch(
+        "superset.db.filters.chart_access_filters",
+        AsyncMock(return_value=[]),
+    ):
+        cmd = ExportChartsCommand(
+            model_ids=[1], dao=mock_dao, security_manager=MagicMock()
+        )
+        with pytest.raises(ObjectNotFoundError):
+            await cmd.validate()
+
+
+# ---------------------------------------------------------------------------
+# NEW-T4: Database YAML ``extra`` fixups in chart export
+# These mirror superset_old/commands/database/export.py:80-88 (parse_extra +
+# schemas_allowed_for_file_upload rename).  The chart export builds the DB
+# YAML inline, so it must apply the same two V1-schema-compat fixups.
+# ---------------------------------------------------------------------------
+
+
+async def test_export_chart_db_extra_single_decodes_only(mock_dao):
+    """Chart export must decode the database ``extra`` JSON exactly ONCE.
+
+    1:1 with the original: ``ExportChartsCommand._export`` delegates the
+    database YAML to ``ExportDatasetsCommand``
+    (superset_old/commands/chart/export.py:104), whose ``_export`` only does
+    ``payload["extra"] = json.loads(payload["extra"])``
+    (superset_old/commands/dataset/export.py:108-112). The
+    ``parse_extra()`` double-decode of ``schemas_allowed_for_csv_upload``
+    belongs ONLY to ``ExportDatabasesCommand``
+    (superset_old/commands/database/export.py:44-51) and must NOT happen here.
+    """
+    import json as _json
+    import zipfile
+
+    import yaml
+
+    chart = MagicMock()
+    chart.id = 1
+    chart.slice_name = "My Chart"
+    chart.tags = []
+    chart.export_to_dict.return_value = {"slice_name": "My Chart", "viz_type": "bar"}
+
+    db = MagicMock()
+    db.id = 10
+    db.database_name = "MyDB"
+    db.uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    # extra contains schemas_allowed_for_csv_upload as a JSON-encoded string
+    db.export_to_dict.return_value = {
+        "database_name": "MyDB",
+        "sqlalchemy_uri": "postgresql://x",
+        "extra": _json.dumps(
+            {"schemas_allowed_for_csv_upload": _json.dumps(["schema1", "schema2"])}
+        ),
+    }
+
+    dataset = MagicMock()
+    dataset.id = 5
+    dataset.table_name = "my_table"
+    dataset.uuid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    dataset.database = db
+    dataset.export_to_dict.return_value = {
+        "table_name": "my_table",
+        "sql": None,
+    }
+
+    chart.table = dataset
+
+    _exec_returns(mock_dao, one=chart)
+    mock_dao.count = AsyncMock(return_value=1)
+
+    # Suppress SSH tunnel lookup
+    with (
+        patch("superset.db.daos.database.AsyncSSHTunnelDAO", side_effect=ImportError),
+        patch(
+            "superset.db.filters.chart_access_filters",
+            AsyncMock(return_value=[]),
+        ),
+        patch("superset.utils.feature_flags.feature_flag_manager") as ff,
+    ):
+        ff.is_feature_enabled.return_value = False
+        cmd = ExportChartsCommand(model_ids=[1], dao=mock_dao)
+        buf = await cmd.execute()
+
+    with zipfile.ZipFile(buf) as zf:
+        db_files = [n for n in zf.namelist() if n.startswith("databases/")]
+        assert db_files, "no databases/*.yaml emitted"
+        db_yaml = yaml.safe_load(zf.read(db_files[0]))
+
+    extra = db_yaml.get("extra", {})
+    # ``extra`` itself is decoded to a dict (single json.loads), but the
+    # inner schemas_allowed_for_csv_upload stays a JSON-encoded string —
+    # the dataset-export path performs NO parse_extra() double-decode.
+    assert isinstance(extra, dict)
+    assert extra.get("schemas_allowed_for_csv_upload") == _json.dumps(
+        ["schema1", "schema2"]
+    )
+
+
+async def test_export_chart_db_extra_keeps_schemas_allowed_for_file_upload(mock_dao):
+    """``schemas_allowed_for_file_upload`` must stay unrenamed in chart export.
+
+    The ``schemas_allowed_for_file_upload`` →
+    ``schemas_allowed_for_csv_upload`` rename
+    (superset_old/commands/database/export.py:86-89) is performed ONLY by
+    ``ExportDatabasesCommand``. Chart export delegates the database YAML to
+    ``ExportDatasetsCommand`` (superset_old/commands/chart/export.py:104),
+    which emits the extra dict as-is after a single ``json.loads``."""
+    import json as _json
+    import zipfile
+
+    import yaml
+
+    chart = MagicMock()
+    chart.id = 2
+    chart.slice_name = "Chart2"
+    chart.tags = []
+    chart.export_to_dict.return_value = {"slice_name": "Chart2", "viz_type": "table"}
+
+    db = MagicMock()
+    db.id = 20
+    db.database_name = "OtherDB"
+    db.uuid = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    db.export_to_dict.return_value = {
+        "database_name": "OtherDB",
+        "sqlalchemy_uri": "postgresql://y",
+        "extra": _json.dumps({"schemas_allowed_for_file_upload": ["s1", "s2"]}),
+    }
+
+    dataset = MagicMock()
+    dataset.id = 6
+    dataset.table_name = "tbl"
+    dataset.uuid = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    dataset.database = db
+    dataset.export_to_dict.return_value = {"table_name": "tbl", "sql": None}
+
+    chart.table = dataset
+
+    _exec_returns(mock_dao, one=chart)
+    mock_dao.count = AsyncMock(return_value=1)
+
+    with (
+        patch("superset.db.daos.database.AsyncSSHTunnelDAO", side_effect=ImportError),
+        patch(
+            "superset.db.filters.chart_access_filters",
+            AsyncMock(return_value=[]),
+        ),
+        patch("superset.utils.feature_flags.feature_flag_manager") as ff,
+    ):
+        ff.is_feature_enabled.return_value = False
+        cmd = ExportChartsCommand(model_ids=[2], dao=mock_dao)
+        buf = await cmd.execute()
+
+    with zipfile.ZipFile(buf) as zf:
+        db_files = [n for n in zf.namelist() if n.startswith("databases/")]
+        assert db_files, "no databases/*.yaml emitted"
+        db_yaml = yaml.safe_load(zf.read(db_files[0]))
+
+    extra = db_yaml.get("extra", {})
+    # The key keeps its modern name — no V1 back-rename in the dataset path.
+    assert extra.get("schemas_allowed_for_file_upload") == ["s1", "s2"]
+    assert "schemas_allowed_for_csv_upload" not in extra, (
+        "the database-export rename must NOT leak into chart export"
+    )
 
 
 async def test_import_charts_validate_skips_non_dict_config(mock_dao):

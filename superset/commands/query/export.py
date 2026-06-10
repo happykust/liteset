@@ -23,10 +23,10 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 import yaml
-from superset.utils.file import secure_filename
 
 from superset.exceptions import CommandInvalidError, ObjectNotFoundError
 from superset.importexport.export_base import AsyncExportModelsCommand
+from superset.utils.file import secure_filename
 
 if TYPE_CHECKING:
     from superset.typing import CRUDDAOProtocol
@@ -46,10 +46,39 @@ class ExportSavedQueriesCommand(AsyncExportModelsCommand):
     _resource_type = "SavedQuery"
 
     def __init__(
-        self, model_ids: list[int], dao: "CRUDDAOProtocol | None" = None
+        self,
+        model_ids: list[int],
+        dao: "CRUDDAOProtocol | None" = None,
+        security_manager: Any = None,
+        user: Any = None,
+        export_related: bool = True,
     ) -> None:
-        super().__init__(model_ids)
+        super().__init__(
+            model_ids,
+            security_manager=security_manager,
+            user=user,
+            export_related=export_related,
+        )
         self._dao = dao
+
+    async def validate(self) -> None:
+        """Validate that requested IDs are accessible to the current user.
+
+        1:1 with original ``ExportModelsCommand.validate()`` at
+        ``superset_old/commands/export/models.py:75-78`` which calls
+        ``SavedQueryDAO.find_by_ids()`` — that DAO applies
+        ``SavedQueryFilter`` (``base_filter``), restricting results to
+        ``SavedQuery.created_by == g.user``.  If the number of found
+        models differs from the requested count, the original raises
+        ``SavedQueryNotFoundError`` which the controller maps to a 404
+        with ``{'message': 'Not found'}`` — no ID details in the body.
+        """
+        from superset.db.filters import saved_query_access_filters
+        from superset.models.sql_lab import SavedQuery
+
+        await self._validate_access(
+            self._dao, SavedQuery, saved_query_access_filters, "SavedQuery"
+        )
 
     @staticmethod
     def _file_name(model: Any) -> str:
@@ -92,16 +121,20 @@ class ExportSavedQueriesCommand(AsyncExportModelsCommand):
             export_uuids=True,
         )
         payload["version"] = EXPORT_VERSION
-        if query.database:
-            payload["database_uuid"] = str(query.database.uuid)
+        # 1:1 with original (superset_old/commands/query/export.py:63):
+        # unconditional — if database is None, raises AttributeError (loud
+        # failure at export time) rather than producing a non-importable ZIP.
+        payload["database_uuid"] = str(query.database.uuid)
 
         files: list[tuple[str, str]] = [
             (self._file_name(query), yaml.safe_dump(payload, sort_keys=False)),
         ]
 
-        # Bundle the related database YAML.
+        # Bundle the related database YAML — 1:1 with
+        # superset_old/commands/query/export.py:77 which gates on
+        # ``export_related`` (False in full-assets bundles to avoid duplication).
         db = getattr(query, "database", None)
-        if db:
+        if db and self._export_related:
             db_payload = db.export_to_dict(
                 recursive=False,
                 include_parent_ref=False,

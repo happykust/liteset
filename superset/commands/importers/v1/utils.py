@@ -50,7 +50,7 @@ from superset.commands.importers.exceptions import (
     IncorrectFormatError,
     IncorrectVersionError,
 )
-from superset.exceptions import CommandInvalidError
+from superset.exceptions import CommandInvalidError, SupersetException
 from superset.i18n import gettext as _
 
 logger = logging.getLogger(__name__)
@@ -118,22 +118,30 @@ def load_metadata(contents: dict[str, str]) -> dict[str, str]:
 
     errors: dict[str, list[str]] = {}
 
-    # ``version`` field — Equal validator: this is the *only* error class
-    # that triggers IncorrectVersionError so the dispatcher can try a
-    # different command version.
+    # ``version`` field — Equal validator: raise IncorrectVersionError for
+    # ANY version-field problem (missing OR wrong value) so the dispatcher
+    # can try a different command version.  This mirrors the original
+    # Marshmallow path: required=True puts "version" in ex.messages for a
+    # missing field too, and the guard ``if "version" in ex.messages`` then
+    # raises IncorrectVersionError in both cases.
     version = metadata.get("version")
     if version is None:
-        errors["version"] = ["Missing data for required field."]
-    elif version != IMPORT_VERSION:
-        # Match the original message verbatim ("Must be equal to <expected>.")
-        # — frontends pattern-match on this string.
+        # Missing field — mirrors Marshmallow required=True message.
+        raise IncorrectVersionError("Missing data for required field.")
+    if version != IMPORT_VERSION:
+        # Wrong value — match the original message verbatim ("Must be equal
+        # to <expected>.") — frontends pattern-match on this string.
         raise IncorrectVersionError(f"Must be equal to {IMPORT_VERSION}.")
 
     # ``type`` is not required at this layer, but if present must be a string.
     if "type" in metadata and not isinstance(metadata["type"], str):
         errors.setdefault("type", []).append("Not a valid string.")
 
-    # ``timestamp`` is optional — only validate format if present
+    # ``timestamp`` is optional — only validate format if present.
+    # NOTE: a non-string (incl. the ``datetime`` objects PyYAML produces for
+    # unquoted timestamp literals) is REJECTED — Marshmallow's
+    # ``DateTime._deserialize`` calls ``from_iso_datetime`` whose regex
+    # ``.match`` raises TypeError on non-strings → "Not a valid datetime.".
     timestamp = metadata.get("timestamp")
     if timestamp is not None and not isinstance(timestamp, str):
         errors.setdefault("timestamp", []).append("Not a valid datetime.")
@@ -188,10 +196,29 @@ def is_valid_config(file_name: str) -> bool:
 def _check_is_safe_zip(zip_file: ZipFile) -> None:
     """Verify a ZIP archive's entries satisfy our safety constraints.
 
-    Mirrors :func:`superset_old.utils.core.check_is_safe_zip`: enforce an
-    entry-count cap (1000) and reject path traversal.  We re-implement here
-    to avoid coupling with the Flask-flavoured utils module.
+    1:1 port of :func:`superset_old.utils.core.check_is_safe_zip`:
+    - Rejects any individual entry whose uncompressed size exceeds
+      ``ZIPPED_FILE_MAX_SIZE`` (default 100 MB).
+    - Rejects the archive when the overall compression ratio exceeds
+      ``ZIP_FILE_MAX_COMPRESS_RATIO`` (default 200×) — zip-bomb guard.
+    - Additionally enforces the entry-count cap (1000) and path-traversal
+      rejection added in the liteset port.
     """
+    # pylint: disable=import-outside-toplevel
+    from superset.config import SupersetSettings
+
+    try:
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        zipped_file_max_size: int = getattr(
+            settings, "zipped_file_max_size", 100 * 1024 * 1024
+        )
+        zip_file_max_compress_ratio: float = getattr(
+            settings, "zip_file_max_compress_ratio", 200.0
+        )
+    except Exception:  # noqa: BLE001
+        zipped_file_max_size = 100 * 1024 * 1024
+        zip_file_max_compress_ratio = 200.0
+
     entries = zip_file.namelist()
     if len(entries) > _MAX_ZIP_ENTRIES:
         raise IncorrectFormatError(
@@ -207,6 +234,16 @@ def _check_is_safe_zip(zip_file: ZipFile) -> None:
             raise IncorrectFormatError(
                 _("ZIP entry contains path traversal: %(name)s", name=name)
             )
+
+    uncompress_size = 0
+    compress_size = 0
+    for zip_info in zip_file.infolist():
+        if zip_info.file_size > zipped_file_max_size:
+            raise SupersetException("Found file with size above allowed threshold")
+        uncompress_size += zip_info.file_size
+        compress_size += zip_info.compress_size
+    if compress_size and uncompress_size / compress_size > zip_file_max_compress_ratio:
+        raise SupersetException("Zip compress ratio above allowed threshold")
 
 
 def get_contents_from_bundle(bundle: ZipFile) -> dict[str, str]:
@@ -363,9 +400,7 @@ def _validate_database_masked_credentials(  # noqa: C901
                 {
                     file_name: {
                         "ssh_tunnel": {
-                            "password": [
-                                "Must provide a password for the ssh tunnel"
-                            ]
+                            "password": ["Must provide a password for the ssh tunnel"]
                         }
                     }
                 }
@@ -381,17 +416,13 @@ def _validate_database_masked_credentials(  # noqa: C901
 
         exception_messages: list[str] = []
         if private_key is None or private_key == _PASSWORD_MASK:
-            exception_messages.append(
-                "Must provide a private key for the ssh tunnel"
-            )
+            exception_messages.append("Must provide a private key for the ssh tunnel")
         if private_key_password is None or private_key_password == _PASSWORD_MASK:
             exception_messages.append(
                 "Must provide a private key password for the ssh tunnel"
             )
         if exception_messages:
-            raise CommandInvalidError(
-                {file_name: {"ssh_tunnel": exception_messages}}
-            )
+            raise CommandInvalidError({file_name: {"ssh_tunnel": exception_messages}})
 
 
 async def load_configs(  # noqa: C901
@@ -496,9 +527,7 @@ async def load_configs(  # noqa: C901
             # ``superset_old/databases/schemas.py``.
             # Only applies to NEW databases (existing ones keep stored secrets).
             if prefix == "databases":
-                _validate_database_masked_credentials(
-                    config, file_name, db_passwords
-                )
+                _validate_database_masked_credentials(config, file_name, db_passwords)
 
             configs[file_name] = config
         except CommandInvalidError as exc:

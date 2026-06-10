@@ -114,12 +114,39 @@ async def test_get_list_empty(
 async def test_get_single(
     controller: ReportExecutionLogController, mock_dao: AsyncMock
 ) -> None:
+    from datetime import datetime
+
+    scheduled = datetime(2024, 1, 1, 10, 0, 0)
+    start = datetime(2024, 1, 1, 10, 0, 1)
+    end = datetime(2024, 1, 1, 10, 0, 5)
+
     item = MagicMock()
     item.id = 5
     item.report_schedule_id = 1
+    item.scheduled_dttm = scheduled
+    item.end_dttm = end
+    item.start_dttm = start
+    item.value = 42.0
+    item.value_row_json = '{"key": "val"}'
+    item.state = "Success"
+    item.error_message = None
+    item.uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
     mock_dao.find_by_id.return_value = item
     result = await _get_single(controller, pk=1, log_id=5, dao=mock_dao)
-    assert result["result"] == item
+
+    assert result["id"] == 5
+    assert result["result"] == {
+        "id": 5,
+        "scheduled_dttm": scheduled,
+        "end_dttm": end,
+        "start_dttm": start,
+        "value": 42.0,
+        "value_row_json": '{"key": "val"}',
+        "state": "Success",
+        "error_message": None,
+        "uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    }
     mock_dao.find_by_id.assert_awaited_once_with(5)
 
 
@@ -131,14 +158,33 @@ async def test_get_single_not_found(
         await _get_single(controller, pk=1, log_id=999, dao=mock_dao)
 
 
-async def test_get_single_wrong_report(
+async def test_get_single_cross_ownership_returns_200(
     controller: ReportExecutionLogController, mock_dao: AsyncMock
 ) -> None:
+    """Original behaviour: a log belonging to a *different* report schedule
+    than the pk in the URL is still returned as HTTP 200, not 404.
+
+    In the original (superset_old/reports/logs/api.py:207-208) the rison filter
+    appended by _apply_layered_relation_to_rison is only consumed for column
+    selection, not for the DB lookup.  FAB's get_headless fetches by log_id
+    using only self._base_filters which is empty for ReportExecutionLogRestApi.
+    """
     item = MagicMock()
-    item.report_schedule_id = 2  # Different from report_pk=1
+    item.id = 5
+    item.report_schedule_id = 2  # Different from pk=1 -- original still 200
+    item.state = "Success"
+    item.error_message = None
+    item.value = 1.0
+    item.value_row_json = None
+    item.scheduled_dttm = None
+    item.start_dttm = None
+    item.end_dttm = None
+    item.uuid = None
     mock_dao.find_by_id.return_value = item
-    with pytest.raises(ObjectNotFoundError):
-        await _get_single(controller, pk=1, log_id=5, dao=mock_dao)
+    # Must NOT raise; must return the item
+    result = await _get_single(controller, pk=1, log_id=5, dao=mock_dao)
+    assert result["id"] == 5
+    assert result["result"]["state"] == "Success"
 
 
 # ---------------------------------------------------------------------------

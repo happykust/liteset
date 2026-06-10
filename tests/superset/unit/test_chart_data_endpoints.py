@@ -342,9 +342,7 @@ async def test_data_executes_command(
     # Realistic query result: ``data`` is a list of record dicts (the shape
     # ``df.to_dict(orient="records")`` produces), which the handler's
     # NaN/Decimal cleanup pass iterates over.
-    mock_cmd.execute = AsyncMock(
-        return_value={"queries": [{"data": [{"value": 99}]}]}
-    )
+    mock_cmd.execute = AsyncMock(return_value={"queries": [{"data": [{"value": 99}]}]})
     mock_chart_data_command_cls.return_value = mock_cmd
 
     result = await _data(

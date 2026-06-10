@@ -33,14 +33,11 @@ from litestar.response import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from superset.db.daos.tab_state import AsyncTableSchemaDAO, AsyncTabStateDAO
+from superset.guards.rbac import require_permission
+from superset.i18n import gettext as __
 from superset.typing import UserProtocol
-
-
-def _json_iso_dttm_ser(obj: Any) -> str:
-    """Serialize datetime objects to ISO format, matching original Superset."""
-    if hasattr(obj, "isoformat"):
-        return obj.isoformat()
-    return str(obj)
+from superset.utils.core import error_msg_from_exception
+from superset.utils.json import json_iso_dttm_ser as _json_iso_dttm_ser
 
 
 def _provide_tab_state_dao(session: AsyncSession) -> AsyncTabStateDAO:
@@ -64,7 +61,7 @@ class TabStateController(Controller):
         "table_schema_dao": Provide(_provide_table_schema_dao, sync_to_thread=False),
     }
 
-    @post("/", status_code=200)
+    @post("/", status_code=200, guards=[require_permission("can_post", "TabStateView")])
     async def create(
         self,
         request: Request[Any, Any, Any],
@@ -90,7 +87,7 @@ class TabStateController(Controller):
                 {
                     "user_id": current_user.id,
                     "label": query_editor.get("name")
-                    or query_editor.get("title", "Untitled Query"),
+                    or query_editor.get("title", __("Untitled Query")),
                     "active": True,
                     "database_id": int(query_editor["dbId"]),
                     "catalog": query_editor.get("catalog"),
@@ -115,12 +112,16 @@ class TabStateController(Controller):
             # ``db.session.rollback()`` in every ``except``.
             await dao.session.rollback()
             return Response(
-                content=json.dumps({"error": str(ex)}),
+                content=json.dumps({"error": error_msg_from_exception(ex)}),
                 status_code=400,
                 media_type="application/json",
             )
 
-    @delete("/{tab_state_id:int}", status_code=200)
+    @delete(
+        "/{tab_state_id:int}",
+        status_code=200,
+        guards=[require_permission("can_delete", "TabStateView")],
+    )
     async def delete_tab(
         self,
         tab_state_id: int,
@@ -129,21 +130,20 @@ class TabStateController(Controller):
         current_user: UserProtocol,
     ) -> Response[str]:
         """DELETE /tabstateview/<id> — delete a tab state and its table schemas."""
-        owner_id = await dao.get_owner_id(tab_state_id)
-        if owner_id is None:
-            return Response(
-                content=json.dumps({"error": "Not found"}),
-                status_code=404,
-                media_type="application/json",
-            )
-        if owner_id != current_user.id:
-            return Response(
-                content=json.dumps({"error": "Forbidden"}),
-                status_code=403,
-                media_type="application/json",
-            )
-
         try:
+            owner_id = await dao.get_owner_id(tab_state_id)
+            if owner_id is None:
+                return Response(
+                    content=json.dumps({"error": "Not found"}),
+                    status_code=404,
+                    media_type="application/json",
+                )
+            if owner_id != current_user.id:
+                return Response(
+                    content=json.dumps({"error": "Forbidden"}),
+                    status_code=403,
+                    media_type="application/json",
+                )
             # Delete tab state and its associated table schemas
             await dao.delete_by_id(tab_state_id)
             await table_schema_dao.delete_by_tab_state_id(tab_state_id)
@@ -160,12 +160,12 @@ class TabStateController(Controller):
             # ``db.session.rollback()`` in every ``except``.
             await dao.session.rollback()
             return Response(
-                content=json.dumps({"error": str(ex)}),
+                content=json.dumps({"error": error_msg_from_exception(ex)}),
                 status_code=400,
                 media_type="application/json",
             )
 
-    @get("/{tab_state_id:int}")
+    @get("/{tab_state_id:int}", guards=[require_permission("can_get", "TabStateView")])
     async def get_tab(
         self,
         tab_state_id: int,
@@ -199,7 +199,11 @@ class TabStateController(Controller):
             media_type="application/json",
         )
 
-    @post("/{tab_state_id:int}/activate", status_code=200)
+    @post(
+        "/{tab_state_id:int}/activate",
+        status_code=200,
+        guards=[require_permission("can_activate", "TabStateView")],
+    )
     async def activate(
         self,
         tab_state_id: int,
@@ -210,21 +214,20 @@ class TabStateController(Controller):
 
         Upstream returns 200 via ``json_success``; override Litestar default.
         """
-        owner_id = await dao.get_owner_id(tab_state_id)
-        if owner_id is None:
-            return Response(
-                content=json.dumps({"error": "Not found"}),
-                status_code=404,
-                media_type="application/json",
-            )
-        if owner_id != current_user.id:
-            return Response(
-                content=json.dumps({"error": "Forbidden"}),
-                status_code=403,
-                media_type="application/json",
-            )
-
         try:
+            owner_id = await dao.get_owner_id(tab_state_id)
+            if owner_id is None:
+                return Response(
+                    content=json.dumps({"error": "Not found"}),
+                    status_code=404,
+                    media_type="application/json",
+                )
+            if owner_id != current_user.id:
+                return Response(
+                    content=json.dumps({"error": "Forbidden"}),
+                    status_code=403,
+                    media_type="application/json",
+                )
             await dao.activate_tab(current_user.id, tab_state_id)
             return Response(
                 content=json.dumps(tab_state_id),
@@ -239,12 +242,12 @@ class TabStateController(Controller):
             # ``db.session.rollback()`` in every ``except``.
             await dao.session.rollback()
             return Response(
-                content=json.dumps({"error": str(ex)}),
+                content=json.dumps({"error": error_msg_from_exception(ex)}),
                 status_code=400,
                 media_type="application/json",
             )
 
-    @put("/{tab_state_id:int}")
+    @put("/{tab_state_id:int}", guards=[require_permission("can_put", "TabStateView")])
     async def update_tab(
         self,
         tab_state_id: int,
@@ -285,12 +288,16 @@ class TabStateController(Controller):
             # ``db.session.rollback()`` in every ``except``.
             await dao.session.rollback()
             return Response(
-                content=json.dumps({"error": str(ex)}),
+                content=json.dumps({"error": error_msg_from_exception(ex)}),
                 status_code=400,
                 media_type="application/json",
             )
 
-    @post("/{tab_state_id:int}/migrate_query", status_code=200)
+    @post(
+        "/{tab_state_id:int}/migrate_query",
+        status_code=200,
+        guards=[require_permission("can_migrate_query", "TabStateView")],
+    )
     async def migrate_query(
         self,
         tab_state_id: int,
@@ -299,21 +306,20 @@ class TabStateController(Controller):
         current_user: UserProtocol,
     ) -> Response[str]:
         """POST /tabstateview/<id>/migrate_query — reassign a query to this tab."""
-        owner_id = await dao.get_owner_id(tab_state_id)
-        if owner_id is None:
-            return Response(
-                content=json.dumps({"error": "Not found"}),
-                status_code=404,
-                media_type="application/json",
-            )
-        if owner_id != current_user.id:
-            return Response(
-                content=json.dumps({"error": "Forbidden"}),
-                status_code=403,
-                media_type="application/json",
-            )
-
         try:
+            owner_id = await dao.get_owner_id(tab_state_id)
+            if owner_id is None:
+                return Response(
+                    content=json.dumps({"error": "Not found"}),
+                    status_code=404,
+                    media_type="application/json",
+                )
+            if owner_id != current_user.id:
+                return Response(
+                    content=json.dumps({"error": "Forbidden"}),
+                    status_code=403,
+                    media_type="application/json",
+                )
             form = await request.form()
             client_id = json.loads(form["queryId"])
 
@@ -331,12 +337,16 @@ class TabStateController(Controller):
             # ``db.session.rollback()`` in every ``except``.
             await dao.session.rollback()
             return Response(
-                content=json.dumps({"error": str(ex)}),
+                content=json.dumps({"error": error_msg_from_exception(ex)}),
                 status_code=400,
                 media_type="application/json",
             )
 
-    @delete("/{tab_state_id:int}/query/{client_id:str}", status_code=200)
+    @delete(
+        "/{tab_state_id:int}/query/{client_id:str}",
+        status_code=200,
+        guards=[require_permission("can_delete_query", "TabStateView")],
+    )
     async def delete_query(
         self,
         tab_state_id: int,
@@ -345,20 +355,6 @@ class TabStateController(Controller):
         current_user: UserProtocol,
     ) -> Response[str]:
         """DELETE /tabstateview/<id>/query/<client_id> — remove a query from a tab."""
-        owner_id = await dao.get_owner_id(tab_state_id)
-        if owner_id is None:
-            return Response(
-                content=json.dumps({"error": "Not found"}),
-                status_code=404,
-                media_type="application/json",
-            )
-        if owner_id != current_user.id:
-            return Response(
-                content=json.dumps({"error": "Forbidden"}),
-                status_code=403,
-                media_type="application/json",
-            )
-
         try:
             # If this query was the tab's latest_query, replace with the previous one
             tab_state_match = await dao.find_tab_with_latest_query(
@@ -390,7 +386,7 @@ class TabStateController(Controller):
             # ``db.session.rollback()`` in every ``except``.
             await dao.session.rollback()
             return Response(
-                content=json.dumps({"error": str(ex)}),
+                content=json.dumps({"error": error_msg_from_exception(ex)}),
                 status_code=400,
                 media_type="application/json",
             )
@@ -405,7 +401,11 @@ class TableSchemaController(Controller):
         "dao": Provide(_provide_table_schema_dao, sync_to_thread=False),
     }
 
-    @post("/", status_code=200)
+    @post(
+        "/",
+        status_code=200,
+        guards=[require_permission("can_post", "TableSchemaView")],
+    )
     async def create(
         self,
         request: Request[Any, Any, Any],
@@ -474,12 +474,16 @@ class TableSchemaController(Controller):
             # ``db.session.rollback()`` in every ``except``.
             await dao.session.rollback()
             return Response(
-                content=json.dumps({"error": str(ex)}),
+                content=json.dumps({"error": error_msg_from_exception(ex)}),
                 status_code=400,
                 media_type="application/json",
             )
 
-    @delete("/{table_schema_id:int}", status_code=200)
+    @delete(
+        "/{table_schema_id:int}",
+        status_code=200,
+        guards=[require_permission("can_delete", "TableSchemaView")],
+    )
     async def delete_schema(
         self,
         table_schema_id: int,
@@ -501,38 +505,40 @@ class TableSchemaController(Controller):
             # ``db.session.rollback()`` in every ``except``.
             await dao.session.rollback()
             return Response(
-                content=json.dumps({"error": str(ex)}),
+                content=json.dumps({"error": error_msg_from_exception(ex)}),
                 status_code=400,
                 media_type="application/json",
             )
 
-    @post("/{table_schema_id:int}/expanded", status_code=200)
+    @post(
+        "/{table_schema_id:int}/expanded",
+        status_code=200,
+        guards=[require_permission("can_expanded", "TableSchemaView")],
+    )
     async def set_expanded(
         self,
         table_schema_id: int,
         request: Request[Any, Any, Any],
         dao: AsyncTableSchemaDAO,
     ) -> Response[str]:
-        """POST /tableschemaview/<id>/expanded — toggle expanded state."""
-        try:
-            form = await request.form()
-            payload = json.loads(form["expanded"])
+        """POST /tableschemaview/<id>/expanded — toggle expanded state.
 
-            await dao.set_expanded(table_schema_id, payload)
-            return Response(
-                content=json.dumps({"id": table_schema_id, "expanded": payload}),
-                media_type="application/json",
+        Matches original TableSchemaView.expanded: a missing ``expanded``
+        form key raises Werkzeug's ``BadRequestKeyError`` (an HTTP 400
+        BadRequest subclass) which Flask renders as 400 — NOT 500. Invalid
+        JSON (``json.loads`` ValueError) propagates → 500, as upstream.
+        """
+        from litestar.exceptions import ClientException
+
+        form = await request.form()
+        if "expanded" not in form:
+            # Werkzeug ImmutableMultiDict.__getitem__ → BadRequestKeyError → 400.
+            raise ClientException(
+                status_code=400, detail="Missing form key: 'expanded'"
             )
-        except Exception as ex:
-            # Roll back the partial mutation before returning. The request
-            # wrapper COMMITS on a returned Response, so without this a
-            # multi-step handler (e.g. delete tab-state then table-schemas,
-            # or delete-matching then create-schema) would persist its first
-            # step when the second fails. 1:1 with upstream's
-            # ``db.session.rollback()`` in every ``except``.
-            await dao.session.rollback()
-            return Response(
-                content=json.dumps({"error": str(ex)}),
-                status_code=400,
-                media_type="application/json",
-            )
+        payload = json.loads(form["expanded"])
+        await dao.set_expanded(table_schema_id, payload)
+        return Response(
+            content=json.dumps({"id": table_schema_id, "expanded": payload}),
+            media_type="application/json",
+        )

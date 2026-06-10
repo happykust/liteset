@@ -36,6 +36,8 @@ from collections.abc import Iterable
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
+from superset.commands.database.exceptions import DatabaseConnectionFailedError
+from superset.db_engine_specs.base import GenericDBException
 from superset.exceptions import OAuth2RedirectError
 
 if TYPE_CHECKING:
@@ -191,7 +193,7 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
             except OAuth2RedirectError:
                 # raise OAuth2 exceptions as-is
                 raise
-            except Exception:  # noqa: BLE001
+            except DatabaseConnectionFailedError:
                 logger.warning(
                     "Error processing catalog %s",
                     catalog or "(default)",
@@ -239,16 +241,27 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
                 return {default_catalog}
 
             def _fetch_catalogs() -> set[str]:
-                with db.get_inspector() as inspector:
-                    return db.db_engine_spec.get_catalog_names(db, inspector)
+                # ``_sync_check_for_oauth2`` mirrors the except-block of the
+                # original ``get_all_catalog_names`` (superset_old/models/
+                # core.py:932-939): a QUERY-TIME exception that
+                # ``needs_oauth2`` triggers the OAuth2 dance
+                # (OAuth2RedirectError) instead of a generic connection error.
+                from superset.utils.database import _sync_check_for_oauth2
+
+                with _sync_check_for_oauth2(db):
+                    with db.get_inspector(ssh_tunnel=self._ssh_tunnel) as inspector:
+                        return db.db_engine_spec.get_catalog_names(db, inspector)
 
             return await asyncio.to_thread(_fetch_catalogs)
         except OAuth2RedirectError:
             # raise OAuth2 exceptions as-is
             raise
-        except Exception:  # noqa: BLE001
-            logger.warning("Failed to get catalog names", exc_info=True)
-            return {None}
+        except GenericDBException as ex:
+            from superset.commands.database.exceptions import (
+                DatabaseConnectionFailedError,
+            )
+
+            raise DatabaseConnectionFailedError() from ex
 
     async def _get_schema_names(self, catalog: str | None) -> set[str]:
         """Load schema names for a catalog. Mirrors original ``_get_schema_names``."""
@@ -259,20 +272,26 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
         try:
 
             def _fetch_schemas() -> set[str]:
-                with db.get_inspector(catalog=catalog) as inspector:
-                    return db.db_engine_spec.get_schema_names(inspector)
+                # Same OAuth2 query-time check as ``_fetch_catalogs`` — 1:1
+                # with ``get_all_schema_names`` (superset_old/models/core.py).
+                from superset.utils.database import _sync_check_for_oauth2
+
+                with _sync_check_for_oauth2(db):
+                    with db.get_inspector(
+                        catalog=catalog, ssh_tunnel=self._ssh_tunnel
+                    ) as inspector:
+                        return db.db_engine_spec.get_schema_names(inspector)
 
             return await asyncio.to_thread(_fetch_schemas)
         except OAuth2RedirectError:
             # raise OAuth2 exceptions as-is
             raise
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "Failed to get schema names for catalog %s",
-                catalog or "(default)",
-                exc_info=True,
+        except GenericDBException as ex:
+            from superset.commands.database.exceptions import (
+                DatabaseConnectionFailedError,
             )
-            return set()
+
+            raise DatabaseConnectionFailedError() from ex
 
     async def _refresh_schemas(
         self, catalog: str | None, schemas: Iterable[str]
@@ -291,7 +310,7 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
             existing_pvm = await sm.find_permission_view_menu("schema_access", perm)
             if not existing_pvm:
                 new_name = sm.get_schema_perm(
-                    self._database.database_name, schema, catalog=catalog
+                    self._database.name, schema, catalog=catalog
                 )
                 await sm.add_permission_view_menu("schema_access", new_name)
                 added += 1
@@ -313,7 +332,7 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
         from superset.db.daos.dataset import AsyncDatasetDAO
 
         sm = self._security_manager
-        db_name = self._database.database_name
+        db_name = self._database.name
         old_name = self.old_db_connection_name
 
         new_catalog_perm_name = (
@@ -337,9 +356,7 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
 
         dataset_dao = AsyncDatasetDAO(self._dao.session)
         for schema in schemas:
-            new_schema_perm_name = sm.get_schema_perm(
-                db_name, schema, catalog=catalog
-            )
+            new_schema_perm_name = sm.get_schema_perm(db_name, schema, catalog=catalog)
 
             # rename existing schema view-menu
             old_schema_perm = sm.get_schema_perm(old_name, schema, catalog=catalog)

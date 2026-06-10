@@ -68,9 +68,7 @@ class CopyDashboardCommand(AsyncBaseCommand["Dashboard"]):
 
             _json_loads(self._data["json_metadata"])
         except Exception as ex:  # noqa: BLE001
-            raise CommandInvalidError(
-                f"json_metadata is not valid JSON: {ex}"
-            ) from ex
+            raise CommandInvalidError(f"json_metadata is not valid JSON: {ex}") from ex
 
         # 1:1 with original superset_old/commands/dashboard/copy.py:
         # When DASHBOARD_RBAC is enabled, only owners of the original dashboard
@@ -90,9 +88,7 @@ class CopyDashboardCommand(AsyncBaseCommand["Dashboard"]):
                     if not is_owner:
                         from superset.exceptions import ForbiddenError
 
-                        raise ForbiddenError(
-                            "You are not an owner of this dashboard"
-                        )
+                        raise ForbiddenError("You are not an owner of this dashboard")
         except (ImportError, ModuleNotFoundError):
             pass
 

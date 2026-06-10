@@ -33,10 +33,64 @@ _current_locale: contextvars.ContextVar[str] = contextvars.ContextVar(
 # locale -> {msgid -> translated}
 _translations: dict[str, dict[str, str]] = {}
 
+# locale -> {singular msgid -> [form0, form1, ...]} (plural variants)
+_plural_tables: dict[str, dict[str, list[str]]] = {}
+# locale -> callable(num) -> plural-form index (from Plural-Forms metadata)
+_plural_rules: dict[str, Any] = {}
+
 
 def init_translations(translations: dict[str, dict[str, str]]) -> None:
     """Load translation catalogs at startup."""
     _translations.update(translations)
+
+
+def init_plural_data(
+    tables: dict[str, dict[str, list[str]]],
+    rules: dict[str, str],
+) -> None:
+    """Load plural-form catalogs and Plural-Forms expressions at startup.
+
+    ``rules`` maps locale → the C-style plural expression from the catalog
+    metadata (e.g. ``"(n != 1)"`` or the three-form Russian rule); it is
+    compiled with the stdlib :func:`gettext.c2py`.
+    """
+    import gettext as _gettext_mod
+
+    _plural_tables.update(tables)
+    for locale, expr in rules.items():
+        try:
+            _plural_rules[locale] = _gettext_mod.c2py(expr)
+        except Exception:  # noqa: BLE001, S112
+            continue
+
+
+def ngettext(singular: str, plural: str, num: int, **variables: Any) -> str:
+    """Plural-aware translation — mirrors Flask-Babel's ``ngettext``.
+
+    Selects the plural form for ``num`` using the locale's Plural-Forms
+    rule (so e.g. Russian's three forms resolve correctly); falls back to
+    the English ``num != 1`` rule and the untranslated msgids.
+    ``num`` is also injected as the ``num`` interpolation variable, exactly
+    like Flask-Babel.
+    """
+    locale = _current_locale.get()
+    forms = _plural_tables.get(locale, {}).get(singular)
+    result: str | None = None
+    if forms:
+        rule = _plural_rules.get(locale)
+        try:
+            idx = int(rule(num)) if rule is not None else (0 if num == 1 else 1)
+        except Exception:  # noqa: BLE001
+            idx = 0 if num == 1 else 1
+        if 0 <= idx < len(forms) and forms[idx]:
+            result = forms[idx]
+    if result is None:
+        # Fall back to the flat catalog / untranslated msgid.
+        catalog = _translations.get(locale, {})
+        msgid = singular if num == 1 else plural
+        result = catalog.get(msgid, msgid)
+    variables.setdefault("num", num)
+    return result % variables
 
 
 def set_locale(locale: str) -> contextvars.Token[str]:

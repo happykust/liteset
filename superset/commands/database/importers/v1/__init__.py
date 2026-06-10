@@ -47,7 +47,9 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
         self._security_manager = security_manager
         self._ignore_permissions = ignore_permissions
 
-    async def _validate(self, configs: dict[str, dict[str, Any]]) -> None:
+    async def _validate(  # noqa: C901
+        self, configs: dict[str, dict[str, Any]]
+    ) -> None:
         from uuid import UUID as _UUID
 
         from superset.commands.database.ssh_tunnel.exceptions import (
@@ -91,9 +93,7 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
             except Exception:  # noqa: BLE001
                 uri_password = None
             if uri_password == PASSWORD_MASK and config.get("password") is None:
-                raise CommandInvalidError(
-                    "Must provide a password for the database"
-                )
+                raise CommandInvalidError("Must provide a password for the database")
 
             ssh_tunnel = config.get("ssh_tunnel")
             if ssh_tunnel:

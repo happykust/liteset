@@ -26,6 +26,7 @@ from superset.controllers.base import (
     extract_ids_required,
     extract_pagination,
     get_info_payload,
+    get_related_payload,
     serialize_list_response,
 )
 from superset.exceptions import SupersetValidationException
@@ -137,6 +138,38 @@ def test_serialize_list_response_missing_attr():
     assert result["result"][0]["missing"] is None
 
 
+def test_serialize_list_response_ids_populated_when_id_not_in_columns():
+    """ids array is populated from ORM items even when 'id' is absent from columns.
+
+    1:1 with FAB BaseModelRestApi.get_list which calls self.datamodel.get_keys(lst)
+    — getattr(item, pk_name) on each ORM object, completely independent of
+    list_columns. The Log endpoint (superset_old/views/log/api.py:48-60) omits
+    "id" from list_columns yet the response carries populated ids.
+    """
+    item1 = MagicMock()
+    item1.id = 7
+    item1.action = "mount_dashboard"
+    item1.user_id = 3
+    item2 = MagicMock()
+    item2.id = 8
+    item2.action = "mount_explorer"
+    item2.user_id = 4
+
+    # "id" intentionally absent — mirrors Log list_columns
+    columns = ["action", "user_id"]
+    result = serialize_list_response([item1, item2], total=2, columns=columns)
+
+    # ids must be populated from the ORM items, not from the row dict
+    assert result["ids"] == ["7", "8"], (
+        "ids should be populated from ORM item.id even when 'id' is absent from columns"
+    )
+    # list_columns in the response must NOT include "id" (matches original list_columns)
+    assert "id" not in result["list_columns"]
+    # result rows must NOT contain an id key
+    assert "id" not in result["result"][0]
+    assert "id" not in result["result"][1]
+
+
 # ---------------------------------------------------------------------------
 # NEW-T12: extract_pagination
 # ---------------------------------------------------------------------------
@@ -208,3 +241,42 @@ async def test_get_info_payload_sa_fallback():
     assert len(result["add_columns"]) == 1
     assert result["add_columns"][0]["name"] == "database_name"
     assert result["add_columns"][0]["required"] is True
+
+
+# ---------------------------------------------------------------------------
+# get_related_payload: 404 when column_name passes allowed_fields but has no
+# SA relationship — mirrors superset_old/views/base_api.py:585-588.
+# ---------------------------------------------------------------------------
+
+
+async def test_get_related_payload_unknown_relationship_raises_404():
+    """column_name passes allowed_fields but is absent from mapper.relationships
+    → NotFoundException (HTTP 404), not HTTP 200 with empty payload.
+
+    1:1 with superset_old/views/base_api.py:585-588:
+        try:
+            datamodel = self.datamodel.get_related_interface(column_name)
+        except KeyError:
+            return self.response_404()
+    """
+    from unittest.mock import patch
+
+    from litestar.exceptions import NotFoundException
+
+    model_cls = MagicMock()
+    dao = MagicMock()
+    dao.model_cls = model_cls
+
+    # Mapper has no relationships for this name
+    mock_mapper = MagicMock()
+    mock_mapper.relationships = {}
+
+    # allowed_fields contains the name (passes the first guard), but the SA
+    # mapper has no matching relationship — the second 404 path must fire.
+    with patch("sqlalchemy.inspect", return_value=mock_mapper):
+        with pytest.raises(NotFoundException):
+            await get_related_payload(
+                dao,
+                "nonexistent_rel",
+                allowed_fields=frozenset({"nonexistent_rel"}),
+            )

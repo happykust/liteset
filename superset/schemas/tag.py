@@ -53,7 +53,7 @@ class BulkTagCreateSchema(msgspec.Struct):
 class AddTagsToObjectProperties(msgspec.Struct, frozen=True):
     """Inner ``properties`` object for the add-tags-to-object request."""
 
-    tags: list[str] = []
+    tags: list[str] | None = None
 
 
 class AddTagsToObjectSchema(msgspec.Struct):

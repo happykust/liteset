@@ -64,6 +64,13 @@ class CreateSavedQueryCommand(AsyncBaseCommand["SavedQuery"]):
         if self._user_id is not None:
             query.created_by_fk = self._user_id
             query.changed_by_fk = self._user_id
+            # 1:1 with original pre_add at
+            # superset_old/queries/saved_queries/api.py:193-194 which sets
+            # ``item.user = g.user``.  SavedQuery has a dedicated ``user_id``
+            # FK column (separate from AuditMixinNullable's created_by_fk)
+            # that backs the ``user`` relationship, ``user_email`` property,
+            # and implicit owner tags.
+            query.user_id = self._user_id
         self._dao.session.add(query)
         await self._dao.session.flush()
 

@@ -225,7 +225,7 @@ class SqlResultExportCommand(AsyncBaseCommand[SqlExportResult]):
             csv_export = {}
 
         encoding = csv_export.get("encoding", "utf-8")
-        kwargs = {k: v for k, v in csv_export.items()}
+        kwargs = dict(csv_export)
         kwargs.setdefault("index", False)
 
         csv_string = df_to_escaped_csv(df, **kwargs)

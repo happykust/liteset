@@ -91,9 +91,7 @@ def _safe_create_index(
     name: str, table: str, columns: list[str], *, unique: bool = False
 ) -> None:
     """Create an index, ignoring the case where it already exists."""
-    _run_in_savepoint(
-        lambda: op.create_index(name, table, columns, unique=unique)
-    )
+    _run_in_savepoint(lambda: op.create_index(name, table, columns, unique=unique))
 
 
 def _safe_drop_index(name: str, table: str) -> None:
@@ -103,9 +101,7 @@ def _safe_drop_index(name: str, table: str) -> None:
 def _safe_create_unique_constraint(
     name: str | None, table: str, columns: list[str]
 ) -> None:
-    _run_in_savepoint(
-        lambda: op.create_unique_constraint(name, table, columns)
-    )
+    _run_in_savepoint(lambda: op.create_unique_constraint(name, table, columns))
 
 
 def _safe_drop_constraint(name: str, table: str, type_: str | None = None) -> None:
@@ -119,9 +115,6 @@ def _safe_drop_constraint(name: str, table: str, type_: str | None = None) -> No
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    dialect = bind.dialect.name
-
     # ------------------------------------------------------------------
     # annotation.layer_id NOT NULL (matches Annotation model in
     # ``superset_old/models/annotations.py``).
@@ -264,12 +257,8 @@ def upgrade() -> None:
         "ab_permission_view",
         ["permission_id", "view_menu_id"],
     )
-    _safe_create_index(
-        "idx_permission_id", "ab_permission_view", ["permission_id"]
-    )
-    _safe_create_index(
-        "idx_view_menu_id", "ab_permission_view", ["view_menu_id"]
-    )
+    _safe_create_index("idx_permission_id", "ab_permission_view", ["permission_id"])
+    _safe_create_index("idx_view_menu_id", "ab_permission_view", ["view_menu_id"])
 
     # ------------------------------------------------------------------
     # ab_user -- self-referential audit columns (1:1 with FAB).
@@ -286,6 +275,7 @@ def _add_user_audit_fk_if_missing(column: str) -> None:
     a SAVEPOINT so a single failed reflection or DDL call doesn't poison
     the whole migration's PostgreSQL transaction.
     """
+
     def _do() -> None:
         bind = op.get_bind()
         inspector = sa.inspect(bind)
@@ -318,7 +308,7 @@ def downgrade() -> None:
             try:
                 with op.batch_alter_table("ab_user") as batch:
                     batch.drop_column(column)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
 
     # ab_permission_view
@@ -360,9 +350,7 @@ def downgrade() -> None:
     )
 
     # report_recipient index
-    _safe_drop_index(
-        "ix_report_recipient_report_schedule_id", "report_recipient"
-    )
+    _safe_drop_index("ix_report_recipient_report_schedule_id", "report_recipient")
 
     # tagged_object.object_type — revert to VARCHAR on PG
     if dialect == "postgresql":

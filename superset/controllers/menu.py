@@ -44,7 +44,7 @@ from typing import Any, Callable
 from litestar import Controller, get, Request
 from litestar.datastructures import State
 
-from superset.guards.rbac import require_authentication
+from superset.guards.rbac import require_permission
 from superset.i18n import gettext as _
 
 logger = logging.getLogger(__name__)
@@ -418,7 +418,7 @@ class MenuController(Controller):
 
     @get(
         "/",
-        guards=[require_authentication],
+        guards=[require_permission("can_get", "MenuApi")],
     )
     async def get_menu_data(
         self,

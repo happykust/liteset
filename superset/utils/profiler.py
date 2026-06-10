@@ -42,7 +42,7 @@ from urllib.parse import parse_qs
 try:
     from pyinstrument import Profiler
 except ModuleNotFoundError:  # pragma: no cover - optional dep
-    Profiler = None  # type: ignore[assignment,misc]
+    Profiler = None
 
 
 class SupersetProfiler:  # pylint: disable=too-few-public-methods
@@ -104,7 +104,6 @@ class SupersetProfiler:  # pylint: disable=too-few-public-methods
         # messages from the wrapped app are intentionally discarded —
         # this matches the original Flask middleware which discarded the
         # response entirely.
-        del captured  # explicit drop for readability
         await send(
             {
                 "type": "http.response.start",

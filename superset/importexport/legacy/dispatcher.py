@@ -119,9 +119,7 @@ class ImportDashboardsCommand:
 
         # v0 fallback — sync, dict-based.
         try:
-            v0_cmd = V0ImportDashboardsCommand(
-                self.contents, *self.args, **self.kwargs
-            )
+            v0_cmd = V0ImportDashboardsCommand(self.contents, *self.args, **self.kwargs)
             v0_cmd.run(session=session)
             return
         except IncorrectVersionError:
@@ -208,9 +206,7 @@ class ImportDatasetsCommand:
 
         if V1ImportDatasetsCommand is not None:
             try:
-                cmd = V1ImportDatasetsCommand(
-                    self.contents, *self.args, **self.kwargs
-                )
+                cmd = V1ImportDatasetsCommand(self.contents, *self.args, **self.kwargs)
                 run_method = getattr(cmd, "run", None)
                 if run_method is not None and not _is_coroutine_method(run_method):
                     run_method()

@@ -59,9 +59,9 @@ class DeleteDashboardCommand(AsyncBaseCommand[None]):
         # alerts/reports reports "reports exist", not "forbidden").
         from superset.db.daos.report import AsyncReportScheduleDAO
 
-        reports = await AsyncReportScheduleDAO(
-            self._dao.session
-        ).find_by_dashboard_ids([self._dashboard_id])
+        reports = await AsyncReportScheduleDAO(self._dao.session).find_by_dashboard_ids(
+            [self._dashboard_id]
+        )
         if reports:
             report_names = ", ".join(report.name for report in reports)
             raise DashboardDeleteFailedReportsExistError(
@@ -112,9 +112,9 @@ class BulkDeleteDashboardsCommand(AsyncBaseCommand[None]):
         # ownership check.
         from superset.db.daos.report import AsyncReportScheduleDAO
 
-        reports = await AsyncReportScheduleDAO(
-            self._dao.session
-        ).find_by_dashboard_ids(self._dashboard_ids)
+        reports = await AsyncReportScheduleDAO(self._dao.session).find_by_dashboard_ids(
+            self._dashboard_ids
+        )
         if reports:
             report_names = ", ".join(report.name for report in reports)
             raise DashboardDeleteFailedReportsExistError(

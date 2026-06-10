@@ -114,10 +114,20 @@ async def parse_import_request(
     )
 
 
-def extract_pagination(rison_params: dict[str, Any] | None) -> tuple[int, int]:
-    """Extract page and page_size from rison params."""
+def extract_pagination(
+    rison_params: dict[str, Any] | None,
+    default_page_size: int = 25,
+) -> tuple[int, int]:
+    """Extract page and page_size from rison params.
+
+    :param rison_params: Rison-decoded query parameter dict (may be None).
+    :param default_page_size: Page size to use when the caller does not
+        provide ``page_size``.  Defaults to 25 for most endpoints; pass
+        ``10`` for endpoints where the original Superset used a 10-row
+        default (e.g. ``/security/roles/search/``).
+    """
     page = (rison_params or {}).get("page", 0)
-    page_size = (rison_params or {}).get("page_size", 25)
+    page_size = (rison_params or {}).get("page_size", default_page_size)
     return page, page_size
 
 
@@ -216,6 +226,7 @@ def build_rison_query_params(  # noqa: C901
     rison_params: dict[str, Any] | None,
     *,
     custom_filters: dict[str, Any] | None = None,
+    default_page_size: int = 25,
 ) -> tuple[list[Any], list[Any] | None, int, int]:
     """Parse Rison query parameters into filters, ordering, and pagination.
 
@@ -228,6 +239,10 @@ def build_rison_query_params(  # noqa: C901
     are supported via the ``custom_filters`` parameter — a dict mapping
     ``opr`` names to callables ``(model_cls, value) -> SQLAlchemy clause``.
 
+    :param default_page_size: Default page size when the client does not
+        supply ``page_size``.  Matches the FAB ``ModelRestApi.page_size``
+        default (20) when the original endpoint did not override it.
+
     Returns:
         A tuple of ``(filters, order_by, page, page_size)``.
     """
@@ -235,7 +250,9 @@ def build_rison_query_params(  # noqa: C901
     from superset.utils import escape_like
 
     params = rison_params or {}
-    page, page_size = extract_pagination(rison_params)
+    page, page_size = extract_pagination(
+        rison_params, default_page_size=default_page_size
+    )
 
     # -- Validate column names via SQLAlchemy mapper inspection --
     valid_columns = _get_model_columns(model_cls)  # type: ignore[arg-type]
@@ -279,8 +296,7 @@ def build_rison_query_params(  # noqa: C901
             if hasattr(model_cls, fk_col_name):
                 fk_col = getattr(model_cls, fk_col_name)
                 filters.append(
-                    fk_col != typed_value if op == "nrel_o_m"
-                    else fk_col == typed_value
+                    fk_col != typed_value if op == "nrel_o_m" else fk_col == typed_value
                 )
             else:
                 # Fallback: try .has() for scalar relationships
@@ -399,7 +415,12 @@ def build_export_headers(
         "Content-Disposition": f"attachment; filename={filename}",
     }
     if token:
-        headers["Set-Cookie"] = "token=done; Path=/; SameSite=Lax"
+        # The cookie NAME must be the token value itself — 1:1 with
+        # superset_old/themes/api.py:491:
+        #   ``response.set_cookie(token, "done", max_age=600)``
+        # The frontend download tracker checks for a cookie named after the
+        # token it passed, not a fixed "token" key.
+        headers["Set-Cookie"] = f"{token}=done; Max-Age=600; Path=/; SameSite=Lax"
     return headers
 
 
@@ -494,14 +515,17 @@ def serialize_list_response(
     """
     result = [_serialize_item(item, columns) for item in (items or [])]
     ids: list[str] = []
-    for row in result:
+    for row, item in zip(result, items or [], strict=False):
         # uuid → string
         if "uuid" in row and row["uuid"] is not None:
             row["uuid"] = str(row["uuid"])
         # ``ids`` is declared as array of strings in the original
         # Superset OpenAPI spec (FAB ApiListResponse); cast pks to str
         # so contract validators don't reject integer entries.
-        row_id = row.get("id") if "id" in row else getattr(row, "id", None)
+        # 1:1 with FAB get_keys() which calls getattr(item, pk_name) on each
+        # ORM object, completely independent of list_columns — so ids is
+        # populated even when "id" is absent from the columns list.
+        row_id = row.get("id") if "id" in row else getattr(item, "id", None)
         if row_id is not None:
             ids.append(str(row_id))
 
@@ -527,6 +551,11 @@ async def get_info_payload(
     dao: Any,
     model_name: str,
     permissions: list[str],
+    *,
+    security_manager: Any | None = None,
+    current_user: Any | None = None,
+    class_permission_name: str | None = None,
+    rison_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the ``GET /<resource>/_info`` response.
 
@@ -540,55 +569,137 @@ async def get_info_payload(
 
     Resources without a descriptor fall back to a minimal
     SA-introspected payload — useful for rarely-used legacy endpoints.
+
+    When ``security_manager``, ``current_user`` and ``class_permission_name``
+    are provided, the permissions list is dynamically filtered against the
+    current user's RBAC grants — 1:1 with FAB's
+    ``merge_current_user_permissions`` (flask_appbuilder/api/__init__.py:759).
+
+    When ``rison_params`` contains a ``keys`` list (``get_info_schema`` from
+    flask_appbuilder/api/schemas.py:121-160), only those response keys are
+    included — 1:1 with FAB's ``set_response_key_mappings``
+    (flask_appbuilder/api/__init__.py:741-757).
     """
+    # ------------------------------------------------------------------
+    # Dynamic RBAC permission filtering (1:1 with FAB
+    # merge_current_user_permissions).  The original iterates
+    # ``self.base_permissions`` and keeps only those for which
+    # ``self.appbuilder.sm.has_access(perm, self.class_permission_name)``
+    # returns True.  The liteset equivalent is
+    # ``security_manager.can_access(perm, class_permission_name, user=…)``.
+    # ------------------------------------------------------------------
+    if security_manager is not None and current_user is not None:
+        perm_name = class_permission_name or model_name
+        filtered: list[str] = []
+        for perm in permissions:
+            if await security_manager.can_access(perm, perm_name, user=current_user):
+                filtered.append(perm)
+        permissions = filtered
+
     from superset.info_builder.builder import build_info_payload
 
     payload = build_info_payload(model_name, permissions=permissions)
-    if payload is not None:
-        return payload
+    if payload is None:
+        payload = _build_fallback_info_payload(dao, model_name, permissions)
 
-    # Fallback — SA introspection. Used by resources we haven't shipped
-    # a static fixture for; keeps the endpoint usable while the
-    # frontend keys off the fixture for the major models.
+    # ------------------------------------------------------------------
+    # Selective key filtering — 1:1 with FAB set_response_key_mappings
+    # (flask_appbuilder/api/__init__.py:750-757).  When ``keys`` is an
+    # empty list or absent, all keys are returned.
+    # The valid key names mirror the get_info_schema enum:
+    #   add_columns, edit_columns, filters, permissions, add_title, edit_title
+    # Note: camelCase variants (addColumns etc.) are also accepted via the
+    # dual-key lookup pattern used throughout liteset.
+    # ------------------------------------------------------------------
+    keys: list[str] | None = None
+    if rison_params:
+        keys = rison_params.get("keys")
+    if keys:
+        payload = {k: v for k, v in payload.items() if k in keys}
+
+    return payload
+
+
+def _build_fallback_info_payload(
+    dao: Any,
+    model_name: str,
+    permissions: list[str],
+) -> dict[str, Any]:
+    """SA-introspection fallback for resources without a RESOURCE_SPECS entry.
+
+    Produces a shape closer to the original FAB ``_info`` response than the
+    previous ad-hoc implementation:
+
+    * Column ``type`` uses Marshmallow class names (``String``, ``Integer``,
+      etc.) via :func:`superset.info_builder.type_map.sa_to_marshmallow_type`
+      — matching ``field.__class__.__name__`` from FAB ``_get_field_info``
+      (flask_appbuilder/api/__init__.py:2046).
+    * No ``nullable`` key (not present in original).
+    * No ``label_columns`` key (not present in original ``_info`` response).
+    * ``add_title`` / ``edit_title`` auto-generated as ``"Add <Model>"`` /
+      ``"Edit <Model>"`` — 1:1 with FAB ``_init_titles``
+      (flask_appbuilder/api/__init__.py:1216-1219).
+    * Filter operators derived via
+      :func:`superset.info_builder.operators.operators_for_column`
+      for every column — matching FAB ``SQLAFilterConverter`` lookup.
+    """
+    import re
+
+    from sqlalchemy import inspect as sa_inspect
+
+    from superset.info_builder.operators import operators_for_column
+    from superset.info_builder.type_map import sa_to_marshmallow_type
+
+    def _prettify_name(name: str) -> str:
+        """FAB _prettify_name: 'HelloWorld' → 'Hello World'."""
+        return re.sub(r"(?<=.)([A-Z])", r" \1", name)
+
+    add_title = "Add " + _prettify_name(model_name)
+    edit_title = "Edit " + _prettify_name(model_name)
+
     model_cls = getattr(dao, "model_cls", None)
     columns: list[dict[str, Any]] = []
+    filters: dict[str, list[dict[str, str]]] = {}
+
     if model_cls is not None:
         try:
-            from sqlalchemy import inspect as sa_inspect
-
             mapper = sa_inspect(model_cls)
-            columns = [
-                {
-                    "name": col.key,
-                    "label": col.key.replace("_", " ").title(),
-                    "description": "",
-                    "type": str(col.type) if hasattr(col, "type") else "unknown",
-                    "nullable": getattr(col, "nullable", True),
-                    "required": not getattr(col, "nullable", True),
-                    "unique": getattr(col, "unique", False),
-                }
-                for col in mapper.columns
-            ]
+            for col in mapper.columns:
+                col_type = col.type if hasattr(col, "type") else None
+                ma_type = (
+                    sa_to_marshmallow_type(col_type)
+                    if col_type is not None
+                    else "String"
+                )
+                # label_columns is derived from col name (FAB _prettify_column)
+                label = re.sub(r"[._]", " ", col.key).title()
+                columns.append(
+                    {
+                        "name": col.key,
+                        "label": label,
+                        "description": "",
+                        "type": ma_type,
+                        "required": not getattr(col, "nullable", True),
+                        "unique": getattr(col, "unique", False),
+                    }
+                )
+                # Build filter operators per column — same logic as info_builder.
+                try:
+                    ops = operators_for_column(model_cls, col.key)
+                except Exception:  # noqa: BLE001
+                    ops = []
+                if ops:
+                    filters[col.key] = ops
         except Exception:  # noqa: BLE001
             logger.debug("Could not introspect model %s columns", model_cls)
 
     return {
-        "permissions": permissions,
         "add_columns": columns,
+        "add_title": add_title,
         "edit_columns": columns,
-        "label_columns": {col["name"]: col["label"] for col in columns},
-        "filters": {
-            col["name"]: [
-                {"name": "sw", "operator": "sw"},
-                {"name": "eq", "operator": "eq"},
-                {"name": "neq", "operator": "neq"},
-                {"name": "ct", "operator": "ct"},
-            ]
-            for col in columns
-            if col.get("type", "")
-            .upper()
-            .startswith(("VARCHAR", "TEXT", "STRING", "CHAR"))
-        },
+        "edit_title": edit_title,
+        "filters": filters,
+        "permissions": permissions,
     }
 
 
@@ -608,9 +719,12 @@ async def get_related_payload(  # noqa: C901
     *,
     allowed_fields: frozenset[str] | None = None,
     base_filters: list[Any] | None = None,
+    query_hook: Any | None = None,
     page: int = 0,
     page_size: int = 25,
     filter_value: str = "",
+    order_rel_fields: dict[str, tuple[str, str]] | None = None,
+    text_field_rel_fields: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build /related/{column_name} response for select dropdowns.
 
@@ -619,17 +733,46 @@ async def get_related_payload(  # noqa: C901
 
     Args:
         allowed_fields: If provided, only these column names are permitted.
-            Returns 404-style empty result for disallowed names, matching
-            Superset's ``allowed_rel_fields`` behavior.
+            Disallowed names raise NotFoundException (HTTP 404), matching
+            Superset's ``allowed_rel_fields`` behavior — see
+            ``superset_old/views/base_api.py:572-574``.
+        query_hook: Optional ``Callable[[Select], Select]`` that mirrors the
+            ``EXTRA_RELATED_QUERY_FILTERS`` contract from
+            ``superset_old/views/filters.py:72-76``.  The hook receives the
+            initial SELECT statement and must return the (possibly modified)
+            SELECT statement.  This matches the original ``Callable[[Query],
+            Query]`` contract — SA 2.0 ``Select`` exposes ``.filter()``
+            (aliased to ``.where()``), so existing hook implementations that
+            call ``query.filter(...)`` work without modification.
+        order_rel_fields: Per-column ordering config, e.g.
+            ``{"owners": ("first_name", "asc"), "slices": ("slice_name", "asc")}``.
+            Matches ``BaseSupersetModelRestApi.order_rel_fields`` —
+            see ``superset_old/views/base_api.py:591-593``.
+        text_field_rel_fields: Per-column model attribute used as the ``text``
+            value instead of ``str(model)``, e.g. ``{"dashboard":
+            "dashboard_title", "chart": "slice_name"}``. Matches
+            ``BaseSupersetModelRestApi.text_field_rel_fields`` /
+            ``_get_text_for_model`` — see ``superset_old/views/base_api.py
+            :403-408`` (only the reports API sets it upstream,
+            ``superset_old/reports/api.py:233``).
     """
+    from litestar.exceptions import NotFoundException
+
     if allowed_fields is not None and column_name not in allowed_fields:
-        return {"count": 0, "result": []}
+        raise NotFoundException()
 
     if rison_params is not None:
         page, page_size = extract_pagination(rison_params)
         filter_value = rison_params.get("filter", "") or filter_value
 
     include_ids = (rison_params or {}).get("include_ids", [])
+
+    # Pagination with forced ids is not supported — fail early,
+    # 1:1 with original ``superset_old/views/base_api.py:581-583``.
+    if page and include_ids:
+        raise SupersetValidationException(
+            "Pagination with include_ids is not supported"
+        )
 
     model_cls = getattr(dao, "model_cls", None)
     if model_cls is None:
@@ -640,11 +783,24 @@ async def get_related_payload(  # noqa: C901
 
         mapper = sa_inspect(model_cls)
         if column_name not in mapper.relationships:
-            return {"count": 0, "result": []}
+            # 1:1 with superset_old/views/base_api.py:585-588:
+            #   try: datamodel = self.datamodel.get_related_interface(column_name)
+            #   except KeyError: return self.response_404()
+            # A name that passes the allowed_fields gate but has no SA
+            # relationship must still return 404, not an empty-success payload.
+            raise NotFoundException()
 
         rel = mapper.relationships[column_name]
         rel_model = rel.mapper.class_
         stmt = sa_select(rel_model)
+
+        # Apply EXTRA_RELATED_QUERY_FILTERS["user"] hook — mirrors
+        # superset_old/views/filters.py:76: ``query = extra_filters(query)``.
+        # The hook receives the SELECT statement and returns a (possibly
+        # modified) SELECT statement.  SA 2.0 Select.filter() is aliased to
+        # .where(), so callbacks that call ``query.filter(...)`` work as-is.
+        if query_hook is not None and callable(query_hook):
+            stmt = query_hook(stmt)
 
         # Apply base_filters if provided
         if base_filters:
@@ -673,12 +829,28 @@ async def get_related_payload(  # noqa: C901
                     "database_name",
                     "table_name",
                     "label",
+                    "dashboard_title",
+                    "slice_name",
                 ):
                     if hasattr(rel_model, name_col):
                         stmt = stmt.where(
                             getattr(rel_model, name_col).ilike(like_value)
                         )
                         break
+
+        # Apply ordering — 1:1 with original ``order_rel_fields`` logic
+        # at ``superset_old/views/base_api.py:591-593``.
+        if order_rel_fields and column_name in order_rel_fields:
+            order_column, order_direction = order_rel_fields[column_name]
+        else:
+            order_column, order_direction = "", ""
+        if order_column and hasattr(rel_model, order_column):
+            col_attr = getattr(rel_model, order_column)
+            from sqlalchemy import asc, desc
+
+            stmt = stmt.order_by(
+                asc(col_attr) if order_direction.lower() == "asc" else desc(col_attr)
+            )
 
         total = await dao.session.scalar(
             sa_select(func.count()).select_from(stmt.subquery())
@@ -688,23 +860,25 @@ async def get_related_payload(  # noqa: C901
         items = list(result.scalars().all())
 
         if include_ids:
-            if page > 0:
-                # Cannot combine pagination with include_ids
-                pass
-            else:
-                original_count = len(items)
-                include_stmt = sa_select(rel_model).where(rel_model.id.in_(include_ids))
-                include_result = await dao.session.execute(include_stmt)
-                include_items = include_result.scalars().all()
-                existing_ids = {item.id for item in items}
-                for item in include_items:
-                    if item.id not in existing_ids:
-                        items.append(item)
-                # Adjust total to account for injected items
-                extra_count = len(items) - original_count
-                total = (total or 0) + extra_count
+            # By this point page==0 is guaranteed (early ValidationException above).
+            # Inject extra ids that are not already in the result — 1:1 with
+            # ``_add_extra_ids_to_result`` in
+            # ``superset_old/views/base_api.py:606-608``.
+            include_stmt = sa_select(rel_model).where(rel_model.id.in_(include_ids))
+            include_result = await dao.session.execute(include_stmt)
+            include_items = include_result.scalars().all()
+            existing_ids = {item.id for item in items}
+            for item in include_items:
+                if item.id not in existing_ids:
+                    items.append(item)
+            # total_rows = len(result) — 1:1 with original
+            # ``superset_old/views/base_api.py:607-608``
+            total = len(items)
 
         extra_fields = _EXTRA_FIELDS_REL.get(column_name, [])
+        # 1:1 with ``_get_text_for_model`` (superset_old/views/base_api.py:
+        # 403-408): a per-column override attribute wins over str(model).
+        text_attr = (text_field_rel_fields or {}).get(column_name)
 
         def _build_item(item: Any) -> dict[str, Any]:
             # Always emit an ``extra`` key (empty dict when the related
@@ -713,7 +887,7 @@ async def get_related_payload(  # noqa: C901
             # required object, and contract tests rely on its presence.
             entry: dict[str, Any] = {
                 "value": item.id,
-                "text": str(item),
+                "text": getattr(item, text_attr) if text_attr else str(item),
                 "extra": {field: getattr(item, field, None) for field in extra_fields}
                 if extra_fields
                 else {},
@@ -724,6 +898,11 @@ async def get_related_payload(  # noqa: C901
             "count": total or 0,
             "result": [_build_item(item) for item in items],
         }
+    except NotFoundException:
+        # Litestar's NotFoundException inherits from ValueError, so it would
+        # otherwise be swallowed by the broad except below.  Re-raise so the
+        # 404 propagates to the framework and reaches the client.
+        raise
     except (SQLAlchemyError, AttributeError, ValueError):
         logger.warning("Failed to resolve related '%s'", column_name, exc_info=True)
         return {"count": 0, "result": []}
@@ -767,19 +946,25 @@ async def get_distinct_payload(
 
         raise NotFoundException()
 
+    # Check that the attribute is a real column (not a relationship).
+    # ``getattr(Model, "<relationship>")`` returns an InstrumentedAttribute
+    # whose ``is_not`` / ``ilike`` / ``distinct`` raise NotImplementedError —
+    # upstream sidesteps this via the ``allowed_distinct_fields`` gate, but
+    # callers can still reach here with stray names; treat as not-found.
+    # This guard must live OUTSIDE the try block so that NotFoundException is
+    # not swallowed by the broad ``except (SQLAlchemyError, AttributeError,
+    # ValueError)`` below — Litestar's NotFoundException inherits from
+    # ValueError (NotFoundException → ClientException → HTTPException →
+    # LitestarException → ValueError).
+    col = getattr(model_cls, column_name)
+    col_prop = getattr(col, "property", None)
+    if col_prop is None or getattr(col_prop, "columns", None) is None:
+        from litestar.exceptions import NotFoundException
+
+        raise NotFoundException()
+
     try:
         from sqlalchemy import func, select as sa_select
-
-        col = getattr(model_cls, column_name)
-        # ``getattr(Model, "<relationship>")`` returns an InstrumentedAttribute
-        # whose ``is_not`` / ``ilike`` / ``distinct`` raise NotImplementedError —
-        # upstream sidesteps this via the ``allowed_distinct_fields`` gate, but
-        # callers can still reach here with stray names; treat as not-found.
-        col_prop = getattr(col, "property", None)
-        if col_prop is None or getattr(col_prop, "columns", None) is None:
-            from litestar.exceptions import NotFoundException
-
-            raise NotFoundException()
 
         # Match original ``DistinctFilter`` behaviour — drop NULL values
         # so ``{"text": "None", "value": null}`` doesn't pollute the
@@ -792,12 +977,16 @@ async def get_distinct_payload(
                 base_stmt = base_stmt.where(bf)
 
         if filter_value:
-            base_stmt = base_stmt.where(col.ilike(f"%{_escape_like(filter_value)}%"))
+            base_stmt = base_stmt.where(col.ilike(f"{_escape_like(filter_value)}%"))
 
         total = await dao.session.scalar(
             sa_select(func.count()).select_from(base_stmt.subquery())
         )
-        stmt = base_stmt.offset(page * page_size).limit(page_size)
+        # Apply ascending sort — 1:1 with original ``apply_order_by``
+        # at ``superset_old/views/base_api.py:670``.
+        from sqlalchemy import asc as sa_asc
+
+        stmt = base_stmt.order_by(sa_asc(col)).offset(page * page_size).limit(page_size)
         result = await dao.session.execute(stmt)
         values = [v for v in result.scalars().all() if v is not None]
 

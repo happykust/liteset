@@ -15,8 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from .dremio import Dremio
-from .firebolt import Firebolt, FireboltOld
-from .pinot import Pinot
+from superset.sql.dialects.dremio import Dremio
+from superset.sql.dialects.firebolt import Firebolt, FireboltOld
+from superset.sql.dialects.pinot import Pinot
 
 __all__ = ["Dremio", "Firebolt", "FireboltOld", "Pinot"]
