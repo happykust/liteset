@@ -31,6 +31,11 @@ from superset.models.sql_lab import TabState
 
 logger = logging.getLogger(__name__)
 
+# Sentinel for ``get_datasets``: distinguishes "argument omitted → no filter"
+# (the export flow wants every dataset) from "explicit None → IS NULL"
+# (upstream's unconditional filter semantics; see R13-08).
+_UNSET: Any = object()
+
 
 class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
     model_cls = Database
@@ -207,10 +212,20 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
     async def get_datasets(
         self,
         database_id: int,
-        catalog: str | None = None,
-        schema: str | None = None,
+        catalog: str | None | object = _UNSET,
+        schema: str | None | object = _UNSET,
     ) -> list[SqlaTable]:
         """Get datasets for a database, optionally filtered.
+
+        ``catalog``/``schema`` filtering is UNCONDITIONAL once the argument
+        is supplied — ``None`` compiles to ``IS NULL``, 1:1 with upstream
+        ``DatabaseDAO.get_datasets`` (R13-08: the previous conditional
+        semantics made ``SyncPermissionsCommand`` rewrite perms on datasets
+        of ALL catalogs when ``catalog=None``). Callers that want every
+        dataset regardless of catalog/schema (the export flow) simply omit
+        the arguments — upstream export reads ``model.tables`` and never
+        goes through this method, so the omitted-argument contract is local
+        to the port.
 
         Eager-loads ``metrics`` and ``columns`` because the database export
         flow calls ``dataset.export_to_dict(recursive=True)`` on every row
@@ -228,9 +243,9 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
                 selectinload(SqlaTable.columns),
             )
         )
-        if catalog is not None:
+        if catalog is not _UNSET:
             stmt = stmt.where(SqlaTable.catalog == catalog)
-        if schema is not None:
+        if schema is not _UNSET:
             stmt = stmt.where(SqlaTable.schema == schema)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
