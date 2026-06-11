@@ -154,12 +154,15 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         self,
         tag_names: list[str],
         obj_types: list[str] | None = None,
+        security_manager: Any | None = None,
+        user: Any | None = None,
     ) -> list[dict[str, Any]]:
         """Get tagged objects by tag names with optional type filter.
 
         Returns the entity-shaped dicts produced by
         :meth:`get_tagged_objects_by_tag_ids` — see that method's docstring
-        for the contract.
+        for the contract (including the access scoping applied when
+        ``security_manager``/``user`` are supplied).
 
         If ``tag_names`` is empty/absent, returns all tagged objects (mirrors
         superset_old/daos/tag.py:254 — ``find_by_names(tag_names) if tag_names
@@ -169,7 +172,9 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
             await self.find_by_names(tag_names) if tag_names else await self.find_all()
         )
         tag_ids: list[int] = [t.id for t in tags]  # type: ignore[misc]
-        return await self.get_tagged_objects_by_tag_ids(tag_ids, obj_types)
+        return await self.get_tagged_objects_by_tag_ids(
+            tag_ids, obj_types, security_manager=security_manager, user=user
+        )
 
     async def create_tag_relationship(
         self,
@@ -296,6 +301,8 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         self,
         tag_ids: list[int],
         obj_types: list[str] | None = None,
+        security_manager: Any | None = None,
+        user: Any | None = None,
     ) -> list[dict[str, Any]]:
         """Get the *entities* tagged by the given tag ids.
 
@@ -304,6 +311,14 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         rows shaped as
         ``{id, type, name, url, changed_on, created_by, creator, tags,
         owners}`` — *not* the raw ``TaggedObject`` link rows.
+
+        When ``security_manager`` and ``user`` are supplied, each entity load
+        is scoped by the same access filters the upstream DAOs apply as
+        ``base_filter`` in ``find_by_ids`` (superset_old/daos/tag.py:195/218/241
+        → DashboardAccessFilter / ChartFilter / SavedQueryFilter): users only
+        see dashboards/charts they can access and ONLY their own saved
+        queries. Without them the load is unscoped — callers serving user
+        requests MUST pass both.
 
         Response shape matches what the original Marshmallow
         ``TaggedObjectEntityResponseSchema`` (superset_old/tags/schemas.py:48-57)
@@ -340,13 +355,16 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
             by_type[t_name].append(cast("int", link.object_id))
 
         results: list[dict[str, Any]] = []
+        scoped = security_manager is not None and user is not None
 
-        async def _load(ids: list[int], model: Any) -> list[Any]:
+        async def _load(
+            ids: list[int], model: Any, extra_filters: list[Any]
+        ) -> list[Any]:
             if not ids:
                 return []
             q = await self.session.execute(
                 select(model)
-                .where(model.id.in_(ids))
+                .where(model.id.in_(ids), *extra_filters)
                 .options(
                     selectinload(model.owners),
                     selectinload(model.tags),
@@ -359,7 +377,16 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         if not obj_types or "dashboard" in obj_types:
             from superset.models.dashboard import Dashboard
 
-            for d in await _load(by_type.get("dashboard", []), Dashboard):
+            dashboard_filters: list[Any] = []
+            if scoped and by_type.get("dashboard"):
+                from superset.db.filters import dashboard_access_filters
+
+                dashboard_filters = await dashboard_access_filters(
+                    security_manager, user
+                )
+            for d in await _load(
+                by_type.get("dashboard", []), Dashboard, dashboard_filters
+            ):
                 results.append(
                     {
                         "id": d.id,
@@ -385,7 +412,12 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         if not obj_types or "chart" in obj_types:
             from superset.models.slice import Slice
 
-            for c in await _load(by_type.get("chart", []), Slice):
+            chart_filters: list[Any] = []
+            if scoped and by_type.get("chart"):
+                from superset.db.filters import chart_access_filters
+
+                chart_filters = await chart_access_filters(security_manager, user)
+            for c in await _load(by_type.get("chart", []), Slice, chart_filters):
                 results.append(
                     {
                         "id": c.id,
@@ -420,11 +452,22 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
             except ImportError:
                 _SavedQuery = None  # type: ignore[assignment,misc]  # noqa: N806
             if _SavedQuery is not None:
+                saved_query_filters: list[Any] = []
+                if scoped:
+                    from superset.db.filters import saved_query_access_filters
+
+                    saved_query_filters = await saved_query_access_filters(
+                        security_manager, user
+                    )
                 q = await self.session.execute(
                     select(_SavedQuery)
-                    .where(_SavedQuery.id.in_(sq_ids))
+                    .where(_SavedQuery.id.in_(sq_ids), *saved_query_filters)
                     .options(
                         selectinload(_SavedQuery.tags),
+                        # ``sq.creator()`` below reads the lazy ``created_by``
+                        # relationship — without the preload it raises
+                        # MissingGreenlet on the async session (R13-06).
+                        selectinload(_SavedQuery.created_by),
                     )
                 )
                 for sq in q.scalars().all():

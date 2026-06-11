@@ -290,6 +290,8 @@ class TagController(Controller):
         self,
         request: Request[Any, Any, Any],
         dao: Any,
+        current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> dict[str, Any]:
         """GET /api/v1/tag/get_objects/ -- get tagged objects by tag names or IDs."""
         tag_ids_raw = request.query_params.get("tagIds", "")
@@ -312,14 +314,23 @@ class TagController(Controller):
             else None
         )
 
-        # tagIds takes priority over tag names (matches original)
+        # tagIds takes priority over tag names (matches original).
+        # security_manager + current_user scope each entity load 1:1 with the
+        # upstream base_filters (DashboardAccessFilter / ChartFilter /
+        # SavedQueryFilter applied by find_by_ids in superset_old/daos/tag.py).
         if tag_ids:
             tagged_objects = await dao.get_tagged_objects_by_tag_ids(
-                tag_ids, obj_types=types_filter
+                tag_ids,
+                obj_types=types_filter,
+                security_manager=security_manager,
+                user=current_user,
             )
         else:
             tagged_objects = await dao.get_tagged_objects_by_tag_names(
-                tag_names, obj_types=types_filter
+                tag_names,
+                obj_types=types_filter,
+                security_manager=security_manager,
+                user=current_user,
             )
 
         # ``get_tagged_objects_by_tag_*`` now returns the entity-shaped dicts
