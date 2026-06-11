@@ -2604,6 +2604,30 @@ class DatabaseController(Controller):
                         break
             return drivers
 
+        # DBS_AVAILABLE_DENYLIST — 1:1 with upstream
+        # ``get_available_engine_specs`` (R13-11): engines whose
+        # ``default_driver`` is denylisted are hidden from the
+        # "Connect a database" modal; the 'superset' meta-DB is implicitly
+        # denied unless ENABLE_SUPERSET_META_DB is on.
+        from superset.utils.feature_flags import feature_flag_manager
+
+        dbs_denylist: dict[str, set[str]] = {
+            engine: set(drivers)
+            for engine, drivers in (
+                getattr(settings_obj, "dbs_available_denylist", {}) or {}
+            ).items()
+        }
+        if not feature_flag_manager.is_feature_enabled("ENABLE_SUPERSET_META_DB"):
+            dbs_denylist["superset"] = {""}
+
+        def _is_denied(engine_key: str, spec_cls: Any) -> bool:
+            return (
+                engine_key in dbs_denylist
+                and hasattr(spec_cls, "default_driver")
+                and (getattr(spec_cls, "default_driver", None) or "")
+                in dbs_denylist[engine_key]
+            )
+
         preferred_names: list[str] = list(
             getattr(settings_obj, "preferred_databases", [])
         )
@@ -2689,6 +2713,8 @@ class DatabaseController(Controller):
                 # Skip abstract base specs with no engine_name; mirrors the
                 # original "if not drivers: continue" filter.
                 continue
+            if _is_denied(engine_key, spec_cls):
+                continue
             _drivers = _installed_for(spec_cls, engine_key)
             if not _drivers:
                 continue
@@ -2708,6 +2734,8 @@ class DatabaseController(Controller):
             if engine_key in native_engines:
                 continue
             if not getattr(spec_cls, "engine_name", None):
+                continue
+            if _is_denied(engine_key, spec_cls):
                 continue
             _drivers = _installed_for(spec_cls, engine_key)
             if not _drivers:
