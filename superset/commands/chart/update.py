@@ -41,6 +41,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def is_query_context_update(properties: dict[str, Any]) -> bool:
+    """1:1 with ``superset_old/commands/chart/update.py::is_query_context_update``."""
+    return set(properties) == {"query_context", "query_context_generation"} and bool(
+        properties.get("query_context_generation")
+    )
+
+
 class UpdateChartCommand(AsyncBaseCommand["Slice"]):
     def __init__(
         self,
@@ -89,11 +96,10 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
         # ``query_context_generation``. Any payload with additional fields
         # (name, owners, dashboards, params, ...) must go through full
         # ownership validation.
-        is_query_context_update = set(self._data) == {
-            "query_context",
-            "query_context_generation",
-        } and bool(self._data.get("query_context_generation"))
-        if not is_query_context_update and self._security_manager is not None:
+        if (
+            not is_query_context_update(self._data)
+            and self._security_manager is not None
+        ):
             await self._security_manager.raise_for_ownership(self._chart, self._user_id)
 
         # Validate tags — 1:1 with
@@ -199,8 +205,16 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
 
         # Resolve owners — ``validate()`` already pre-loaded the
         # collection via ``selectinload`` so the assignment below will
-        # not trigger a lazy load.
-        if self._security_manager is not None:
+        # not trigger a lazy load.  Skipped for query-context-only updates:
+        # upstream only calls ``compute_owners`` when
+        # ``not is_query_context_update(properties)``
+        # (superset_old/commands/chart/update.py:115-128) — that path runs
+        # without an ownership check, and recomputing owners there would
+        # prepend the non-admin actor (report worker / viewer) to ``owners``.
+        if (
+            not is_query_context_update(self._data)
+            and self._security_manager is not None
+        ):
             self._chart.owners = await compute_owner_list(
                 self._security_manager,
                 self._user_id,

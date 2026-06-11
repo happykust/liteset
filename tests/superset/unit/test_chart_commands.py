@@ -189,6 +189,43 @@ async def test_update_chart_query_context_regeneration_skips_last_saved(
     assert mock_chart.changed_by_fk == 42
 
 
+async def test_update_chart_query_context_regeneration_keeps_owners(
+    mock_dao, mock_chart
+):
+    """A query-context-only update skips the ownership check so report
+    workers and non-owner viewers can refresh the stored ``query_context``
+    — but it must NOT recompute owners.  Upstream gates ``compute_owners``
+    on ``not is_query_context_update(...)``
+    (superset_old/commands/chart/update.py:115-128); recomputing here would
+    prepend the non-admin actor to ``owners`` (compute_owner_list auto-adds
+    a non-admin caller missing from the list) — silent ownership escalation."""
+    existing_owner = MagicMock()
+    existing_owner.id = 7
+    mock_chart.owners = [existing_owner]
+    _exec_returns(mock_dao, unique_one=mock_chart)
+
+    actor = MagicMock()
+    actor.id = 42
+    users = {42: actor, 7: existing_owner}
+    sm = AsyncMock()
+    sm.is_admin = MagicMock(return_value=False)
+    sm.find_user_by_id = AsyncMock(side_effect=lambda uid: users.get(uid))
+
+    cmd = UpdateChartCommand(
+        dao=mock_dao,
+        chart_id=1,
+        data={"query_context": "{}", "query_context_generation": True},
+        user_id=42,
+        security_manager=sm,
+    )
+    await cmd.validate()
+    await cmd.run()
+    # Ownership check skipped (that's the point of the qcu path)…
+    sm.raise_for_ownership.assert_not_awaited()
+    # …but owners must stay exactly as they were: no actor prepended.
+    assert [o.id for o in mock_chart.owners] == [7]
+
+
 async def test_delete_chart_not_found(mock_dao):
     mock_dao.find_by_id = AsyncMock(return_value=None)
     cmd = DeleteChartCommand(dao=mock_dao, chart_id=999)
