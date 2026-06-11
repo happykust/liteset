@@ -357,28 +357,248 @@ def _dataset_perm(connection: Connection, target: "SqlaTable") -> str | None:
     return f"[{row.database_name}].[{target.table_name}](id:{target.id})"
 
 
-def _sqlatable_before_update(
+def _database_name_for(connection: Connection, database_id: Any) -> str | None:
+    if database_id is None:
+        return None
+    row = connection.execute(
+        text("SELECT database_name FROM dbs WHERE id = :id"),
+        {"id": int(database_id)},
+    ).first()
+    return row.database_name if row is not None else None
+
+
+def _update_dataset_perm(
+    connection: Connection,
+    old_permission_name: str | None,
+    new_permission_name: str | None,
+    target: "SqlaTable",
+) -> None:
+    """Propagate a dataset perm rename to the VM, the dataset and its charts.
+
+    1:1 with ``security_manager._update_dataset_perm``
+    (superset_old/security/manager.py:1934-2006).
+    """
+    logger.info(
+        "Updating dataset perm, old: %s, new: %s",
+        old_permission_name,
+        new_permission_name,
+    )
+    if not new_permission_name:
+        return
+    new_vm = connection.execute(
+        text("SELECT id FROM ab_view_menu WHERE name = :name"),
+        {"name": new_permission_name},
+    ).first()
+    if new_vm is not None:
+        return
+    old_vm = (
+        connection.execute(
+            text("SELECT id FROM ab_view_menu WHERE name = :name"),
+            {"name": old_permission_name},
+        ).first()
+        if old_permission_name
+        else None
+    )
+    if old_vm is None:
+        logger.warning(
+            "Could not find previous dataset permission %s", old_permission_name
+        )
+        _ensure_pvm(connection, "datasource_access", new_permission_name)
+        return
+    # Update VM (rename keeps existing role grants attached)
+    _rename_view_menu(connection, str(old_permission_name), new_permission_name)
+    # Update dataset (SqlaTable perm field)
+    connection.execute(
+        text("UPDATE tables SET perm = :new WHERE id = :id"),
+        {"new": new_permission_name, "id": int(target.id)},
+    )
+    # Update charts (Slice perm field)
+    connection.execute(
+        text(
+            "UPDATE slices SET perm = :new "
+            "WHERE datasource_id = :id AND datasource_type = 'table'"
+        ),
+        {"new": new_permission_name, "id": int(target.id)},
+    )
+
+
+def _update_dataset_catalog_schema_perm(
+    connection: Connection,
+    catalog_permission_name: str | None,
+    schema_permission_name: str | None,
+    target: "SqlaTable",
+) -> None:
+    """Propagate catalog/schema perm changes to the dataset and its charts.
+
+    1:1 with ``security_manager._update_dataset_catalog_schema_perm``
+    (superset_old/security/manager.py:1863-1932).
+    """
+    # insert new PVMs if they don't exist (upstream's
+    # ``_insert_pvm_on_sqla_event`` no-ops on a falsy name)
+    if catalog_permission_name:
+        _ensure_pvm(connection, "catalog_access", catalog_permission_name)
+    if schema_permission_name:
+        _ensure_pvm(connection, "schema_access", schema_permission_name)
+
+    # Update dataset
+    connection.execute(
+        text("UPDATE tables SET catalog_perm = :c, schema_perm = :s WHERE id = :id"),
+        {
+            "c": catalog_permission_name,
+            "s": schema_permission_name,
+            "id": int(target.id),
+        },
+    )
+    # Update charts (Slice catalog_perm/schema_perm fields)
+    connection.execute(
+        text(
+            "UPDATE slices SET catalog_perm = :c, schema_perm = :s "
+            "WHERE datasource_id = :id AND datasource_type = 'table'"
+        ),
+        {
+            "c": catalog_permission_name,
+            "s": schema_permission_name,
+            "id": int(target.id),
+        },
+    )
+
+
+def _sqlatable_before_update(  # noqa: C901
     _mapper: Mapper[Any], connection: Connection, target: "SqlaTable"
 ) -> None:
-    """Refresh ``perm`` / ``schema_perm`` / ``catalog_perm`` before update.
+    """Propagate dataset perm changes before update.
 
-    Mirrors ``SqlaTable.before_update`` /
-    ``security_manager.dataset_before_update``.
+    1:1 with ``security_manager.dataset_before_update``
+    (superset_old/security/manager.py:1771-1860): when ``database_id``,
+    ``table_name``, ``catalog`` or ``schema`` change, rename the
+    ``ab_view_menu`` entry (keeping role grants) and update
+    ``perm``/``schema_perm``/``catalog_perm`` on the dataset AND its charts.
+    The previous version only refreshed ``target.perm``, so users with
+    ``datasource_access`` on the old PVM lost access after a rename.
     """
-    perm = _dataset_perm(connection, target)
-    if perm is not None:
-        target.perm = perm  # type: ignore[assignment]
+    from superset.security.permission_manager import (
+        get_catalog_perm,
+        get_dataset_perm,
+        get_schema_perm,
+    )
+
+    current = connection.execute(
+        # ``schema`` is double-quoted: the metadata DB is PostgreSQL (or
+        # SQLite in tests), where the ANSI quoting is valid; unquoted it can
+        # collide with the keyword.
+        text(
+            'SELECT database_id, catalog, table_name, "schema" AS schema_name '
+            "FROM tables WHERE id = :id"
+        ),
+        {"id": int(target.id)},
+    ).first()
+    if current is None:
+        # Fresh row (insert path) — keep the legacy perm refresh only.
+        perm = _dataset_perm(connection, target)
+        if perm is not None:
+            target.perm = perm  # type: ignore[assignment]
+        return
+
+    database_name = _database_name_for(connection, target.database_id)
+
+    # When database changes
+    if current.database_id != target.database_id:
+        new_dataset_vm_name = get_dataset_perm(
+            target.id, target.table_name, database_name
+        )
+        _update_dataset_perm(
+            connection,
+            cast("str | None", target.perm),
+            new_dataset_vm_name,
+            target,
+        )
+        target.perm = new_dataset_vm_name  # type: ignore[assignment]
+
+        # Updates catalog/schema permissions
+        _update_dataset_catalog_schema_perm(
+            connection,
+            get_catalog_perm(database_name, target.catalog),
+            get_schema_perm(database_name, target.catalog, target.schema),
+            target,
+        )
+
+    # When table name changes
+    if current.table_name != target.table_name:
+        new_dataset_vm_name = get_dataset_perm(
+            target.id, target.table_name, database_name
+        )
+        old_dataset_vm_name = get_dataset_perm(
+            target.id, current.table_name, database_name
+        )
+        _update_dataset_perm(
+            connection, old_dataset_vm_name, new_dataset_vm_name, target
+        )
+        target.perm = new_dataset_vm_name  # type: ignore[assignment]
+
+    # When catalog/schema change
+    if current.catalog != target.catalog or current.schema_name != target.schema:
+        _update_dataset_catalog_schema_perm(
+            connection,
+            get_catalog_perm(database_name, target.catalog),
+            get_schema_perm(database_name, target.catalog, target.schema),
+            target,
+        )
 
 
 def _sqlatable_after_insert(
     _mapper: Mapper[Any], connection: Connection, target: "SqlaTable"
 ) -> None:
-    """Create the ``datasource_access`` PVM after a dataset insert."""
+    """Create the dataset PVMs and persist local perms after insert.
+
+    1:1 with ``security_manager.dataset_after_insert``
+    (superset_old/security/manager.py:1661-1743): attribute changes made
+    inside an ``after_insert`` handler are NOT included in the flush, so the
+    perm columns must be written through the connection explicitly.
+    """
+    from superset.security.permission_manager import (
+        get_catalog_perm,
+        get_schema_perm,
+    )
+
     perm = _dataset_perm(connection, target)
     if perm is None:
         return
     target.perm = perm  # type: ignore[assignment]
     _ensure_pvm(connection, "datasource_access", perm)
+    connection.execute(
+        text("UPDATE tables SET perm = :perm WHERE id = :id"),
+        {"perm": perm, "id": int(target.id)},
+    )
+
+    # update catalog and schema perms
+    database_name = _database_name_for(connection, target.database_id)
+    values: dict[str, str | None] = {}
+    if target.schema:
+        dataset_schema_perm = get_schema_perm(
+            database_name, target.catalog, target.schema
+        )
+        if dataset_schema_perm:
+            _ensure_pvm(connection, "schema_access", dataset_schema_perm)
+        target.schema_perm = dataset_schema_perm  # type: ignore[assignment]
+        values["s"] = dataset_schema_perm
+    if target.catalog:
+        dataset_catalog_perm = get_catalog_perm(database_name, target.catalog)
+        if dataset_catalog_perm:
+            _ensure_pvm(connection, "catalog_access", dataset_catalog_perm)
+        target.catalog_perm = dataset_catalog_perm  # type: ignore[assignment]
+        values["c"] = dataset_catalog_perm
+    if values:
+        set_clauses = []
+        if "s" in values:
+            set_clauses.append("schema_perm = :s")
+        if "c" in values:
+            set_clauses.append("catalog_perm = :c")
+        connection.execute(
+            text(
+                f"UPDATE tables SET {', '.join(set_clauses)} WHERE id = :id"  # noqa: S608
+            ),
+            {**values, "id": int(target.id)},
+        )
 
 
 def _sqlatable_after_delete(

@@ -62,6 +62,7 @@ from superset.controllers.base import (
 from superset.events import event_logger
 from superset.exceptions import (
     CommandInvalidError,
+    OAuth2RedirectError,
     ObjectNotFoundError,
     SupersetException,
     SupersetSecurityException,
@@ -79,6 +80,7 @@ from superset.schemas.database import (
     DatabaseGetResponse,
     DatabasePostSchema,
     DatabasePutSchema,
+    DatabaseShowResult,
     DatabaseTestConnectionSchema,
     DatabaseValidateParamsSchema,
     FileMetadataItem,
@@ -1042,7 +1044,10 @@ class DatabaseController(Controller):
         # inaccessible database returns 404 (existence is hidden).
         if not await _database_is_accessible(security_manager, current_user, database):
             raise ObjectNotFoundError("Database", pk)
-        result = _build_database_result(database)
+        # ``DatabaseShowResult`` — exactly upstream show_columns; the
+        # connection details (sqlalchemy_uri/extra/server_cert/parameters/
+        # masked_encrypted_extra) are can_write-only via /{pk}/connection.
+        result = DatabaseShowResult.from_model(database)
         # Merge SSH tunnel data into response — matches original
         # superset_old/databases/api.py:get (lines 397-403) which calls
         # DatabaseDAO.get_ssh_tunnel(pk) and adds payload["result"]["ssh_tunnel"].
@@ -1336,7 +1341,19 @@ class DatabaseController(Controller):
             data=update_data,
             user_id=current_user.id,
         )
-        db = await cmd.execute()
+        from litestar.exceptions import ClientException
+
+        from superset.commands.database.exceptions import (
+            DatabaseParametersInvalidError,
+        )
+
+        try:
+            db = await cmd.execute()
+        except DatabaseParametersInvalidError as ex:
+            # Upstream's @pre_load build_sqlalchemy_uri failures were
+            # Marshmallow ValidationErrors → response_400 (R11-08) —
+            # symmetric with the POST handler's catch.
+            raise ClientException(status_code=400, detail=str(ex)) from ex
 
         # -----------------------------------------------------------------
         # OAuth2 token purge — mirrors UpdateDatabaseCommand._handle_oauth2.
@@ -1482,6 +1499,11 @@ class DatabaseController(Controller):
                 user=current_user,
             )
             return CatalogsResponse(result=catalogs_list)
+        except OAuth2RedirectError:
+            # 1:1 with upstream catalogs (databases/api.py:737-740): the
+            # OAuth2 dance must reach the frontend (error_type
+            # OAUTH2_REDIRECT), not collapse into an empty dropdown.
+            raise
         except Exception as exc:
             _log.warning("Failed to fetch catalogs for database %s: %s", pk, exc)
             return CatalogsResponse(result=[])
@@ -1493,7 +1515,7 @@ class DatabaseController(Controller):
         "/{pk:int}/schemas/",
         guards=[require_permission("can_read", "Database")],
     )
-    async def schemas(
+    async def schemas(  # noqa: C901
         self,
         pk: int,
         dao: DatabaseDAOProtocol,
@@ -1554,6 +1576,9 @@ class DatabaseController(Controller):
                         s for s in schemas_list if s.lower() in allowed_lower
                     ]
             return SchemasResponse(result=schemas_list)
+        except OAuth2RedirectError:
+            # 1:1 with upstream schemas (databases/api.py:820-823).
+            raise
         except Exception as exc:
             _log.warning("Failed to fetch schemas for database %s: %s", pk, exc)
             return SchemasResponse(result=[])
@@ -1679,6 +1704,11 @@ class DatabaseController(Controller):
                 "count": len(options),
                 "result": options,
             }
+        except OAuth2RedirectError:
+            # Upstream tables has no try/except at all — exceptions propagate
+            # through @handle_api_exception; at minimum the OAuth2 dance must
+            # not be swallowed into an empty list.
+            raise
         except Exception as exc:
             _log.warning("Failed to fetch tables for database %s: %s", pk, exc)
             return {"count": 0, "result": []}
@@ -2486,7 +2516,7 @@ class DatabaseController(Controller):
         "/available/",
         guards=[require_permission("can_read", "Database")],
     )
-    async def available(self) -> dict[str, Any]:
+    async def available(self) -> dict[str, Any]:  # noqa: C901
         """GET /api/v1/database/available/ — list engine specs.
 
         Mirrors ``superset_old/databases/api.py::available``. The
@@ -2497,8 +2527,23 @@ class DatabaseController(Controller):
         alphabetically by display name.
         """
         from superset.db.engine_specs import _get_sync_spec_map, _NATIVE_SPECS
+        from superset.db_engine_specs import get_installed_drivers
 
         settings_obj = SupersetSettings()  # type: ignore[call-arg]
+        # Map of engine/backend → set of INSTALLED driver names (R11-17): an
+        # engine is only offered when at least one of its drivers can import,
+        # 1:1 with upstream ``get_available_engine_specs``.
+        installed_drivers = get_installed_drivers()
+
+        def _installed_for(spec_cls: Any, engine_key: str) -> set[str]:
+            drivers = set(installed_drivers.get(engine_key, set()))
+            if not drivers:
+                for alias in getattr(spec_cls, "engine_aliases", None) or set():
+                    if installed_drivers.get(alias):
+                        drivers = set(installed_drivers[alias])
+                        break
+            return drivers
+
         preferred_names: list[str] = list(
             getattr(settings_obj, "preferred_databases", [])
         )
@@ -2584,7 +2629,17 @@ class DatabaseController(Controller):
                 # Skip abstract base specs with no engine_name; mirrors the
                 # original "if not drivers: continue" filter.
                 continue
-            databases.append(_build_payload(engine_key, spec_cls, sync_fallback=False))
+            _drivers = _installed_for(spec_cls, engine_key)
+            if not _drivers:
+                continue
+            databases.append(
+                _build_payload(
+                    engine_key,
+                    spec_cls,
+                    sync_fallback=False,
+                    available_drivers=sorted(_drivers),
+                )
+            )
 
         # 2. Sync fallback engine specs (from superset.db_engine_specs)
         native_engines = set(_NATIVE_SPECS.keys())
@@ -2594,7 +2649,19 @@ class DatabaseController(Controller):
                 continue
             if not getattr(spec_cls, "engine_name", None):
                 continue
-            databases.append(_build_payload(engine_key, spec_cls, sync_fallback=True))
+            _drivers = _installed_for(spec_cls, engine_key)
+            if not _drivers:
+                # Driver not installed → engine can't connect; omit it
+                # (R11-17) — 1:1 with upstream ``if not driver`` skip.
+                continue
+            databases.append(
+                _build_payload(
+                    engine_key,
+                    spec_cls,
+                    sync_fallback=True,
+                    available_drivers=sorted(_drivers),
+                )
+            )
 
         # Sort: preferred first (in config order), then the rest alphabetically.
         # ``name`` can be ``None`` for custom specs that don't define

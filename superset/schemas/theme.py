@@ -63,10 +63,15 @@ class ThemePostSchema(msgspec.Struct):
 
 
 class ThemePutSchema(msgspec.Struct):
-    """PUT /api/v1/theme/<pk>"""
+    """PUT /api/v1/theme/<pk>
 
-    theme_name: str | None | msgspec.UnsetType = msgspec.UNSET
-    json_data: str | None | msgspec.UnsetType = msgspec.UNSET
+    1:1 with the original ``ThemePutSchema(ThemeBaseSchema)``: BOTH fields
+    are ``required=True, allow_none=False`` — a partial PUT or an explicit
+    null is a 400 upstream, never a silent NULL write.
+    """
+
+    theme_name: Annotated[str, Meta(min_length=1)]
+    json_data: str
 
     def __post_init__(self) -> None:
         _validate_theme_json(self.json_data)

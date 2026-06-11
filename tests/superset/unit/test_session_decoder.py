@@ -1,7 +1,16 @@
-"""Tests for FlaskSessionDecoder — itsdangerous cookie decoding."""
+"""Tests for FlaskSessionDecoder — itsdangerous cookie decoding.
+
+Cookies are minted with Flask's exact signer configuration
+(``key_derivation="hmac"`` + SHA-1 + ``TaggedJSONSerializer``) — the
+itsdangerous *defaults* (django-concat) produce incompatible signatures,
+which is precisely the round-10 regression this file guards against.
+"""
 
 from __future__ import annotations
 
+import hashlib
+
+from flask.json.tag import TaggedJSONSerializer
 from itsdangerous import URLSafeTimedSerializer
 
 from superset.security.session_decoder import FlaskSessionDecoder
@@ -14,9 +23,32 @@ def _create_flask_session_cookie(
     secret_key: str = SECRET_KEY,
     salt: str = "cookie-session",
 ) -> str:
-    """Create a Flask-style signed session cookie for testing."""
-    s = URLSafeTimedSerializer(secret_key, salt=salt)
+    """Create a real Flask-format signed session cookie for testing."""
+    s = URLSafeTimedSerializer(
+        secret_key,
+        salt=salt,
+        serializer=TaggedJSONSerializer(),
+        signer_kwargs={"key_derivation": "hmac", "digest_method": hashlib.sha1},
+    )
     return s.dumps(data)
+
+
+def test_decode_real_flask_session_interface_cookie():
+    """Regression: a cookie minted by Flask itself must decode.
+
+    Pre-fix the decoder used itsdangerous' default key derivation
+    (django-concat) → BadSignature on every real Flask cookie →
+    get_user_id() always None (Strangler-Fig session auth dead).
+    """
+    import flask
+
+    app = flask.Flask(__name__)
+    app.secret_key = SECRET_KEY
+    signer = flask.sessions.SecureCookieSessionInterface().get_signing_serializer(app)
+    cookie = signer.dumps({"_user_id": "5", "csrf_token": "tok"})
+
+    decoder = FlaskSessionDecoder(secret_key=SECRET_KEY)
+    assert decoder.get_user_id(cookie) == 5
 
 
 def test_decode_valid_cookie():

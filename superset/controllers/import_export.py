@@ -67,18 +67,18 @@ class ImportExportController(Controller):
 
         from superset.importexport.manager import AsyncFullAssetManager
 
+        # ONE timestamp for both the internal ZIP root and the download
+        # filename — 1:1 with the original which assigns it once (an export
+        # spanning a second boundary previously produced mismatched names).
+        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        root = f"assets_export_{timestamp}"
+
         manager = AsyncFullAssetManager(session)
-        content = await manager.export_assets()
+        content = await manager.export_assets(root=root)
 
         await event_logger.alog_with_context("assets.export", user_id=current_user.id)
 
-        # Serve ``assets_export_<timestamp>.zip`` — 1:1 with the original
-        # ``superset_old/importexport/api.py::export`` (``timestamp =
-        # datetime.now().strftime("%Y%m%dT%H%M%S")``).  The manager already
-        # nests every entry under a matching ``assets_export_<ts>/`` root so the
-        # bundle round-trips through ``remove_root`` on re-import.
-        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-        filename = f"assets_export_{timestamp}.zip"
+        filename = f"{root}.zip"
 
         return Response(
             content=content,

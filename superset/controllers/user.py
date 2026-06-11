@@ -36,6 +36,7 @@ from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_register_user_dao, provide_user_crud_dao
 from superset.schemas.security import (
+    UserAuditRef,
     UserGroupRef,
     UserResponse,
     UserRoleRef,
@@ -104,6 +105,18 @@ def _user_to_response(user: Any) -> UserResponse:
         last_login=user.last_login.isoformat() if user.last_login else None,
         created_on=user.created_on.isoformat() if user.created_on else None,
         changed_on=user.changed_on.isoformat() if user.changed_on else None,
+        # FAB serialises only ``created_by.id``/``changed_by.id`` — build the
+        # refs from the FK columns directly (no lazy relationship access).
+        created_by=(
+            UserAuditRef(id=user.created_by_fk)
+            if getattr(user, "created_by_fk", None)
+            else None
+        ),
+        changed_by=(
+            UserAuditRef(id=user.changed_by_fk)
+            if getattr(user, "changed_by_fk", None)
+            else None
+        ),
     )
 
 
@@ -375,6 +388,9 @@ class UserController(Controller):
             "email",
             "active",
             "last_login",
+            # FAB list_columns include both counters → orderable upstream.
+            "login_count",
+            "fail_login_count",
             "created_on",
             "changed_on",
         ):
@@ -862,7 +878,10 @@ class UserRegistrationsController(Controller):
         await event_logger.alog_with_context(
             "user_registrations.show", object_ref=str(pk)
         )
-        return {"id": pk, "result": _reg_to_dict(reg)}
+        # FAB auto-populates show_columns from ALL model columns (incl. id),
+        # so ``id`` appears inside ``result`` AND at the top level —
+        # 88e43b6c2d applied the same to other resources.
+        return {"id": pk, "result": {"id": reg.id, **_reg_to_dict(reg)}}
 
     # ------------------------------------------------------------------
     # POST / — create a registration request

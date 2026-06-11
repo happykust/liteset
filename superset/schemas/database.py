@@ -357,14 +357,57 @@ class EngineInformationRef(msgspec.Struct, omit_defaults=True):
     supports_oauth2: bool = False
 
 
-class DatabaseDetailResult(ModelStruct):
-    """Full database detail returned by GET /api/v1/database/{pk}.
+class DatabaseShowResult(ModelStruct):
+    """GET /api/v1/database/{pk} — exactly upstream ``show_columns``.
 
-    Mirrors ``superset_old.databases.api.DatabaseRestApi.show_columns``
-    which lists ``id`` first.  The frontend's edit modal reads
-    ``response.result.id`` to decide between PUT (update) and POST
-    (create); omitting ``id`` here makes "Save" silently fall back to
-    POST and trip the duplicate-name validator with a generic 422.
+    The original deliberately excludes ``sqlalchemy_uri`` / ``extra`` /
+    ``server_cert`` / ``masked_encrypted_extra`` / ``parameters`` from the
+    can_read GET — those live behind the can_write ``/{pk}/connection``
+    endpoint (METHOD_PERMISSION_MAP: get_connection → write).  Exposing
+    them here leaked structural connection details (host, port, username,
+    engine params) to any Gamma user with can_read Database.
+    ``ssh_tunnel`` is merged separately by the handler — 1:1 with upstream
+    ``get`` (databases/api.py:397-403).
+    """
+
+    id: int | None = None
+    uuid: str | None = None
+    database_name: str = ""
+    cache_timeout: int | None = None
+    expose_in_sqllab: bool = True
+    allow_run_async: bool = False
+    allow_file_upload: bool = False
+    configuration_method: str | None = None
+    allow_ctas: bool = False
+    allow_cvas: bool = False
+    allow_dml: bool = False
+    backend: str = ""
+    driver: str | None = None
+    force_ctas_schema: str | None = None
+    impersonate_user: bool = False
+    is_managed_externally: bool = False
+    engine_information: EngineInformationRef | dict[str, Any] | None = None
+    ssh_tunnel: Any = None
+
+    @classmethod
+    def _resolve_engine_information(
+        cls,
+        obj: Any,
+    ) -> EngineInformationRef | dict[str, Any]:
+        raw = getattr(obj, "engine_information", None)
+        if raw and isinstance(raw, dict):
+            return raw
+        return EngineInformationRef(
+            supports_file_upload=getattr(obj, "allow_file_upload", False),
+        )
+
+
+class DatabaseDetailResult(ModelStruct):
+    """Extended database detail echoed by POST / PUT.
+
+    Mirrors the original create/update responses (which echo the loaded
+    request schema, incl. the masked ``sqlalchemy_uri``).  NOT used for the
+    can_read GET /{pk} — see :class:`DatabaseShowResult`.
     """
 
     id: int | None = None

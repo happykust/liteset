@@ -261,7 +261,15 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             else getattr(self._dataset, "schema", None)
         )
 
-        table_name = self._data.get("table_name")
+        # 1:1 with upstream ``_validate_dataset_source``: the uniqueness
+        # check ALWAYS runs, falling back to the current model's table_name
+        # when the PUT body omits it (``self._properties.get("table_name",
+        # self._model.table_name)``) — a schema-only change can still
+        # collide with another dataset, and the DB-level UniqueConstraint
+        # was dropped (migration df3d7e2eb9a4), so this is the only guard.
+        table_name = self._data.get("table_name") or getattr(
+            self._dataset, "table_name", None
+        )
         if table_name:
             # Use the resolved target db for the uniqueness check (1:1 upstream
             # ``validate_update_uniqueness(db, table, ...)``).

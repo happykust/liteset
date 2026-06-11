@@ -222,6 +222,20 @@ class EmbeddedSSRController(Controller):
 
         assets_prefix = getattr(settings, "static_assets_prefix", "")
 
+        # Audit log — 1:1 with the original's
+        # ``@event_logger.log_this_with_extra_payload`` +
+        # ``add_extra_log_payload(embedded_dashboard_id=uuid,
+        # dashboard_version="v2")`` (superset_old/embedded/view.py:37-77).
+        from superset.events import event_logger
+
+        await event_logger.alog_with_context(
+            "EmbeddedView.embedded",
+            extra={
+                "embedded_dashboard_id": uuid,
+                "dashboard_version": "v2",
+            },
+        )
+
         return Template(
             template_name="spa.html",
             context={

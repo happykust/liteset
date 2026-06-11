@@ -354,6 +354,15 @@ def apply_client_processing(  # noqa: C901
     form_data: Optional[dict[str, Any]] = None,
     datasource: Optional[Union["SqlaTable", "Query"]] = None,
 ) -> dict[Any, Any]:
+    # Audit log — 1:1 with upstream's ``@event_logger.log_this`` on
+    # ``apply_client_processing`` (best-effort: logging must never break
+    # report rendering).
+    try:
+        from superset.events import event_logger
+
+        event_logger.log_with_context(action="apply_client_processing")
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to audit-log apply_client_processing", exc_info=True)
     form_data = form_data or {}
 
     viz_type = form_data.get("viz_type")

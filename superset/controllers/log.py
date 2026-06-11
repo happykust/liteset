@@ -151,10 +151,11 @@ class LogController(Controller):
         if item is None:
             raise ObjectNotFoundError("Log", pk)
         user = getattr(item, "user", None)
+        # ``show_columns = list_columns`` upstream — no ``id`` inside
+        # ``result`` (it lives only in the FAB envelope's top-level key).
         return {
             "id": pk,
             "result": {
-                "id": getattr(item, "id", None),
                 "action": getattr(item, "action", None),
                 "user_id": getattr(item, "user_id", None),
                 "dashboard_id": getattr(item, "dashboard_id", None),

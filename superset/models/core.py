@@ -411,6 +411,29 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
             source=source,
         )
 
+    def has_table(self, table: Any) -> bool:
+        """Check that a physical table exists on the database.
+
+        1:1 with ``Database.has_table`` in ``superset_old/models/core.py``
+        (line 1104) — including the lowercase fallback.  ``table`` is a
+        :class:`superset.sql.parse.Table`.  Synchronous (engine-backed), so
+        async callers must run it in a thread.  SA 2.0 removed
+        ``Engine.has_table``; the inspector call is the documented
+        replacement with identical semantics.
+        """
+        from sqlalchemy import inspect as sa_inspect
+
+        from superset.utils.database import get_sync_engine
+
+        with get_sync_engine(
+            self, catalog=table.catalog, schema=table.schema
+        ) as engine:
+            inspector = sa_inspect(engine)
+            # do not pass "" as an empty schema; force null
+            if inspector.has_table(table.table, table.schema or None):
+                return True
+            return inspector.has_table(table.table.lower(), table.schema or None)
+
     def get_inspector(
         self,
         catalog: str | None = None,
@@ -1049,6 +1072,38 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
 
     def get_extra(self, source: QuerySource | None = None) -> dict[str, Any]:
         return self.db_engine_spec.get_extra_params(self, source)
+
+    def get_schema_access_for_file_upload(self) -> set[str]:
+        """1:1 with ``Database.get_schema_access_for_file_upload``
+        (superset_old/models/core.py:1055-1068): ``literal_eval`` for legacy
+        string-encoded lists, plus the configurable
+        ``ALLOWED_USER_CSV_SCHEMA_FUNC`` hook (the Flask ``g.user`` read is
+        replaced by the request-scoped ContextVar)."""
+        from ast import literal_eval
+
+        allowed_databases = self.get_extra().get("schemas_allowed_for_file_upload", [])
+
+        if isinstance(allowed_databases, str):
+            allowed_databases = literal_eval(allowed_databases)
+        allowed_databases = list(allowed_databases)
+
+        from superset.utils.core import get_current_user
+
+        user = get_current_user()
+        if user is not None:
+            try:
+                from superset.config import SupersetSettings
+
+                func = getattr(
+                    SupersetSettings(),  # type: ignore[call-arg]
+                    "allowed_user_csv_schema_func",
+                    None,
+                )
+            except Exception:  # noqa: BLE001
+                func = None
+            if callable(func):
+                allowed_databases += func(self, user)
+        return set(allowed_databases)
 
     def get_encrypted_extra(self) -> dict[str, Any]:
         encrypted_extra: dict[str, Any] = {}

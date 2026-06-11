@@ -159,7 +159,8 @@ async def test_get_single(controller, mock_dao):
     # The handler serializes the ORM instance to a dict (msgspec can't dump
     # the SA model directly), matching the original LogModelView dump shape.
     assert result["id"] == 1
-    assert result["result"]["id"] == 1
+    # show_columns = list_columns upstream — no "id" inside "result".
+    assert "id" not in result["result"]
     assert result["result"]["action"] == "explore"
     mock_dao.find_all.assert_awaited_once()
 

@@ -21,6 +21,8 @@ Pure SQLAlchemy -- no Flask dependencies.
 
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy import (
     Column,
     DateTime,
@@ -74,6 +76,18 @@ class Annotation(Base, AuditMixinNullable):
     def __repr__(self) -> str:
         # 1:1 superset_old/models/annotations.py:67.
         return str(self.short_descr)
+
+    @property
+    def data(self) -> dict[str, Any]:
+        # 1:1 superset_old/models/annotations.py:56-65.
+        return {
+            "layer_id": self.layer_id,
+            "start_dttm": self.start_dttm,
+            "end_dttm": self.end_dttm,
+            "short_descr": self.short_descr,
+            "long_descr": self.long_descr,
+            "layer": self.layer.name if self.layer else None,
+        }
 
     # -- relationships --------------------------------------------------------
 

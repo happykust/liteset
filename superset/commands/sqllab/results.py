@@ -79,7 +79,27 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
         query = None
         if self._dao is not None:
             try:
-                query = await self._dao.find_one_or_none(results_key=self._key)
+                # Eager-load ``database`` — ``_deserialize_results_payload``
+                # reads ``query.database.db_engine_spec`` for ``expand_data``;
+                # the default lazy relationship raised MissingGreenlet inside
+                # the broad except, silently skipping Presto/Hive expansion
+                # (R11-14).
+                from sqlalchemy import select as _sa_select
+                from sqlalchemy.orm import selectinload as _selectinload
+
+                from superset.models.sql_lab import Query as _Query
+
+                query = (
+                    (
+                        await self._dao.session.execute(
+                            _sa_select(_Query)
+                            .where(_Query.results_key == self._key)
+                            .options(_selectinload(_Query.database))
+                        )
+                    )
+                    .scalars()
+                    .one_or_none()
+                )
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "DAO lookup failed for results key %s", self._key, exc_info=True
@@ -230,7 +250,14 @@ def _deserialize_results_payload(
 
             raise SerializationError("Unable to deserialize table") from ex
 
-        df = pa_table.to_pandas(integer_object_nulls=True)
+        # 1:1 with ``SupersetResultSet.convert_table_to_df``
+        # (superset_old/result_set.py:211-215): out-of-range timestamps
+        # (year < 1678 / > 2262) raise ArrowInvalid — fall back to
+        # ``timestamp_as_object=True`` instead of a 500.
+        try:
+            df = pa_table.to_pandas(integer_object_nulls=True)
+        except pa.lib.ArrowInvalid:
+            df = pa_table.to_pandas(integer_object_nulls=True, timestamp_as_object=True)
         try:
             from superset.commands.sqllab._shared import make_json_safe
 

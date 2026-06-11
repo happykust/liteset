@@ -44,12 +44,16 @@ class WarmUpDatasetCacheCommand(AsyncBaseCommand[list[dict[str, Any]]]):
         table_name: str,
         dashboard_id: int | None = None,
         extra_filters: str | None = None,
+        security_manager: Any | None = None,
+        current_user: Any | None = None,
     ) -> None:
         self._dao = dao
         self._db_name = db_name
         self._table_name = table_name
         self._dashboard_id = dashboard_id
         self._extra_filters = extra_filters
+        self._security_manager = security_manager
+        self._current_user = current_user
         self._charts: list[Slice] = []
 
     async def validate(self) -> None:
@@ -65,13 +69,23 @@ class WarmUpDatasetCacheCommand(AsyncBaseCommand[list[dict[str, Any]]]):
         if table is None:
             raise WarmUpCacheTableNotFoundError()
 
+        # Eager-load the full chain the chart warm-up command's run() reads
+        # synchronously (datasource → database/columns/metrics, owners) — the
+        # charts are passed as already-loaded instances (upstream passed the
+        # Slice object and validate() short-circuited; re-fetching per chart
+        # was an N-query regression).
         charts_stmt = (
             select(Slice)
             .where(
                 Slice.datasource_id == table.id,
                 Slice.datasource_type == table.type,
             )
-            .options(selectinload(Slice.owners))
+            .options(
+                selectinload(Slice.table).selectinload(SqlaTable.database),
+                selectinload(Slice.table).selectinload(SqlaTable.columns),
+                selectinload(Slice.table).selectinload(SqlaTable.metrics),
+                selectinload(Slice.owners),
+            )
         )
         self._charts = list(
             (await self._dao.session.execute(charts_stmt)).scalars().all()
@@ -82,14 +96,18 @@ class WarmUpDatasetCacheCommand(AsyncBaseCommand[list[dict[str, Any]]]):
         chart_dao = AsyncChartDAO(self._dao.session)
         results: list[dict[str, Any]] = []
         for chart in self._charts:
+            # Pass the already-loaded Slice — 1:1 with upstream where
+            # ChartWarmUpCacheCommand.validate() returns immediately for a
+            # Slice instance (no per-chart re-fetch).
             cmd = WarmUpChartCacheCommand(
                 dao=chart_dao,
-                chart_id=chart.id,
+                chart=chart,
                 dashboard_id=self._dashboard_id,
                 extra_filters=self._extra_filters,
+                # Threads the access gate (raise_for_access) and RLS cache
+                # key into the per-chart warm-up — 1:1 upstream (R11-06).
+                security_manager=self._security_manager,
+                current_user=self._current_user,
             )
-            # execute() = validate() + run(): validate() is what loads
-            # self._chart on the chart command — calling run() directly
-            # would trip its ``assert self._chart is not None``.
             results.append(await cmd.execute())
         return results

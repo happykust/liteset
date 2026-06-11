@@ -39,3 +39,7 @@ class DynamicPlugin(Base, AuditMixinNullable):
     name = Column(Text, unique=True, nullable=False)
     key = Column(Text, unique=True, nullable=False)
     bundle_url = Column(Text, unique=True, nullable=False)
+
+    def __repr__(self) -> str:
+        # 1:1 superset_old/models/dynamic_plugins.py:31-32.
+        return str(self.name)

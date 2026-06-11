@@ -173,12 +173,18 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
         from superset import config as _config
 
         url = self.tracking_url_raw
+        # Common case: no tracking URL (only Hive/Presto/Trino set one) —
+        # skip the settings construction entirely.  Mirrors upstream's
+        # ``if url and transform:`` guard semantics; the previous version
+        # built a full SupersetSettings on EVERY ``to_dict()`` poll.
+        if not url:
+            return url
         try:
             settings = _config.SupersetSettings()
             transform = getattr(settings, "tracking_url_transformer", None)
         except Exception:  # noqa: BLE001
             transform = None
-        if url and transform:
+        if transform:
             sig = inspect.signature(transform)
             args = [url, self][: len(sig.parameters)]
             url = transform(*args)
@@ -208,7 +214,10 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
         if "database" not in state.unloaded and self.database is not None:
             db_name = self.database.database_name
 
-        changed_on_iso = ""
+        # None (JSON null), not "" — "" is not a valid DateTime for clients
+        # that re-validate; upstream serialised ``changed_on.isoformat()``
+        # unconditionally (changed_on is practically never NULL).
+        changed_on_iso = None
         if self.changed_on is not None:
             changed_on_iso = self.changed_on.isoformat()
 

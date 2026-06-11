@@ -183,8 +183,11 @@ class DashboardPutSchema(msgspec.Struct):
 class DashboardCopySchema(msgspec.Struct):
     """POST /api/v1/dashboard/<pk>/copy/"""
 
-    dashboard_title: str
     json_metadata: str
+    # Optional + nullable — 1:1 with the original (no ``required=True``,
+    # ``allow_none=True``); the command rejects a falsy title with its own
+    # CommandInvalidError (422), matching the upstream layering.
+    dashboard_title: str | None = None
     css: str | None = None
     duplicate_slices: bool = False
 
@@ -233,7 +236,9 @@ class DashboardScreenshotSchema(msgspec.Struct, rename="camel"):
     data_mask: dict[str, Any] = {}
     active_tabs: list[str] = []
     anchor: str | None = None
-    url_params: list[list[str]] = []
+    # ``[key, value]`` 2-tuples — the original validates ``len(x) == 2``
+    # per inner list (CacheScreenshotSchema).
+    url_params: list[tuple[str, str]] = []
     permalink_key: str | None = None
 
 
@@ -243,7 +248,8 @@ class DashboardPermalinkSchema(msgspec.Struct, rename="camel"):
     data_mask: dict[str, Any] = {}
     active_tabs: list[str] = []
     anchor: str | None = None
-    url_params: list[list[str]] = []
+    # ``fields.Tuple((Str, Str))`` upstream — enforce the pair shape.
+    url_params: list[tuple[str, str]] = []
 
 
 class FilterStateSchema(msgspec.Struct):

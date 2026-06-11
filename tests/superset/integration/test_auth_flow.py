@@ -6,6 +6,7 @@ Uses in-memory SQLite with real FAB-compatible table schemas.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -211,7 +212,13 @@ async def db_engine():
 
 
 def _make_cookie(user_id: int) -> str:
-    s = URLSafeTimedSerializer(SECRET_KEY, salt="cookie-session")
+    # Flask's exact signer configuration (hmac key-derivation + SHA-1) —
+    # the decoder no longer accepts itsdangerous' django-concat default.
+    s = URLSafeTimedSerializer(
+        SECRET_KEY,
+        salt="cookie-session",
+        signer_kwargs={"key_derivation": "hmac", "digest_method": hashlib.sha1},
+    )
     return s.dumps({"_user_id": str(user_id)})
 
 

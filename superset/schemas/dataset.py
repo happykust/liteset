@@ -72,20 +72,25 @@ class DatasetPostSchema(msgspec.Struct):
 
 
 class DatasetColumnsPut(msgspec.Struct):
-    column_name: str | None = None
-    type: str | None = None
-    is_dttm: bool | None = None
-    is_active: bool | None = None
-    groupby: bool | None = None
-    filterable: bool | None = None
-    description: str | None = None
-    expression: str | None = None
-    verbose_name: str | None = None
-    python_date_format: str | None = None
-    extra: str | None = None
-    id: int | None = None
-    uuid: str | None = None
-    advanced_data_type: str | None = None
+    # ``UNSET`` defaults (not ``None``) so an explicitly-null field in the
+    # request JSON is distinguishable from an absent one — the original
+    # Marshmallow schema has ``allow_none=True`` on the nullable fields, so
+    # ``{"expression": null}`` must CLEAR the stored value while an omitted
+    # key preserves it (the controller filters UNSET, not None).
+    column_name: str | None | msgspec.UnsetType = msgspec.UNSET
+    type: str | None | msgspec.UnsetType = msgspec.UNSET
+    is_dttm: bool | None | msgspec.UnsetType = msgspec.UNSET
+    is_active: bool | None | msgspec.UnsetType = msgspec.UNSET
+    groupby: bool | None | msgspec.UnsetType = msgspec.UNSET
+    filterable: bool | None | msgspec.UnsetType = msgspec.UNSET
+    description: str | None | msgspec.UnsetType = msgspec.UNSET
+    expression: str | None | msgspec.UnsetType = msgspec.UNSET
+    verbose_name: str | None | msgspec.UnsetType = msgspec.UNSET
+    python_date_format: str | None | msgspec.UnsetType = msgspec.UNSET
+    extra: str | None | msgspec.UnsetType = msgspec.UNSET
+    id: int | None | msgspec.UnsetType = msgspec.UNSET
+    uuid: str | None | msgspec.UnsetType = msgspec.UNSET
+    advanced_data_type: str | None | msgspec.UnsetType = msgspec.UNSET
 
     def __post_init__(self) -> None:
         # 1:1 with original DatasetColumnsPutSchema.column_name:
@@ -97,7 +102,13 @@ class DatasetColumnsPut(msgspec.Struct):
         # Litestar's validation_error_handler and mapped to 400 (not 422), so we raise
         # SupersetMarshmallowValidationError directly to preserve the original
         # status code.
-        if not self.column_name or len(self.column_name) > 255:
+        # ``column_name`` is required upstream — absent (UNSET) / null /
+        # empty / oversized all reject as 422.
+        if (
+            not isinstance(self.column_name, str)
+            or not self.column_name
+            or len(self.column_name) > 255
+        ):
             from superset.exceptions import SupersetMarshmallowValidationError
 
             raise SupersetMarshmallowValidationError(
@@ -115,15 +126,32 @@ class DatasetMetricCurrency(msgspec.Struct, rename="camel"):
 class DatasetMetricsPut(msgspec.Struct):
     metric_name: str
     expression: str
-    metric_type: str | None = None
-    verbose_name: str | None = None
-    description: str | None = None
-    d3format: str | None = None
-    currency: DatasetMetricCurrency | None = None
-    warning_text: str | None = None
-    extra: str | None = None
-    id: int | None = None
-    uuid: str | None = None
+    # UNSET defaults — see DatasetColumnsPut: explicit-null clears, absent
+    # preserves (original Marshmallow ``allow_none=True`` semantics).
+    metric_type: str | None | msgspec.UnsetType = msgspec.UNSET
+    verbose_name: str | None | msgspec.UnsetType = msgspec.UNSET
+    description: str | None | msgspec.UnsetType = msgspec.UNSET
+    d3format: str | None | msgspec.UnsetType = msgspec.UNSET
+    currency: DatasetMetricCurrency | None | msgspec.UnsetType = msgspec.UNSET
+    warning_text: str | None | msgspec.UnsetType = msgspec.UNSET
+    extra: str | None | msgspec.UnsetType = msgspec.UNSET
+    id: int | None | msgspec.UnsetType = msgspec.UNSET
+    uuid: str | None | msgspec.UnsetType = msgspec.UNSET
+
+    def __post_init__(self) -> None:
+        # 1:1 with original DatasetMetricsPutSchema.metric_name:
+        # fields.String(required=True, validate=Length(1, 255)).  The DB
+        # column is String(255) — without this check an oversized name hits
+        # PostgreSQL DataError → 500 instead of the original clean 422.
+        # Same 422-routing rationale as DatasetColumnsPut.__post_init__.
+        if not self.metric_name or len(self.metric_name) > 255:
+            from superset.exceptions import SupersetMarshmallowValidationError
+
+            raise SupersetMarshmallowValidationError(
+                messages={
+                    "metric_name": ["metric_name must be between 1 and 255 characters"]
+                }
+            )
 
 
 class DatasetPutSchema(msgspec.Struct):

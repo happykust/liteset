@@ -104,9 +104,7 @@ async def test_reset_wipes_non_system_users_and_roles(reset_env):
     cmd = _make_command(session, admin)
     await cmd.execute()
 
-    usernames = set(
-        (await session.execute(select(User.username))).scalars().all()
-    )
+    usernames = set((await session.execute(select(User.username))).scalars().all())
     role_names = set((await session.execute(select(Role.name))).scalars().all())
     assert usernames == {"admin"}
     assert "CustomRole" not in role_names
@@ -120,14 +118,10 @@ async def test_reset_honors_exclusions(reset_env):
     session, admin = reset_env
     from superset.models.security import Role, User
 
-    cmd = _make_command(
-        session, admin, exclude_users="bob", exclude_roles="CustomRole"
-    )
+    cmd = _make_command(session, admin, exclude_users="bob", exclude_roles="CustomRole")
     await cmd.execute()
 
-    usernames = set(
-        (await session.execute(select(User.username))).scalars().all()
-    )
+    usernames = set((await session.execute(select(User.username))).scalars().all())
     role_names = set((await session.execute(select(Role.name))).scalars().all())
     assert "bob" in usernames
     assert "CustomRole" in role_names

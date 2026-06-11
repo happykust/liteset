@@ -44,8 +44,11 @@ class CreateCssTemplateCommand(AsyncBaseCommand[Any]):
         self._data = data
 
     async def validate(self) -> None:
-        if not self._data.get("template_name", "").strip():
-            raise CommandInvalidError("template_name is required")
+        # No non-empty check: the original FAB create path only marks the
+        # field required (presence enforced by the schema) — an empty
+        # template_name is accepted upstream, matching the schema comment in
+        # superset/schemas/css_template.py.
+        pass
 
     async def run(self) -> Any:
         result = await self._dao.create(self._data)

@@ -100,6 +100,9 @@ class Tag(Base, AuditMixinNullable):
     objects = relationship(
         "TaggedObject",
         back_populates="tag",
+        # 1:1 superset_old/tags/models.py:99 — silences the SA overlap
+        # warning with SavedQuery.tags (secondary="tagged_object").
+        overlaps="objects,tags",
     )
     users_favorited = relationship(
         "User",

@@ -57,6 +57,7 @@ def _capped_row_limit(
     from superset import config as _config
     from superset.utils.core import apply_max_row_limit
 
+    settings = None
     try:
         settings = _config.SupersetSettings()  # type: ignore[call-arg]
         default = (
@@ -66,8 +67,12 @@ def _capped_row_limit(
         )
     except Exception:  # noqa: BLE001
         default = 1000 if result_type == "samples" else 50000
+    # Reuse the settings instance — building a second one inside
+    # apply_max_row_limit doubled the pydantic construction per query object.
     return apply_max_row_limit(
-        row_limit or default, server_pagination=server_pagination
+        row_limit or default,
+        server_pagination=server_pagination,
+        settings=settings,
     )
 
 
@@ -625,7 +630,10 @@ class AsyncQueryObject:
                 series_columns=q.get("series_columns", []),
                 series_limit=series_limit,
                 series_limit_metric=series_limit_metric,
-                is_timeseries=q.get("is_timeseries", False),
+                # ``None`` (not False) when absent → __post_init__ auto-detects
+                # ``__timestamp in columns`` — 1:1 upstream _set_is_timeseries
+                # (R11-15: a False default killed the auto-detection).
+                is_timeseries=q.get("is_timeseries"),
                 result_type=q.get("result_type"),
                 applied_time_extras=q.get("applied_time_extras", {}),
                 apply_fetch_values_predicate=q.get(
@@ -706,7 +714,8 @@ class AsyncQueryObject:
             series_columns=list(getattr(q, "series_columns", [])),
             series_limit=getattr(q, "series_limit", 0),
             series_limit_metric=getattr(q, "series_limit_metric", None),
-            is_timeseries=getattr(q, "is_timeseries", False),
+            # ``None`` default — see the dict-path note above (R11-15).
+            is_timeseries=getattr(q, "is_timeseries", None),
             result_type=getattr(q, "result_type", None),
             applied_time_extras=dict(getattr(q, "applied_time_extras", {})),
             apply_fetch_values_predicate=getattr(

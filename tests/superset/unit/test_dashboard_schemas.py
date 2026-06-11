@@ -135,7 +135,9 @@ def test_screenshot_body_url_params_tuple_format():
         b'{"urlParams": [["key1", "val1"], ["key2", "val2"]]}',
         type=DashboardScreenshotSchema,
     )
-    assert body.url_params == [["key1", "val1"], ["key2", "val2"]]
+    # Decoded as (key, value) 2-tuples — the schema now enforces the pair
+    # shape 1:1 with upstream fields.Tuple((Str, Str)).
+    assert body.url_params == [("key1", "val1"), ("key2", "val2")]
 
 
 def test_dashboard_json_metadata_stagger():

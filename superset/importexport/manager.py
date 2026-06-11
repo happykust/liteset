@@ -190,6 +190,7 @@ class AsyncFullAssetManager:
     async def export_assets(
         self,
         asset_types: list[str] | None = None,
+        root: str | None = None,
     ) -> bytes:
         """Export every asset as a ZIP file.
 
@@ -202,8 +203,11 @@ class AsyncFullAssetManager:
         # ``remove_root`` (``parts[1:]``) unconditionally, so a *flat* bundle is
         # NOT round-trip-importable (the asset-type prefix would be stripped
         # instead of the root).  The timestamp uses ``datetime.now()`` local
-        # time + the original ``"%Y%m%dT%H%M%S"`` format.
-        root = f"assets_export_{datetime.now().strftime('%Y%m%dT%H%M%S')}"
+        # time + the original ``"%Y%m%dT%H%M%S"`` format.  The controller
+        # passes ``root`` so the download filename and the internal folder
+        # share ONE timestamp (upstream computes it once).
+        if root is None:
+            root = f"assets_export_{datetime.now().strftime('%Y%m%dT%H%M%S')}"
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -429,8 +433,12 @@ class AsyncFullAssetManager:
         try:
             entries = [n for n in zf.namelist() if not n.endswith("/")]
 
+            # ``IncorrectFormatError`` (422) — consistent with
+            # ``_check_is_safe_zip`` for the same conditions; a bare
+            # ValueError escaped ``import_assets``'s BadZipFile-only catch
+            # and surfaced as 500 in the bytes-input path.
             if len(entries) > MAX_ZIP_ENTRIES:
-                raise ValueError(
+                raise IncorrectFormatError(
                     f"ZIP contains too many entries "
                     f"({len(entries)} > {MAX_ZIP_ENTRIES})"
                 )
@@ -438,7 +446,9 @@ class AsyncFullAssetManager:
             for entry in entries:
                 parts = PurePosixPath(entry).parts
                 if ".." in parts:
-                    raise ValueError(f"ZIP entry contains path traversal: {entry}")
+                    raise IncorrectFormatError(
+                        f"ZIP entry contains path traversal: {entry}"
+                    )
 
             # Apply remove_root + is_valid_config exactly like the original
             # ``get_contents_from_bundle`` so a nested bundle flattens to the

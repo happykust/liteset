@@ -51,6 +51,13 @@ def _cursor_raising(exc: Exception) -> MagicMock:
 
 def test_execute_oauth2_enabled_and_needed_starts_dance() -> None:
     """oauth2-enabled DB + oauth2 error -> OAuth2RedirectError (dance started)."""
+    # ``needs_oauth2`` now requires a request-bound user (1:1 with upstream's
+    # ``g and hasattr(g, "user")`` guard) — bind one for the duration.
+    from types import SimpleNamespace
+
+    from superset.utils.core import set_current_user
+
+    set_current_user(SimpleNamespace(id=1, username="tester"))
     database = MagicMock()
     database.is_oauth2_enabled.return_value = True
 

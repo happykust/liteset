@@ -826,7 +826,6 @@ def _build_bootstrap_data(user: Any, settings: Any, **kw: Any) -> dict[str, Any]
         "currencies": currencies,
         "deckgl_tiles": deckgl_tiles,
         "menu_data": menu_data,
-        "theme": theme,
     }
 
     # --- COMMON_BOOTSTRAP_OVERRIDES_FUNC ---
@@ -837,6 +836,12 @@ def _build_bootstrap_data(user: Any, settings: Any, **kw: Any) -> dict[str, Any]
     )
     if callable(overrides_func):
         common.update(overrides_func(common))
+
+    # Theme is written AFTER the overrides — 1:1 with upstream
+    # ``cached_common_bootstrap_data`` (views/base.py:447-449) where
+    # ``get_theme_bootstrap_data()`` always wins over a custom overrides
+    # function.
+    common["theme"] = theme
 
     # --- user ---
     user_data = _build_user_data(user)
@@ -912,9 +917,14 @@ async def _render_welcome_dashboard(
 
             _sec_mgr = await provide_security_manager(_dash_session, state)
 
-            # View-level permission check: 1:1 with @has_access on Superset.dashboard
-            if not await _sec_mgr.has_access("can_dashboard", "Superset", user):
-                return Response(content=b"Not Found", status_code=404)
+            # View-level permission check: 1:1 with @has_access on
+            # Superset.dashboard — FAB's @has_access returns 403 (Forbidden)
+            # for an AUTHENTICATED user lacking the permission, not 404.
+            # NOTE: ``user`` is keyword-only on AsyncSecurityManager.has_access;
+            # the previous positional call raised TypeError which the broad
+            # except below silently turned into a 404 for everyone.
+            if not await _sec_mgr.has_access("can_dashboard", "Superset", user=user):
+                return Response(content=b"Forbidden", status_code=403)
 
             await _sec_mgr.raise_for_access(dashboard=_welcome_dash, user=user)
         except SupersetSecurityException:
@@ -1013,6 +1023,44 @@ class SPAController(Controller):
             status_code=404,
             media_type="application/json",
         )
+
+    @get(
+        ["/lang/{locale:str}", "/lang/{locale:str}/"],
+        # 1:1 with FAB ``LocaleView.index`` (@expose, no permission check
+        # beyond login-irrelevance) — the menu's ``config.languages[*].url``
+        # entries point here.
+        opt={"exclude_from_auth": True},
+    )
+    async def set_language(
+        self,
+        locale: str,
+        request: Request[Any, Any, Any],
+        state: State,
+    ) -> Response[Any]:
+        """GET /lang/<locale> — switch the UI language.
+
+        Mirrors FAB ``LocaleView.index``
+        (flask_appbuilder/babel/views.py:14-19): unsupported locale → 404;
+        otherwise persist the choice and redirect back.  FAB stores the
+        locale in the Flask session; the Litestar port persists it in the
+        ``language`` cookie that :class:`LocaleMiddleware` reads first.
+        """
+        settings = getattr(state, "settings", None)
+        languages = getattr(settings, "languages", None) or {}
+        if locale not in languages:
+            return Response(
+                content=b"Locale not supported.",
+                status_code=404,
+                media_type="text/plain",
+            )
+        referrer = request.headers.get("Referer") or "/"
+        response: Response[Any] = Response(
+            content=b"",
+            status_code=302,
+            headers={"Location": referrer},
+        )
+        response.set_cookie("language", locale)
+        return response
 
     @get(
         ["/dashboard/new/", "/dashboard/new"],

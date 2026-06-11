@@ -108,7 +108,11 @@ class RateLimitMiddleware(ASGIMiddleware):
             await next_app(scope, receive, send)
             return
 
-        if remaining <= 0:
+        # ``remaining < 0`` — the current request is already counted by
+        # ``_sliding_window_check`` (zadd before zcard), so ``remaining == 0``
+        # IS the exact ``max_requests``-th request and must be allowed;
+        # ``<= 0`` capped the effective limit at ``max_requests - 1``.
+        if remaining < 0:
             # 429 Too Many Requests
             retry_after = str(int(reset_at - time.time()) + 1)
             await _send_429(send, max_requests, reset_at, retry_after)

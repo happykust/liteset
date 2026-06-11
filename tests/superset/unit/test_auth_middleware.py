@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -39,7 +40,13 @@ class MockRole:
 
 
 def _make_session_cookie(user_id: int) -> str:
-    s = URLSafeTimedSerializer(SECRET_KEY, salt="cookie-session")
+    # Flask's exact signer configuration (hmac key-derivation + SHA-1) —
+    # the decoder no longer accepts itsdangerous' django-concat default.
+    s = URLSafeTimedSerializer(
+        SECRET_KEY,
+        salt="cookie-session",
+        signer_kwargs={"key_derivation": "hmac", "digest_method": hashlib.sha1},
+    )
     return s.dumps({"_user_id": str(user_id)})
 
 

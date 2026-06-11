@@ -534,14 +534,25 @@ class DatasetController(Controller):
                 "folders": data.folders,
             }
         )
+        # Filter UNSET (absent keys) but KEEP explicit nulls — the original
+        # Marshmallow schemas have ``allow_none=True`` on nullable fields, so
+        # ``{"expression": null}`` must reach the DAO to clear the value.
         if data.columns is not msgspec.UNSET and data.columns is not None:
             update_data["columns"] = [
-                {k: v for k, v in msgspec.structs.asdict(c).items() if v is not None}
+                {
+                    k: v
+                    for k, v in msgspec.structs.asdict(c).items()
+                    if v is not msgspec.UNSET
+                }
                 for c in data.columns
             ]
         if data.metrics is not msgspec.UNSET and data.metrics is not None:
             update_data["metrics"] = [
-                {k: v for k, v in msgspec.structs.asdict(m).items() if v is not None}
+                {
+                    k: v
+                    for k, v in msgspec.structs.asdict(m).items()
+                    if v is not msgspec.UNSET
+                }
                 for m in data.metrics
             ]
 
@@ -894,7 +905,11 @@ class DatasetController(Controller):
         guards=[require_permission("can_write", "Dataset")],
     )
     async def warm_up_cache(
-        self, data: DatasetCacheWarmUpRequest, dao: DatasetDAOProtocol
+        self,
+        data: DatasetCacheWarmUpRequest,
+        dao: DatasetDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
         cmd = WarmUpDatasetCacheCommand(
             dao=cast("AsyncDatasetDAO", dao),
@@ -902,6 +917,8 @@ class DatasetController(Controller):
             table_name=data.table_name,
             dashboard_id=data.dashboard_id,
             extra_filters=data.extra_filters,
+            security_manager=security_manager,
+            current_user=current_user,
         )
         result = await cmd.execute()
         await event_logger.alog_with_context("dataset.warm_up_cache")

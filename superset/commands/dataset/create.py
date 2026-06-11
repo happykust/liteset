@@ -108,17 +108,22 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 exceptions.append(DatasetExistsValidationError(table))
 
             # Validate the physical table exists when no sql is provided —
-            # 1:1 with ``DatasetDAO.validate_table_exists``. ``has_table`` may
-            # be unavailable on the connection; skip the check in that case.
-            if not sql and hasattr(self._database, "has_table"):
+            # 1:1 with ``DatasetDAO.validate_table_exists``: reflection runs
+            # against the live database; ``SQLAlchemyError`` (incl. connection
+            # failures) → False → per-field TableNotFoundValidationError 422,
+            # exactly like upstream (daos/dataset.py:74-83).
+            if not sql:
                 import asyncio
 
+                from sqlalchemy.exc import SQLAlchemyError
+
                 try:
-                    exists = await asyncio.to_thread(
-                        self._database.has_table, table_name, schema=schema
+                    exists = await asyncio.to_thread(self._database.has_table, table)
+                except SQLAlchemyError as ex:
+                    logger.warning(
+                        "Got an error %s validating table: %s", str(ex), table
                     )
-                except Exception:  # noqa: BLE001
-                    exists = True  # skip check if has_table is not available
+                    exists = False
                 if not exists:
                     exceptions.append(TableNotFoundValidationError(table))
 
@@ -203,6 +208,9 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             external_url=self._data.get("external_url"),
             normalize_columns=self._data.get("normalize_columns", False),
             always_filter_main_dttm=self._data.get("always_filter_main_dttm", False),
+            # Upstream ``DatasetDAO.create(attributes=...)`` setattr's every
+            # provided key — template_params was silently dropped here.
+            template_params=self._data.get("template_params"),
         )
         if self._user_id is not None:
             dataset.created_by_fk = self._user_id

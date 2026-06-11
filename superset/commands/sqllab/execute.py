@@ -325,6 +325,19 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         # ``QUERY_IS_RUNNING`` so the API responded with 202.
         # ------------------------------------------------------------------
         if self._run_async:
+            # Commit the PENDING Query row BEFORE dispatching the Celery task —
+            # 1:1 with upstream ``_save_new_query``
+            # (superset_old/commands/sql_lab/execute.py:180-205): "Committing
+            # within a transaction violates the 'unit of work' construct, but
+            # is necessary for async querying. The Celery task … needs to read
+            # a previously committed state given the READ COMMITTED isolation
+            # level."  Without it the worker (separate process, sync session)
+            # may not see the row until the request transaction commits —
+            # i.e. AFTER the task already ran.  The session factory uses
+            # ``expire_on_commit=False`` so the ORM object stays usable, and
+            # ``provide_async_session``'s final commit simply picks up the
+            # remaining changes.
+            await session.commit()
             try:
                 from superset.tasks.sql_lab import get_sql_results
 

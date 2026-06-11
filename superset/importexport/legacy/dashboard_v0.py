@@ -310,12 +310,19 @@ def import_dashboard(  # noqa: C901
     # ``filter_immune_slice_fields`` are converted to ``filter_scopes``;
     # legacy bundles still carry the old keys, which are translated
     # forward here.
-    filter_scopes: dict[str, Any] = {}
+    # Single ``filter_scopes`` variable through all three phases — 1:1 with
+    # upstream v0.py:210-225 (a split ``converted_scopes`` name caused
+    # NameError for bundles carrying ``filter_scopes`` without the legacy
+    # ``filter_immune_*`` keys, and passed the wrong scopes when both were
+    # present).
+    # ``Any``-typed: phase 2 holds the int-keyed convert_filter_scopes
+    # output, phase 3 the str-keyed metadata dict (upstream is untyped here).
+    filter_scopes: Any = {}
     if (
         "filter_immune_slices" in i_params_dict
         or "filter_immune_slice_fields" in i_params_dict
     ):
-        converted_scopes = convert_filter_scopes(old_json_metadata, slices)
+        filter_scopes = convert_filter_scopes(old_json_metadata, slices)
 
     if "filter_scopes" in i_params_dict:
         filter_scopes = old_json_metadata.get("filter_scopes")
@@ -323,7 +330,7 @@ def import_dashboard(  # noqa: C901
     if filter_scopes:
         new_filter_scopes = copy_filter_scopes(
             old_to_new_slc_id_dict=old_to_new_slc_id_dict,
-            old_filter_scopes=converted_scopes,
+            old_filter_scopes=filter_scopes,
         )
 
     # Override the dashboard if it already exists (matching by remote_id).

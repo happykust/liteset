@@ -113,9 +113,21 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
         ssh_tunnel = self._ssh_tunnel
 
         def _ping() -> bool:
+            # Honour TEST_DATABASE_CONNECTION_TIMEOUT — the original wraps
+            # the ping in ``timeout(...)`` (commands/database/utils.py:44);
+            # without it an unreachable database stalls the worker thread
+            # indefinitely.  Same SigalrmTimeout pattern as
+            # ``test_connection._ping`` (no-op off the main thread, like the
+            # original's defensive fallback).
+            from superset.commands.database.test_connection import (
+                _ping_timeout_seconds,
+            )
+            from superset.utils.core import SigalrmTimeout
+
             with database.get_sqla_engine(override_ssh_tunnel=ssh_tunnel) as engine:
-                with closing(engine.raw_connection()) as conn:
-                    return engine.dialect.do_ping(conn)
+                with SigalrmTimeout(seconds=_ping_timeout_seconds()):
+                    with closing(engine.raw_connection()) as conn:
+                        return engine.dialect.do_ping(conn)
 
         try:
             alive = await asyncio.to_thread(_ping)

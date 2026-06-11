@@ -71,6 +71,48 @@ class GroupPutBody(msgspec.Struct):
 # ---------------------------------------------------------------------------
 
 
+async def _validate_group_member_ids(
+    session: Any,
+    requested_ids: list[int],
+    field_name: str,
+) -> None:
+    """Raise HTTP 400 when any requested role/user ID does not exist.
+
+    1:1 with FAB ``GroupApi.post()``/``put()``
+    (flask_appbuilder/security/sqla/apis/group/api.py): after
+    ``_fetch_entities``, ``missing_*_ids = set(value) - {e.id for e in
+    fetched}`` and a non-empty set returns ``response_400(message={field:
+    ["Role(s)/User(s) with ID(s) [...] do not exist."]})``.  Without this
+    the DAO silently assigns only the rows it found.
+    """
+    if not requested_ids:
+        return
+    from sqlalchemy import select
+
+    from superset.models.security import Role, User
+
+    model_cls: type[Any]
+    model_name: str
+    if field_name == "roles":
+        model_cls, model_name = Role, "Role"
+    else:
+        model_cls, model_name = User, "User"
+
+    stmt = select(model_cls.id).where(model_cls.id.in_(requested_ids))
+    result = await session.execute(stmt)
+    found_ids = {row[0] for row in result}
+    missing_ids = sorted(set(requested_ids) - found_ids)
+    if missing_ids:
+        from litestar.exceptions import HTTPException
+
+        raise HTTPException(
+            status_code=400,
+            detail={  # type: ignore[arg-type]
+                field_name: [f"{model_name}(s) with ID(s) {missing_ids} do not exist."]
+            },
+        )
+
+
 def _group_to_response(group: Any) -> GroupResponse:
     """Convert a Group model instance to a GroupResponse schema."""
     roles = [
@@ -217,6 +259,10 @@ class GroupController(Controller):
         if not data.name or not data.name.strip():
             raise SupersetValidationException("Group name is required")
 
+        # FAB GroupApi.post(): non-existent role/user IDs → HTTP 400.
+        await _validate_group_member_ids(group_dao.session, data.roles, "roles")
+        await _validate_group_member_ids(group_dao.session, data.users, "users")
+
         attrs: dict[str, Any] = {
             "name": data.name.strip(),
             "role_ids": data.roles,
@@ -264,8 +310,11 @@ class GroupController(Controller):
         if data.description is not None:
             attrs["description"] = data.description.strip()
         if data.roles is not None:
+            # FAB GroupApi.put(): non-existent role IDs → HTTP 400.
+            await _validate_group_member_ids(group_dao.session, data.roles, "roles")
             attrs["role_ids"] = data.roles
         if data.users is not None:
+            await _validate_group_member_ids(group_dao.session, data.users, "users")
             attrs["user_ids"] = data.users
 
         updated = await group_dao.update(group, attrs)

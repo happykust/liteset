@@ -23,6 +23,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
+from superset.commands.database.exceptions import MissingOAuth2TokenError
 from superset.commands.database.utils import (
     _validate_extra,
     _validate_field_lengths,
@@ -130,34 +131,48 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
         # ``backend`` is a read-only property too — same treatment.
         self._data.pop("backend", None)
         parameters = self._data.pop("parameters", None)
-        if configuration_method == "dynamic_form" and engine and parameters:
-            try:
-                from superset.db_engine_specs import get_engine_spec
+        if configuration_method == "dynamic_form" and parameters:
+            # Build failures surface as DatabaseParametersInvalidError →
+            # HTTP 400 in the controller — 1:1 with upstream's @pre_load
+            # ``build_sqlalchemy_uri`` raising Marshmallow ValidationError
+            # (R11-08: a broad-except used to swallow every error and save
+            # the database with its OLD URI while returning 200).
+            from superset.commands.database.exceptions import (
+                DatabaseParametersInvalidError,
+            )
+            from superset.db_engine_specs import get_engine_spec
 
-                spec = get_engine_spec(engine, driver)
-                if hasattr(spec, "build_sqlalchemy_uri") and hasattr(
-                    spec, "parameters_schema"
-                ):
-                    masked_extra = (
-                        self._data.get("masked_encrypted_extra")
-                        or self._data.get("encrypted_extra")
-                        or "{}"
-                    )
-                    import json as _json
-
-                    try:
-                        encrypted_extra = _json.loads(masked_extra)
-                    except (TypeError, _json.JSONDecodeError):
-                        encrypted_extra = {}
-                    self._data["sqlalchemy_uri"] = spec.build_sqlalchemy_uri(
-                        parameters,
-                        encrypted_extra,
-                    )
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "Failed to build sqlalchemy_uri from parameters",
-                    exc_info=True,
+            if not engine:
+                raise DatabaseParametersInvalidError(
+                    "An engine must be specified when passing individual "
+                    "parameters to a database."
                 )
+            spec = get_engine_spec(engine, driver)
+            if not hasattr(spec, "build_sqlalchemy_uri") or not hasattr(
+                spec, "parameters_schema"
+            ):
+                raise DatabaseParametersInvalidError(
+                    f'Engine spec "{engine}" does not support being '
+                    "configured via individual parameters."
+                )
+            masked_extra = (
+                self._data.get("masked_encrypted_extra")
+                or self._data.get("encrypted_extra")
+                or "{}"
+            )
+            import json as _json
+
+            try:
+                encrypted_extra = _json.loads(masked_extra)
+            except (TypeError, _json.JSONDecodeError):
+                encrypted_extra = {}
+            try:
+                self._data["sqlalchemy_uri"] = spec.build_sqlalchemy_uri(
+                    parameters,
+                    encrypted_extra,
+                )
+            except ValueError as ex:
+                raise DatabaseParametersInvalidError(str(ex)) from ex
 
         # --- unmask_encrypted_extra ----------------------------------------
         # The PUT request may contain ``masked_encrypted_extra`` — a version of
@@ -279,11 +294,12 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
                 old_db_connection_name=original_database_name,
                 db_connection=self._database,
             ).execute()
-        except OAuth2RedirectError:
-            # The connection needs OAuth2 re-auth — don't fail the update.  Any
-            # other error propagates (and rolls back the update), exactly as the
-            # original's ``except (OAuth2RedirectError, MissingOAuth2TokenError)``
-            # (``MissingOAuth2TokenError`` has no equivalent in the port — live
-            # connection failures are already swallowed inside
-            # ``SyncPermissionsCommand._get_catalog_names`` / ``_get_schema_names``).
+        except (OAuth2RedirectError, MissingOAuth2TokenError):
+            # The connection needs OAuth2 re-auth — don't fail the update.
+            # 1:1 with upstream update.py:123-124 ``except (OAuth2RedirectError,
+            # MissingOAuth2TokenError): pass``.  ``MissingOAuth2TokenError`` IS
+            # raised by ``SyncPermissionsCommand.validate()`` when the ping of
+            # an OAuth2-enabled database fails for lack of a token — without
+            # this catch a user couldn't update an OAuth2 database with an
+            # expired token (500 instead of update-without-perm-sync).
             pass

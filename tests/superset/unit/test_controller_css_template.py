@@ -56,17 +56,17 @@ def mock_template():
 
 
 class TestCreateCssTemplateCommand:
-    async def test_validate_missing_template_name(self, mock_dao):
+    async def test_validate_missing_template_name_accepted(self, mock_dao):
+        # 1:1 upstream: FAB only marks the field required at the schema
+        # layer — the command itself does NOT reject absent/empty names.
         cmd = CreateCssTemplateCommand(dao=mock_dao, data={"css": "body{}"})
-        with pytest.raises(CommandInvalidError, match="template_name"):
-            await cmd.validate()
+        await cmd.validate()  # should not raise
 
-    async def test_validate_empty_template_name(self, mock_dao):
+    async def test_validate_empty_template_name_accepted(self, mock_dao):
         cmd = CreateCssTemplateCommand(
             dao=mock_dao, data={"template_name": "  ", "css": "body{}"}
         )
-        with pytest.raises(CommandInvalidError, match="template_name"):
-            await cmd.validate()
+        await cmd.validate()  # should not raise
 
     async def test_validate_success(self, mock_dao):
         cmd = CreateCssTemplateCommand(

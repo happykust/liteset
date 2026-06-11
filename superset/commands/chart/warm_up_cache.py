@@ -65,19 +65,22 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
     def __init__(
         self,
         dao: "AsyncChartDAO",
-        chart_id: int,
+        chart_id: int | None = None,
         dashboard_id: int | None = None,
         extra_filters: str | None = None,
         security_manager: Any | None = None,
         current_user: Any | None = None,
+        chart: Any | None = None,
     ) -> None:
         self._dao = dao
-        self._chart_id = chart_id
+        self._chart = chart
+        self._chart_id = (
+            chart_id if chart_id is not None else getattr(chart, "id", None)
+        )
         self._dashboard_id = dashboard_id
         self._extra_filters = extra_filters
         self._security_manager = security_manager
         self._current_user = current_user
-        self._chart: Any | None = None
 
     async def validate(self) -> None:
         """Eagerly load the chart with its datasource + database.
@@ -86,7 +89,15 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
         plus the implicit lazy-load of ``chart.datasource`` later in
         ``run``. We pre-load both relationships so the inner ``run``
         body stays free of awaits-on-attribute-access.
+
+        1:1 with upstream ``ChartWarmUpCacheCommand.validate``: when the
+        command was constructed with an already-loaded Slice instance
+        (the dataset warm-up passes its charts directly), return without
+        a DB round-trip — the caller is responsible for eager-loading
+        the relationship chain.
         """
+        if self._chart is not None:
+            return
         from sqlalchemy import select as sa_select
         from sqlalchemy.orm import selectinload
 
@@ -182,18 +193,35 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
                 and isinstance(filter_scopes, dict)
                 and isinstance(default_filters, dict)
             ):
-                # ``build_extra_filters`` (port of
-                # ``superset_old.views.utils.build_extra_filters``) is not
-                # in :mod:`superset.legacy` yet. Fall through to ``[]``
-                # when it is missing — matches the original's "empty
-                # default filters" branch.
-                try:
-                    from superset.legacy import build_extra_filters
-                except ImportError:
-                    return []
+                from superset.legacy import build_extra_filters
+
+                # Pre-fetch the filter-box slices' params — the original
+                # reads them off the sync session inline; the async port
+                # passes them into the pure function (R11-07).
+                filter_params_by_id: dict[str, str | None] = {}
+                filter_ids = [
+                    int(fid)
+                    for fid in default_filters
+                    if str(fid).lstrip("-").isdigit()
+                ]
+                if filter_ids:
+                    from superset.models.slice import Slice as _Slice
+
+                    rows = (
+                        await self._dao.session.execute(
+                            sa_select(_Slice.id, _Slice.params).where(
+                                _Slice.id.in_(filter_ids)
+                            )
+                        )
+                    ).all()
+                    filter_params_by_id = {str(row[0]): row[1] for row in rows}
 
                 return build_extra_filters(
-                    layout, filter_scopes, default_filters, slice_id
+                    layout,
+                    filter_scopes,
+                    default_filters,
+                    slice_id,
+                    filter_params_by_id=filter_params_by_id,
                 )
         return []
 
@@ -364,6 +392,14 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
             user=self._current_user,
             query_context=query_context,
         )
+
+        # Datasource access gate — 1:1 with upstream where the non-legacy
+        # branch routes through ``ChartDataCommand`` whose ``validate()``
+        # calls ``query_context.raise_for_access()`` (R11-06: the direct
+        # ``get_payload`` call skipped it, letting a ``can_warm_up_cache``
+        # holder run queries against inaccessible datasources).
+        if self._security_manager is not None:
+            await processor.raise_for_access()
 
         payload = await processor.get_payload(
             query_objects=queries,

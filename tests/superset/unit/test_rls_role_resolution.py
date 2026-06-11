@@ -67,9 +67,7 @@ def test_anonymous_with_public_role_resolves_role_id():
             return _R()
 
     with (
-        patch.object(
-            rls_module, "_cached_settings", return_value=_settings("Public")
-        ),
+        patch.object(rls_module, "_cached_settings", return_value=_settings("Public")),
         patch.object(rls_module, "_metadata_sync_session", return_value=_Session()),
     ):
         assert rls_module._sync_resolve_user_role_ids(anon) == [42]
@@ -97,9 +95,7 @@ def test_anonymous_public_role_missing_returns_empty_list():
             return _R()
 
     with (
-        patch.object(
-            rls_module, "_cached_settings", return_value=_settings("Public")
-        ),
+        patch.object(rls_module, "_cached_settings", return_value=_settings("Public")),
         patch.object(rls_module, "_metadata_sync_session", return_value=_Session()),
     ):
         assert rls_module._sync_resolve_user_role_ids(anon) == []

@@ -58,6 +58,15 @@ class ImportSavedQueriesCommand(AsyncImportModelsCommand):
                 for required in ("uuid", "sql", "database_uuid"):
                     if not config.get(required):
                         raise CommandInvalidError(f"Missing {required} in {name}")
+                # ``schema`` Length(0, 128) — 1:1 with the original
+                # ``ImportV1SavedQuerySchema`` (the DB column is
+                # String(128); without this a crafted bundle dies with a
+                # DataError 500 instead of a clean 422).
+                schema = config.get("schema")
+                if isinstance(schema, str) and len(schema) > 128:
+                    raise CommandInvalidError(
+                        f"schema must be at most 128 characters in {name}"
+                    )
 
     async def run(self) -> None:
         if self._configs is None:

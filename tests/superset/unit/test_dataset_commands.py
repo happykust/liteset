@@ -622,11 +622,10 @@ async def test_warm_up_success(mock_dao):
 
 
 async def test_warm_up_runs_chart_command_via_execute(mock_dao, monkeypatch):
-    """Regression: the per-chart command MUST go through execute().
-
-    ``WarmUpChartCacheCommand.validate()`` is the only place that loads
-    ``self._chart``; ``run()`` starts with ``assert self._chart is not None``,
-    so invoking ``run()`` directly (the old bug) crashes on every chart.
+    """Regression: the per-chart command MUST go through execute() AND be
+    handed the already-loaded Slice (``chart=``) — 1:1 with upstream where
+    ``ChartWarmUpCacheCommand.validate()`` short-circuits for a Slice
+    instance instead of re-fetching it per chart (the N-query regression).
     The stub mirrors that contract exactly.
     """
     from superset.commands.dataset import warm_up_cache as wuc_module
@@ -634,12 +633,27 @@ async def test_warm_up_runs_chart_command_via_execute(mock_dao, monkeypatch):
     calls: list[int] = []
 
     class StubChartCmd:
-        def __init__(self, dao, chart_id, dashboard_id=None, extra_filters=None):
-            self._chart_id = chart_id
-            self._chart = None
+        def __init__(
+            self,
+            dao,
+            chart_id=None,
+            dashboard_id=None,
+            extra_filters=None,
+            chart=None,
+            security_manager=None,
+            current_user=None,
+        ):
+            self._chart = chart
+            self._chart_id = (
+                chart_id if chart_id is not None else getattr(chart, "id", None)
+            )
 
         async def validate(self):
-            self._chart = object()
+            # Pre-loaded chart → no DB round-trip (the contract under test).
+            if self._chart is None:
+                raise AssertionError(
+                    "dataset warm-up must pass the loaded chart, not chart_id"
+                )
 
         async def run(self):
             assert self._chart is not None

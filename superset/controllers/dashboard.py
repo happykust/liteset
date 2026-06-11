@@ -20,6 +20,7 @@ embedded, screenshots, and related objects."""
 from __future__ import annotations
 
 import io
+import logging
 from typing import Any, cast, TYPE_CHECKING
 
 from litestar import Controller, delete, get, post, put
@@ -104,6 +105,8 @@ from superset.utils import filter_none, filter_unset
 if TYPE_CHECKING:
     from superset.db.daos.dashboard import AsyncDashboardDAO, AsyncEmbeddedDashboardDAO
     from superset.db.daos.key_value import AsyncKeyValueDAO
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_import_upload(filename: str, contents: bytes) -> tuple[dict[str, str], bool]:
@@ -261,14 +264,13 @@ def _get_time_grain_sqla(database: Any) -> list[list[Any]]:
     if database is None:
         return []
     try:
-        spec = database.db_engine_spec
-        grain_exprs = spec.get_time_grain_expressions()
+        grains = database.grains()
     except Exception:  # noqa: BLE001
         return []
-    result: list[list[Any]] = []
-    for duration in grain_exprs:
-        result.append([duration, duration or "Original value"])
-    return result
+    # ``[(g.duration, g.name), ...]`` — g.name is the human-readable label
+    # ("Minute", "5 minute", …); the previous version reused the ISO duration
+    # as the label, showing raw "PT5M" codes in the filter dropdown.
+    return [[g.duration, g.name] for g in grains]
 
 
 class DashboardController(Controller):
@@ -638,8 +640,12 @@ class DashboardController(Controller):
                 for m in metrics
                 if getattr(m, "metric_name", None)
             ]
+            # ``choicify(self.dttm_cols)`` upstream → ``[[value, label], …]``
+            # pairs (superset_old/connectors/sqla/models.py:1346 +
+            # DashboardDatasetSchema's ``fields.List(fields.List(...))``); a
+            # flat list of names breaks the time-column filter control.
             granularity_sqla = [
-                c.column_name
+                [c.column_name, c.column_name]
                 for c in columns
                 if getattr(c, "is_dttm", False) and getattr(c, "column_name", None)
             ]
@@ -1591,6 +1597,16 @@ class DashboardController(Controller):
                 )
             image.seek(0)
         except ScreenshotImageNotAvailableException:
+            return Response(
+                content={"message": "Not found"},
+                status_code=404,
+                media_type="application/json",
+            )
+        except Exception:  # noqa: BLE001
+            # 1:1 with the original's broad catch
+            # (superset_old/dashboards/api.py:1350-1357): any unexpected
+            # error retrieving the cached image → clean 404, not a 500.
+            logger.error("Error fetching dashboard thumbnail", exc_info=True)
             return Response(
                 content={"message": "Not found"},
                 status_code=404,

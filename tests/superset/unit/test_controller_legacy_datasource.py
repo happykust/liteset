@@ -266,6 +266,7 @@ async def test_external_metadata_by_name_404_for_nonexistent_table() -> None:
     request = MagicMock()
     q_val = prison.dumps(
         {
+            "datasource_type": "table",
             "database_name": "my_db",
             "table_name": "missing_table",
             "schema_name": "public",
@@ -303,6 +304,7 @@ async def test_external_metadata_by_name_200_for_existing_table() -> None:
     request = MagicMock()
     q_val = prison.dumps(
         {
+            "datasource_type": "table",
             "database_name": "my_db",
             "table_name": "real_table",
             "schema_name": "public",

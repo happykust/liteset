@@ -878,11 +878,18 @@ class BaseViz:
                 and cache_timeout != CACHE_DISABLED_TIMEOUT
             ):
                 try:
+                    # ``dttm`` — 1:1 with ``set_and_log_cache``
+                    # (superset_old/utils/cache.py:65-66); the return value
+                    # below reads it back as ``cached_dttm`` for the
+                    # frontend's "Last cached at …" display.
+                    from datetime import datetime as _datetime
+
                     cache_payload = {
                         "df": df,
                         "query": self.query,
                         "applied_filter_columns": self.applied_filter_columns,
                         "rejected_filter_columns": self.rejected_filter_columns,
+                        "dttm": _datetime.utcnow().isoformat().split(".")[0],
                     }
                     # Sync backend — off-load the blocking write off the loop.
                     await asyncio.to_thread(

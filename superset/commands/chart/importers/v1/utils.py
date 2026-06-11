@@ -139,9 +139,14 @@ async def _import_chart(  # noqa: C901
 
     from superset.models.slice import Slice
 
+    # ``AsyncSecurityManager.can_access`` takes the user explicitly
+    # (keyword-only) — upstream's Flask manager reads ``g.user`` internally.
+    # No user in context → deny, like upstream.
     can_write = True
     if security_manager is not None:
-        can_write = await security_manager.can_access("can_write", "Chart")
+        can_write = current_user is not None and await security_manager.can_access(
+            "can_write", "Chart", user=current_user
+        )
 
     # UUID-based dedup
     stmt = sa_select(Slice).where(Slice.uuid == _UUID(str(config["uuid"])))
@@ -151,9 +156,14 @@ async def _import_chart(  # noqa: C901
     if existing:
         if overwrite and can_write and current_user:
             if security_manager is not None:
-                can_access = await security_manager.can_access_chart(existing)
-                is_admin = await security_manager.is_admin()
-                await session.refresh(existing, ["owners"])
+                # ``can_access_chart`` walks ``owners`` and the ``datasource``
+                # proxy (``Slice.table``) synchronously — pre-load both so the
+                # bare-fetched chart doesn't trip MissingGreenlet.
+                await session.refresh(existing, ["owners", "table"])
+                can_access = await security_manager.can_access_chart(
+                    existing, user=current_user
+                )
+                is_admin = security_manager.is_admin(current_user)
                 if not can_access or (
                     current_user not in existing.owners and not is_admin
                 ):
@@ -298,7 +308,14 @@ async def _import_database(  # noqa: C901
 
     can_write = ignore_permissions
     if not can_write and security_manager is not None:
-        can_write = await security_manager.can_access("can_write", "Database")
+        # Resolve the acting user from the request-scoped ContextVar — the
+        # async equivalent of upstream's ``g.user`` read inside ``can_access``.
+        from superset.utils.core import get_current_user
+
+        _user = get_current_user()
+        can_write = _user is not None and await security_manager.can_access(
+            "can_write", "Database", user=_user
+        )
 
     cfg = dict(config)
     uuid_str = cfg.get("uuid")
@@ -324,27 +341,22 @@ async def _import_database(  # noqa: C901
             "create databases"
         )
 
-    # Optional URI safety check (gated on PREVENT_UNSAFE_DB_CONNECTIONS).
-    try:
-        from superset.config import current_config
+    # URI safety check (gated on PREVENT_UNSAFE_DB_CONNECTIONS) — 1:1 with
+    # upstream import_database:56-60.  NOTE: the previous version imported a
+    # phantom ``superset.config.current_config`` whose ImportError silently
+    # skipped the whole check.
+    from superset.config import SupersetSettings
+    from superset.databases.utils import make_url_safe
+    from superset.exceptions import SupersetSecurityException
+    from superset.security.analytics_db_safety import check_sqlalchemy_uri
 
-        if current_config.get("PREVENT_UNSAFE_DB_CONNECTIONS", True):
-            try:
-                from superset.databases.utils import make_url_safe
-                from superset.security.analytics_db_safety import (
-                    check_sqlalchemy_uri,
-                )
-
-                check_sqlalchemy_uri(make_url_safe(cfg.get("sqlalchemy_uri", "")))
-            except ImportError:
-                # Helpers not yet ported — skip the check rather than fail.
-                pass
-            except Exception as exc:  # noqa: BLE001
-                # Wrap as ImportFailedError so the caller surfaces a clean
-                # error message (matches the original).
-                raise ImportFailedError(str(exc)) from exc
-    except ImportError:
-        pass
+    settings = SupersetSettings()  # type: ignore[call-arg]
+    if getattr(settings, "prevent_unsafe_db_connections", True):
+        try:
+            check_sqlalchemy_uri(make_url_safe(cfg.get("sqlalchemy_uri", "")))
+        except SupersetSecurityException as exc:
+            # 1:1 upstream: ``raise ImportFailedError(exc.message) from exc``.
+            raise ImportFailedError(getattr(exc, "message", str(exc))) from exc
 
     # ``allow_csv_upload`` -> ``allow_file_upload`` rename
     if "allow_csv_upload" in cfg:
@@ -415,15 +427,21 @@ async def _import_database(  # noqa: C901
     if database.id is None:
         await session.flush()
 
+    ssh_tunnel = None
     if ssh_tunnel_config:
-        await _import_ssh_tunnel(session, database.id, dict(ssh_tunnel_config))
+        ssh_tunnel = await _import_ssh_tunnel(
+            session, database.id, dict(ssh_tunnel_config)
+        )
 
     # Create catalog/schema DAR permission-view-menus — port of
     # ``superset_old/commands/database/importers/v1/utils.py`` ->
     # ``superset_old/commands/database/utils.py:add_permissions``.  Best-effort
     # (the original wrapped this in ``try/except SupersetDBAPIConnectionError``)
     # so a database that's unreachable at import time doesn't abort the import.
-    await add_permissions(session, database)
+    # The just-imported (uncommitted) tunnel is forwarded so enumeration works
+    # for tunnel-only databases — 1:1 with upstream add_permissions(database,
+    # ssh_tunnel) (R11-04).
+    await add_permissions(session, database, ssh_tunnel=ssh_tunnel)
 
     return database
 
@@ -431,6 +449,7 @@ async def _import_database(  # noqa: C901
 async def add_permissions(  # noqa: C901
     session: AsyncSession,
     database: Database,
+    ssh_tunnel: Any | None = None,
 ) -> None:
     """Add DAR (data-access-role) permission-view-menus for catalogs/schemas.
 
@@ -466,7 +485,7 @@ async def add_permissions(  # noqa: C901
             ):
 
                 def _fetch_catalogs() -> set[str]:
-                    with database.get_inspector() as inspector:
+                    with database.get_inspector(ssh_tunnel=ssh_tunnel) as inspector:
                         return spec.get_catalog_names(database, inspector)
 
                 catalogs: set[str | None] = set(
@@ -496,7 +515,9 @@ async def add_permissions(  # noqa: C901
         try:
 
             def _fetch_schemas(catalog: str | None = catalog) -> set[str]:
-                with database.get_inspector(catalog=catalog) as inspector:
+                with database.get_inspector(
+                    catalog=catalog, ssh_tunnel=ssh_tunnel
+                ) as inspector:
                     return spec.get_schema_names(inspector)
 
             schemas = await asyncio.to_thread(_fetch_schemas)
@@ -516,14 +537,18 @@ async def _import_ssh_tunnel(
     session: AsyncSession,
     database_id: int,
     config: dict[str, Any],
-) -> None:
-    """Upsert an SSH tunnel row attached to ``database_id``."""
+) -> Any | None:
+    """Upsert an SSH tunnel row attached to ``database_id``.
+
+    Returns the (existing or new) tunnel row so callers can forward it to
+    ``add_permissions`` before the transaction commits (R11-04).
+    """
     from sqlalchemy import select as sa_select
 
     try:
         from superset.models.ssh_tunnel import SSHTunnel
     except ImportError:
-        return
+        return None
 
     cfg = dict(config)
     cfg["database_id"] = database_id
@@ -558,11 +583,14 @@ async def _import_ssh_tunnel(
                 ):
                     continue
                 setattr(existing, key, value)
+        tunnel = existing
     else:
         filtered = {k: v for k, v in cfg.items() if k in attrs}
-        session.add(SSHTunnel(**filtered))
+        tunnel = SSHTunnel(**filtered)
+        session.add(tunnel)
 
     await session.flush()
+    return tunnel
 
 
 # --------------------------------------------------------------------------- #
@@ -591,13 +619,14 @@ async def _import_dataset(  # noqa: C901
     - Owner management
     """
     from sqlalchemy import select as sa_select
-    from sqlalchemy.exc import MultipleResultsFound
 
     from superset.models.connectors import SqlaTable
 
     can_write = ignore_permissions
     if not can_write and security_manager is not None:
-        can_write = await security_manager.can_access("can_write", "Dataset")
+        can_write = current_user is not None and await security_manager.can_access(
+            "can_write", "Dataset", user=current_user
+        )
 
     cfg = dict(config)  # shallow copy
     uuid_str = cfg.get("uuid")
@@ -622,7 +651,7 @@ async def _import_dataset(  # noqa: C901
             and security_manager is not None
         ):
             await session.refresh(existing, ["owners"])
-            is_admin = await security_manager.is_admin()
+            is_admin = security_manager.is_admin(current_user)
             if current_user not in existing.owners and not is_admin:
                 raise ImportFailedError(
                     "A dataset already exists and user doesn't "
@@ -685,7 +714,6 @@ async def _import_dataset(  # noqa: C901
     cfg.pop("database_uuid", None)
     cfg.pop("data", None)
     cfg.pop("uuid", None)
-    cfg.pop("folders", None)  # Not in current liteset SqlaTable column set.
 
     dataset_attrs = {
         "table_name",
@@ -717,20 +745,33 @@ async def _import_dataset(  # noqa: C901
     }
 
     if existing:
+        # Historical two-row guard — upstream's ``except MultipleResultsFound``
+        # recovery (utils.py:161-170): if ANOTHER row already holds the
+        # incoming (database_id, catalog, schema, table_name), applying the
+        # update would violate the unique constraint; return the UUID-matched
+        # row unmodified instead (R11-03).
+        conflict_id = (
+            (
+                await session.execute(
+                    sa_select(SqlaTable.id).where(
+                        SqlaTable.database_id == cfg.get("database_id"),
+                        SqlaTable.catalog == cfg.get("catalog"),
+                        SqlaTable.schema == cfg.get("schema"),
+                        SqlaTable.table_name == cfg.get("table_name"),
+                        SqlaTable.id != existing.id,
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if conflict_id is not None:
+            return existing
         for key, value in filtered.items():
             setattr(existing, key, value)
         dataset = existing
     else:
-        try:
-            dataset = SqlaTable(**filtered)
-        except MultipleResultsFound:
-            # Mirrors the original recovery: return the existing row by UUID.
-            if uuid_str:
-                existing_q = await session.execute(
-                    sa_select(SqlaTable).where(SqlaTable.uuid == _UUID(uuid_str))
-                )
-                return existing_q.scalars().one()
-            raise
+        dataset = SqlaTable(**filtered)
         if uuid_str:
             dataset.uuid = _UUID(uuid_str)  # type: ignore[assignment]
         session.add(dataset)
@@ -743,9 +784,22 @@ async def _import_dataset(  # noqa: C901
     await _import_metrics(session, dataset, metrics_config, sync=sync_metrics)
     await session.flush()
 
-    # Optional data URL load.
-    if data_uri and force_data:
-        await _load_data(session, data_uri, dataset)
+    # Optional data URL load — 1:1 with upstream import_dataset:175-187:
+    # load when the physical table does not exist OR the caller forced a
+    # reload (R11-02; the previous ``force_data``-only gate left example
+    # bundles without their physical tables).
+    if data_uri:
+        try:
+            table_exists = await _table_exists(session, dataset)
+        except Exception:  # noqa: BLE001
+            # MySQL doesn't play nice with GSheets table names
+            logger.warning(
+                "Couldn't check if table %s exists, assuming it does",
+                getattr(dataset, "table_name", ""),
+            )
+            table_exists = True
+        if not table_exists or force_data:
+            await _load_data(session, data_uri, dataset)
 
     # Owner management.
     if current_user is not None:
@@ -901,6 +955,55 @@ async def _import_metrics(  # noqa: C901
                 await session.delete(m_obj)
 
 
+async def _table_exists(session: AsyncSession, dataset: SqlaTable) -> bool:
+    """1:1 port of the ``Database.has_table`` check in upstream
+    ``import_dataset`` (utils.py:176-178), incl. the lowercase fallback.
+
+    Raises on connection/inspection failure so the caller can apply the
+    original "assume it exists" recovery.
+    """
+    import asyncio
+
+    import sqlalchemy as sa
+
+    if "database" in sa.inspect(dataset).unloaded:
+        from superset.models.core import Database
+
+        db_q = await session.execute(
+            sa.select(Database).where(Database.id == dataset.database_id)
+        )
+        database = db_q.scalars().one_or_none()
+    else:
+        database = dataset.database
+    if database is None or not getattr(database, "sqlalchemy_uri", ""):
+        return False
+
+    table_name = dataset.table_name
+    schema = getattr(dataset, "schema", None) or None
+
+    def _check_sync() -> bool:
+        with database.get_sqla_engine() as engine:
+            inspector = sa.inspect(engine)
+            if inspector.has_table(table_name, schema):
+                return True
+            return inspector.has_table(table_name.lower(), schema)
+
+    return await asyncio.to_thread(_check_sync)
+
+
+def _dataset_import_allowed_urls() -> list[str]:
+    """``DATASET_IMPORT_ALLOWED_DATA_URLS`` from settings.
+
+    The previous code imported the phantom ``superset.config.current_config``
+    whose ImportError silently emptied the allow-list AND inverted the
+    empty-list semantics to allow-all (R11-01).
+    """
+    from superset.config import SupersetSettings
+
+    settings = SupersetSettings()  # type: ignore[call-arg]
+    return list(getattr(settings, "dataset_import_allowed_data_urls", [r".*"]))
+
+
 async def _load_data(  # noqa: C901  # complex business logic
     session: AsyncSession,
     data_uri: str,
@@ -924,33 +1027,32 @@ async def _load_data(  # noqa: C901  # complex business logic
     import pandas as pd
     from sqlalchemy import Date, DateTime
 
-    # Validate URI against allow list.
+    # Normalise example URLs, then validate against the allow-list —
+    # 1:1 with upstream ``load_data`` → ``validate_data_uri``: ANY matching
+    # regex passes; no match (incl. an EMPTY allow-list) raises
+    # ``DatasetForbiddenDataURI`` (R11-01: the previous phantom
+    # ``current_config`` import silently skipped the check and treated an
+    # empty list as allow-all).
     try:
-        from superset.config import current_config
+        from superset.examples.helpers import normalize_example_data_url
 
-        allowed = current_config.get("DATASET_IMPORT_ALLOWED_DATA_URLS", [])
-    except Exception:  # noqa: BLE001
-        allowed = []
+        data_uri = normalize_example_data_url(data_uri)
+    except ImportError:  # pragma: no cover — helpers always ship
+        pass
 
-    if allowed:
-        accepted = False
-        for pattern in allowed:
-            try:
-                if re.match(pattern, data_uri):
-                    accepted = True
-                    break
-            except re.error:
-                logger.exception("Invalid regex on DATASET_IMPORT_ALLOWED_DATA_URLS")
-                raise
-        if not accepted:
-            try:
-                from superset.commands.dataset.exceptions import (
-                    DatasetForbiddenDataURI,
-                )
+    from superset.commands.dataset.exceptions import DatasetForbiddenDataURI
 
-                raise DatasetForbiddenDataURI()
-            except ImportError:
-                raise ImportFailedError("Forbidden data URI")  # noqa: B904
+    accepted = False
+    for pattern in _dataset_import_allowed_urls():
+        try:
+            if re.match(pattern, data_uri):
+                accepted = True
+                break
+        except re.error:
+            logger.exception("Invalid regex on DATASET_IMPORT_ALLOWED_DATA_URLS")
+            raise
+    if not accepted:
+        raise DatasetForbiddenDataURI()
 
     logger.info("Downloading data from %s", data_uri)
 

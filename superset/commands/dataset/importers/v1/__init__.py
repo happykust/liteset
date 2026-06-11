@@ -163,76 +163,42 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
 
         await self._import_dataset(content)
 
-    async def _import_database(  # noqa: C901
+    async def _import_database(
         self,
         file_name: str,
         content: dict[str, Any],
     ) -> None:
-        """Import a dependent database from the bundle."""
+        """Import a dependent database from the bundle.
+
+        Delegates to the shared full ``_import_database`` port (the same
+        function the chart/assets importers use) — 1:1 with upstream where
+        the dataset importer calls the common
+        ``commands.database.importers.v1.utils.import_database``.  That
+        covers everything the previous inline copy dropped: ``extra``
+        JSON-serialisation, the ``PREVENT_UNSAFE_DB_CONNECTIONS`` URI check,
+        ``set_sqlalchemy_uri`` password masking, SSH-tunnel rows and
+        catalog/schema ``add_permissions``.  ``overwrite=False`` is
+        hardcoded upstream (``import_database(config, overwrite=False)``) —
+        dependency databases are never overwritten on dataset import.
+        """
         if self._dao is None:
             return
 
-        from uuid import UUID as _UUID
+        from superset.commands.chart.importers.v1.utils import (
+            _import_database as _shared_import_database,
+        )
 
-        from superset.models.core import Database
-
-        uuid_str = content.get("uuid")
-        existing: Database | None = None
-        if uuid_str:
-            from sqlalchemy import select
-
-            stmt = select(Database).where(Database.uuid == _UUID(uuid_str))
-            result = await self._dao.session.execute(stmt)
-            existing = result.scalars().one_or_none()
-
-        if existing:
-            if not self._overwrite:
-                return  # skip
-            # Update existing
-            for key in (
-                "database_name",
-                "sqlalchemy_uri",
-                "cache_timeout",
-                "expose_in_sqllab",
-                "allow_run_async",
-                "allow_ctas",
-                "allow_cvas",
-                "allow_dml",
-                "extra",
-            ):
-                if key in content:
-                    value = content[key]
-                    if key == "allow_csv_upload":
-                        existing.allow_file_upload = value
-                    else:
-                        setattr(existing, key, value)
-            await self._dao.session.flush()
-        else:
-            config = dict(content)
-            if "allow_csv_upload" in config:
-                config["allow_file_upload"] = config.pop("allow_csv_upload")
-            config.pop("version", None)
-            config.pop("ssh_tunnel", None)
-            db = Database(
-                database_name=config.get("database_name", ""),
-                sqlalchemy_uri=config.get("sqlalchemy_uri", ""),
-            )
-            if uuid_str:
-                db.uuid = _UUID(uuid_str)  # type: ignore[assignment]
-            for key in (
-                "cache_timeout",
-                "expose_in_sqllab",
-                "allow_run_async",
-                "allow_ctas",
-                "allow_cvas",
-                "allow_dml",
-                "allow_file_upload",
-                "extra",
-            ):
-                if key in config:
-                    setattr(db, key, config[key])
-            self._dao.session.add(db)
-            await self._dao.session.flush()
+        await _shared_import_database(
+            self._dao.session,
+            dict(content),
+            overwrite=False,
+            # Without a security manager the permission gate lives on the
+            # controller guard (can_write Dataset) — don't deny creation.
+            ignore_permissions=(
+                self._ignore_permissions or self._security_manager is None
+            ),
+            security_manager=self._security_manager,
+        )
 
     async def _import_dataset(  # noqa: C901
         self,
@@ -390,6 +356,12 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
             "database_id",
             "perm",
             "schema_perm",
+            # extra_import_fields upstream (connectors/sqla/models.py:212) —
+            # R11-11.
+            "is_managed_externally",
+            "external_url",
+            # export_fields includes folders (models.py:1171) — R11-12.
+            "folders",
         }
 
         collision = False
@@ -469,22 +441,19 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                 table_exists = True
 
             if not table_exists or self._force_data:
-                try:
-                    if collision:
-                        # The collision branch skips ``_import_columns`` (which
-                        # refreshes ``columns``), so ``_get_dtype`` would trip a
-                        # sync lazy-load (MissingGreenlet) silently swallowed
-                        # below. Load the relationship first — upstream's sync
-                        # session lazy-loaded it on demand here.
-                        await self._dao.session.refresh(dataset, ["columns"])  # type: ignore[union-attr]
-                    await self._load_data(data_uri, dataset)
-                except Exception:
-                    logger.warning(
-                        "Failed to load data from %s for dataset %s",
-                        data_uri,
-                        getattr(dataset, "table_name", ""),
-                        exc_info=True,
-                    )
+                if collision:
+                    # The collision branch skips ``_import_columns`` (which
+                    # refreshes ``columns``), so ``_get_dtype`` would trip a
+                    # sync lazy-load (MissingGreenlet). Load the relationship
+                    # first — upstream's sync session lazy-loaded it on
+                    # demand here.
+                    await self._dao.session.refresh(dataset, ["columns"])  # type: ignore[union-attr]
+                # NO try/except — upstream ``load_data`` failures (incl.
+                # DatasetForbiddenDataURI and download/engine errors)
+                # propagate and fail the whole import (R11-10: a swallow-all
+                # used to turn them into a silently "successful" import
+                # without data).
+                await self._load_data(data_uri, dataset)
 
         # --- Owner management ---
         # Add the importing user as owner — 1:1 with upstream utils.py:189
@@ -699,18 +668,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                 raise
         raise DatasetForbiddenDataURI()
 
-    @staticmethod
-    def _to_sync_uri(raw_uri: str) -> str:
-        """Convert an async-driver SQLAlchemy URI to its sync equivalent."""
-        uri = raw_uri
-        if "+asyncpg" in uri:
-            uri = uri.replace("+asyncpg", "+psycopg2")
-        elif "+aiomysql" in uri or "+asyncmy" in uri:
-            uri = uri.replace("+aiomysql", "+pymysql").replace("+asyncmy", "+pymysql")
-        elif "+aiosqlite" in uri:
-            uri = uri.replace("+aiosqlite", "")
-        return uri
-
     async def _table_exists(self, dataset: "SqlaTable") -> bool:
         """1:1 port of ``Database.has_table`` used by ``import_dataset``.
 
@@ -722,34 +679,47 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         """
         import asyncio
 
-        from sqlalchemy import create_engine, inspect
+        import sqlalchemy as sa
 
-        database = getattr(dataset, "database", None)
-        if database is None:
-            database = await self._dao.get_database_by_id(dataset.database_id)
+        database = await self._get_dataset_database(dataset)
         if database is None:
             # No database -> treat as not existing so example data can load.
             return False
 
-        raw_uri = getattr(database, "sqlalchemy_uri", "")
-        if not raw_uri:
+        if not getattr(database, "sqlalchemy_uri", ""):
             return False
 
-        uri = self._to_sync_uri(raw_uri)
         table_name = dataset.table_name
         schema = getattr(dataset, "schema", None) or None
 
         def _check_sync() -> bool:
-            engine = create_engine(uri)
-            try:
-                inspector = inspect(engine)
+            # ``get_sqla_engine`` (not a bare ``create_engine`` on the stored
+            # URI) — the stored URI carries PASSWORD_MASK; the engine factory
+            # restores the real password (sqlalchemy_uri_decrypted), 1:1 with
+            # upstream ``database.has_table`` going through ``get_sqla_engine``.
+            with database.get_sqla_engine() as engine:
+                inspector = sa.inspect(engine)
                 if inspector.has_table(table_name, schema):
                     return True
                 return inspector.has_table(table_name.lower(), schema)
-            finally:
-                engine.dispose()
 
         return await asyncio.to_thread(_check_sync)
+
+    async def _get_dataset_database(self, dataset: "SqlaTable") -> Any:
+        """Resolve ``dataset.database`` without tripping MissingGreenlet.
+
+        ``getattr(dataset, "database", None)`` does NOT suppress
+        ``MissingGreenlet`` (it only suppresses ``AttributeError``) — an
+        unloaded lazy relationship fires a sync SELECT on the async session.
+        Check the loaded-state via the inspector first and fall back to an
+        explicit async DAO fetch.
+        """
+        import sqlalchemy as sa
+
+        if "database" not in sa.inspect(dataset).unloaded:
+            return dataset.database
+        assert self._dao is not None
+        return await self._dao.get_database_by_id(dataset.database_id)
 
     async def _load_data(  # noqa: C901
         self,
@@ -788,11 +758,7 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                 df[column_name] = pd.to_datetime(df[column_name])
 
         # Load data using the database engine
-        database = getattr(dataset, "database", None)
-        if database is None:
-            db_obj = await self._dao.get_database_by_id(dataset.database_id)
-            database = db_obj
-
+        database = await self._get_dataset_database(dataset)
         if database is None:
             logger.warning(
                 "Cannot load data: database not found for dataset %s",
@@ -802,30 +768,26 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
 
         table_name = dataset.table_name
         schema = getattr(dataset, "schema", None)
+        catalog = getattr(dataset, "catalog", None)
 
-        # Use sync engine via to_thread for data loading
-        from sqlalchemy import create_engine
-
-        raw_uri = getattr(database, "sqlalchemy_uri", "")
-        if not raw_uri:
+        if not getattr(database, "sqlalchemy_uri", ""):
             logger.warning("Cannot load data: no sqlalchemy_uri on database")
             return
 
-        # Convert async driver URI to sync for pandas to_sql
-        uri = self._to_sync_uri(raw_uri)
-
         def _load_sync() -> None:
-            engine = create_engine(uri)
-            df.to_sql(
-                table_name,
-                con=engine,
-                schema=schema,
-                if_exists="replace",
-                chunksize=CHUNKSIZE,
-                dtype=dtype,
-                index=False,
-                method="multi",
-            )
-            engine.dispose()
+            # ``get_sqla_engine`` restores the masked password — 1:1 with
+            # upstream ``load_data``'s
+            # ``database.get_sqla_engine(catalog=..., schema=...)``.
+            with database.get_sqla_engine(catalog=catalog, schema=schema) as engine:
+                df.to_sql(
+                    table_name,
+                    con=engine,
+                    schema=schema,
+                    if_exists="replace",
+                    chunksize=CHUNKSIZE,
+                    dtype=dtype,
+                    index=False,
+                    method="multi",
+                )
 
         await asyncio.to_thread(_load_sync)

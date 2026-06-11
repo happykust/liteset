@@ -16,45 +16,292 @@
 # under the License.
 """Port of ``superset_old.migrations.shared.native_filters``.
 
-The full filter-box conversion logic depends on
-``convert_filter_scopes`` (300+ LOC of legacy filter-box internals) which
-isn't yet ported to liteset.  Bundles produced by Superset >= 2.0 always
-ship with ``filter_box`` charts already migrated, so the typical import
-flow only needs the *cleanup* half of the original migration:
-
-1. Strip ``default_filters`` / ``filter_scopes`` from ``json_metadata``
-   (they're superseded by ``native_filter_configuration``).
-2. Replace any remaining ``filter_box`` chart positions with markdown
-   placeholders pointing back at the original chart slug.
-3. Remove the filter-box charts from ``dashboard.slices``.
-
-This matches the *observable* effect of the original on already-migrated
-bundles.  When the rare case of an unmigrated bundle is encountered the
-function still terminates cleanly (matching the original
-``except: print`` recovery) so import doesn't block.
+Includes the full legacy filter-box → native-filter conversion
+(:func:`convert_filter_scopes_to_native_filters`, 1:1 with the original —
+``convert_filter_scopes`` lives in
+``superset.utils.dashboard_filter_scopes_converter``) plus the cleanup half
+of ``migrate_dashboard`` (strip legacy keys, markdown placeholders, drop
+filter-box charts from ``dashboard.slices``).
 """
 
 from __future__ import annotations
 
 import json as _json
 import logging
+from collections import defaultdict
 from textwrap import dedent
-from typing import TYPE_CHECKING
+from typing import Any, cast, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from superset.models.dashboard import Dashboard
+    from superset.models.slice import Slice
 
 logger = logging.getLogger(__name__)
+
+
+def convert_filter_scopes_to_native_filters(  # noqa: C901, PLR0912, PLR0915
+    json_metadata: dict[str, Any],
+    position_json: dict[str, Any],
+    filter_boxes: list[Slice],
+) -> list[dict[str, Any]]:
+    """
+    Convert the legacy filter scopes et al. to the native filter configuration.
+
+    1:1 port of ``superset_old/migrations/shared/native_filters.py:28-283``.
+    Dashboard filter scopes are implicitly defined where an undefined scope
+    implies no immunity; ``convert_filter_scopes`` provides an explicit
+    definition by extracting the underlying filter-box configurations.
+
+    Hierarchical legacy filters are defined via non-exclusion of peer or
+    children filter-box charts whereas native hierarchical filters are
+    defined via explicit parental relationships, i.e., the inverse.
+    """
+    from superset.utils import json
+    from superset.utils.core import shortid
+    from superset.utils.dashboard_filter_scopes_converter import (
+        convert_filter_scopes,
+    )
+
+    default_filters = json.loads(json_metadata.get("default_filters") or "{}")
+    filter_scopes = json_metadata.get("filter_scopes", {})
+    filter_box_ids = {filter_box.id for filter_box in filter_boxes}
+
+    filter_scope_by_key_and_field: dict[str, dict[str, dict[str, Any]]] = defaultdict(
+        dict
+    )
+
+    filter_by_key_and_field: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+
+    # Dense representation of filter scopes, falling back to chart level filter
+    # configs if the respective filter scope is not defined at the dashboard
+    # level.
+    for filter_box in filter_boxes:
+        key = str(filter_box.id)
+
+        filter_scope_by_key_and_field[key] = {
+            **(
+                convert_filter_scopes(
+                    json_metadata,
+                    filter_boxes=[filter_box],
+                ).get(cast("int", filter_box.id), {})
+            ),
+            **(filter_scopes.get(key, {})),
+        }
+
+    # Construct the native filters.
+    unique_short_ids: set[str] = set()
+    for filter_box in filter_boxes:
+        key = str(filter_box.id)
+        params = json.loads(cast("str", filter_box.params) or "{}")
+
+        for field, filter_scope in filter_scope_by_key_and_field[key].items():
+            default = default_filters.get(key, {}).get(field)
+            short_id = f"{shortid()}"[:9]
+
+            # Ensure uniqueness due to UUIDv4 truncation increasing
+            # collision chance to infinitesimally small amount.
+            while True:
+                if short_id not in unique_short_ids:
+                    unique_short_ids.add(short_id)
+                    break
+                short_id = f"{shortid()}"[:9]
+
+            fltr: dict[str, Any] = {
+                "cascadeParentIds": [],
+                "id": f"NATIVE_FILTER-{short_id}",
+                "scope": {
+                    "rootPath": filter_scope["scope"],
+                    "excluded": [
+                        id_
+                        for id_ in filter_scope["immune"]
+                        if id_ not in filter_box_ids
+                    ],
+                },
+                "type": "NATIVE_FILTER",
+            }
+
+            if field == "__time_col" and params.get("show_sqla_time_column"):
+                fltr.update(
+                    {
+                        "filterType": "filter_timecolumn",
+                        "name": "Time Column",
+                        "targets": [{"datasetId": filter_box.datasource_id}],
+                    }
+                )
+
+                if not default:
+                    default = params.get("granularity_sqla")
+
+                if default:
+                    fltr["defaultDataMask"] = {
+                        "extraFormData": {"granularity_sqla": default},
+                        "filterState": {"value": [default]},
+                    }
+            elif field == "__time_grain" and params.get("show_sqla_time_granularity"):
+                fltr.update(
+                    {
+                        "filterType": "filter_timegrain",
+                        "name": "Time Grain",
+                        "targets": [{"datasetId": filter_box.datasource_id}],
+                    }
+                )
+
+                if not default:
+                    default = params.get("time_grain_sqla")
+
+                if default:
+                    fltr["defaultDataMask"] = {
+                        "extraFormData": {"time_grain_sqla": default},
+                        "filterState": {"value": [default]},
+                    }
+            elif field == "__time_range" and params.get("date_filter"):
+                fltr.update(
+                    {
+                        "filterType": "filter_time",
+                        "name": "Time Range",
+                        "targets": [{}],
+                    }
+                )
+
+                if not default:
+                    default = params.get("time_range")
+
+                if default and default != "No filter":
+                    fltr["defaultDataMask"] = {
+                        "extraFormData": {"time_range": default},
+                        "filterState": {"value": default},
+                    }
+            else:
+                for config in params.get("filter_configs") or []:
+                    if config["column"] == field:
+                        fltr.update(
+                            {
+                                "controlValues": {
+                                    "defaultToFirstItem": False,
+                                    "enableEmptyFilter": not config.get(
+                                        "clearable",
+                                        True,
+                                    ),
+                                    "inverseSelection": False,
+                                    "multiSelect": config.get(
+                                        "multiple",
+                                        False,
+                                    ),
+                                    "searchAllOptions": config.get(
+                                        "searchAllOptions",
+                                        False,
+                                    ),
+                                },
+                                "filterType": "filter_select",
+                                "name": config.get("label") or field,
+                                "targets": [
+                                    {
+                                        "column": {"name": field},
+                                        "datasetId": filter_box.datasource_id,
+                                    },
+                                ],
+                            }
+                        )
+
+                        if "metric" in config:
+                            fltr["sortMetric"] = config["metric"]
+                            fltr["controlValues"]["sortAscending"] = config["asc"]
+
+                        if params.get("adhoc_filters"):
+                            fltr["adhoc_filters"] = params["adhoc_filters"]
+
+                        # Pre-filter available values based on time range/column.
+                        time_range = params.get("time_range")
+
+                        if time_range and time_range != "No filter":
+                            fltr.update(
+                                {
+                                    "time_range": time_range,
+                                    "granularity_sqla": params.get("granularity_sqla"),
+                                }
+                            )
+
+                        if not default:
+                            default = config.get("defaultValue")
+
+                            if default and config["multiple"]:
+                                default = default.split(";")
+
+                        if default:
+                            if not isinstance(default, list):
+                                default = [default]
+
+                            fltr["defaultDataMask"] = {
+                                "extraFormData": {
+                                    "filters": [
+                                        {
+                                            "col": field,
+                                            "op": "IN",
+                                            "val": default,
+                                        }
+                                    ],
+                                },
+                                "filterState": {"value": default},
+                            }
+
+                        break
+
+            if "filterType" in fltr:
+                filter_by_key_and_field[key][field] = fltr
+
+    # Ancestors of filter-box charts.
+    ancestors_by_id = defaultdict(set)
+
+    for filter_box in filter_boxes:
+        for value in position_json.values():
+            try:
+                if (
+                    isinstance(value, dict)
+                    and value["type"] == "CHART"
+                    and value["meta"]["chartId"] == filter_box.id
+                    and value["parents"]  # Misnomer as this the complete ancestry.
+                ):
+                    ancestors_by_id[filter_box.id] = set(value["parents"])
+            except KeyError:
+                pass
+
+    # Wire up the hierarchical filters.
+    for this in filter_boxes:
+        for other in filter_boxes:
+            if this != other and any(
+                # Immunity is at the chart rather than field level.
+                this.id not in filter_scope["immune"]
+                and set(filter_scope["scope"]) <= ancestors_by_id[this.id]
+                for filter_scope in filter_scope_by_key_and_field[
+                    str(other.id)
+                ].values()
+            ):
+                for child in filter_by_key_and_field[str(this.id)].values():
+                    if child["filterType"] == "filter_select":
+                        for parent in filter_by_key_and_field[str(other.id)].values():
+                            if (
+                                parent["filterType"] in {"filter_select", "filter_time"}
+                                and parent["id"] not in child["cascadeParentIds"]
+                            ):
+                                child["cascadeParentIds"].append(parent["id"])
+
+    return sorted(
+        [
+            fltr
+            for key in filter_by_key_and_field
+            for fltr in filter_by_key_and_field[key].values()
+        ],
+        key=lambda fltr: fltr["filterType"],
+    )
 
 
 def migrate_dashboard(dashboard: Dashboard) -> None:  # noqa: C901
     """Convert ``dashboard`` to use native filters in place.
 
-    Mirrors :func:`superset_old.migrations.shared.native_filters.migrate_dashboard`
-    for the cleanup half of the original (the legacy filter-box ->
-    native-filter conversion is gated behind import of
-    ``convert_filter_scopes`` which is not yet ported).  The async caller
-    is expected to have already eagerly loaded ``dashboard.slices``.
+    1:1 with
+    :func:`superset_old.migrations.shared.native_filters.migrate_dashboard`.
+    The async caller is expected to have already eagerly loaded
+    ``dashboard.slices``.
     """
     mapping: dict[str, str] = {}
 
@@ -73,28 +320,17 @@ def migrate_dashboard(dashboard: Dashboard) -> None:  # noqa: C901
         # Ensure the native_filter_configuration key exists.
         json_metadata.setdefault("native_filter_configuration", [])
 
-        # Best-effort: try to convert any remaining legacy filter scopes
-        # to native filters using the original helper.  If the port isn't
-        # available, just drop the legacy keys (the typical case for
-        # post-2.0 bundles which ship native filters already).
-        try:
-            from superset.migrations.shared.native_filters_full import (
-                convert_filter_scopes_to_native_filters,
-            )
-
-            json_metadata["native_filter_configuration"].extend(
-                convert_filter_scopes_to_native_filters(
-                    json_metadata,
-                    position_json,
-                    filter_boxes=list(filter_boxes_by_id.values()),
-                ),
-            )
-        except ImportError:
-            logger.debug(
-                "convert_filter_scopes_to_native_filters not yet ported; "
-                "dropping legacy filter scopes for dashboard %s",
-                getattr(dashboard, "id", None),
-            )
+        # Convert any remaining legacy filter scopes to native filters —
+        # 1:1 with the original.  (The previous version imported a phantom
+        # ``native_filters_full`` module whose ImportError ALWAYS fired,
+        # silently dropping legacy filter-box scopes on import.)
+        json_metadata["native_filter_configuration"].extend(
+            convert_filter_scopes_to_native_filters(
+                json_metadata,
+                position_json,
+                filter_boxes=list(filter_boxes_by_id.values()),
+            ),
+        )
 
         # Remove the legacy filter configuration.
         for key in ("default_filters", "filter_scopes"):
@@ -149,4 +385,4 @@ def migrate_dashboard(dashboard: Dashboard) -> None:  # noqa: C901
         )
 
 
-__all__ = ["migrate_dashboard"]
+__all__ = ["convert_filter_scopes_to_native_filters", "migrate_dashboard"]

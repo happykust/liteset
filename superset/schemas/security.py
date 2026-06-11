@@ -62,6 +62,13 @@ class UserGroupRef(msgspec.Struct):
     name: str
 
 
+class UserAuditRef(msgspec.Struct):
+    """Nested ``created_by``/``changed_by`` audit reference — FAB
+    ``list_columns`` include ``created_by.id`` / ``changed_by.id``."""
+
+    id: int
+
+
 class UserResponse(msgspec.Struct):
     """Single user in search/show results (matches FAB list_columns)."""
 
@@ -78,6 +85,8 @@ class UserResponse(msgspec.Struct):
     last_login: str | None = None
     created_on: str | None = None
     changed_on: str | None = None
+    created_by: UserAuditRef | None = None
+    changed_by: UserAuditRef | None = None
 
 
 class UsersSearchResponse(msgspec.Struct):

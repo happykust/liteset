@@ -652,10 +652,15 @@ class BaseEngineSpec:  # noqa: PLR0904
     def needs_oauth2(cls, ex: Exception) -> bool:
         """Return True if *ex* indicates OAuth2 authorization is required.
 
-        Mirrors the original ``isinstance(ex, cls.oauth2_exception)``
-        check.  The default sentinel never matches.
+        Mirrors the original ``g and hasattr(g, "user") and isinstance(ex,
+        cls.oauth2_exception)`` — the user-bound guard keeps Celery workers
+        (no request user) from supplanting the original driver error with an
+        OAuth2 dance no one can complete.  The async equivalent of the
+        Flask ``g.user`` check is the request-scoped ContextVar.
         """
-        return isinstance(ex, cls.oauth2_exception)
+        from superset.utils.core import get_current_user
+
+        return get_current_user() is not None and isinstance(ex, cls.oauth2_exception)
 
     @classmethod
     async def start_oauth2_dance(

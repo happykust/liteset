@@ -233,9 +233,12 @@ class ReportSchedulePutSchema(msgspec.Struct, forbid_unknown_fields=True):
     validator_config_json: ValidatorConfigJSON | msgspec.UnsetType = msgspec.UNSET
     # ``log_retention`` Range(min=0) for PUT — matches original PUT schema
     # ``validate=[Range(min=0, error="Value must be 0 or greater")]``.
-    log_retention: Annotated[int, Meta(ge=0)] | None | msgspec.UnsetType = msgspec.UNSET
-    # ``grace_period`` Range(min=1) for PUT — matches original.
-    grace_period: Annotated[int, Meta(ge=1)] | None | msgspec.UnsetType = msgspec.UNSET
+    # No ``None`` leg: the original has no ``allow_none=True`` here —
+    # explicit null must be rejected at decode time (422), not written
+    # through to the column.
+    log_retention: Annotated[int, Meta(ge=0)] | msgspec.UnsetType = msgspec.UNSET
+    # ``grace_period`` Range(min=1) for PUT — matches original (no allow_none).
+    grace_period: Annotated[int, Meta(ge=1)] | msgspec.UnsetType = msgspec.UNSET
     email_subject: str | None | msgspec.UnsetType = msgspec.UNSET
     context_markdown: str | None | msgspec.UnsetType = msgspec.UNSET
     creation_method: str | None | msgspec.UnsetType = msgspec.UNSET
@@ -250,8 +253,12 @@ class ReportSchedulePutSchema(msgspec.Struct, forbid_unknown_fields=True):
     # (superset_old/reports/schemas.py:367-370) — null must be rejected, so the
     # type annotation excludes None.
     report_format: str | msgspec.UnsetType = msgspec.UNSET
-    active: bool | None | msgspec.UnsetType = msgspec.UNSET
-    force_screenshot: bool | None | msgspec.UnsetType = msgspec.UNSET
+    # ``active`` / ``force_screenshot`` have no ``allow_none=True`` in the
+    # original PUT schema — explicit null is a 422 upstream.  ``active=None``
+    # additionally tripped UpdateReportScheduleCommand's ``not
+    # self._data["active"]`` guard, silently resetting WORKING→NOOP.
+    active: bool | msgspec.UnsetType = msgspec.UNSET
+    force_screenshot: bool | msgspec.UnsetType = msgspec.UNSET
     custom_width: int | None | msgspec.UnsetType = msgspec.UNSET
     # ``extra`` has no ``allow_none=True`` in the original PUT schema
     # (superset_old/reports/schemas.py:371 — ``fields.Dict(dump_default=None)``

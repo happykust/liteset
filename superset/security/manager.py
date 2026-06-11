@@ -429,6 +429,152 @@ class AsyncSecurityManager:
         await self._update_user_auth_stat(user, success=True)
         return user
 
+    async def _oauth_calculate_user_roles(
+        self,
+        userinfo: dict[str, Any],
+        *,
+        settings: Any,
+    ) -> list[Any]:
+        """Map OAuth userinfo to a list of FAB :class:`Role` objects.
+
+        1:1 port of
+        :pymeth:`flask_appbuilder.security.manager.BaseSecurityManager._oauth_calculate_user_roles`
+        (flask_appbuilder/security/manager.py:1437-1467):
+
+        * ``AUTH_ROLES_MAPPING`` translates the IdP's ``role_keys`` claim
+          into one or more Superset role names (``get_roles_from_keys``).
+        * When ``AUTH_USER_REGISTRATION`` is on, the configured
+          ``AUTH_USER_REGISTRATION_ROLE`` is appended — optionally resolved
+          dynamically via ``AUTH_USER_REGISTRATION_ROLE_JMESPATH``.
+        """
+        user_role_objects: dict[int, Any] = {}
+
+        # apply AUTH_ROLES_MAPPING (FAB ``get_roles_from_keys``)
+        roles_mapping = getattr(settings, "auth_roles_mapping", {}) or {}
+        if roles_mapping:
+            user_role_keys = set(userinfo.get("role_keys", []) or [])
+            for role_key, fab_role_names in roles_mapping.items():
+                if role_key not in user_role_keys:
+                    continue
+                for fab_role_name in fab_role_names:
+                    fab_role = await self.dao.get_role_by_name(fab_role_name)
+                    if fab_role is not None:
+                        user_role_objects[fab_role.id] = fab_role
+                    else:
+                        logger.warning(
+                            "Can't find role specified in AUTH_ROLES_MAPPING: %s",
+                            fab_role_name,
+                        )
+
+        # apply AUTH_USER_REGISTRATION_ROLE
+        if getattr(settings, "auth_user_registration", False):
+            registration_role_name = getattr(
+                settings, "auth_user_registration_role", "Public"
+            )
+
+            # if AUTH_USER_REGISTRATION_ROLE_JMESPATH is set, use it for the
+            # registration role
+            jmespath_expr = getattr(
+                settings, "auth_user_registration_role_jmespath", None
+            )
+            if jmespath_expr:
+                try:
+                    import jmespath
+
+                    registration_role_name = jmespath.search(jmespath_expr, userinfo)
+                except ImportError:
+                    logger.error(
+                        "jmespath is not installed; cannot evaluate "
+                        "AUTH_USER_REGISTRATION_ROLE_JMESPATH"
+                    )
+
+            fab_role = await self.dao.get_role_by_name(registration_role_name)
+            if fab_role is not None:
+                user_role_objects.setdefault(fab_role.id, fab_role)
+            else:
+                logger.warning(
+                    "Can't find AUTH_USER_REGISTRATION role: %s",
+                    registration_role_name,
+                )
+
+        return list(user_role_objects.values())
+
+    async def auth_user_oauth(
+        self,
+        userinfo: dict[str, Any],
+        *,
+        settings: Any,
+    ) -> Any | None:
+        """Authenticate a user via an OAuth userinfo document.
+
+        1:1 port of
+        :pymeth:`flask_appbuilder.security.manager.BaseSecurityManager.auth_user_oauth`
+        (flask_appbuilder/security/manager.py:1469-1526).
+
+        :param userinfo: dict with user information
+            (keys are the same as User model columns)
+        :param settings: A :class:`SupersetSettings` instance (auth config)
+        """
+        # extract the username from `userinfo`
+        if "username" in userinfo:
+            username = userinfo["username"]
+        elif "email" in userinfo:
+            username = userinfo["email"]
+        else:
+            logger.error("OAUTH userinfo does not have username or email %s", userinfo)
+            return None
+
+        # If username is empty, go away
+        if (username is None) or username == "":
+            return None
+
+        # Search the DB for this user
+        user = await self.dao.get_user_by_username(username)
+
+        # If user is not active, go away
+        if user is not None and not getattr(user, "active", True):
+            return None
+
+        # If user is not registered, and not self-registration, go away
+        auth_user_registration = bool(
+            getattr(settings, "auth_user_registration", False)
+        )
+        if user is None and not auth_user_registration:
+            return None
+
+        # Sync the user's roles
+        if user is not None and getattr(settings, "auth_roles_sync_at_login", False):
+            user.roles = await self._oauth_calculate_user_roles(
+                userinfo, settings=settings
+            )
+            logger.debug(
+                "Calculated new roles for user='%s' as: %s", username, user.roles
+            )
+
+        # If the user is new, register them
+        if user is None and auth_user_registration:
+            user = await self._register_user(
+                username=username,
+                first_name=userinfo.get("first_name", ""),
+                last_name=userinfo.get("last_name", ""),
+                email=userinfo.get("email", "") or f"{username}@email.notfound",
+                roles=await self._oauth_calculate_user_roles(
+                    userinfo, settings=settings
+                ),
+            )
+            logger.debug("New user registered: %s", user)
+
+            # If user registration failed, go away
+            if user is None:
+                logger.error("Error creating a new OAuth user %s", username)
+                return None
+
+        # LOGIN SUCCESS (only if user is now registered)
+        if user:
+            await self._update_user_auth_stat(user, success=True)
+            return user
+        return None
+
     async def _ldap_authenticate_and_search(  # noqa: C901
         self,
         *,
@@ -1872,7 +2018,7 @@ class AsyncSecurityManager:
         # schema_access — parse 2-part and 3-part perm strings
         accessible_schemas: set[str] = set()
         db_name = getattr(database, "database_name", "")
-        user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
+        user_perms = await self._user_permission_pairs(user)
 
         schema_access_perms = {
             view_name
@@ -1935,7 +2081,7 @@ class AsyncSecurityManager:
         """
         if self.is_admin(user):
             return []  # Admin can access all — empty means no filter
-        user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
+        user_perms = await self._user_permission_pairs(user)
         return [
             view_name
             for perm_name, view_name in user_perms
@@ -2439,6 +2585,30 @@ class AsyncSecurityManager:
         """Check if user has the all_query_access permission."""
         return await self.has_access(ALL_QUERY_ACCESS, ALL_QUERY_ACCESS, user=user)
 
+    async def _user_permission_pairs(self, user: Any) -> Any:
+        """``(perm_name, view_name)`` pairs for the user.
+
+        Anonymous users (``UnauthenticatedUser``, id=0) resolve to the
+        Public role's permissions — the per-user query would key on id 0
+        and return nothing, silently dropping Public-role
+        schema/catalog/datasource access (upstream reads the Public role
+        via ``get_public_role()``).  Same guard as ``user_view_menu_names``.
+        """
+        if getattr(user, "is_anonymous", False) or not getattr(user, "id", 0):
+            public_role_name = self._public_role_name
+            if not public_role_name:
+                return []
+            public_role = await self.dao.get_role_by_name(public_role_name)
+            if public_role is None:
+                return []
+            pvs = await self.dao.get_role_permissions(public_role.id)
+            return [
+                (pv.permission.name, pv.view_menu.name)
+                for pv in pvs
+                if pv.permission is not None and pv.view_menu is not None
+            ]
+        return await self.dao.get_all_permissions_for_user_with_groups(user.id)
+
     # --- List-filtering methods (ID-based, for object-level filters) ---
 
     async def get_accessible_datasource_ids(self, user: Any) -> list[int]:
@@ -2450,7 +2620,7 @@ class AsyncSecurityManager:
         """
         if self.is_admin(user):
             return []
-        user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
+        user_perms = await self._user_permission_pairs(user)
         ids: list[int] = []
         for perm_name, view_name in user_perms:
             if perm_name != DATASOURCE_ACCESS:
@@ -2469,7 +2639,7 @@ class AsyncSecurityManager:
         """
         if self.is_admin(user):
             return []
-        user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
+        user_perms = await self._user_permission_pairs(user)
         ids: list[int] = []
         for perm_name, view_name in user_perms:
             if perm_name != DATABASE_ACCESS:
@@ -2489,7 +2659,7 @@ class AsyncSecurityManager:
         """
         if self.is_admin(user):
             return []
-        user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
+        user_perms = await self._user_permission_pairs(user)
         return [
             view_name
             for perm_name, view_name in user_perms
@@ -2528,7 +2698,7 @@ class AsyncSecurityManager:
             if hasattr(database, "get_default_catalog")
             else None
         )
-        user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
+        user_perms = await self._user_permission_pairs(user)
 
         catalog_access_perms = {
             view_name
@@ -2609,7 +2779,7 @@ class AsyncSecurityManager:
                 if getattr(pv.permission, "name", None) == permission_name
             }
 
-        user_perms = await self.dao.get_all_permissions_for_user_with_groups(user.id)
+        user_perms = await self._user_permission_pairs(user)
         return {
             view_name
             for perm_name, view_name in user_perms

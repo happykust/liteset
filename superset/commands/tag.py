@@ -126,10 +126,12 @@ class CreateTagCommand(AsyncBaseCommand[Any]):
 
     async def run(self) -> Any:
         name = self._data["name"]
-        description = self._data.get("description", "")
+        # Unconditional assignment — 1:1 with upstream
+        # ``tag.description = self._properties.get("description", "")``
+        # (commands/tag/create.py:85): re-submitting an existing tag with an
+        # empty/absent description CLEARS it.
         tag = await self._dao.get_by_name(name, "custom")
-        if description:
-            tag.description = description
+        tag.description = self._data.get("description", "")
         # Create tagged object associations if provided.
         #
         # Each entry is a ``[object_type, object_id]`` PAIR — the shape both

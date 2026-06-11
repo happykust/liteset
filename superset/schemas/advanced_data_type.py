@@ -25,7 +25,10 @@ import msgspec
 
 class AdvancedDataTypeConvertRequest(msgspec.Struct):
     type: str
-    values: list[str]
+    # ``list[Any]`` — the original JSON schema places no type constraint on
+    # array items and ``AdvancedDataTypeRequest.values`` is ``list[Any]``;
+    # third-party plugins may pass non-string values (e.g. integers).
+    values: list[Any]
 
 
 class AdvancedDataTypeConvertResponse(msgspec.Struct):

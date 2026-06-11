@@ -95,12 +95,16 @@ async def test_importing_user_becomes_dataset_owner(import_env):
     await session.commit()
 
     dataset = (
-        await session.execute(
-            select(SqlaTable)
-            .options(selectinload(SqlaTable.owners))
-            .where(SqlaTable.table_name == "energy")
+        (
+            await session.execute(
+                select(SqlaTable)
+                .options(selectinload(SqlaTable.owners))
+                .where(SqlaTable.table_name == "energy")
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     assert dataset is not None
     assert [o.username for o in dataset.owners] == ["importer"]
 
@@ -164,12 +168,16 @@ async def test_import_name_collision_keeps_uuid_row_unmodified(import_env):
     await session.commit()
 
     refreshed = (
-        await session.execute(
-            select(SqlaTable).where(
-                SqlaTable.uuid == "cccccccc-0000-0000-0000-00000000000a"
+        (
+            await session.execute(
+                select(SqlaTable).where(
+                    SqlaTable.uuid == "cccccccc-0000-0000-0000-00000000000a"
+                )
             )
         )
-    ).scalars().one()
+        .scalars()
+        .one()
+    )
     # UUID-matched row stays unmodified (schema NOT updated to "public").
     assert refreshed.schema is None
     assert refreshed.table_name == "users"

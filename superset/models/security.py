@@ -97,6 +97,24 @@ class User(Base):
     created_by_fk = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
     changed_by_fk = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
 
+    # 1:1 FAB self-referential audit relationships
+    # (flask_appbuilder/security/sqla/models.py:196-209) — UserApi's
+    # list/show columns include ``created_by.id`` / ``changed_by.id``.
+    created_by = relationship(
+        "User",
+        remote_side=[id],
+        primaryjoin="User.created_by_fk == User.id",
+        foreign_keys=[created_by_fk],
+        uselist=False,
+    )
+    changed_by = relationship(
+        "User",
+        remote_side=[id],
+        primaryjoin="User.changed_by_fk == User.id",
+        foreign_keys=[changed_by_fk],
+        uselist=False,
+    )
+
     roles = relationship("Role", secondary=ab_user_role, backref="user")
     groups = relationship("Group", secondary=ab_user_group, backref="users")
 

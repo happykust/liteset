@@ -222,8 +222,14 @@ async def _get_or_create_role(session: AsyncSession, name: str) -> Role:
     loaded so that subsequent assignment (``role.permissions = [...]``)
     doesn't trigger a synchronous lazy-load in async context.
     """
+    # Chain-load ``PermissionView.permission`` too — ``_copy_role``'s merge
+    # loop reads ``pvm.permission.name`` on the target role's PVMs, which
+    # would otherwise fire a sync lazy-load (MissingGreenlet) on repeated
+    # ``superset init`` runs with PUBLIC_ROLE_LIKE set.
     result = await session.execute(
-        select(Role).where(Role.name == name).options(selectinload(Role.permissions))
+        select(Role)
+        .where(Role.name == name)
+        .options(selectinload(Role.permissions).selectinload(PermissionView.permission))
     )
     role = result.scalars().one_or_none()
     if role is None:
@@ -235,7 +241,9 @@ async def _get_or_create_role(session: AsyncSession, name: str) -> Role:
         result = await session.execute(
             select(Role)
             .where(Role.id == role.id)
-            .options(selectinload(Role.permissions))
+            .options(
+                selectinload(Role.permissions).selectinload(PermissionView.permission)
+            )
         )
         role = result.scalars().one()
     return role

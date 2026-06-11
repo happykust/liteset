@@ -118,8 +118,10 @@ async def test_raise_for_access_path4_bare_dashboard_owner_passes(dash_env):
     async with session_factory() as fresh:
         manager = _make_manager(fresh)
         bare = (
-            await fresh.execute(select(Dashboard).where(Dashboard.id == dash_id))
-        ).scalars().one()
+            (await fresh.execute(select(Dashboard).where(Dashboard.id == dash_id)))
+            .scalars()
+            .one()
+        )
         assert "owners" not in bare.__dict__  # genuinely bare
         # Before the fix: MissingGreenlet out of is_owner. Now: owner passes.
         await manager.raise_for_access(dashboard=bare, user=owner)
@@ -143,7 +145,9 @@ async def test_raise_for_access_path4_bare_dashboard_denied_non_owner(dash_env):
         )
         manager = _make_manager(fresh, dashboard_rbac_enabled=True)
         bare = (
-            await fresh.execute(select(Dashboard).where(Dashboard.id == dash_id))
-        ).scalars().one()
+            (await fresh.execute(select(Dashboard).where(Dashboard.id == dash_id)))
+            .scalars()
+            .one()
+        )
         with pytest.raises(SupersetSecurityException):
             await manager.raise_for_access(dashboard=bare, user=stranger)

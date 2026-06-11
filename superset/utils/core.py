@@ -107,19 +107,25 @@ class QueryObjectFilterClause(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 # generic_find_constraint_name  (uses Flask-SQLAlchemy db object)
 # ---------------------------------------------------------------------------
-def apply_max_row_limit(limit: int, server_pagination: bool | None = None) -> int:
+def apply_max_row_limit(
+    limit: int,
+    server_pagination: bool | None = None,
+    settings: Any | None = None,
+) -> int:
     """Cap a requested row limit at the configured maximum — 1:1 port of
     ``superset_old/utils/core.py::apply_max_row_limit``.
 
     ``server_pagination`` selects ``TABLE_VIZ_MAX_ROW_SERVER`` vs ``SQL_MAX_ROW``
     as the ceiling; ``limit == 0`` means "no explicit limit" → use the max. The
     config is read from ``SupersetSettings`` (the Flask-free port equivalent of
-    ``app.config[...]``).
+    ``app.config[...]``); pass an already-built instance via ``settings`` to
+    avoid a second construction in hot paths.
     """
     from superset import config as _config
 
     try:
-        settings = _config.SupersetSettings()  # type: ignore[call-arg]
+        if settings is None:
+            settings = _config.SupersetSettings()  # type: ignore[call-arg]
         sql_max_row = int(getattr(settings, "sql_max_row", 100000))
         table_viz_max = int(getattr(settings, "table_viz_max_row_server", sql_max_row))
     except Exception:  # noqa: BLE001 — never break query building on config errors

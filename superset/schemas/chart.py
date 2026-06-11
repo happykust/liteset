@@ -86,9 +86,12 @@ class ChartPutSchema(msgspec.Struct):
     """PUT /api/v1/chart/<pk>"""
 
     # See ChartPostSchema comment — same VARCHAR(250) DB limit applies.
-    slice_name: (
-        Annotated[str, Meta(min_length=1, max_length=250)] | None | msgspec.UnsetType
-    ) = msgspec.UNSET
+    # No min_length: the original PUT schema validates ``Length(0, 250)``
+    # (POST uses ``Length(1, 250)``) — an empty slice_name is accepted on
+    # update upstream.
+    slice_name: Annotated[str, Meta(max_length=250)] | None | msgspec.UnsetType = (
+        msgspec.UNSET
+    )
     viz_type: Annotated[str, Meta(max_length=250)] | None | msgspec.UnsetType = (
         msgspec.UNSET
     )
@@ -422,7 +425,12 @@ class ChartDataQueryObject(msgspec.Struct):
     url_params: dict[str, str] = {}
     custom_params: dict[str, Any] = {}
     custom_form_data: dict[str, Any] = {}
-    is_timeseries: bool = False
+    # ``None`` = not supplied — upstream's Marshmallow field has
+    # ``allow_none=True`` and NO load_default, so an absent key never reaches
+    # the query-object factory and ``_set_is_timeseries`` auto-detects
+    # ``DTTM_ALIAS in columns``.  A ``False`` default here made every request
+    # an EXPLICIT False, killing the auto-detection (R11-15).
+    is_timeseries: bool | None = None
     timeseries_limit: int = 0
     timeseries_limit_metric: str | ChartDataAdhocMetric | None = None
     series_columns: list[str] = []

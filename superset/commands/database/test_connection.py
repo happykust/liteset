@@ -49,6 +49,33 @@ class DatabaseSecurityUnsafeError(CommandInvalidError):
     message = _("Stopped an unsafe database connection")
 
 
+def get_log_connection_action(
+    action: str, ssh_tunnel: Any | None, exc: Exception | None = None
+) -> str:
+    """1:1 with ``superset_old/commands/database/test_connection.py:52-60``."""
+    action_modified = action
+    if exc:
+        action_modified += f".{exc.__class__.__name__}"
+    if ssh_tunnel:
+        action_modified += ".ssh_tunnel"
+    return action_modified
+
+
+def _log_connection_event(
+    action: str, ssh_tunnel: Any | None, engine: str, exc: Exception | None = None
+) -> None:
+    """Best-effort audit log — logging must never break the connection test."""
+    try:
+        from superset.events import event_logger
+
+        event_logger.log_with_context(
+            action=get_log_connection_action(action, ssh_tunnel, exc),
+            engine=engine,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to audit-log %s", action, exc_info=True)
+
+
 def _ping(engine: Any) -> bool:
     """Ping ``engine`` to verify connectivity.
 
@@ -297,6 +324,9 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
                     ssh_tunnel = unmask_password_info(ssh_tunnel, existing_ssh_tunnel)
             ssh_tunnel = SSHTunnel(**ssh_tunnel)
 
+        _engine_name = database.db_engine_spec.__name__
+        _log_connection_event("test_connection_attempt", ssh_tunnel, _engine_name)
+
         try:
             # Ping through the (sync) engine, optionally via the SSH tunnel.
             # The sync engine is the only path that supports
@@ -328,9 +358,13 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
                 # So we stop losing the original message if any.
                 ex_str = str(ping_error) if ping_error is not None else ""
                 raise DBAPIError(ex_str or None, None, None)
+            # Log successful connection test with engine —
+            # test_connection.py:167-170.
+            _log_connection_event("test_connection_success", ssh_tunnel, _engine_name)
             return {"message": "OK"}
 
         except (NoSuchModuleError, ModuleNotFoundError) as ex:
+            _log_connection_event("test_connection_error", ssh_tunnel, _engine_name, ex)
             raise DatabaseTestConnectionDriverError(
                 message=(
                     f"Could not load database driver: "
@@ -338,14 +372,17 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
                 ),
             ) from ex
         except DBAPIError as ex:
+            _log_connection_event("test_connection_error", ssh_tunnel, _engine_name, ex)
             # Custom errors (wrong username, wrong password, etc).
             errors = database.db_engine_spec.extract_errors(ex, self._context)
             raise SupersetErrorsException(errors, status=400) from ex
         except OAuth2RedirectError:
             raise
         except SupersetSecurityException as ex:
+            _log_connection_event("test_connection_error", ssh_tunnel, _engine_name, ex)
             raise DatabaseSecurityUnsafeError(message=str(ex)) from ex
-        except (SupersetTimeoutException, SSHTunnelingNotEnabledError):
+        except (SupersetTimeoutException, SSHTunnelingNotEnabledError) as ex:
+            _log_connection_event("test_connection_error", ssh_tunnel, _engine_name, ex)
             # bubble up the exception to return proper status code
             raise
         except SupersetErrorsException:
@@ -363,6 +400,7 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
                     user_id=self._user_id,
                     default_redirect_uri=self._default_redirect_uri,
                 )
+            _log_connection_event("test_connection_error", ssh_tunnel, _engine_name, ex)
             errors = database.db_engine_spec.extract_errors(ex, self._context)
             raise DatabaseTestConnectionUnexpectedError(errors) from ex
 

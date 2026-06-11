@@ -117,6 +117,17 @@ class AnnotationLayerController(Controller):
                 "created_by.last_name",
             ],
             list_title="List Annotation Layer",
+            # 1:1 with AnnotationLayerRestApi.order_columns — the frontend
+            # reads this to render sortable column headers.
+            order_columns=[
+                "name",
+                "descr",
+                "created_by.first_name",
+                "changed_by.first_name",
+                "changed_on",
+                "changed_on_delta_humanized",
+                "created_on",
+            ],
         )
 
     # ------------------------------------------------------------------

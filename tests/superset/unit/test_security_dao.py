@@ -447,9 +447,7 @@ async def prod_models_session():
         view = sec_models.ViewMenu(name="Chart")
         session.add_all([perm, view])
         await session.flush()
-        pv = sec_models.PermissionView(
-            permission_id=perm.id, view_menu_id=view.id
-        )
+        pv = sec_models.PermissionView(permission_id=perm.id, view_menu_id=view.id)
         session.add(pv)
         await session.flush()
         role = sec_models.Role(name="Alpha")
@@ -468,9 +466,7 @@ async def test_has_permission_view_with_production_models(prod_models_session):
     assert not await dao.has_permission_view(
         "can_read", "Chart", role_ids=[empty_role_id]
     )
-    assert not await dao.has_permission_view(
-        "can_write", "Chart", role_ids=[role_id]
-    )
+    assert not await dao.has_permission_view("can_write", "Chart", role_ids=[role_id])
 
 
 async def test_get_role_permissions_with_production_models(prod_models_session):

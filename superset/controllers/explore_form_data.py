@@ -23,6 +23,7 @@ serialized value in a KV table keyed by a UUID.
 
 from __future__ import annotations
 
+import functools
 import logging
 from typing import Any, Literal
 from uuid import uuid4
@@ -51,6 +52,28 @@ from superset.typing import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@functools.lru_cache(maxsize=1)
+def _refresh_timeout_on_retrieval() -> bool:
+    """EXPLORE_FORM_DATA_CACHE_CONFIG["REFRESH_TIMEOUT_ON_RETRIEVAL"], cached.
+
+    The original read one dict key off ``app.config`` per request; building
+    a full SupersetSettings per GET in the hot chart-loading path is the
+    round-10 perf finding.  Config is static per process.
+    """
+    try:
+        from superset.config import SupersetSettings
+
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        return bool(
+            settings.explore_form_data_cache_config.get(
+                "REFRESH_TIMEOUT_ON_RETRIEVAL", True
+            )
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to read REFRESH_TIMEOUT_ON_RETRIEVAL", exc_info=True)
+        return True
 
 
 def _form_data_cache() -> Any:
@@ -189,21 +212,7 @@ class ExploreFormDataController(Controller):
             # get.py:54-55: ``if self._refresh_timeout:
             #     cache_manager.explore_form_data_cache.set(key, state)``
             # which re-stores the value with a fresh full-TTL expires_on.
-            _refresh = True
-            try:
-                from superset.config import SupersetSettings
-
-                _settings = SupersetSettings()  # type: ignore[call-arg]
-                _refresh = bool(
-                    _settings.explore_form_data_cache_config.get(
-                        "REFRESH_TIMEOUT_ON_RETRIEVAL", True
-                    )
-                )
-            except Exception:  # noqa: BLE001
-                logger.debug(
-                    "Failed to read REFRESH_TIMEOUT_ON_RETRIEVAL", exc_info=True
-                )
-            if _refresh:
+            if _refresh_timeout_on_retrieval():
                 # Slot ``set`` stamps a fresh full-TTL window.
                 await cache.set(key, entry)
             if "form_data" in entry:

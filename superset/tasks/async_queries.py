@@ -414,26 +414,16 @@ def _create_query_context_from_form(form_data: dict[str, Any]) -> Any:
             except (ValueError, IndexError):
                 q_ds = datasource_dict
 
+        # ``from_request`` — the SAME deserialization path the controller
+        # layer uses.  The previous hand-picked subset dropped time_shift /
+        # applied_time_extras / is_rowcount / group_others_when_limit_reached
+        # / from_dttm / to_dttm, so GAQ (Celery) results diverged from the
+        # sync path for time-comparison / rowcount charts (upstream's
+        # ``ChartDataQueryContextSchema().load(form_data)`` deserialised the
+        # COMPLETE query object).
         queries.append(
-            AsyncQueryObject(
-                datasource=q_ds if isinstance(q_ds, dict) else datasource_dict,
-                columns=q.get("columns") or q.get("groupby") or [],
-                metrics=q.get("metrics") or [],
-                filters=q.get("filters") or [],
-                orderby=q.get("orderby") or [],
-                row_limit=q.get("row_limit"),
-                row_offset=q.get("row_offset", 0),
-                time_range=q.get("time_range"),
-                granularity=q.get("granularity") or q.get("granularity_sqla"),
-                extras=q.get("extras") or {},
-                post_processing=q.get("post_processing") or [],
-                time_offsets=q.get("time_offsets") or [],
-                order_desc=q.get("order_desc", True),
-                series_columns=q.get("series_columns") or [],
-                series_limit=q.get("series_limit", 0),
-                series_limit_metric=q.get("series_limit_metric"),
-                is_timeseries=q.get("is_timeseries", False),
-                annotation_layers=q.get("annotation_layers") or [],
+            AsyncQueryObject.from_request(
+                q, q_ds if isinstance(q_ds, dict) else datasource_dict
             )
         )
 

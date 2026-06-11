@@ -33,7 +33,10 @@ class TagPostSchema(msgspec.Struct):
     # to reject up-front with the field name).
     name: Annotated[str, Meta(min_length=1, max_length=250)]
     description: str | None = None
-    objects_to_tag: list[list[str | int]] = []
+    # 1:1 with upstream ``objects_to_tag_field``: a list of
+    # ``(object_type, object_id)`` pairs with ``Range(min=1)`` on the id —
+    # ``object_id=0`` would insert a dangling TaggedObject row.
+    objects_to_tag: list[tuple[str, Annotated[int, Meta(ge=1)]]] = []
 
 
 class TagPutSchema(msgspec.Struct):
@@ -43,7 +46,10 @@ class TagPutSchema(msgspec.Struct):
         Annotated[str, Meta(min_length=1, max_length=250)] | None | msgspec.UnsetType
     ) = msgspec.UNSET
     description: str | None | msgspec.UnsetType = msgspec.UNSET
-    objects_to_tag: list[list[str | int]] | msgspec.UnsetType = msgspec.UNSET
+    # Same pair shape + Range(min=1) as POST.
+    objects_to_tag: list[tuple[str, Annotated[int, Meta(ge=1)]]] | msgspec.UnsetType = (
+        msgspec.UNSET
+    )
 
 
 class BulkTagCreateSchema(msgspec.Struct):

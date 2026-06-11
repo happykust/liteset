@@ -40,6 +40,7 @@ Notification sending via email and Slack is fully wired.
 
 from __future__ import annotations
 
+import functools
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Optional, Union
@@ -106,8 +107,14 @@ logger = logging.getLogger(__name__)
 REPORT_SCHEDULE_ERROR_NOTIFICATION_MARKER = "Notification sent with error"
 
 
+@functools.lru_cache(maxsize=1)
 def _get_settings() -> Any:
-    """Load SupersetSettings lazily to avoid circular imports."""
+    """Load SupersetSettings lazily (avoids circular imports) and cache it.
+
+    A single report/alert execution reads settings 7+ times; the original
+    read ``app.config[...]`` (O(1) dict lookups on a boot-time singleton).
+    Config is static per process, so a process-wide snapshot is 1:1.
+    """
     from superset.config import SupersetSettings
 
     return SupersetSettings()  # type: ignore[call-arg]

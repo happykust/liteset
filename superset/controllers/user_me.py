@@ -159,6 +159,13 @@ class CurrentUserController(Controller):
             current_user = await user_dao.get_by_id_with_role_permissions(
                 current_user.id
             )
+            if current_user is None:
+                # The user was deleted while their session token is still
+                # valid — treat as unauthenticated (401) instead of an
+                # AttributeError 500 in the payload builder below.
+                from litestar.exceptions import NotAuthorizedException
+
+                raise NotAuthorizedException(detail="User no longer exists")
             roles = _build_roles_map(current_user)
         elif is_guest:
             # GuestUser carries lightweight ``_CachedRole`` stubs without
@@ -310,7 +317,7 @@ class CurrentUserController(Controller):
 
         # Pass changed_by_fk — mirrors pre_update
         # (superset_old/views/users/api.py:49-50)
-        await user_dao.update_profile(
+        updated = await user_dao.update_profile(
             user_id=current_user.id,
             attributes=updates,
             hashed_password=hashed_password,
@@ -320,6 +327,13 @@ class CurrentUserController(Controller):
         # Re-read so we serialise the persisted state (mirrors upstream's
         # ``user_response_schema.dump(g.user)`` after ``db.session.commit()``).
         fresh = await user_dao.get_by_id(current_user.id)
+        if not updated or fresh is None:
+            # The user row vanished while the session token was still valid
+            # (upstream works on the in-memory ``g.user`` so this path can't
+            # happen there) — 401, not an AttributeError 500.
+            from litestar.exceptions import NotAuthorizedException
+
+            raise NotAuthorizedException(detail="User no longer exists")
         await event_logger.alog_with_context("user.update_me", user_id=current_user.id)
         return {
             "result": {

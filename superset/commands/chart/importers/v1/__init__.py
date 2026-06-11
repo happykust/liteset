@@ -167,31 +167,33 @@ class ImportChartsCommand(AsyncImportModelsCommand):
                     current_user=self._current_user,
                 )
 
-                # Tag import (gated on TAGGING_SYSTEM feature flag).
+                # Tag import (gated on TAGGING_SYSTEM inside ``import_tag``).
+                # No try/except — upstream lets a tag-import failure roll the
+                # whole import back (R11-05).
                 if "tags" in config and config["tags"]:
-                    try:
-                        await import_tag(
-                            list(config["tags"]),
-                            self._raw_contents() or {},
-                            chart.id,
-                            "chart",
-                            session,
-                        )
-                    except Exception:  # noqa: BLE001
-                        logger.exception(
-                            "Failed to import tags for chart %s",
-                            chart.id,
-                        )
+                    await import_tag(
+                        list(config["tags"]),
+                        self._raw_contents() or {},
+                        chart.id,
+                        "chart",
+                        session,
+                    )
 
     async def _import_single(self, file_name: str, content: dict[str, Any]) -> None:
         # Not used — run() handles the full orchestration
         pass
 
     def _raw_contents(self) -> dict[str, str] | None:
-        """Return the raw bundle ``{filename: yaml_text}`` mapping if available."""
+        """Return the raw bundle ``{filename: yaml_text}`` mapping if available.
+
+        Entry names are stripped of the export-root folder (``remove_root``,
+        same as ``_parse_zip``) — consumers like ``import_tag`` look up
+        ``"tags.yaml"``, not ``"chart_export_<ts>/tags.yaml"``.
+        """
         try:
             import io
             import zipfile
+            from pathlib import PurePosixPath
 
             buf = self._contents
             if buf is None:
@@ -199,11 +201,20 @@ class ImportChartsCommand(AsyncImportModelsCommand):
             buf.seek(0)
             data = buf.read()
             buf.seek(0)
+            out: dict[str, str] = {}
             with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                return {
-                    name: zf.read(name).decode("utf-8")
-                    for name in zf.namelist()
-                    if not name.endswith("/")
-                }
+                for name in zf.namelist():
+                    if name.endswith("/"):
+                        continue
+                    parts = PurePosixPath(name).parts
+                    safe_parts = tuple(p for p in parts if p not in ("..", "/"))
+                    if not safe_parts:
+                        continue
+                    if len(safe_parts) > 1:
+                        rel = str(PurePosixPath(*safe_parts[1:]))
+                    else:
+                        rel = safe_parts[0]
+                    out[rel] = zf.read(name).decode("utf-8")
+            return out
         except Exception:  # noqa: BLE001
             return None

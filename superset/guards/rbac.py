@@ -76,19 +76,9 @@ def require_authentication(
         raise NotAuthorizedException(detail="Not authenticated")
 
 
-def require_authenticated_user(
-    connection: ASGIConnection[Any, Any, Any, Any],
-    _: BaseRouteHandler,
-) -> None:
-    """Guard that strictly requires is_authenticated=True.
-
-    Rejects anonymous users even with Public role permissions.
-    """
-    user = connection.user
-    if not getattr(user, "is_authenticated", False):
-        raise NotAuthorizedException(
-            detail="Not authenticated",
-        )
+# Alias — both names are imported across controllers but the behaviour is
+# (and must stay) identical; a separate copy invited silent divergence.
+require_authenticated_user = require_authentication
 
 
 def deny_anon_with_403(

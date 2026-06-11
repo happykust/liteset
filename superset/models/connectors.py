@@ -447,7 +447,14 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
 
         if self.is_dttm:
             return int(GenericDataType.TEMPORAL)
-        table = getattr(self, "table", None)
+        # ``getattr`` does NOT suppress MissingGreenlet from an unloaded lazy
+        # relationship on an AsyncSession — check loaded-state first so a
+        # bare-fetched column degrades to None instead of crashing ``.data``.
+        if "table" in sa.inspect(self).unloaded:
+            return None
+        table = self.table
+        if table is not None and "database" in sa.inspect(table).unloaded:
+            return None
         database = getattr(table, "database", None)
         if database is None:
             return None
@@ -478,10 +485,14 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
             "filterable",
             "groupby",
             "id",
+            "uuid",
+            "is_certified",
             "is_dttm",
             "python_date_format",
             "type",
+            "type_generic",
             "verbose_name",
+            "warning_markdown",
         )
         return {s: getattr(self, s) for s in attrs if hasattr(self, s)}
 
@@ -715,7 +726,10 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
             "description",
             "expression",
             "id",
+            "uuid",
+            "is_certified",
             "metric_name",
+            "warning_markdown",
             "warning_text",
             "verbose_name",
         )
@@ -1513,12 +1527,20 @@ class SqlaTable(
         return f"[{self.database}].[{self.table_name}](id:{self.id})"
 
     def get_schema_perm(self) -> str | None:
-        """Return schema permission string: ``[database].[schema]``."""
+        """Return the schema permission string.
+
+        ``[db].[schema]`` or ``[db].[catalog].[schema]`` when a catalog is
+        set — same format as ``security_manager.get_schema_perm`` (the
+        authoritative derivation); without the catalog component the perm
+        is malformed for multi-catalog databases (BigQuery et al.).
+        """
         if sa.inspect(self).unloaded.intersection({"database"}):
             return self.schema_perm
         if self.database is None or not self.schema:
             return None
         db_name = getattr(self.database, "database_name", str(self.database))
+        if self.catalog:
+            return f"[{db_name}].[{self.catalog}].[{self.schema}]"
         return f"[{db_name}].[{self.schema}]"
 
     def get_catalog_perm(self) -> str | None:
@@ -1636,9 +1658,15 @@ class SqlaTable(
 
         # SqlaTable-specific extensions (matches original .data property)
         data_["granularity_sqla"] = [(c, c) for c in self.dttm_cols]
-        data_["time_grain_sqla"] = [
-            (g.duration, g.name) for g in self.database.grains() or []
-        ]
+        # Same unloaded-guard as ``db_data`` above — an unguarded
+        # ``self.database`` access on a bare-fetched instance raises
+        # MissingGreenlet on the AsyncSession.
+        if not sa.inspect(self).unloaded.intersection({"database"}):
+            data_["time_grain_sqla"] = [
+                (g.duration, g.name) for g in self.database.grains() or []
+            ]
+        else:
+            data_["time_grain_sqla"] = []
         data_["main_dttm_col"] = self.main_dttm_col
         data_["fetch_values_predicate"] = self.fetch_values_predicate
         data_["template_params"] = self.template_params

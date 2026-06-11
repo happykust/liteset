@@ -377,6 +377,15 @@ class SupersetValidationException(SupersetException):
         super().__init__(message=message, extra=extra, **kwargs)
 
 
+class DatasourceTypeNotSupportedError(SupersetException):
+    """1:1 with upstream ``daos.exceptions.DatasourceTypeNotSupportedError``
+    (status 422) — raised for datasource types without a backing model
+    ("view"/"dataset")."""
+
+    status_code = 422
+    message = "DAO datasource query source type is not supported"
+
+
 class SupersetNotFoundError(SupersetException):
     status_code = 404
     message = "Resource not found"

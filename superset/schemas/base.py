@@ -103,6 +103,22 @@ class FavoriteStatusResponse(msgspec.Struct):
 # ---------------------------------------------------------------------------
 
 
+def _field_default(field: Any) -> Any:
+    """Resolve a msgspec field's default, honouring ``default_factory``.
+
+    For mutable defaults (``owners: list[X] = []``) msgspec stores
+    ``default=NODEFAULT`` and ``default_factory=list`` — checking only
+    ``field.default`` returned ``None`` for list fields, serialising them
+    as JSON ``null`` instead of ``[]`` in the exception fallback.
+    """
+    if field.default is not msgspec.NODEFAULT:
+        return field.default
+    factory = getattr(field, "default_factory", msgspec.NODEFAULT)
+    if factory is not msgspec.NODEFAULT and callable(factory):
+        return factory()
+    return None
+
+
 class ModelStruct(msgspec.Struct):
     """Base class for API response Structs with automatic ORM→Struct mapping.
 
@@ -148,8 +164,7 @@ class ModelStruct(msgspec.Struct):
             except Exception:
                 # Attribute access may trigger lazy load on async sessions
                 # (MissingGreenlet). Fall back to field default.
-                raw = field.default if field.default is not msgspec.NODEFAULT else None
-                kwargs[name] = raw
+                kwargs[name] = _field_default(field)
                 continue
 
             # Nested ModelStruct (scalar relationship)
@@ -160,11 +175,7 @@ class ModelStruct(msgspec.Struct):
                 elif raw is not None:
                     kwargs[name] = nested_type.from_model(raw)
                 else:
-                    kwargs[name] = (
-                        field.default
-                        if field.default is not msgspec.NODEFAULT
-                        else None
-                    )
+                    kwargs[name] = _field_default(field)
                 continue
 
             # List of nested ModelStruct

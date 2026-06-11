@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -90,16 +90,21 @@ async def test_get_explore_with_form_data_key(monkeypatch):
     request.query_params = {"form_data_key": "my-key"}
     chart_dao = AsyncMock()
     dataset_dao = AsyncMock()
-    kv_dao = AsyncMock()
-    # The KV entry envelope: owner/datasource_id/chart_id metadata + form_data
-    # payload — 1:1 with the shape written by explore_form_data.py:338-346.
-    kv_dao.get_value.return_value = json.dumps(
-        {
-            "datasource_id": 1,
-            "datasource_type": "table",
-            "chart_id": None,
-            "form_data": json.dumps({"viz_type": "bar"}),
-        }
+    # The cache-slot entry envelope: owner/datasource_id/chart_id metadata +
+    # form_data payload — 1:1 with the shape written by
+    # explore_form_data.py:338-346.  The form_data_key branch reads through
+    # ``cache_manager.explore_form_data_cache`` (same slot the
+    # explore_form_data endpoints write to), NOT the kv_dao.
+    fake_cache = AsyncMock()
+    fake_cache.get.return_value = {
+        "datasource_id": 1,
+        "datasource_type": "table",
+        "chart_id": None,
+        "form_data": json.dumps({"viz_type": "bar"}),
+    }
+    monkeypatch.setattr(
+        "superset.controllers.explore_form_data._form_data_cache",
+        lambda: fake_cache,
     )
 
     # check_access enforces datasource/chart access on the cached form_data
@@ -116,12 +121,13 @@ async def test_get_explore_with_form_data_key(monkeypatch):
         request=request,
         chart_dao=chart_dao,
         dataset_dao=dataset_dao,
-        kv_dao=kv_dao,
+        kv_dao=AsyncMock(),
         query_dao=AsyncMock(),
         security_manager=AsyncMock(),
         current_user=MagicMock(),
         session=AsyncMock(),
     )
+    fake_cache.get.assert_awaited_once_with("my-key")
     # The handler applies upstream transforms (convert_legacy_filters_into_adhoc
     # / merge_extra_filters / merge_request_params) on top of the loaded
     # form_data, so assert the relevant value rather than an exact dict.
@@ -261,6 +267,12 @@ async def test_get_explore_with_permalink_key_round_trip(monkeypatch):
             return stored
 
     monkeypatch.setattr("superset.db.daos.key_value.AsyncKeyValueDAO", _FakeDAO)
+    # The permalink branch now enforces check_chart_access (1:1 with
+    # GetExplorePermalinkCommand); this test covers resolution, not RBAC.
+    monkeypatch.setattr(
+        "superset.commands.explore_form_data.utils.check_access",
+        AsyncMock(return_value=True),
+    )
 
     get_fn = ExploreController.get_explore.fn
     result = await get_fn(
@@ -357,16 +369,15 @@ async def test_datasource_priority_form_data_wins_over_url_param():
     chart_dao.find_by_id_with_options.return_value = None
     chart_dao.find_by_id.return_value = None
 
-    # kv cache supplies form_data with datasource="2__query".
-    kv_dao = AsyncMock()
-    kv_dao.get_value.return_value = json.dumps(
-        {
-            "datasource_id": 2,
-            "datasource_type": "query",
-            "chart_id": None,
-            "form_data": json.dumps({"datasource": "2__query", "viz_type": "table"}),
-        }
-    )
+    # The explore_form_data cache slot supplies form_data with
+    # datasource="2__query".
+    fake_cache = AsyncMock()
+    fake_cache.get.return_value = {
+        "datasource_id": 2,
+        "datasource_type": "query",
+        "chart_id": None,
+        "form_data": json.dumps({"datasource": "2__query", "viz_type": "table"}),
+    }
 
     captured_filter: list[object] = []
     dataset_dao = AsyncMock()
@@ -387,18 +398,24 @@ async def test_datasource_priority_form_data_wins_over_url_param():
 
     _fd_utils.check_access = _noop_check
     try:
-        get_fn = ExploreController.get_explore.fn
-        result = await get_fn(
-            None,
-            request=request,
-            chart_dao=chart_dao,
-            dataset_dao=dataset_dao,
-            kv_dao=kv_dao,
-            query_dao=AsyncMock(),
-            security_manager=_explore_sm(),
-            current_user=MagicMock(),
-            session=AsyncMock(),
-        )
+        from unittest.mock import patch as _patch
+
+        with _patch(
+            "superset.controllers.explore_form_data._form_data_cache",
+            return_value=fake_cache,
+        ):
+            get_fn = ExploreController.get_explore.fn
+            result = await get_fn(
+                None,
+                request=request,
+                chart_dao=chart_dao,
+                dataset_dao=dataset_dao,
+                kv_dao=AsyncMock(),
+                query_dao=AsyncMock(),
+                security_manager=_explore_sm(),
+                current_user=MagicMock(),
+                session=AsyncMock(),
+            )
     finally:
         _fd_utils.check_access = _fd_utils_orig_check
 
@@ -480,16 +497,17 @@ async def test_datasource_writeback_normalises_form_data():
         "datasource_type": "table",
     }
 
-    # kv cache supplies form_data with datasource="3__query"
-    kv_dao = AsyncMock()
-    kv_dao.get_value.return_value = json.dumps(
-        {
-            "datasource_id": 3,
-            "datasource_type": "query",
-            "chart_id": None,
-            "form_data": json.dumps({"datasource": "3__query", "viz_type": "bar"}),
-        }
-    )
+    # The explore_form_data cache slot supplies form_data with
+    # datasource="3__query" (the form_data_key branch reads through
+    # ``cache_manager.explore_form_data_cache`` — same slot the
+    # explore_form_data endpoints write to).
+    fake_cache = AsyncMock()
+    fake_cache.get.return_value = {
+        "datasource_id": 3,
+        "datasource_type": "query",
+        "chart_id": None,
+        "form_data": json.dumps({"datasource": "3__query", "viz_type": "bar"}),
+    }
 
     chart_dao = AsyncMock()
     chart_dao.find_by_id_with_options.return_value = None
@@ -507,19 +525,24 @@ async def test_datasource_writeback_normalises_form_data():
 
     _fd_utils.check_access = _noop_check
     try:
-        result = await ExploreController.get_explore.fn(
-            None,
-            request=request,
-            chart_dao=chart_dao,
-            dataset_dao=dataset_dao,
-            kv_dao=kv_dao,
-            query_dao=AsyncMock(),
-            security_manager=_explore_sm(),
-            current_user=MagicMock(),
-            session=AsyncMock(),
-        )
+        with patch(
+            "superset.controllers.explore_form_data._form_data_cache",
+            return_value=fake_cache,
+        ):
+            result = await ExploreController.get_explore.fn(
+                None,
+                request=request,
+                chart_dao=chart_dao,
+                dataset_dao=dataset_dao,
+                kv_dao=AsyncMock(),
+                query_dao=AsyncMock(),
+                security_manager=_explore_sm(),
+                current_user=MagicMock(),
+                session=AsyncMock(),
+            )
     finally:
         _fd_utils.check_access = orig_check
+    fake_cache.get.assert_awaited_once_with("fd-key-3")
 
     # form_data["datasource"] must reflect the RESOLVED datasource (3__query),
     # not the stale URL param value (99__table).
@@ -636,14 +659,16 @@ async def test_rejected_form_data_keys_request_js_key_stripped(monkeypatch):
     chart_dao.find_by_id.return_value = chart
 
     # The form_data_key cache entry injects js_tooltip via the request path.
-    kv_dao = AsyncMock()
-    kv_dao.get_value.return_value = json.dumps(
-        {
-            "datasource_id": 0,
-            "datasource_type": "table",
-            "chart_id": None,
-            "form_data": json.dumps({"js_tooltip": "evil_fn", "extra": "ok"}),
-        }
+    fake_cache = AsyncMock()
+    fake_cache.get.return_value = {
+        "datasource_id": 0,
+        "datasource_type": "table",
+        "chart_id": None,
+        "form_data": json.dumps({"js_tooltip": "evil_fn", "extra": "ok"}),
+    }
+    monkeypatch.setattr(
+        "superset.controllers.explore_form_data._form_data_cache",
+        lambda: fake_cache,
     )
 
     import superset.commands.explore_form_data.utils as _fd_utils
@@ -660,7 +685,7 @@ async def test_rejected_form_data_keys_request_js_key_stripped(monkeypatch):
             request=request,
             chart_dao=chart_dao,
             dataset_dao=AsyncMock(),
-            kv_dao=kv_dao,
+            kv_dao=AsyncMock(),
             query_dao=AsyncMock(),
             security_manager=_explore_sm(),
             current_user=MagicMock(),

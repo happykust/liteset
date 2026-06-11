@@ -209,6 +209,28 @@ class ExploreController(Controller):
                 key=entry_id,
             )
             if isinstance(value, dict):
+                # check_chart_access — 1:1 with GetExplorePermalinkCommand.run()
+                # (superset_old/commands/explore/permalink/get.py:49-57): the
+                # permalink references a datasource AND (usually) a chart; a
+                # user with datasource access but no access to the chart must
+                # not read its full form_data via someone else's permalink.
+                from superset.commands.explore_form_data.utils import check_access
+
+                _pl_chart_id: int | None = value.get("chartId")
+                _pl_datasource_id: int = (
+                    value.get("datasourceId") or value.get("datasetId") or 0
+                )
+                _pl_datasource_type: str = str(value.get("datasourceType") or "table")
+                await check_access(
+                    datasource_id=_pl_datasource_id,
+                    chart_id=_pl_chart_id,
+                    datasource_type=_pl_datasource_type,
+                    dataset_dao=dataset_dao,
+                    query_dao=query_dao,
+                    chart_dao=chart_dao,
+                    security_manager=security_manager,
+                    user=current_user,
+                )
                 state = value.get("state") or {}
                 fd = state.get("formData") or {}
                 form_data = json.loads(fd) if isinstance(fd, str) else fd
@@ -227,14 +249,20 @@ class ExploreController(Controller):
         # permalink_key and form_data_key are in an if/elif chain: when
         # permalink_key is provided, form_data_key is ignored entirely.
         elif form_data_key:
-            raw = await kv_dao.get_value(
-                resource="explore_form_data",
-                resource_id=0,
-                key=form_data_key,
-            )
-            if raw:
+            # Read through the SAME cache slot the explore_form_data endpoints
+            # write to (``cache_manager.explore_form_data_cache`` — honours
+            # CACHE_TYPE, metastore backend hashes keys to uuid3 under the
+            # ``superset_metastore_cache`` resource).  The previous
+            # ``kv_dao.get_value(resource="explore_form_data", …)`` read a
+            # resource nothing writes to anymore (regression of ebb75d7008) →
+            # form_data_key navigation always came back empty.
+            from superset.controllers.explore_form_data import _form_data_cache
+
+            entry = await _form_data_cache().get(form_data_key)
+            if entry is not None:
                 try:
-                    entry = json.loads(raw)
+                    if isinstance(entry, str):
+                        entry = json.loads(entry)
                     if isinstance(entry, dict):
                         # Access check — 1:1 with
                         # superset_old/commands/explore/form_data/get.py:48-53

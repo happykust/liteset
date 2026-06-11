@@ -60,7 +60,11 @@ def _get_alembic_config(sql: bool = False) -> "Config":  # noqa: F821
         .replace("sqlite+aiosqlite", "sqlite")
         .replace("mysql+asyncmy", "mysql+pymysql")
     )
-    cfg.set_main_option("sqlalchemy.url", sync_url)
+    # configparser interpolation: a literal ``%`` (e.g. in a DB password)
+    # must be escaped as ``%%`` or ``superset db upgrade`` dies with
+    # InterpolationSyntaxError — 1:1 with upstream env.py's
+    # ``DATABASE_URI.replace("%", "%%")``.
+    cfg.set_main_option("sqlalchemy.url", sync_url.replace("%", "%%"))
     cfg.set_main_option(
         "script_location",
         str(alembic_ini.parent),

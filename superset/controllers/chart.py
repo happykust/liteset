@@ -316,6 +316,72 @@ def _render_chart_data_payload(  # noqa: C901
     return Response(content=encoded, media_type="application/json")
 
 
+def _table_like_file_response(
+    result: dict[str, Any],
+    result_format: str,
+) -> Response[Any]:
+    """Render a chart-data ``result`` as a CSV / XLSX download.
+
+    1:1 with the table-like branch of upstream ``_send_chart_response``
+    (superset_old/charts/data/api.py:362-378): a single query returns the
+    file directly, multiple queries are bundled into a ZIP.  Shared by the
+    POST /data and GET /{pk}/data/ handlers (R11-16 — the GET path used to
+    fall through to the JSON renderer, so CSV email reports attached a JSON
+    blob named ``.csv``).
+    """
+    import zipfile
+    from datetime import datetime as _dt
+
+    import pandas as pd
+
+    queries = result.get("queries", []) or []
+    frames: list[pd.DataFrame] = []
+    for q in queries:
+        if isinstance(q, dict):
+            if isinstance(q.get("df"), pd.DataFrame):
+                frames.append(q["df"])
+            elif q.get("data"):
+                frames.append(pd.DataFrame(q["data"]))
+
+    # Timestamped download filename — 1:1 with the original
+    # ``generate_download_headers`` (``views/base.py``).
+    _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+
+    if len(frames) <= 1:
+        df = frames[0] if frames else pd.DataFrame()
+        if result_format == "csv":
+            csv_content = AsyncQueryContextProcessor.get_data(df, "csv")
+            return Response(
+                content=csv_content,
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename={_ts}.csv"},
+            )
+        xlsx_data = AsyncQueryContextProcessor.get_data(df, "xlsx")
+        return Response(
+            content=xlsx_data,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            headers={"Content-Disposition": f"attachment; filename={_ts}.xlsx"},
+        )
+
+    ext = "csv" if result_format == "csv" else "xlsx"
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for idx, df in enumerate(frames, start=1):
+            file_data = AsyncQueryContextProcessor.get_data(df, result_format)
+            file_bytes = (
+                file_data.encode("utf-8") if isinstance(file_data, str) else file_data
+            )
+            zf.writestr(f"query_{idx}.{ext}", file_bytes)
+    zip_buf.seek(0)
+    return Response(
+        content=zip_buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={_ts}.zip"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Async chart-data channel resolution
 # ---------------------------------------------------------------------------
@@ -1772,6 +1838,16 @@ class ChartController(Controller):
                 datasource = await ds_dao.get_datasource(ds_dict["type"], ds_dict["id"])
                 if not datasource:
                     raise ObjectNotFoundError("Datasource", ds_dict["id"])
+                # Enforce datasource access BEFORE dispatching the GAQ Celery
+                # job — 1:1 with upstream where ``command.validate()``
+                # (raise_for_access) runs unconditionally before the async
+                # ``_run_async`` dispatch (same gate as the POST /data path:
+                # ``_try_cached_chart_data`` swallows the access error in its
+                # broad ``except``, so without this a user with no datasource
+                # access could trigger background compute against it).
+                await security_manager.raise_for_access(
+                    datasource=datasource, user=current_user
+                )
                 query_objects = [
                     AsyncQueryObject.from_request(q, ds_dict)
                     for q in form_data.get("queries", [])
@@ -1891,8 +1967,31 @@ class ChartController(Controller):
             user=current_user,
             query_context=query_context,
         )
+        # Table-like formats (?format=csv|xlsx) — 1:1 with upstream
+        # ``_send_chart_response`` which both GET and POST route through:
+        # the ``can_csv`` gate, then a raw CSV/XLSX (or ZIP) download.  The
+        # CSV email-report path (``get_chart_csv_data``) reads this raw body
+        # (R11-16: the GET path used to return the JSON envelope).
+        _result_format_get = str(qc_data.get("result_format") or "json").lower()
+        if _result_format_get in ("csv", "xlsx"):
+            if not await security_manager.can_access(
+                "can_csv", "Superset", user=current_user
+            ):
+                return Response(
+                    content={"message": "You don't have permission to download data"},
+                    status_code=403,
+                )
+
         cmd = ChartDataCommand(query_context=query_context, processor=processor)
         result = await cmd.execute()
+
+        if _result_format_get in ("csv", "xlsx"):
+            await event_logger.alog_with_context(
+                "chart.data",
+                object_ref=f"chart:{pk}",
+                user_id=current_user.id,
+            )
+            return _table_like_file_response(result, _result_format_get)
 
         # 1:1 with the original GET endpoint (charts/data/api.py:171-178):
         # extract ``form_data`` from ``chart.params`` and pass it through
@@ -2208,64 +2307,7 @@ class ChartController(Controller):
             )
             cmd = ChartDataCommand(query_context=query_context, processor=processor)
             result = await cmd.execute()
-
-            import zipfile
-
-            # Extract data from queries result
-            queries = result.get("queries", [])
-            frames: list[pd.DataFrame] = []
-            for q in queries:
-                if isinstance(q, dict):
-                    if isinstance(q.get("df"), pd.DataFrame):
-                        frames.append(q["df"])
-                    elif q.get("data"):
-                        frames.append(pd.DataFrame(q["data"]))
-
-            # Timestamped download filename — 1:1 with the original
-            # ``generate_download_headers`` (``views/base.py``) which uses
-            # ``datetime.now().strftime("%Y%m%d_%H%M%S").<ext>`` (was a static
-            # ``data.csv`` / ``data.xlsx`` / ``chart_data.zip``).
-            from datetime import datetime as _dt
-
-            _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
-
-            if len(frames) <= 1:
-                # Single query (or no data): return file directly
-                df = frames[0] if frames else pd.DataFrame()
-                if result_format == "csv":
-                    csv_content = AsyncQueryContextProcessor.get_data(df, "csv")
-                    return Response(
-                        content=csv_content,
-                        media_type="text/csv",
-                        headers={
-                            "Content-Disposition": f"attachment; filename={_ts}.csv"
-                        },
-                    )
-                xlsx_data = AsyncQueryContextProcessor.get_data(df, "xlsx")
-                return Response(
-                    content=xlsx_data,
-                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={"Content-Disposition": f"attachment; filename={_ts}.xlsx"},
-                )
-
-            # Multiple queries: bundle individual files into a ZIP
-            ext = "csv" if result_format == "csv" else "xlsx"
-            zip_buf = io.BytesIO()
-            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                for idx, df in enumerate(frames, start=1):
-                    file_data = AsyncQueryContextProcessor.get_data(df, result_format)
-                    file_bytes = (
-                        file_data.encode("utf-8")
-                        if isinstance(file_data, str)
-                        else file_data
-                    )
-                    zf.writestr(f"query_{idx}.{ext}", file_bytes)
-            zip_buf.seek(0)
-            return Response(
-                content=zip_buf.getvalue(),
-                media_type="application/zip",
-                headers={"Content-Disposition": f"attachment; filename={_ts}.zip"},
-            )
+            return _table_like_file_response(result, result_format)
 
         # --- post_processed branch — 1:1 with superset_old/charts/data/api.py ---
         # When result_type is "post_processed", execute the query (full path)

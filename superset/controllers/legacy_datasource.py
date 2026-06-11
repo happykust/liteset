@@ -1011,17 +1011,13 @@ class LegacyDatasourceController(Controller):
                 content={"message": f'Datasource "{datasource_id}" not found.'},
                 status_code=404,
             )
+        # Only SupersetException → 400 (1:1 with the original's
+        # ``except SupersetException as ex: json_error_response(status=400)``);
+        # other exceptions propagate to the global handler (500/422), like
+        # upstream's @handle_api_exception.
         try:
             ext_meta = await asyncio.to_thread(orm_datasource.external_metadata)
         except SupersetException as exc:
-            return Response(
-                content={"message": str(exc)},
-                status_code=400,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "external_metadata failed for datasource %s", datasource_id
-            )
             return Response(
                 content={"message": str(exc)},
                 status_code=400,
@@ -1069,6 +1065,13 @@ class LegacyDatasourceController(Controller):
             except Exception:  # noqa: BLE001
                 params = {}
 
+        # ``datasource_type`` is required — 1:1 with the original
+        # ``ExternalMetadataSchema.datasource_type = fields.Str(required=True)``.
+        if not params.get("datasource_type"):
+            return Response(
+                content={"message": "datasource_type is required"},
+                status_code=400,
+            )
         database_name: str = params.get("database_name") or ""
         if not database_name:
             return Response(
@@ -1097,19 +1100,12 @@ class LegacyDatasourceController(Controller):
         )
 
         if orm_datasource is not None:
-            # Return column info from Superset metadata
+            # Return column info from Superset metadata.  Only
+            # SupersetException → 400 (see external_metadata above).
             try:
                 ext_meta = await asyncio.to_thread(orm_datasource.external_metadata)
                 return Response(content=ext_meta, status_code=200)
             except SupersetException as exc:
-                return Response(content={"message": str(exc)}, status_code=400)
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "external_metadata_by_name: external_metadata failed for %s.%s.%s",
-                    database_name,
-                    schema_name,
-                    table_name,
-                )
                 return Response(content={"message": str(exc)}, status_code=400)
 
         # Fallback: use the SQLAlchemy inspector via the async connection

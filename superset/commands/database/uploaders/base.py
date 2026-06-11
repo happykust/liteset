@@ -198,13 +198,15 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
         schema = self._data.get("schema")
         allowed = bool(getattr(self._database, "allow_file_upload", False))
         if allowed:
+            # ``get_schema_access_for_file_upload`` — 1:1 with the original
+            # validator: handles legacy string-encoded allowlists via
+            # ``literal_eval`` AND the configurable
+            # ``ALLOWED_USER_CSV_SCHEMA_FUNC`` hook (the previous inline
+            # ``get_extra().get(...)`` skipped both).
             try:
-                schemas_allowed = (
-                    self._database.get_extra().get("schemas_allowed_for_file_upload")
-                    or []
-                )
+                schemas_allowed = self._database.get_schema_access_for_file_upload()
             except Exception:  # noqa: BLE001
-                schemas_allowed = []
+                schemas_allowed = set()
             if schemas_allowed:
                 allowed = schema in schemas_allowed
             elif self._security_manager is not None:

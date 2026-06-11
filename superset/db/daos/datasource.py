@@ -63,7 +63,13 @@ class AsyncDatasourceDAO:
         """
         model_cls = _DATASOURCE_TYPE_MAP.get(datasource_type)
         if model_cls is None:
-            raise ValueError(f"Unknown datasource type: {datasource_type}")
+            # 1:1 with upstream ``DatasourceDAO.get_datasource`` raising
+            # ``DatasourceTypeNotSupportedError`` (status 422) — the enum
+            # also contains "view"/"dataset" which have no backing model;
+            # a bare ValueError surfaced as HTTP 500.
+            from superset.exceptions import DatasourceTypeNotSupportedError
+
+            raise DatasourceTypeNotSupportedError()
         stmt: Any
         if model_cls is SqlaTable:
             stmt = (
