@@ -214,6 +214,42 @@ async def test_update_dashboard_success(mock_dao, mock_dashboard):
     mock_dao.session.flush.assert_awaited()
 
 
+async def test_update_dashboard_tags_applied_without_tagging_system_flag(
+    mock_dao, mock_dashboard
+):
+    """Explicit tags in a PUT payload are validated and applied regardless of
+    TAGGING_SYSTEM — upstream calls ``validate_tags``/``update_tags``
+    unconditionally (superset_old/commands/dashboard/update.py:64-65,106-110);
+    the flag only gates the implicit owner/type tag event-listeners."""
+    mock_dao.find_by_id_with_options = AsyncMock(return_value=mock_dashboard)
+    actor = MagicMock()
+    actor.id = 1
+    sm = AsyncMock()
+    sm.is_admin = MagicMock(return_value=True)
+    sm.find_user_by_id = AsyncMock(return_value=actor)
+    with (
+        patch(
+            "superset.commands.dashboard.update.feature_flag_manager.is_feature_enabled",
+            return_value=False,
+        ),
+        patch(
+            "superset.commands.dashboard.update.validate_tags", new=AsyncMock()
+        ) as vt,
+        patch("superset.commands.dashboard.update.update_tags", new=AsyncMock()) as ut,
+    ):
+        cmd = UpdateDashboardCommand(
+            dao=mock_dao,
+            dashboard_id=1,
+            data={"tags": [5]},
+            user_id=1,
+            security_manager=sm,
+        )
+        await cmd.validate()
+        await cmd.run()
+    vt.assert_awaited_once()
+    ut.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # DeleteDashboardCommand
 # ---------------------------------------------------------------------------
