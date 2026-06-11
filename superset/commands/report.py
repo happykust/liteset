@@ -243,6 +243,33 @@ def _settings_config_get(settings: Any, key: str, default: Any) -> Any:
     return default
 
 
+async def _raise_not_found_or_forbidden(
+    security_manager: Any,
+    user_id: int | None,
+    pk: Any,
+    ex: Exception,
+) -> None:
+    """Map an ownership denial to 404-vs-403, mirroring upstream's base_filter.
+
+    Upstream ``ReportScheduleDAO.find_by_id(s)`` applies
+    ``ReportScheduleFilter`` (owners-scope unless the user has
+    ``can_access_all_datasources``), so a report the user can't even see is a
+    ``ReportScheduleNotFoundError`` (404) *before* the ownership check; the
+    403 from ``raise_for_ownership`` is reachable only for users who can see
+    every report (R13-04). The port's DAO has no base filter, so reproduce
+    the same outcome here: visible-but-not-owner → 403, invisible → 404.
+    """
+    user = None
+    if user_id is not None:
+        user = await security_manager.find_user_by_id(user_id)
+    can_access_all = user is not None and (
+        await security_manager.can_access_all_datasources(user=user)
+    )
+    if not can_access_all:
+        raise ObjectNotFoundError("ReportSchedule", pk) from ex
+    raise ReportScheduleForbiddenError() from ex
+
+
 class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
     def __init__(
         self,
@@ -569,7 +596,7 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         try:
             await sm.raise_for_ownership(self._report, self._user_id)
         except SupersetSecurityException as ex:
-            raise ReportScheduleForbiddenError() from ex
+            await _raise_not_found_or_forbidden(sm, self._user_id, self._pk, ex)
 
         # Validate/compute owners -- 1:1 with update.py:130-139: catch the
         # OwnersNotFoundValidationError and fold it into the exceptions list so
@@ -653,7 +680,9 @@ class DeleteReportScheduleCommand(AsyncBaseCommand[None]):
                     self._report, self._user_id
                 )
             except SupersetSecurityException as ex:
-                raise ReportScheduleForbiddenError() from ex
+                await _raise_not_found_or_forbidden(
+                    self._security_manager, self._user_id, self._pk, ex
+                )
 
     async def run(self) -> None:
         assert self._report is not None
@@ -698,7 +727,9 @@ class BulkDeleteReportScheduleCommand(AsyncBaseCommand[None]):
                         model, self._user_id
                     )
                 except SupersetSecurityException as ex:
-                    raise ReportScheduleForbiddenError() from ex
+                    await _raise_not_found_or_forbidden(
+                        self._security_manager, self._user_id, model.id, ex
+                    )
 
     async def run(self) -> None:
         # Mirror ``DeleteReportScheduleCommand.run()``'s
