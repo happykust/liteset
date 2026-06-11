@@ -104,15 +104,18 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
         # Capture the original name before the setattr loop overwrites it, so a
         # rename can be propagated to the (name-based) FAB permissions below.
         original_database_name = self._database.database_name
-        # Capture the original default catalog + multi-catalog flag BEFORE the
-        # setattr loop mutates the model — used to propagate a default-catalog
-        # change to dependent assets after the update (1:1 with upstream
-        # ``UpdateDatabaseCommand._update_catalog_attribute``). For catalog-less
-        # engines (e.g. postgres) ``get_default_catalog`` is ``None`` → no-op.
-        original_catalog = self._database.get_default_catalog()
-        original_allow_multi_catalog = bool(
-            getattr(self._database, "allow_multi_catalog", False)
-        )
+        # Capture the original default catalog BEFORE the setattr loop mutates
+        # the model — used to propagate a default-catalog change to dependent
+        # assets after the update.  1:1 with upstream update.py:83-93: some DBs
+        # need a live query for the default catalog, so a BROKEN current
+        # connection raises here — swallow it and force the asset update so the
+        # connection can still be fixed via PUT.
+        force_update = False
+        try:
+            original_catalog = self._database.get_default_catalog()
+        except Exception:  # noqa: BLE001
+            original_catalog = None
+            force_update = True
 
         # --- build_sqlalchemy_uri --------------------------------------------
         # Mirrors the ``@pre_load`` hook on
@@ -224,18 +227,17 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
         await self._dao.session.flush()
 
         # Propagate a default-catalog change to dependent assets (SqlaTable /
-        # Query / SavedQuery / TabState / TableSchema) — 1:1 with upstream:
-        # only when the default catalog actually changed AND multi-catalog was
-        # NOT enabled on either the old or new config (with multi-catalog the
-        # per-asset catalog is meaningful and must be preserved).
+        # Query / SavedQuery / TabState / TableSchema) — 1:1 with upstream
+        # update.py:104-110: ``force_update or (catalog changed and not
+        # multi-catalog)``.  Upstream evaluates BOTH ``self._model`` and
+        # ``database`` allow_multi_catalog checks on the same (post-update)
+        # instance, so only the new flag value matters.
         new_catalog = self._database.get_default_catalog()
         new_allow_multi_catalog = bool(
             getattr(self._database, "allow_multi_catalog", False)
         )
-        if (
-            new_catalog != original_catalog
-            and not original_allow_multi_catalog
-            and not new_allow_multi_catalog
+        if force_update or (
+            new_catalog != original_catalog and not new_allow_multi_catalog
         ):
             await self._update_catalog_attribute(self._database.id, new_catalog)
 

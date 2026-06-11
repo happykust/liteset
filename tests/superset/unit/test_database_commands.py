@@ -228,6 +228,39 @@ async def test_update_database_success(mock_dao, mock_database):
     mock_dao.session.flush.assert_awaited()
 
 
+async def test_update_database_broken_connection_forces_catalog_update(
+    mock_dao, mock_database
+):
+    """When the CURRENT connection is broken, ``get_default_catalog`` on the
+    pre-update model raises — upstream catches it, sets ``force_update=True``
+    and still propagates the (fixed) catalog to dependent assets
+    (superset_old/commands/database/update.py:83-110).  Without the catch the
+    PUT 500s and the user can never repair a broken connection."""
+    mock_dao.find_by_id = AsyncMock(return_value=mock_database)
+    mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
+    mock_database.get_default_catalog = MagicMock(
+        side_effect=[Exception("connection broken"), "fixed_catalog"]
+    )
+    cmd = UpdateDatabaseCommand(
+        dao=mock_dao,
+        database_id=1,
+        data={"sqlalchemy_uri": "postgresql://fixed-host/db"},
+    )
+    await cmd.validate()
+    with (
+        patch.object(
+            UpdateDatabaseCommand, "_sync_permissions", new_callable=AsyncMock
+        ),
+        patch.object(
+            UpdateDatabaseCommand, "_update_catalog_attribute", new_callable=AsyncMock
+        ) as upd_cat,
+    ):
+        result = await cmd.run()
+    assert result is mock_database
+    # force_update short-circuits the multi-catalog guard — 1:1 upstream.
+    upd_cat.assert_awaited_once_with(1, "fixed_catalog")
+
+
 # ---------------------------------------------------------------------------
 # DeleteDatabaseCommand
 # ---------------------------------------------------------------------------
