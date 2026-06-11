@@ -195,6 +195,68 @@ def _query_dashboard_datasources(
     )
 
 
+def _query_dashboard_slice_names(session: "Any", dashboard_id: int) -> list[str]:
+    """Slice names of every chart attached to ``dashboard_id``.
+
+    Sync mirror of ``Dashboard.charts`` (``[slc.slice_name or "<empty>" for
+    slc in self.slices]``) computed through the metadata ``session`` so the
+    digest never depends on the relationship-load state of a (possibly
+    async-detached) ``Dashboard``.  Touching the unloaded ``slices``
+    relationship on an object bound to an ``AsyncSession`` emits a sync
+    lazy-load → ``MissingGreenlet`` → HTTP 500 (e.g. on ``GET /dashboard/``
+    list serialisation, which does not eager-load ``slices``).  Ordered by
+    ``Slice.id`` for a deterministic digest.
+    """
+    from sqlalchemy import select
+
+    from superset.models.dashboard import dashboard_slices
+    from superset.models.slice import Slice
+
+    rows = (
+        session.execute(
+            select(Slice.slice_name)
+            .join(dashboard_slices, dashboard_slices.c.slice_id == Slice.id)
+            .where(dashboard_slices.c.dashboard_id == dashboard_id)
+            .order_by(Slice.id)
+        )
+        .scalars()
+        .all()
+    )
+    return [name or "<empty>" for name in rows]
+
+
+def _query_chart_datasources(
+    session: "Any", datasource_id: int | None, datasource_type: str | None
+) -> "list[SqlaTable]":
+    """Return ``[SqlaTable]`` for a single chart's datasource via ``session``.
+
+    The single-chart analogue of :func:`_query_dashboard_datasources`:
+    re-queries the ``SqlaTable`` (eager-loading ``database`` and keeping it
+    attached to the sync ``session``) so the RLS walk in
+    :func:`_adjust_string_with_rls` → ``compose_rls_text_clauses`` never trips
+    a ``MissingGreenlet`` by touching ``chart.datasource.database`` on an
+    async-detached ORM object (the chart-list path eager-loads only
+    ``Slice.table``, not ``SqlaTable.database``).  Only ``table``-type
+    datasources are mapped, mirroring ``Slice.datasource``.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from superset.models.connectors import SqlaTable
+
+    if datasource_id is None or (datasource_type or "table") != "table":
+        return []
+    return list(
+        session.execute(
+            select(SqlaTable)
+            .where(SqlaTable.id == datasource_id)
+            .options(selectinload(SqlaTable.database))
+        )
+        .scalars()
+        .all()
+    )
+
+
 def get_dashboard_digest(dashboard: "Dashboard") -> str | None:
     """Return the cache-key digest for ``dashboard``.
 
@@ -218,23 +280,28 @@ def get_dashboard_digest(dashboard: "Dashboard") -> str | None:
     if func:
         return func(dashboard, executor_type, executor)
 
-    unique_string = (
-        f"{dashboard.id}\n{dashboard.charts}\n{dashboard.position_json}\n"
-        f"{dashboard.css}\n{dashboard.json_metadata}"
-    )
-
-    unique_string = _adjust_string_for_executor(unique_string, executor_type, executor)
-    # Fold each attached datasource's RLS predicates into the digest so a
-    # dashboard thumbnail is cached per-RLS-context (a user who can only see
-    # their own rows must not be served another tenant's cached thumbnail).
-    # 1:1 with the original which hashed ``Dashboard.datasources`` here. The
-    # enumeration and RLS evaluation run inside one sync metadata session so
-    # the datasources stay attached for ``get_sqla_row_level_filters`` (which
+    # The ``charts`` part (slice names) and the RLS datasources are both read
+    # through one sync metadata session so the digest never depends on the
+    # relationship-load state of a (possibly async-detached) ``Dashboard``.
+    # ``dashboard.charts`` used to read ``self.slices`` directly — a sync
+    # lazy-load on an ``AsyncSession``-bound object → ``MissingGreenlet`` →
+    # HTTP 500 on the dashboard-list endpoint (which does not eager-load
+    # ``slices``).  ``id``/``position_json``/``css``/``json_metadata`` are
+    # plain columns (already loaded) so they stay inline.  The datasources
+    # stay attached to ``session`` for ``get_sqla_row_level_filters`` (which
     # walks ``datasource.database`` and columns to build the template
-    # processor).
+    # processor) — 1:1 with the original which hashed ``Dashboard.datasources``.
     from superset.utils.rls import _metadata_sync_session
 
     with _metadata_sync_session() as session:
+        chart_names = _query_dashboard_slice_names(session, cast("int", dashboard.id))
+        unique_string = (
+            f"{dashboard.id}\n{chart_names}\n{dashboard.position_json}\n"
+            f"{dashboard.css}\n{dashboard.json_metadata}"
+        )
+        unique_string = _adjust_string_for_executor(
+            unique_string, executor_type, executor
+        )
         datasources = _query_dashboard_datasources(session, cast("int", dashboard.id))
         unique_string = _adjust_string_with_rls(unique_string, datasources, executor)
 
@@ -266,7 +333,20 @@ def get_chart_digest(chart: "Slice") -> str | None:
 
     unique_string = f"{chart.params or ''}.{executor}"
     unique_string = _adjust_string_for_executor(unique_string, executor_type, executor)
-    unique_string = _adjust_string_with_rls(unique_string, [chart.datasource], executor)
+    # Re-query the datasource through a sync metadata session (rather than
+    # passing the async-bound ``chart.datasource``) so the RLS walk in
+    # ``_adjust_string_with_rls`` → ``compose_rls_text_clauses`` can lazily
+    # touch ``datasource.database`` (and columns) without tripping a
+    # ``MissingGreenlet`` — the chart-list endpoint eager-loads only
+    # ``Slice.table``, not ``SqlaTable.database``.  ``datasource_id`` /
+    # ``datasource_type`` are plain columns (already loaded).
+    from superset.utils.rls import _metadata_sync_session
+
+    with _metadata_sync_session() as session:
+        datasources = _query_chart_datasources(
+            session, chart.datasource_id, chart.datasource_type
+        )
+        unique_string = _adjust_string_with_rls(unique_string, datasources, executor)
 
     return md5_sha_from_str(unique_string)
 

@@ -20,6 +20,7 @@ and viz_types listing."""
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json as _json
 import logging
@@ -723,6 +724,18 @@ class ChartController(Controller):
         )
         total = await dao.count(filters=all_filters or None)
         await event_logger.alog_with_context("chart.list")
+        # ``Slice.thumbnail_url`` → digest does blocking metadata-DB I/O (the
+        # sync RLS lookups in ``thumbnails.digest``).  Compute every chart's
+        # thumbnail URL in a single batch off the event-loop thread via
+        # ``asyncio.to_thread`` (which copies the ``contextvars`` context, so
+        # the digest executor's ``get_current_user`` stays visible) and inject
+        # the result below — instead of reading the property on the loop.
+        # ``thumbnail_url`` is therefore dropped from the serialized column set
+        # (it was overwritten manually anyway) and re-declared on the response
+        # ``list_columns`` afterwards so the frontend contract is unchanged.
+        thumbnail_urls = await asyncio.to_thread(
+            lambda: {chart.id: chart.thumbnail_url for chart in charts}
+        )
         # Column list matches Flask-AppBuilder ChartRestApi.list_columns
         # (superset_old/charts/api.py:137-184). The first block are simple
         # model columns / relationships; the second block are computed
@@ -771,7 +784,6 @@ class ChartController(Controller):
                 "slice_url",
                 "table.default_endpoint",
                 "table.table_name",
-                "thumbnail_url",
                 "url",
                 "viz_type",
                 "tags.id",
@@ -793,6 +805,13 @@ class ChartController(Controller):
                 "viz_type",
             ],
         )
+        # Re-declare ``thumbnail_url`` on the response contract (dropped from
+        # the serialized column set above so the blocking digest isn't computed
+        # on the event loop); the value is injected per-item from the batch
+        # computed off-thread.
+        if "thumbnail_url" not in payload["list_columns"]:
+            payload["list_columns"].append("thumbnail_url")
+            payload["label_columns"]["thumbnail_url"] = "Thumbnail Url"
         for item in payload["result"]:
             # Computed properties from the Slice model
             chart_id = item["id"]
@@ -824,7 +843,7 @@ class ChartController(Controller):
                 )
                 item["datasource_name_text"] = chart_obj.datasource_name_text
                 item["datasource_url"] = chart_obj.datasource_url
-                item["thumbnail_url"] = chart_obj.thumbnail_url
+                item["thumbnail_url"] = thumbnail_urls.get(chart_id)
                 item["url"] = chart_obj.url
                 item["edit_url"] = chart_obj.edit_url
                 item["slice_url"] = chart_obj.slice_url

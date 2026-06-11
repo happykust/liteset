@@ -19,6 +19,7 @@ embedded, screenshots, and related objects."""
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from typing import Any, cast, TYPE_CHECKING
@@ -330,7 +331,19 @@ class DashboardController(Controller):
         )
         total = await dao.count(filters=all_filters or None)
         await event_logger.alog_with_context("dashboard.list")
-        return serialize_list_response(
+        # ``serialize_list_response`` is fully synchronous and resolves the
+        # ``thumbnail_url`` column via ``Dashboard.thumbnail_url`` → digest,
+        # which does blocking metadata-DB I/O (the sync RLS / slice-name
+        # lookups in ``thumbnails.digest``).  Run the whole serialization off
+        # the event-loop thread via ``asyncio.to_thread`` so that I/O never
+        # blocks the loop.  ``to_thread`` copies the current ``contextvars``
+        # context, so ``get_current_user`` (used by the digest executor) stays
+        # visible; the digest's own sync session is a separate engine, and
+        # every ORM attribute touched here is already eager-loaded (owners /
+        # roles / tags / changed_by / created_by), so no async-session lazy
+        # load happens in the worker thread.
+        return await asyncio.to_thread(
+            serialize_list_response,
             dashboards,
             total,
             [

@@ -168,3 +168,153 @@ def test_query_dashboard_datasources_empty_when_no_tables():
 
     assert result == []
     assert session.execute.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# R13-02 / R13-03 regression: digest on an async-session-bound ORM object
+# whose lazy relationships are NOT eager-loaded must not raise MissingGreenlet.
+# Mirrors the list-endpoint serialization path (slices / table.database are
+# not preloaded there); before the fix these raised
+# ``sqlalchemy.exc.MissingGreenlet`` -> HTTP 500.  The digest reads the lazy
+# data through a sync metadata session instead — patched here onto the same
+# SQLite file the async fetch uses so the sync lookups resolve.
+# ---------------------------------------------------------------------------
+
+
+class _FakeUser:
+    username = "alice"
+    id = 1
+    is_anonymous = False
+    is_authenticated = True
+
+
+def _patch_metadata_engine(monkeypatch, sync_engine):
+    import superset.utils.rls as rls_mod
+
+    monkeypatch.setattr(rls_mod, "_metadata_sync_engine", lambda: sync_engine)
+
+
+async def test_get_dashboard_digest_no_slices_preload_does_not_raise(
+    tmp_path, monkeypatch
+):
+    """R13-02: get_dashboard_digest must not trip MissingGreenlet when the
+    dashboard's ``slices`` relationship is not eager-loaded (the dashboard-list
+    query only preloads owners/roles/tags/changed_by/created_by)."""
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.orm import selectinload, Session as SyncSession
+
+    from superset.models.dashboard import Dashboard
+    from superset.models.slice import Slice
+    from superset.thumbnails.digest import get_dashboard_digest
+    from superset.utils.core import set_current_user
+
+    db_file = tmp_path / "r1302.db"
+    sync_engine = create_engine(f"sqlite:///{db_file}")
+    Dashboard.metadata.create_all(sync_engine)
+    with SyncSession(sync_engine) as session:
+        dash = Dashboard(dashboard_title="t", slug="r1302")
+        dash.slices = [Slice(slice_name="c1", datasource_type="table")]
+        session.add(dash)
+        session.commit()
+        dash_id = dash.id
+
+    _patch_metadata_engine(monkeypatch, sync_engine)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    set_current_user(_FakeUser())
+    try:
+        async with maker() as session:
+            # NB: slices intentionally NOT in options — mirrors the list path.
+            dash = (
+                (
+                    await session.execute(
+                        select(Dashboard)
+                        .where(Dashboard.id == dash_id)
+                        .options(selectinload(Dashboard.owners))
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            digest = get_dashboard_digest(dash)
+        assert isinstance(digest, str)
+        assert digest
+    finally:
+        set_current_user(None)
+        await engine.dispose()
+
+
+async def test_get_chart_digest_no_database_preload_does_not_raise(
+    tmp_path, monkeypatch
+):
+    """R13-03: get_chart_digest must not trip MissingGreenlet when the chart's
+    ``table.database`` relationship is not eager-loaded (the chart-list query
+    preloads only ``Slice.table``); the RLS digest walk reads
+    ``datasource.database``."""
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.orm import selectinload, Session as SyncSession
+
+    from superset.models.connectors import SqlaTable
+    from superset.models.core import Database
+    from superset.models.security import User
+    from superset.models.slice import Slice
+    from superset.thumbnails.digest import get_chart_digest
+    from superset.utils.core import set_current_user
+
+    db_file = tmp_path / "r1303.db"
+    sync_engine = create_engine(f"sqlite:///{db_file}")
+    Slice.metadata.create_all(sync_engine)
+    with SyncSession(sync_engine) as session:
+        # A real ``alice`` row makes the RLS digest walk resolve the executor
+        # user and proceed to ``datasource.database`` — the exact attribute
+        # that tripped R13-03 on an async-bound table.
+        session.add(
+            User(username="alice", first_name="a", last_name="l", email="a@x.com")
+        )
+        db = Database(database_name="d", sqlalchemy_uri="sqlite://")
+        session.add(db)
+        session.flush()
+        table = SqlaTable(table_name="t", database_id=db.id)
+        table.is_managed_externally = False
+        session.add(table)
+        session.flush()
+        chart = Slice(
+            slice_name="c1",
+            datasource_type="table",
+            datasource_id=table.id,
+            params="{}",
+        )
+        session.add(chart)
+        session.commit()
+        chart_id = chart.id
+
+    _patch_metadata_engine(monkeypatch, sync_engine)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    set_current_user(_FakeUser())
+    try:
+        async with maker() as session:
+            # Mirror the chart-list query: owners preloaded (get_executor reads
+            # them) and Slice.table preloaded — but table.database is NOT.
+            chart = (
+                (
+                    await session.execute(
+                        select(Slice)
+                        .where(Slice.id == chart_id)
+                        .options(
+                            selectinload(Slice.owners),
+                            selectinload(Slice.table),
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            digest = get_chart_digest(chart)
+        assert isinstance(digest, str)
+        assert digest
+    finally:
+        set_current_user(None)
+        await engine.dispose()
