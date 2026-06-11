@@ -771,6 +771,28 @@ async def _database_is_accessible(
     return getattr(database, "database_name", None) in database_names
 
 
+async def _get_accessible_database_or_404(
+    dao: "DatabaseDAOProtocol",
+    security_manager: Any,
+    current_user: Any,
+    pk: int,
+) -> Any:
+    """Load a database by id, hiding inaccessible ones behind a 404.
+
+    1:1 with the upstream ``DatabaseFilter`` base_filter that
+    ``DatabaseDAO.find_by_id``/FAB ``datamodel`` apply on EVERY by-id
+    operation (superset_old/daos/database.py:38, daos/base.py:52-72): a
+    database outside the user's visibility scope must behave exactly like a
+    missing one — existence hidden, no metadata or mutation possible.
+    """
+    database = await dao.find_by_id(pk)
+    if not database or not await _database_is_accessible(
+        security_manager, current_user, database
+    ):
+        raise ObjectNotFoundError("Database", pk)
+    return database
+
+
 class DatabaseController(Controller):
     path = "/api/v1/database"
     tags = ["Databases"]
@@ -967,11 +989,15 @@ class DatabaseController(Controller):
         guards=[require_permission("can_write", "Database")],
     )
     async def get_connection(
-        self, pk: int, dao: DatabaseDAOProtocol
+        self,
+        pk: int,
+        dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> DatabaseConnectionResponse:
-        database = await dao.find_by_id(pk)
-        if not database:
-            raise ObjectNotFoundError("Database", pk)
+        database = await _get_accessible_database_or_404(
+            dao, security_manager, current_user, pk
+        )
         # Mirrors ``DatabaseConnectionSchema`` from
         # ``superset_old.databases.schemas`` (via
         # ``DatabaseRestApi.get_connection``).  Fields ``id``,
@@ -1259,7 +1285,11 @@ class DatabaseController(Controller):
         request: Request[Any, Any, Any],
         dao: DatabaseDAOProtocol,
         current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> DatabaseGetResponse:
+        # Visibility scope (upstream DatabaseFilter via DAO base_filter):
+        # a database the user cannot access must 404 before any mutation.
+        await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
         # Bind the current user to the request-scoped ContextVar so downstream
         # commands resolving ``get_current_user()`` (e.g. ``SyncPermissionsCommand``
         # invoked from ``UpdateDatabaseCommand._sync_permissions``) find the
@@ -1414,8 +1444,14 @@ class DatabaseController(Controller):
         status_code=200,
     )
     async def delete_database(
-        self, pk: int, dao: DatabaseDAOProtocol
+        self,
+        pk: int,
+        dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, str]:
+        # Visibility scope (upstream DatabaseFilter via DAO base_filter).
+        await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
         cmd = DeleteDatabaseCommand(dao=cast("AsyncDatabaseDAO", dao), database_id=pk)
         await cmd.execute()
         await event_logger.alog_with_context(
@@ -1441,6 +1477,8 @@ class DatabaseController(Controller):
         # Mirrors superset_old/databases/api.py:sync_permissions verbatim: run
         # the command (which dispatches the Celery task in async mode, else runs
         # inline) then return 202/200 with the original message.
+        # Visibility scope (upstream DatabaseFilter via DAO base_filter).
+        await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
         username: str | None = getattr(current_user, "username", None)
         await SyncPermissionsCommand(
             dao=cast("AsyncDatabaseDAO", dao),
@@ -1482,9 +1520,9 @@ class DatabaseController(Controller):
             _parsed = _parse_rison_or_json(q)
             if isinstance(_parsed, dict):
                 _ = bool(_parsed.get("force", False))
-        database = await dao.find_by_id(pk)
-        if not database:
-            raise ObjectNotFoundError("Database", pk)
+        database = await _get_accessible_database_or_404(
+            dao, security_manager, current_user, pk
+        )
         try:
             if database_has_async_driver(database):
                 async with get_async_connection(database) as (conn, engine_spec):
@@ -1601,6 +1639,9 @@ class DatabaseController(Controller):
         catalog: str | None = Parameter(query="catalog", default=None),
         force: bool = Parameter(query="force", default=False),
     ) -> dict[str, Any]:
+        # Visibility scope (upstream DatabaseFilter via DAO base_filter):
+        # TablesDatabaseCommand's own find_by_id is unscoped.
+        await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
         # Original Superset sends params inside Rison ``q`` parameter.
         # Fall back to direct query params for backward compat.
         rison = rison_params or {}
@@ -2306,11 +2347,13 @@ class DatabaseController(Controller):
         guards=[require_permission("can_read", "Database")],
     )
     async def related_objects(
-        self, pk: int, dao: DatabaseDAOProtocol
+        self,
+        pk: int,
+        dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
-        database = await dao.find_by_id(pk)
-        if not database:
-            raise ObjectNotFoundError("Database", pk)
+        await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
         related = await dao.get_related_objects(pk)
         return {
             "charts": {
@@ -2362,7 +2405,11 @@ class DatabaseController(Controller):
         pk: int,
         data: ValidateSQLSchema,
         dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
+        # Visibility scope (upstream DatabaseFilter via DAO base_filter).
+        await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
         # Mirrors ``superset_old/databases/api.py:validate_sql`` — the command
         # returns a list of SQL-error annotations, which the API wraps as
         # ``{"result": [...]}``.  When the engine has no validator configured
@@ -2401,6 +2448,13 @@ class DatabaseController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
+        # Visibility scope (upstream DatabaseFilter via DAO base_filter):
+        # ExportDatabasesCommand loads via find_by_ids which upstream scopes —
+        # any requested id outside the user's visibility must 404 the export.
+        for _id in ids:
+            await _get_accessible_database_or_404(
+                dao, security_manager, current_user, _id
+            )
         # 1:1 with ``superset_old/databases/api.py:1515-1539``: build
         # ``root = f"database_export_{timestamp}"`` (timestamp =
         # ``datetime.now().strftime("%Y%m%dT%H%M%S")``), nest every ZIP entry
@@ -2490,10 +2544,16 @@ class DatabaseController(Controller):
         "/{pk:int}/function_names/",
         guards=[require_permission("can_read", "Database")],
     )
-    async def function_names(self, pk: int, dao: DatabaseDAOProtocol) -> dict[str, Any]:
-        database = await dao.find_by_id(pk)
-        if not database:
-            raise ObjectNotFoundError("Database", pk)
+    async def function_names(
+        self,
+        pk: int,
+        dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
+    ) -> dict[str, Any]:
+        database = await _get_accessible_database_or_404(
+            dao, security_manager, current_user, pk
+        )
         # Delegate to Database.function_names which calls
         # db_engine_spec.get_function_names(database) — matches original
         # superset_old/databases/api.py:function_names line 1826-1828.
@@ -2731,9 +2791,9 @@ class DatabaseController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> SchemaAccessForUploadResponse:
-        database = await dao.find_by_id(pk)
-        if not database:
-            raise ObjectNotFoundError("Database", pk)
+        database = await _get_accessible_database_or_404(
+            dao, security_manager, current_user, pk
+        )
         # Check allow_file_upload flag on the database
         if not getattr(database, "allow_file_upload", False):
             return SchemaAccessForUploadResponse(schemas=[])
@@ -2795,6 +2855,10 @@ class DatabaseController(Controller):
            ``column_data_types`` JSON — previously all were silently dropped.
         """
         from superset.utils.upload import parse_upload_form, validate_file_extension
+
+        # Visibility scope (upstream DatabaseFilter via DAO base_filter):
+        # UploadCommand's own find_by_id is unscoped.
+        await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
 
         # Extract the UploadFile object from the multipart dict.
         # Litestar puts named file fields as UploadFile instances in the dict.
@@ -3040,18 +3104,21 @@ class DatabaseController(Controller):
         status_code=200,
     )
     async def delete_ssh_tunnel(
-        self, pk: int, dao: DatabaseDAOProtocol
+        self,
+        pk: int,
+        dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, str]:
-        # Check database existence first — 1:1 with
+        # Check database existence + visibility first — 1:1 with
         # ``superset_old/databases/api.py:2045-2047``: the original does
-        # ``DatabaseDAO.find_by_id(pk)`` and returns 404 when missing,
-        # BEFORE checking for the SSH tunnel.  Without this the port
-        # would return ``ObjectNotFoundError("SSHTunnel", pk)`` instead
-        # of ``ObjectNotFoundError("Database", pk)`` when the database
+        # ``DatabaseDAO.find_by_id(pk)`` (scoped by DatabaseFilter) and
+        # returns 404 when missing/inaccessible, BEFORE checking for the
+        # SSH tunnel.  Without this the port would return
+        # ``ObjectNotFoundError("SSHTunnel", pk)`` instead of
+        # ``ObjectNotFoundError("Database", pk)`` when the database
         # itself doesn't exist.
-        database = await dao.find_by_id(pk)
-        if not database:
-            raise ObjectNotFoundError("Database", pk)
+        await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
         cmd = DeleteSSHTunnelCommand(dao=cast("AsyncDatabaseDAO", dao), database_id=pk)
         await cmd.execute()
         await event_logger.alog_with_context(

@@ -361,7 +361,15 @@ async def test_database_tables_filters_inaccessible():
     async def _fake_conn(_db):
         yield (MagicMock(), _Spec())
 
-    with patch("superset.controllers.database.get_async_connection", _fake_conn):
+    with (
+        patch("superset.controllers.database.get_async_connection", _fake_conn),
+        # The database itself IS visible to the user (the R13-07 visibility
+        # gate passes); this test exercises the table-level filtering below.
+        patch(
+            "superset.controllers.database._database_is_accessible",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
         result = await _fn(DatabaseController, "tables")(
             controller,
             pk=1,
