@@ -285,9 +285,15 @@ async def _import_dashboard(  # noqa: C901
 
     from superset.models.dashboard import Dashboard
 
+    # ``AsyncSecurityManager.can_access`` takes the user explicitly
+    # (keyword-only) — upstream's Flask manager reads ``g.user`` internally.
+    # No user in context → deny, like upstream (R12-02; 1:1 with the
+    # chart-importer fix from R10).
     can_write = True
     if security_manager is not None:
-        can_write = await security_manager.can_access("can_write", "Dashboard")
+        can_write = current_user is not None and await security_manager.can_access(
+            "can_write", "Dashboard", user=current_user
+        )
 
     # Dedup by all unique columns (uuid OR slug), 1:1 with upstream
     # ``import_from_dict`` which filters on every unique constraint — a
@@ -304,9 +310,19 @@ async def _import_dashboard(  # noqa: C901
     if existing:
         if overwrite and can_write and current_user:
             if security_manager is not None:
-                can_access = await security_manager.can_access_dashboard(existing)
-                is_admin = await security_manager.is_admin()
+                # ``can_access_dashboard`` walks owners/roles/slices and
+                # ``is_owner`` reads ``owners`` synchronously — pre-load both
+                # so the bare-fetched dashboard doesn't trip MissingGreenlet.
+                # ``can_access_dashboard``/``is_admin`` are user-explicit
+                # (keyword-only / positional); ``is_admin`` is SYNC — the
+                # previous ``can_access_dashboard(existing)`` /
+                # ``await is_admin()`` raised TypeError (R12-02; 1:1 with the
+                # R10 chart-importer fix).
                 await session.refresh(existing, ["owners"])
+                can_access = await security_manager.can_access_dashboard(
+                    existing, user=current_user
+                )
+                is_admin = security_manager.is_admin(current_user)
                 if not can_access or (
                     current_user not in existing.owners and not is_admin
                 ):

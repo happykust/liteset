@@ -62,9 +62,18 @@ async def import_theme(  # noqa: C901  # complex business logic
 
     from superset.models.core import Theme
 
+    # ``AsyncSecurityManager.can_access`` takes the user explicitly
+    # (keyword-only) — the previous call omitted it (TypeError when this
+    # branch runs, R12-01). Resolve the acting user from the request-scoped
+    # ContextVar, mirroring upstream's Flask ``g.user`` read.
     can_write = ignore_permissions
     if not can_write and security_manager is not None:
-        can_write = await security_manager.can_access("can_write", "Theme")
+        from superset.utils.core import get_current_user
+
+        _user = get_current_user()
+        can_write = _user is not None and await security_manager.can_access(
+            "can_write", "Theme", user=_user
+        )
 
     cfg = dict(config)
     uuid_str = cfg.get("uuid")

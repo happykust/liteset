@@ -331,7 +331,7 @@ class TagController(Controller):
         # ``.url`` from each entry. Pass-through unchanged.
         return {"result": tagged_objects}
 
-    @get("/{pk:int}/favorites/")
+    @get("/{pk:int}/favorites/", guards=[require_permission("can_read", "Tag")])
     async def check_favorite(
         self,
         pk: int,
