@@ -218,11 +218,20 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
         config = dict(content)  # shallow copy to avoid mutating caller's data
 
         # --- Permission check ---
+        # ``AsyncSecurityManager.can_access`` takes the user explicitly
+        # (keyword-only) — upstream's Flask manager reads ``g.user`` inside
+        # ``can_access`` instead. No user in context → deny, like upstream
+        # (same fix as the dataset importer / R12-01 / R12-02).
         can_write = self._ignore_permissions
         if not can_write and self._security_manager is not None:
             if hasattr(self._security_manager, "can_access"):
-                can_write = await self._security_manager.can_access(
-                    "can_write", "Database"
+                from superset.utils.core import get_current_user
+
+                user = get_current_user()
+                can_write = user is not None and (
+                    await self._security_manager.can_access(
+                        "can_write", "Database", user=user
+                    )
                 )
             else:
                 can_write = True
