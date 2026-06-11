@@ -48,13 +48,13 @@ from textwrap import dedent
 from typing import Any, cast, Iterator, Optional, TYPE_CHECKING
 
 from packaging.version import Version
-from sqlalchemy import Column, literal_column, types
+from sqlalchemy import literal_column, types
 from sqlalchemy.engine.base import Engine
 from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.engine.result import Row as ResultRow
 from sqlalchemy.engine.url import URL
 from sqlalchemy.exc import NoSuchTableError
-from sqlalchemy.sql.expression import ColumnClause, Select
+from sqlalchemy.sql.expression import ColumnClause
 
 from superset.common.query_status import QueryStatus
 from superset.db_engine_specs.base import ResultSetColumnType
@@ -69,7 +69,7 @@ from superset.db_engine_specs.trino import (
 )
 from superset.exceptions import SupersetTemplateException
 from superset.result_set import destringify
-from superset.utils import core as utils, json
+from superset.utils import core as utils
 from superset.utils.feature_flags import feature_flag_manager
 
 if TYPE_CHECKING:
@@ -86,21 +86,6 @@ logger = logging.getLogger(__name__)
 def is_feature_enabled(feature: str) -> bool:
     """Port shim for upstream's ``superset.is_feature_enabled``."""
     return feature_flag_manager.is_feature_enabled(feature)
-
-
-# ---------------------------------------------------------------------------
-# Custom Presto SQL types used by ``where_latest_partition`` — the port's
-# ``trino.py`` defines the column-mapping types (Array/Map/Row/Interval/
-# TinyInteger) but not these two date/timestamp markers.
-# ---------------------------------------------------------------------------
-
-
-class Date(types.TypeEngine):  # pylint: disable=abstract-method
-    """Presto ``date`` partition-value marker type."""
-
-
-class TimeStamp(types.TypeEngine):  # pylint: disable=abstract-method
-    """Presto ``timestamp`` partition-value marker type."""
 
 
 # ---------------------------------------------------------------------------
@@ -364,43 +349,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
         """
         )
         return sql
-
-    @classmethod
-    def where_latest_partition(
-        cls,
-        database: Database,
-        table: Table,
-        query: Select,
-        columns: list[ResultSetColumnType] | None = None,
-    ) -> Select | None:
-        try:
-            col_names, values = cls.latest_partition(database, table, show_first=True)
-        except Exception:  # pylint: disable=broad-except
-            # table is not partitioned
-            return None
-
-        if values is None:
-            return None
-
-        column_type_by_name = {
-            column.get("column_name"): column.get("type") for column in columns or []
-        }
-
-        for col_name, value in zip(col_names, values, strict=False):
-            col_type = column_type_by_name.get(col_name)
-
-            if isinstance(col_type, str):
-                col_type_class = getattr(types, col_type, None)
-                col_type = col_type_class() if col_type_class else None
-
-            if isinstance(col_type, types.DATE):
-                col_type = Date()
-            elif isinstance(col_type, types.TIMESTAMP):
-                col_type = TimeStamp()
-
-            query = query.where(Column(col_name, col_type) == value)
-
-        return query
 
     @classmethod
     def _latest_partition_from_df(cls, df: Any) -> list[str] | None:
@@ -745,112 +693,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
     # ------------------------------------------------------------------
     # Cost estimation + function names (originally on ``PrestoBaseEngineSpec``)
     # ------------------------------------------------------------------
-
-    @classmethod
-    def estimate_statement_cost(
-        cls, database: Database, statement: str, cursor: Any
-    ) -> dict[str, Any]:
-        """
-        Run a SQL query that estimates the cost of a given statement.
-        :param database: A Database object
-        :param statement: A single SQL statement
-        :param cursor: Cursor instance
-        :return: JSON response from Trino
-        """
-        sql = f"EXPLAIN (TYPE IO, FORMAT JSON) {statement}"
-        cursor.execute(sql)
-
-        # the output from Trino is a single column and a single row containing
-        # JSON:
-        #
-        #   {
-        #     ...
-        #     "estimate" : {
-        #       "outputRowCount" : 8.73265878E8,
-        #       "outputSizeInBytes" : 3.41425774958E11,
-        #       "cpuCost" : 3.41425774958E11,
-        #       "maxMemory" : 0.0,
-        #       "networkCost" : 3.41425774958E11
-        #     }
-        #   }
-        result = json.loads(cursor.fetchone()[0])
-        return result
-
-    @classmethod
-    def query_cost_formatter(
-        cls, raw_cost: list[dict[str, Any]]
-    ) -> list[dict[str, str]]:
-        """
-        Format cost estimate.
-        :param raw_cost: JSON estimate from Trino
-        :return: Human readable cost estimate
-        """
-
-        def humanize(value: Any, suffix: str) -> str:
-            try:
-                value = int(value)
-            except ValueError:
-                return str(value)
-
-            prefixes = ["K", "M", "G", "T", "P", "E", "Z", "Y"]
-            prefix = ""
-            to_next_prefix = 1000
-            while value > to_next_prefix and prefixes:
-                prefix = prefixes.pop(0)
-                value //= to_next_prefix
-
-            return f"{value} {prefix}{suffix}"
-
-        cost = []
-        columns = [
-            ("outputRowCount", "Output count", " rows"),
-            ("outputSizeInBytes", "Output size", "B"),
-            ("cpuCost", "CPU cost", ""),
-            ("maxMemory", "Max memory", "B"),
-            ("networkCost", "Network cost", ""),
-        ]
-        for row in raw_cost:
-            estimate: dict[str, float] = row.get("estimate", {})
-            statement_cost = {}
-            for key, label, suffix in columns:
-                if key in estimate:
-                    statement_cost[label] = humanize(estimate[key], suffix).strip()
-            cost.append(statement_cost)
-
-        return cost
-
-    @classmethod
-    def get_function_names(cls, database: Database) -> list[str]:
-        """
-        Get a list of function names that are able to be called on the database.
-        Used for SQL Lab autocomplete.
-
-        Results are cached per-database for SQL Lab autocomplete — the business
-        equivalent of upstream's ``@cache_manager.data_cache.memoize()``. The
-        port's cache layer exposes no flask-caching ``memoize``, so this uses
-        the sync cache slot (``cache_manager.sync_cache``) directly with a
-        manual get/set, matching the ClickHouse port's ``get_function_names``.
-
-        :param database: The database to get functions for
-        :return: A list of function names useable in the database
-        """
-        from superset.extensions import cache_manager
-
-        cache_key = f"db:{getattr(database, 'id', None)}:function_names"
-        try:
-            cached = cache_manager.sync_cache.get(cache_key)
-            if cached is not None:
-                return cached
-        except Exception:  # noqa: BLE001
-            logger.debug("function-name cache read failed", exc_info=True)
-
-        names = database.get_df("SHOW FUNCTIONS")["Function"].tolist()
-
-        try:
-            cache_manager.sync_cache.set(cache_key, names)
-        except Exception:  # noqa: BLE001
-            logger.debug("function-name cache write failed", exc_info=True)
-        return names
 
     # ------------------------------------------------------------------
     # Presto-only overrides
