@@ -272,9 +272,10 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
             " - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 15)"
         ),
         # Half hour — upstream presto/trino key is TimeGrain.HALF_HOUR
-        # ("PT0.5H"), NOT "PT30M": the explore UI offers grains from the SYNC
-        # spec table, so the key here must match or the SQL builder silently
-        # drops the truncation (R13-09).
+        # ("PT0.5H"), NOT "PT30M". The explore UI offers grains from the SYNC
+        # spec table, so any async consumer of this table must see the same
+        # keys or it silently drops the truncation (R13-09, latent — see
+        # tests/superset/unit/test_engine_spec_grain_parity.py).
         "PT0.5H": (
             "DATE_TRUNC('minute', CAST({col} AS TIMESTAMP))"
             " - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 30)"

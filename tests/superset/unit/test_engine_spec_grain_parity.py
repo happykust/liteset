@@ -19,13 +19,14 @@ async engine-spec packages.
 
 Two-package topology hazard: the explore UI builds its grain dropdown from
 the SYNC spec (``Database.db_engine_spec`` → ``superset.db_engine_specs``,
-the upstream copy), while chart SQL generation resolves the ASYNC spec
-(``superset.utils.database.get_engine_spec_for_database`` →
-``superset.db.engine_specs``) in ``SqlaTable._get_time_grain_expr``.  Any
-grain key the sync table offers but the async table lacks makes the SQL
-builder silently fall back to the un-truncated column — charts group by raw
-timestamps instead of the selected grain (this is exactly how Trino's
-``PT0.5H`` half-hour grain was lost: the async table spelled it ``PT30M``).
+the upstream copy), while the async package keeps its own grain tables
+(``superset.db.engine_specs``), consumed via
+``get_engine_spec_for_database`` (today only by the currently-unwired
+``SqlaTable._get_time_grain_expr``; any future consumer inherits the same
+contract).  Any grain key the sync table offers but the async table lacks
+makes such a consumer silently fall back to the un-truncated column —
+charts group by raw timestamps instead of the selected grain (this is
+exactly how Trino's ``PT0.5H`` half-hour grain was spelled ``PT30M``).
 """
 
 from __future__ import annotations
