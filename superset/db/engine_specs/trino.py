@@ -271,8 +271,11 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
             "DATE_TRUNC('minute', CAST({col} AS TIMESTAMP))"
             " - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 15)"
         ),
-        # 30-minute (half hour)
-        "PT30M": (
+        # Half hour — upstream presto/trino key is TimeGrain.HALF_HOUR
+        # ("PT0.5H"), NOT "PT30M": the explore UI offers grains from the SYNC
+        # spec table, so the key here must match or the SQL builder silently
+        # drops the truncation (R13-09).
+        "PT0.5H": (
             "DATE_TRUNC('minute', CAST({col} AS TIMESTAMP))"
             " - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 30)"
         ),
