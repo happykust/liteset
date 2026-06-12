@@ -400,3 +400,30 @@ async def test_database_ssh_tunnel_get_denied_404():
             security_manager=sm,
             current_user=MagicMock(),
         )
+
+
+def test_database_get_ssh_tunnel_requires_can_write() -> None:
+    """GET /database/{pk}/ssh_tunnel/ must require can_write — upstream exposes
+    tunnel metadata only via get_connection (can_write); a can_read gate would
+    let Gamma enumerate SSH bastion host/username (R15-01)."""
+    from superset.controllers.database import DatabaseController
+
+    handler = DatabaseController.get_ssh_tunnel
+    perms = [
+        c
+        for g in (handler.guards or [])
+        for c in (cell.cell_contents for cell in (g.__closure__ or []))
+        if isinstance(c, tuple) and len(c) == 2
+    ]
+    assert ("can_write", "Database") in perms, perms
+
+
+def test_user_avatar_requires_authentication() -> None:
+    """GET /user/{id}/avatar.png must require authentication — 1:1 with upstream
+    which 401s anonymous callers; the port used exclude_from_auth (R15-02)."""
+    from superset.controllers.user import UserPublicController
+    from superset.guards.rbac import require_authentication
+
+    handler = UserPublicController.avatar
+    assert require_authentication in (handler.guards or [])
+    assert not (handler.opt or {}).get("exclude_from_auth"), handler.opt

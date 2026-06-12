@@ -3109,7 +3109,13 @@ class DatabaseController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/{pk:int}/ssh_tunnel/",
-        guards=[require_permission("can_read", "Database")],
+        # ``can_write`` — upstream exposes SSH-tunnel metadata
+        # (server_address/port/username) ONLY through ``get_connection``
+        # (constants.py:171 ``get_connection: write``); there is no can_read
+        # path to it.  Gate this liteset-added GET at the same level so a
+        # ``can_read``-only user (e.g. Gamma) can't enumerate a database's SSH
+        # bastion host + username (R15-01).
+        guards=[require_permission("can_write", "Database")],
     )
     async def get_ssh_tunnel(
         self,

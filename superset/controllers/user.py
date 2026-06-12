@@ -32,7 +32,7 @@ from litestar.response import Redirect
 from superset.controllers.base import extract_pagination
 from superset.events import event_logger
 from superset.exceptions import ObjectNotFoundError, SupersetValidationException
-from superset.guards.rbac import require_permission
+from superset.guards.rbac import require_authentication, require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_register_user_dao, provide_user_crud_dao
 from superset.schemas.security import (
@@ -1112,7 +1112,12 @@ class UserPublicController(Controller):
 
     @get(
         "/{user_id:int}/avatar.png",
-        opt={"exclude_from_auth": True},
+        # Require authentication — 1:1 with upstream ``UserRestApi.avatar``
+        # whose docstring states it "returns a 401 error if the user is
+        # unauthenticated" (superset_old/views/users/api.py:183-205). Avatars
+        # load via same-origin ``<img>`` which forwards the session cookie, so
+        # authenticated display is unaffected (R15-02).
+        guards=[require_authentication],
     )
     async def avatar(self, user_dao: Any, user_id: int, state: State) -> Any:
         """GET /api/v1/user/{user_id}/avatar.png — redirect to avatar URL.
