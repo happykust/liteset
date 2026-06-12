@@ -113,11 +113,13 @@ class CreateTagCommand(AsyncBaseCommand[Any]):
         data: dict[str, Any],
         security_manager: Any | None = None,
         current_user: Any | None = None,
+        bulk_create: bool = False,
     ) -> None:
         self._dao = dao
         self._data = data
         self._security_manager = security_manager
         self._current_user = current_user
+        self._bulk_create = bulk_create
 
     async def validate(self) -> None:
         name = self._data.get("name", "").strip()
@@ -165,21 +167,29 @@ class CreateTagCommand(AsyncBaseCommand[Any]):
             [(str(o[0]), int(o[1])) for o in normalized],
         )
 
+        pairs: list[tuple[str, int]] = []
         for obj in normalized:
             object_type, object_id = obj[0], obj[1]
             pair = (str(object_type), int(object_id))
-            if pair in skipped:
-                continue
-            # Validate the object type up front — ``create_custom_tagged_objects``
-            # does ``ObjectType[object_type]`` which would ``KeyError`` → 500 on
-            # an unknown type. Mirror upstream's ``invalid object type`` 4xx.
+            # Validate the object type up front — ``ObjectType[object_type]``
+            # downstream would ``KeyError`` → 500 on an unknown type. Mirror
+            # upstream's ``invalid object type`` 4xx.
             if str(object_type) not in ObjectType.__members__:
                 raise CommandInvalidError(f"invalid object type {object_type}")
-            await self._dao.create_custom_tagged_objects(
-                object_type=str(object_type),
-                object_id=int(object_id),
-                tag_names=[name],
-            )
+            if pair in skipped:
+                continue
+            pairs.append(pair)
+
+        # RECONCILE (not insert-only) — 1:1 with upstream
+        # ``CreateCustomTagWithRelationshipsCommand.run`` →
+        # ``TagDAO.create_tag_relationship(objects_to_tag, tag, bulk_create)``:
+        # with ``bulk_create=False`` (single POST /tag/) associations absent
+        # from the submitted list are DELETED (empty list wipes all), so
+        # re-submitting an existing tag name REPLACES its object set; the
+        # bulk path (``bulk_create=True``) stays insert-only.
+        await self._dao.create_tag_relationship(
+            pairs, tag, bulk_create=self._bulk_create
+        )
         await self._dao.session.flush()
         return tag
 
@@ -354,7 +364,9 @@ class BulkCreateTagCommand(AsyncBaseCommand[dict[str, list[Any]]]):
                 **tag_data,
                 "objects_to_tag": [list(p) for p in objects_to_tag if p not in skipped],
             }
-            await CreateTagCommand(dao=self._dao, data=tag_data).execute()
+            await CreateTagCommand(
+                dao=self._dao, data=tag_data, bulk_create=True
+            ).execute()
         return {
             "objects_tagged": [list(p) for p in (all_tagged - all_skipped)],
             "objects_skipped": [list(p) for p in all_skipped],

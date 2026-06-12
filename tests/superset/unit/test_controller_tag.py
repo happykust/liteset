@@ -90,6 +90,12 @@ async def test_create_tag_with_description(mock_dao: AsyncMock) -> None:
 
 
 async def test_create_tag_with_objects_to_tag(mock_dao: AsyncMock) -> None:
+    """Single create RECONCILES associations — upstream
+    ``CreateCustomTagWithRelationshipsCommand.run`` goes through
+    ``TagDAO.create_tag_relationship(bulk_create=False)`` which also deletes
+    associations missing from the submitted list (re-POST of an existing tag
+    name replaces its object set; empty list wipes it).  Insert-only
+    ``create_custom_tagged_objects`` silently kept stale associations."""
     tag = MagicMock()
     tag.id = 1
     tag.name = "MyTag"
@@ -109,10 +115,28 @@ async def test_create_tag_with_objects_to_tag(mock_dao: AsyncMock) -> None:
     )
     await cmd.validate()
     await cmd.run()
-    assert mock_dao.create_custom_tagged_objects.await_count == 2
-    mock_dao.create_custom_tagged_objects.assert_any_await(
-        object_type="chart", object_id=10, tag_names=["MyTag"]
+    mock_dao.create_tag_relationship.assert_awaited_once_with(
+        [("chart", 10), ("dashboard", 20)], tag, bulk_create=False
     )
+
+
+async def test_bulk_create_tag_uses_insert_only_semantics(mock_dao: AsyncMock) -> None:
+    """Bulk create must NOT delete existing associations — upstream passes
+    ``bulk_create=True`` to ``create_tag_relationship`` (insert-only)."""
+    tag = MagicMock()
+    tag.id = 1
+    tag.name = "MyTag"
+    mock_dao.get_by_name.return_value = tag
+    cmd = BulkCreateTagCommand(
+        dao=mock_dao,
+        tags_data=[{"name": "MyTag", "objects_to_tag": [["chart", 10]]}],
+    )
+    await cmd.validate()
+    result = await cmd.run()
+    mock_dao.create_tag_relationship.assert_awaited_once_with(
+        [("chart", 10)], tag, bulk_create=True
+    )
+    assert result["objects_tagged"] == [["chart", 10]]
 
 
 async def test_create_tag_invalid_object_type_raises(mock_dao: AsyncMock) -> None:
@@ -126,7 +150,7 @@ async def test_create_tag_invalid_object_type_raises(mock_dao: AsyncMock) -> Non
     )
     with pytest.raises(CommandInvalidError, match="invalid object type"):
         await cmd.run()
-    mock_dao.create_custom_tagged_objects.assert_not_awaited()
+    mock_dao.create_tag_relationship.assert_not_awaited()
 
 
 async def test_create_tag_malformed_object_entry_raises(mock_dao: AsyncMock) -> None:
