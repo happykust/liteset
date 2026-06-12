@@ -47,16 +47,22 @@ class DeleteDatasetMetricCommand(AsyncBaseCommand[None]):
         self._metric: Any | None = None
 
     async def validate(self) -> None:
-        dataset = await self._dataset_dao.find_by_id(self._dataset_id)
-        if not dataset:
-            raise ObjectNotFoundError("Dataset", self._dataset_id)
-        if self._security_manager is not None:
-            await self._security_manager.raise_for_ownership(dataset, self._user_id)
+        # 1:1 with upstream ``DeleteDatasetMetricCommand.validate``: resolve
+        # the metric scoped to the dataset FIRST (missing dataset or metric →
+        # 404 ``DatasetMetricNotFoundError``), THEN check ownership on the
+        # METRIC itself.  ``SqlMetric`` has no ``owners`` relationship, so
+        # ``raise_for_ownership`` denies every non-admin — effectively
+        # admin-only, exactly like upstream (R14-07); dataset owners manage
+        # metrics through ``PUT /dataset/{pk}`` instead.
         self._metric = await self._metric_dao.find_by_dataset_and_id(
             self._dataset_id, self._metric_id
         )
         if not self._metric:
             raise ObjectNotFoundError("DatasetMetric", self._metric_id)
+        if self._security_manager is not None:
+            await self._security_manager.raise_for_ownership(
+                self._metric, self._user_id
+            )
 
     async def run(self) -> None:
         assert self._metric is not None

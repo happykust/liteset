@@ -683,15 +683,61 @@ async def test_warm_up_runs_chart_command_via_execute(mock_dao, monkeypatch):
 
 
 async def test_delete_column_dataset_not_found(mock_dao, mock_column_dao):
-    mock_dao.find_by_id = AsyncMock(return_value=None)
+    """A missing dataset surfaces as a missing COLUMN (the lookup is scoped
+    by ``(dataset_id, column_id)``) — 1:1 with upstream
+    ``DatasetDAO.find_dataset_column`` → ``DatasetColumnNotFoundError``."""
+    mock_column_dao.find_by_dataset_and_id = AsyncMock(return_value=None)
     cmd = DeleteDatasetColumnCommand(
         dataset_dao=mock_dao,
         column_dao=mock_column_dao,
         dataset_id=999,
         column_id=1,
     )
-    with pytest.raises(ObjectNotFoundError, match="Dataset"):
+    with pytest.raises(ObjectNotFoundError, match="DatasetColumn"):
         await cmd.validate()
+
+
+async def test_delete_column_ownership_checked_on_column(mock_dao, mock_column_dao):
+    """Ownership is checked on the COLUMN itself — 1:1 with upstream
+    ``raise_for_ownership(self._model)`` where ``_model`` is the TableColumn
+    (superset_old/commands/dataset/columns/delete.py:30-36).  TableColumn has
+    no ``owners``, so non-admins are always denied (effectively admin-only);
+    checking the parent DATASET instead silently widened access to dataset
+    owners (R14-07)."""
+    mock_column = MagicMock()
+    mock_column_dao.find_by_dataset_and_id = AsyncMock(return_value=mock_column)
+    sm = AsyncMock()
+    cmd = DeleteDatasetColumnCommand(
+        dataset_dao=mock_dao,
+        column_dao=mock_column_dao,
+        dataset_id=1,
+        column_id=5,
+        security_manager=sm,
+        user_id=42,
+    )
+    await cmd.validate()
+    sm.raise_for_ownership.assert_awaited_once_with(mock_column, 42)
+
+
+async def test_delete_column_missing_is_404_before_ownership(
+    mock_dao, mock_column_dao
+):
+    """Column existence is validated BEFORE ownership — a non-owner probing a
+    nonexistent column gets 404, not 403 (upstream order: find → ownership)."""
+    mock_column_dao.find_by_dataset_and_id = AsyncMock(return_value=None)
+    sm = AsyncMock()
+    sm.raise_for_ownership = AsyncMock(side_effect=_security_exception())
+    cmd = DeleteDatasetColumnCommand(
+        dataset_dao=mock_dao,
+        column_dao=mock_column_dao,
+        dataset_id=1,
+        column_id=999,
+        security_manager=sm,
+        user_id=42,
+    )
+    with pytest.raises(ObjectNotFoundError, match="DatasetColumn"):
+        await cmd.validate()
+    sm.raise_for_ownership.assert_not_awaited()
 
 
 async def test_delete_column_not_found(mock_dao, mock_column_dao, mock_dataset):
@@ -726,15 +772,34 @@ async def test_delete_column_success(mock_dao, mock_column_dao, mock_dataset):
 
 
 async def test_delete_metric_dataset_not_found(mock_dao, mock_metric_dao):
-    mock_dao.find_by_id = AsyncMock(return_value=None)
+    """Missing dataset surfaces as a missing METRIC (scoped lookup) — 1:1
+    upstream ``find_dataset_metric`` → ``DatasetMetricNotFoundError``."""
+    mock_metric_dao.find_by_dataset_and_id = AsyncMock(return_value=None)
     cmd = DeleteDatasetMetricCommand(
         dataset_dao=mock_dao,
         metric_dao=mock_metric_dao,
         dataset_id=999,
         metric_id=1,
     )
-    with pytest.raises(ObjectNotFoundError, match="Dataset"):
+    with pytest.raises(ObjectNotFoundError, match="DatasetMetric"):
         await cmd.validate()
+
+
+async def test_delete_metric_ownership_checked_on_metric(mock_dao, mock_metric_dao):
+    """Ownership is checked on the METRIC itself (1:1 upstream, R14-07)."""
+    mock_metric = MagicMock()
+    mock_metric_dao.find_by_dataset_and_id = AsyncMock(return_value=mock_metric)
+    sm = AsyncMock()
+    cmd = DeleteDatasetMetricCommand(
+        dataset_dao=mock_dao,
+        metric_dao=mock_metric_dao,
+        dataset_id=1,
+        metric_id=7,
+        security_manager=sm,
+        user_id=42,
+    )
+    await cmd.validate()
+    sm.raise_for_ownership.assert_awaited_once_with(mock_metric, 42)
 
 
 async def test_delete_metric_not_found(mock_dao, mock_metric_dao, mock_dataset):

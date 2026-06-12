@@ -47,16 +47,22 @@ class DeleteDatasetColumnCommand(AsyncBaseCommand[None]):
         self._column: Any | None = None
 
     async def validate(self) -> None:
-        dataset = await self._dataset_dao.find_by_id(self._dataset_id)
-        if not dataset:
-            raise ObjectNotFoundError("Dataset", self._dataset_id)
-        if self._security_manager is not None:
-            await self._security_manager.raise_for_ownership(dataset, self._user_id)
+        # 1:1 with upstream ``DeleteDatasetColumnCommand.validate``: resolve
+        # the column scoped to the dataset FIRST (missing dataset or column →
+        # 404 ``DatasetColumnNotFoundError``), THEN check ownership on the
+        # COLUMN itself.  ``TableColumn`` has no ``owners`` relationship, so
+        # ``raise_for_ownership`` denies every non-admin — effectively
+        # admin-only, exactly like upstream (R14-07); dataset owners manage
+        # columns through ``PUT /dataset/{pk}`` instead.
         self._column = await self._column_dao.find_by_dataset_and_id(
             self._dataset_id, self._column_id
         )
         if not self._column:
             raise ObjectNotFoundError("DatasetColumn", self._column_id)
+        if self._security_manager is not None:
+            await self._security_manager.raise_for_ownership(
+                self._column, self._user_id
+            )
 
     async def run(self) -> None:
         assert self._column is not None
