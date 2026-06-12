@@ -54,6 +54,33 @@ class DatabaseParametersInvalidError(CommandInvalidError):
     status_code = 400
 
 
+class DatabaseExistsValidationError(CommandInvalidError):
+    """Database-name uniqueness violation — field-keyed leaf error.
+
+    1:1 with ``superset_old.commands.database.exceptions
+    .DatabaseExistsValidationError`` (marshmallow ``ValidationError`` with
+    ``field_name="database_name"``).
+    """
+
+    status_code = 422
+    message = _("A database with the same name already exists.")
+
+    def normalized_messages(self) -> dict[str, list[str]]:
+        return {"database_name": [str(self.message)]}
+
+
+class DatabaseInvalidError(CommandInvalidError):
+    """Accumulating database validation error.
+
+    1:1 with ``superset_old.commands.database.exceptions
+    .DatabaseInvalidError`` — the registered handler emits
+    ``{"message": normalized_messages()}`` (per-field 422).
+    """
+
+    status_code = 422
+    message = _("Database parameters are invalid.")
+
+
 class UserNotFoundInSessionError(CommandException):
     """1:1 with ``superset_old/commands/database/exceptions.py``."""
 

@@ -62,11 +62,41 @@ class DashboardDeleteFailedReportsExistError(CommandInvalidError):
     status_code = 422
 
 
+class DashboardSlugExistsValidationError(CommandInvalidError):
+    """Slug uniqueness violation — field-keyed leaf error.
+
+    1:1 with ``superset_old.commands.dashboard.exceptions
+    .DashboardSlugExistsValidationError`` (marshmallow ``ValidationError``
+    with ``field_name="slug"`` and message "Must be unique").
+    """
+
+    status_code = 422
+    message = "Must be unique"
+
+    def normalized_messages(self) -> dict[str, list[str]]:
+        return {"slug": [str(self.message)]}
+
+
+class DashboardInvalidError(CommandInvalidError):
+    """Accumulating dashboard validation error.
+
+    1:1 with ``superset_old.commands.dashboard.exceptions
+    .DashboardInvalidError`` — the registered handler emits
+    ``{"message": normalized_messages()}`` (per-field 422), matching upstream
+    FAB ``response_422(message=ex.normalized_messages())``.
+    """
+
+    status_code = 422
+    message = "Dashboard parameters are invalid."
+
+
 __all__ = (
     "CommandInvalidError",
     "DashboardAccessDeniedError",
     "DashboardDeleteFailedReportsExistError",
+    "DashboardInvalidError",
     "DashboardNotFoundError",
+    "DashboardSlugExistsValidationError",
     "ForbiddenError",
     "ImportFailedError",
     "ObjectNotFoundError",

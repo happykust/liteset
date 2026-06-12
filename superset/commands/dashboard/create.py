@@ -24,7 +24,6 @@ from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
 from superset.commands.utils import populate_owner_list
-from superset.exceptions import CommandInvalidError
 from superset.tags.core import add_implicit_tags_after_insert
 from superset.utils.feature_flags import feature_flag_manager
 
@@ -53,7 +52,17 @@ class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         if slug:
             is_unique = await self._dao.validate_slug_uniqueness(slug)
             if not is_unique:
-                raise CommandInvalidError(f"slug '{slug}' already exists")
+                # Field-keyed 422 — 1:1 with upstream
+                # ``DashboardInvalidError(exceptions=[DashboardSlugExists
+                # ValidationError()])`` → ``{"slug": ["Must be unique"]}``.
+                from superset.commands.dashboard.exceptions import (
+                    DashboardInvalidError,
+                    DashboardSlugExistsValidationError,
+                )
+
+                raise DashboardInvalidError(
+                    exceptions=[DashboardSlugExistsValidationError()]
+                )
 
     async def run(self) -> "Dashboard":
         from superset.models.dashboard import Dashboard

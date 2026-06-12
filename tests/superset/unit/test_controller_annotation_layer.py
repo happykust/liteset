@@ -158,10 +158,19 @@ async def test_create_layer_validates_empty_name(mock_dao):
 
 
 async def test_create_layer_validates_uniqueness(mock_dao):
+    """Name conflict is the field-keyed 422 upstream emits:
+    ``AnnotationLayerInvalidError(exceptions=[AnnotationLayerNameUniqueness
+    ValidationError()])`` → ``{"name": ["Name must be unique"]}``
+    (superset_old/commands/annotation_layer/exceptions.py:52-58)."""
+    from superset.commands.annotation_layer.exceptions import (
+        AnnotationLayerInvalidError,
+    )
+
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=False)
     cmd = CreateAnnotationLayerCommand(dao=mock_dao, data={"name": "Duplicate"})
-    with pytest.raises(CommandInvalidError, match="already exists"):
+    with pytest.raises(AnnotationLayerInvalidError) as exc_info:
         await cmd.validate()
+    assert exc_info.value.normalized_messages() == {"name": ["Name must be unique"]}
 
 
 async def test_create_layer_validates_success(mock_dao):
@@ -196,11 +205,16 @@ async def test_update_layer_not_found(mock_dao):
 
 
 async def test_update_layer_uniqueness_conflict(mock_dao, mock_layer):
+    from superset.commands.annotation_layer.exceptions import (
+        AnnotationLayerInvalidError,
+    )
+
     mock_dao.find_by_id = AsyncMock(return_value=mock_layer)
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=False)
     cmd = UpdateAnnotationLayerCommand(dao=mock_dao, pk=1, data={"name": "Duplicate"})
-    with pytest.raises(CommandInvalidError, match="already exists"):
+    with pytest.raises(AnnotationLayerInvalidError) as exc_info:
         await cmd.validate()
+    assert exc_info.value.normalized_messages() == {"name": ["Name must be unique"]}
 
 
 async def test_update_layer_success(mock_dao, mock_layer):

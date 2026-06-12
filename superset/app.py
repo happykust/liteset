@@ -96,11 +96,18 @@ def _build_exception_handlers() -> dict[Any, Any]:
       up-front via marshmallow ``Length(...)`` validators; absent those
       caps in the msgspec schemas the asyncpg error reached 500.
     """
-    # Dataset validation accumulates per-field errors and emits a
+    # Accumulating *InvalidError* validation errors emit a
     # ``{"message": {field: [messages]}}`` 422 body 1:1 with upstream FAB
     # ``response_422(message=ex.normalized_messages())``. Registered more
-    # specifically than ``SupersetException`` so it wins via MRO resolution;
-    # scoped strictly to datasets (every other command keeps flat strings).
+    # specifically than ``SupersetException`` so they win via MRO resolution;
+    # scoped to the resources whose commands raise field-keyed errors
+    # (dataset, dashboard, database, annotation layer) — every other command
+    # keeps flat strings.
+    from superset.commands.annotation_layer.exceptions import (
+        AnnotationLayerInvalidError,
+    )
+    from superset.commands.dashboard.exceptions import DashboardInvalidError
+    from superset.commands.database.exceptions import DatabaseInvalidError
     from superset.commands.dataset.exceptions import (
         dataset_invalid_error_handler,
         DatasetInvalidError,
@@ -108,6 +115,9 @@ def _build_exception_handlers() -> dict[Any, Any]:
 
     return {
         DatasetInvalidError: dataset_invalid_error_handler,
+        DashboardInvalidError: dataset_invalid_error_handler,
+        DatabaseInvalidError: dataset_invalid_error_handler,
+        AnnotationLayerInvalidError: dataset_invalid_error_handler,
         SupersetException: superset_exception_handler,
         _ValidationException: validation_error_handler,
         _IntegrityError: integrity_error_handler,

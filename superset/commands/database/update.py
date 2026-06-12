@@ -31,7 +31,6 @@ from superset.commands.database.utils import (
     _validate_sqlalchemy_uri_safety,
 )
 from superset.exceptions import (
-    CommandInvalidError,
     OAuth2RedirectError,
     ObjectNotFoundError,
 )
@@ -69,8 +68,16 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
                 new_name,
             )
             if not is_unique:
-                raise CommandInvalidError(
-                    f'A database with the name "{new_name}" already exists'
+                # Field-keyed 422 — 1:1 with upstream
+                # ``DatabaseInvalidError(exceptions=[DatabaseExists
+                # ValidationError()])``.
+                from superset.commands.database.exceptions import (
+                    DatabaseExistsValidationError,
+                    DatabaseInvalidError,
+                )
+
+                raise DatabaseInvalidError(
+                    exceptions=[DatabaseExistsValidationError()]
                 )
 
         # Field validators — 1:1 with ``DatabasePutSchema`` (extra/server_cert

@@ -40,8 +40,17 @@ class CreateAnnotationLayerCommand(AsyncBaseCommand["AnnotationLayer"]):
             raise CommandInvalidError("name is required")
         is_unique = await self._dao.validate_update_uniqueness(name)
         if not is_unique:
-            raise CommandInvalidError(
-                f"Annotation layer with name '{name}' already exists"
+            # Field-keyed 422 — 1:1 with upstream
+            # ``AnnotationLayerInvalidError(exceptions=[AnnotationLayerName
+            # UniquenessValidationError()])`` → ``{"name": ["Name must be
+            # unique"]}``.
+            from superset.commands.annotation_layer.exceptions import (
+                AnnotationLayerInvalidError,
+                AnnotationLayerNameUniquenessValidationError,
+            )
+
+            raise AnnotationLayerInvalidError(
+                exceptions=[AnnotationLayerNameUniquenessValidationError()]
             )
 
     async def run(self) -> "AnnotationLayer":

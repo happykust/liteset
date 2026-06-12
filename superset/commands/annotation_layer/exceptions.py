@@ -23,7 +23,37 @@ from superset.exceptions import (
     ObjectNotFoundError,
 )
 
+
+class AnnotationLayerNameUniquenessValidationError(CommandInvalidError):
+    """Layer-name uniqueness violation — field-keyed leaf error.
+
+    1:1 with ``superset_old.commands.annotation_layer.exceptions
+    .AnnotationLayerNameUniquenessValidationError`` (marshmallow
+    ``ValidationError`` with ``field_name="name"``).
+    """
+
+    status_code = 422
+    message = "Name must be unique"
+
+    def normalized_messages(self) -> dict[str, list[str]]:
+        return {"name": [str(self.message)]}
+
+
+class AnnotationLayerInvalidError(CommandInvalidError):
+    """Accumulating annotation-layer validation error.
+
+    1:1 with ``superset_old.commands.annotation_layer.exceptions
+    .AnnotationLayerInvalidError`` — the registered handler emits
+    ``{"message": normalized_messages()}`` (per-field 422).
+    """
+
+    status_code = 422
+    message = "Annotation layer parameters are invalid."
+
+
 __all__ = (
+    "AnnotationLayerInvalidError",
+    "AnnotationLayerNameUniquenessValidationError",
     "CommandInvalidError",
     "ObjectNotFoundError",
 )

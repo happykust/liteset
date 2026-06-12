@@ -160,6 +160,12 @@ async def test_create_database_validates_name_required(mock_dao):
 
 
 async def test_create_database_validates_uniqueness(mock_dao):
+    """Name conflict is the field-keyed 422 upstream emits:
+    ``DatabaseInvalidError(exceptions=[DatabaseExistsValidationError()])`` →
+    ``{"database_name": ["A database with the same name already exists."]}``
+    (superset_old/commands/database/exceptions.py:35-43)."""
+    from superset.commands.database.exceptions import DatabaseInvalidError
+
     mock_dao.validate_uniqueness = AsyncMock(return_value=False)
     cmd = CreateDatabaseCommand(
         dao=mock_dao,
@@ -168,8 +174,11 @@ async def test_create_database_validates_uniqueness(mock_dao):
             "sqlalchemy_uri": "postgresql://localhost/db",
         },
     )
-    with pytest.raises(CommandInvalidError, match="already exists"):
+    with pytest.raises(DatabaseInvalidError) as exc_info:
         await cmd.validate()
+    assert exc_info.value.normalized_messages() == {
+        "database_name": ["A database with the same name already exists."]
+    }
 
 
 async def test_create_database_validates_success(mock_dao):
@@ -197,6 +206,10 @@ async def test_update_database_not_found(mock_dao):
 
 
 async def test_update_database_duplicate_name(mock_dao, mock_database):
+    """PUT name conflict — same field-keyed shape and exact upstream text
+    (the port used to emit a different flat string)."""
+    from superset.commands.database.exceptions import DatabaseInvalidError
+
     mock_dao.find_by_id = AsyncMock(return_value=mock_database)
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=False)
     cmd = UpdateDatabaseCommand(
@@ -204,8 +217,11 @@ async def test_update_database_duplicate_name(mock_dao, mock_database):
         database_id=1,
         data={"database_name": "duplicate"},
     )
-    with pytest.raises(CommandInvalidError, match="already exists"):
+    with pytest.raises(DatabaseInvalidError) as exc_info:
         await cmd.validate()
+    assert exc_info.value.normalized_messages() == {
+        "database_name": ["A database with the same name already exists."]
+    }
 
 
 async def test_update_database_success(mock_dao, mock_database):

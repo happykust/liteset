@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
-from superset.exceptions import CommandInvalidError, ObjectNotFoundError
+from superset.exceptions import ObjectNotFoundError
 
 if TYPE_CHECKING:
     from superset.models.annotations import AnnotationLayer
@@ -46,8 +46,16 @@ class UpdateAnnotationLayerCommand(AsyncBaseCommand["AnnotationLayer"]):
                 name, layer_id=self._pk
             )
             if not is_unique:
-                raise CommandInvalidError(
-                    f"Annotation layer with name '{name}' already exists"
+                # Field-keyed 422 — 1:1 with upstream
+                # ``AnnotationLayerInvalidError(exceptions=[AnnotationLayer
+                # NameUniquenessValidationError()])``.
+                from superset.commands.annotation_layer.exceptions import (
+                    AnnotationLayerInvalidError,
+                    AnnotationLayerNameUniquenessValidationError,
+                )
+
+                raise AnnotationLayerInvalidError(
+                    exceptions=[AnnotationLayerNameUniquenessValidationError()]
                 )
 
     async def run(self) -> "AnnotationLayer":

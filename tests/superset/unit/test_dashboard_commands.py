@@ -154,13 +154,20 @@ async def test_create_dashboard_allows_missing_title(mock_dao):
 
 
 async def test_create_dashboard_validates_slug_uniqueness(mock_dao):
+    """Slug conflict is the field-keyed 422 upstream emits:
+    ``DashboardInvalidError(exceptions=[DashboardSlugExistsValidationError()])``
+    → ``{"slug": ["Must be unique"]}`` (superset_old/commands/dashboard/
+    exceptions.py:33-39), not a flat string."""
+    from superset.commands.dashboard.exceptions import DashboardInvalidError
+
     mock_dao.validate_slug_uniqueness = AsyncMock(return_value=False)
     cmd = CreateDashboardCommand(
         dao=mock_dao,
         data={"dashboard_title": "Test", "slug": "taken"},
     )
-    with pytest.raises(CommandInvalidError, match="slug.*already exists"):
+    with pytest.raises(DashboardInvalidError) as exc_info:
         await cmd.validate()
+    assert exc_info.value.normalized_messages() == {"slug": ["Must be unique"]}
 
 
 async def test_create_dashboard_validates_success(mock_dao):
@@ -189,6 +196,11 @@ async def test_update_dashboard_not_found(mock_dao):
 
 
 async def test_update_dashboard_slug_conflict(mock_dao, mock_dashboard):
+    """PUT slug conflict — same field-keyed shape as create (upstream
+    UpdateDashboardCommand.validate collects DashboardSlugExistsValidationError
+    into DashboardInvalidError)."""
+    from superset.commands.dashboard.exceptions import DashboardInvalidError
+
     mock_dao.find_by_id_with_options = AsyncMock(return_value=mock_dashboard)
     mock_dao.validate_update_slug_uniqueness = AsyncMock(return_value=False)
     cmd = UpdateDashboardCommand(
@@ -196,8 +208,9 @@ async def test_update_dashboard_slug_conflict(mock_dao, mock_dashboard):
         dashboard_id=1,
         data={"slug": "taken"},
     )
-    with pytest.raises(CommandInvalidError, match="slug.*already exists"):
+    with pytest.raises(DashboardInvalidError) as exc_info:
         await cmd.validate()
+    assert exc_info.value.normalized_messages() == {"slug": ["Must be unique"]}
 
 
 async def test_update_dashboard_success(mock_dao, mock_dashboard):

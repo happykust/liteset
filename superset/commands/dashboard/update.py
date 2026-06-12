@@ -26,7 +26,7 @@ from typing import Any, TYPE_CHECKING
 
 from superset.commands.base import AsyncBaseCommand
 from superset.commands.utils import compute_owner_list, update_tags, validate_tags
-from superset.exceptions import CommandInvalidError, ObjectNotFoundError
+from superset.exceptions import ObjectNotFoundError
 from superset.tags.core import sync_owner_tags_after_update
 from superset.tags.models import ObjectType
 from superset.utils.feature_flags import feature_flag_manager
@@ -83,7 +83,17 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
                 self._dashboard_id, slug
             )
             if not is_unique:
-                raise CommandInvalidError(f"slug '{slug}' already exists")
+                # Field-keyed 422 — 1:1 with upstream
+                # ``DashboardInvalidError(exceptions=[DashboardSlugExists
+                # ValidationError()])`` → ``{"slug": ["Must be unique"]}``.
+                from superset.commands.dashboard.exceptions import (
+                    DashboardInvalidError,
+                    DashboardSlugExistsValidationError,
+                )
+
+                raise DashboardInvalidError(
+                    exceptions=[DashboardSlugExistsValidationError()]
+                )
 
         # Validate tags — 1:1 with
         # ``superset_old/commands/dashboard/update.py::UpdateDashboardCommand.validate``

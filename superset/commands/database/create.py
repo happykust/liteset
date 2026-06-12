@@ -143,12 +143,16 @@ class CreateDatabaseCommand(AsyncBaseCommand["Database"]):
             self._data["database_name"],
         )
         if not is_unique:
-            # Verbatim match for ``DatabaseExistsValidationError`` from
-            # ``superset_old.commands.database.exceptions`` — the
-            # frontend's "An error occurred while creating databases"
-            # toast appends this message, and integration tests rely on
-            # the exact string.
-            raise CommandInvalidError("A database with the same name already exists.")
+            # Field-keyed 422 — 1:1 with upstream
+            # ``DatabaseInvalidError(exceptions=[DatabaseExistsValidationError()])``
+            # → ``{"database_name": ["A database with the same name already
+            # exists."]}``.
+            from superset.commands.database.exceptions import (
+                DatabaseExistsValidationError,
+                DatabaseInvalidError,
+            )
+
+            raise DatabaseInvalidError(exceptions=[DatabaseExistsValidationError()])
 
     async def run(self) -> "Database":
         from superset.commands.database.ssh_tunnel.exceptions import (
