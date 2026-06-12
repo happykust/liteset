@@ -257,6 +257,42 @@ async def test_delete_chart_invisible_is_404(mock_dao, mock_chart):
     sm.raise_for_ownership.assert_not_awaited()
 
 
+async def test_update_chart_attach_unpublished_dashboard_is_not_found(mock_dao, mock_chart):
+    """Attaching a chart to a NEW dashboard outside the caller's list-filter
+    scope (e.g. an unpublished dashboard they don't own) is the 422
+    DashboardsNotFoundValidationError upstream emits — upstream
+    ``_validate_new_dashboard_access`` resolves new ids via the FILTERED
+    ``DashboardDAO.find_by_ids`` (DashboardAccessFilter, published required),
+    NOT the laxer direct-access ``raise_for_dashboard_access`` semantics.
+    A 403 (or silent allow) would diverge from upstream curation."""
+    import sqlalchemy as sa
+
+    from superset.exceptions import DashboardsNotFoundValidationError
+
+    mock_chart.dashboards = []
+    _exec_returns(mock_dao, unique_one=mock_chart, all_=[])
+    dash = MagicMock()
+    dash.id = 7
+    mock_dao.find_dashboards_by_ids = AsyncMock(return_value=[dash])
+    sm = AsyncMock()
+    sm.find_user_by_id = AsyncMock(return_value=MagicMock(id=42))
+    # Direct-access would PASS (lax, no published req) — the bug used this.
+    sm.can_access_dashboard = AsyncMock(return_value=True)
+    with patch(
+        "superset.db.filters.dashboard_access_filters",
+        new=AsyncMock(return_value=[sa.text("1=1")]),
+    ):
+        cmd = UpdateChartCommand(
+            dao=mock_dao,
+            chart_id=1,
+            data={"dashboards": [7]},
+            user_id=42,
+            security_manager=sm,
+        )
+        with pytest.raises(DashboardsNotFoundValidationError):
+            await cmd.validate()
+
+
 async def test_create_chart_invisible_dashboard_is_not_found(mock_dao):
     """Attaching a new chart to a dashboard the user can't SEE is the 422
     DashboardsNotFoundValidationError upstream emits (filtered

@@ -167,24 +167,29 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
                 d for d in dashboards if d.id not in existing_dashboard_ids
             ]
             if new_dashboards and self._security_manager is not None:
-                user = (
-                    await self._security_manager.find_user_by_id(self._user_id)
-                    if self._user_id
-                    else None
+                # 1:1 with upstream ``_validate_new_dashboard_access``
+                # (superset_old/commands/chart/update.py:88-95) which resolves
+                # NEW dashboards via the FILTERED ``DashboardDAO.find_by_ids``
+                # (DashboardAccessFilter — published required for non-owners),
+                # NOT the laxer direct-access ``raise_for_dashboard_access``
+                # semantics (``can_access_dashboard``, no published gate). An
+                # id outside that list-filter scope is reported as "not found"
+                # rather than "forbidden" so the dashboard's existence isn't
+                # leaked.
+                from superset.commands.utils import filter_visible_ids
+                from superset.db.filters import dashboard_access_filters
+                from superset.models.dashboard import Dashboard
+
+                visible = await filter_visible_ids(
+                    self._security_manager,
+                    self._user_id,
+                    self._dao.session,
+                    Dashboard,
+                    [int(d.id) for d in new_dashboards],
+                    dashboard_access_filters,
                 )
-                if user is not None and hasattr(
-                    self._security_manager, "can_access_dashboard"
-                ):
-                    for dash in new_dashboards:
-                        has_access = await self._security_manager.can_access_dashboard(
-                            dash, user=user
-                        )
-                        if not has_access:
-                            # Mirror original behaviour: inaccessible new
-                            # dashboards are reported as "not found" rather
-                            # than "forbidden" to avoid leaking their
-                            # existence to users without access.
-                            raise DashboardsNotFoundValidationError()
+                if {int(d.id) for d in new_dashboards} - visible:
+                    raise DashboardsNotFoundValidationError()
 
             # Store resolved Dashboard objects so ``run()`` can assign
             # directly without a second DAO round-trip.
