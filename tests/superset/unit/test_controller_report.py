@@ -813,3 +813,20 @@ def test_get_slack_channels_stores_result_in_cache_on_miss():
     sync_cache.set.assert_called_once_with(
         "slack_conversations_list", fetched, ttl=1800
     )
+
+
+def test_slack_channels_requires_can_write() -> None:
+    """GET /report/slack_channels/ must require ``can_write ReportSchedule``,
+    1:1 with upstream ``MODEL_API_RW_METHOD_PERMISSION_MAP["slack_channels"] =
+    "write"`` (constants.py:173). A ``can_read`` gate would let view-only users
+    enumerate the workspace's Slack channels (and trigger Slack API calls)."""
+    from superset.controllers.report import ReportScheduleController
+
+    handler = ReportScheduleController.slack_channels
+    perm_tuples = [
+        c
+        for g in (handler.guards or [])
+        for c in (cell.cell_contents for cell in (g.__closure__ or []))
+        if isinstance(c, tuple) and len(c) == 2
+    ]
+    assert ("can_write", "ReportSchedule") in perm_tuples, perm_tuples

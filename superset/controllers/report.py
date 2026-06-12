@@ -762,7 +762,12 @@ class ReportScheduleController(Controller):
 
     @get(
         "/slack_channels/",
-        guards=[require_permission("can_read", "ReportSchedule")],
+        # 1:1 with upstream ``MODEL_API_RW_METHOD_PERMISSION_MAP
+        # ["slack_channels"] = "write"`` (constants.py:173): only users who can
+        # create/edit reports need to enumerate Slack channels. A ``can_read``
+        # gate would let view-only users list the workspace's channels and
+        # trigger Slack API calls.
+        guards=[require_permission("can_write", "ReportSchedule")],
     )
     async def slack_channels(
         self,
