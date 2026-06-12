@@ -1016,11 +1016,10 @@ def register() -> None:
     # ``superset.models.helpers`` which in turn must finish initialising
     # before this module's class references resolve.
     from superset.models.connectors import SqlaTable
-    from superset.models.core import Database, FavStar
+    from superset.models.core import Database
     from superset.models.dashboard import Dashboard
     from superset.models.security import User
     from superset.models.slice import Slice
-    from superset.models.sql_lab import Query
 
     # Slice perm propagation + thumbnail invalidation
     event.listen(Slice, "before_insert", _slice_set_related_perm)
@@ -1044,7 +1043,36 @@ def register() -> None:
     # User welcome-dashboard clone
     event.listen(User, "after_insert", _user_copy_dashboard)
 
-    # Tag updaters
+    # Tag updaters — registered ONLY when the TAGGING_SYSTEM feature flag is
+    # enabled, 1:1 with upstream which calls ``register_sqla_event_listeners()``
+    # exclusively under ``if is_feature_enabled("TAGGING_SYSTEM")``
+    # (superset_old/app.py:158-161).  The perm/thumbnail/welcome listeners
+    # above stay unconditional (they are not tag-related and upstream wires
+    # them at model-class definition time).  Without this gate the implicit
+    # ``owner:``/``type:``/``favorited_by:`` tags were created on every sync
+    # insert (Celery query worker, CLI import) even with tagging disabled.
+    from superset.utils.feature_flags import feature_flag_manager
+
+    if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
+        _register_tag_listeners()
+
+
+def _register_tag_listeners() -> None:
+    """Wire the implicit-tag SQLA event listeners.
+
+    Split out of :func:`register` so it can be gated on ``TAGGING_SYSTEM`` and
+    exercised in isolation by tests.  1:1 with upstream's
+    ``register_sqla_event_listeners`` (superset_old/tags/core.py:20-53): the
+    query updater targets ``SavedQuery`` (user-saved queries), NOT ``Query``
+    (every SQL Lab execution) — tagging the latter would create an implicit
+    ``type:query`` + ``owner:`` tag on every single query run.
+    """
+    from superset.models.connectors import SqlaTable
+    from superset.models.core import FavStar
+    from superset.models.dashboard import Dashboard
+    from superset.models.slice import Slice
+    from superset.models.sql_lab import SavedQuery
+
     event.listen(Slice, "after_insert", _chart_tag_after_insert)
     event.listen(Slice, "after_update", _chart_tag_after_update)
     event.listen(Slice, "after_delete", _chart_tag_after_delete)
@@ -1057,9 +1085,9 @@ def register() -> None:
     event.listen(SqlaTable, "after_update", _dataset_tag_after_update)
     event.listen(SqlaTable, "after_delete", _dataset_tag_after_delete)
 
-    event.listen(Query, "after_insert", _query_tag_after_insert)
-    event.listen(Query, "after_update", _query_tag_after_update)
-    event.listen(Query, "after_delete", _query_tag_after_delete)
+    event.listen(SavedQuery, "after_insert", _query_tag_after_insert)
+    event.listen(SavedQuery, "after_update", _query_tag_after_update)
+    event.listen(SavedQuery, "after_delete", _query_tag_after_delete)
 
     event.listen(FavStar, "after_insert", _favstar_after_insert)
     event.listen(FavStar, "after_delete", _favstar_after_delete)
