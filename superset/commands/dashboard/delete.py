@@ -54,6 +54,24 @@ class DeleteDashboardCommand(AsyncBaseCommand[None]):
         self._dashboard = await self._dao.find_by_id(self._dashboard_id)
         if not self._dashboard:
             raise ObjectNotFoundError("Dashboard", self._dashboard_id)
+        # Visibility scope — upstream ``DashboardDAO.find_by_ids`` applies
+        # ``DashboardAccessFilter`` (base_filter), so a dashboard outside the
+        # caller's scope is a 404 BEFORE the reports/ownership checks; a 403
+        # here would disclose its existence (R14-06).
+        from superset.commands.utils import filter_visible_ids
+        from superset.db.filters import dashboard_access_filters
+        from superset.models.dashboard import Dashboard
+
+        visible = await filter_visible_ids(
+            self._security_manager,
+            self._user_id,
+            self._dao.session,
+            Dashboard,
+            [self._dashboard_id],
+            dashboard_access_filters,
+        )
+        if self._dashboard_id not in visible:
+            raise ObjectNotFoundError("Dashboard", self._dashboard_id)
         # Check there are no associated ReportSchedules — 1:1 with the
         # original, which raises BEFORE the ownership check (a dashboard with
         # alerts/reports reports "reports exist", not "forbidden").
@@ -105,6 +123,22 @@ class BulkDeleteDashboardsCommand(AsyncBaseCommand[None]):
         self._dashboards = await self._dao.find_by_ids(self._dashboard_ids)
         found_ids = {int(d.id) for d in self._dashboards}
         missing = set(self._dashboard_ids) - found_ids
+        # Visibility scope — ids outside the caller's DashboardAccessFilter
+        # scope read as missing, exactly like upstream's filtered
+        # ``find_by_ids`` (R14-06).
+        from superset.commands.utils import filter_visible_ids
+        from superset.db.filters import dashboard_access_filters
+        from superset.models.dashboard import Dashboard
+
+        visible = await filter_visible_ids(
+            self._security_manager,
+            self._user_id,
+            self._dao.session,
+            Dashboard,
+            list(found_ids),
+            dashboard_access_filters,
+        )
+        missing |= found_ids - visible
         if missing:
             raise ObjectNotFoundError("Dashboard", str(sorted(missing)))
         # Check there are no associated ReportSchedules — 1:1 with the

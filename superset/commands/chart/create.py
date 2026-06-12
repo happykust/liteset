@@ -86,6 +86,24 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
             dashboards = await self._dao.find_dashboards_by_ids(dashboard_ids)
             if len(dashboards) != len(dashboard_ids):
                 raise DashboardsNotFoundValidationError()
+            # Visibility scope — upstream resolves the ids via the FILTERED
+            # ``DashboardDAO.find_by_ids`` (DashboardAccessFilter), so a
+            # dashboard the user can't see reads as "not found" (422), never
+            # 403 — which would disclose its existence (R14-06).
+            from superset.commands.utils import filter_visible_ids
+            from superset.db.filters import dashboard_access_filters
+            from superset.models.dashboard import Dashboard
+
+            visible = await filter_visible_ids(
+                self._security_manager,
+                self._user_id,
+                self._dao.session,
+                Dashboard,
+                [int(d.id) for d in dashboards],
+                dashboard_access_filters,
+            )
+            if {int(d.id) for d in dashboards} - visible:
+                raise DashboardsNotFoundValidationError()
             if self._security_manager is not None:
                 from superset.exceptions import SupersetSecurityException
 

@@ -268,6 +268,53 @@ async def test_update_dashboard_tags_applied_without_tagging_system_flag(
 # ---------------------------------------------------------------------------
 
 
+async def test_delete_dashboard_invisible_is_404(mock_dao, mock_dashboard):
+    """A dashboard outside the caller's visibility scope reads as nonexistent
+    (404), not forbidden (403) — upstream ``DashboardDAO.find_by_ids`` applies
+    ``DashboardAccessFilter`` (base_filter) so invisible ids never reach the
+    ownership check (superset_old/daos/dashboard.py:49 +
+    commands/dashboard/delete.py:40-44).  403 would disclose existence."""
+    import sqlalchemy as sa
+
+    mock_dao.find_by_id = AsyncMock(return_value=mock_dashboard)
+    # The visibility query returns NO ids → dashboard is out of scope.
+    _exec_returns(mock_dao, all_=[])
+    sm = AsyncMock()
+    sm.find_user_by_id = AsyncMock(return_value=MagicMock(id=42))
+    sm.raise_for_ownership = AsyncMock(side_effect=_security_exception())
+    with patch(
+        "superset.db.filters.dashboard_access_filters",
+        new=AsyncMock(return_value=[sa.text("1=1")]),
+    ):
+        cmd = DeleteDashboardCommand(
+            dao=mock_dao, dashboard_id=1, security_manager=sm, user_id=42
+        )
+        with pytest.raises(ObjectNotFoundError):
+            await cmd.validate()
+    sm.raise_for_ownership.assert_not_awaited()
+
+
+async def test_bulk_delete_dashboard_invisible_is_404(mock_dao, mock_dashboard):
+    """Bulk delete: ids outside the visibility scope count as missing → 404."""
+    import sqlalchemy as sa
+
+    mock_dao.find_by_ids = AsyncMock(return_value=[mock_dashboard])
+    _exec_returns(mock_dao, all_=[])
+    sm = AsyncMock()
+    sm.find_user_by_id = AsyncMock(return_value=MagicMock(id=42))
+    sm.raise_for_ownership = AsyncMock(side_effect=_security_exception())
+    with patch(
+        "superset.db.filters.dashboard_access_filters",
+        new=AsyncMock(return_value=[sa.text("1=1")]),
+    ):
+        cmd = BulkDeleteDashboardsCommand(
+            dao=mock_dao, dashboard_ids=[1], security_manager=sm, user_id=42
+        )
+        with pytest.raises(ObjectNotFoundError):
+            await cmd.validate()
+    sm.raise_for_ownership.assert_not_awaited()
+
+
 async def test_delete_dashboard_not_found(mock_dao):
     mock_dao.find_by_id = AsyncMock(return_value=None)
     cmd = DeleteDashboardCommand(dao=mock_dao, dashboard_id=999)

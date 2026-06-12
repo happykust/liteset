@@ -31,6 +31,43 @@ from superset.exceptions import (
 from superset.tags.models import ObjectType, TagType
 
 
+async def filter_visible_ids(
+    security_manager: Any,
+    user_id: int | None,
+    session: AsyncSession,
+    model_cls: Any,
+    ids: list[int],
+    access_filters_fn: Any,
+) -> set[int]:
+    """Return the subset of ``ids`` visible under the resource's base filter.
+
+    Upstream FAB DAOs apply ``base_filter`` (``DashboardAccessFilter`` /
+    ``ChartFilter``) inside ``find_by_id(s)``, so an object outside the
+    caller's scope reads as nonexistent (404 / NotFound validation error)
+    rather than forbidden (403) — a 403 would disclose its existence.  The
+    async DAOs carry no implicit base filter, so mutation commands call this
+    helper to reproduce the same surface.
+
+    ``access_filters_fn`` is one of the ``superset.db.filters`` helpers
+    (``dashboard_access_filters`` / ``chart_access_filters``); an empty
+    filter list (admin / full access) means everything is visible.  When the
+    security context is unavailable the check degrades to permissive (all
+    requested ids visible), matching the commands' other guards.
+    """
+    requested = {int(i) for i in ids}
+    if security_manager is None or user_id is None or not requested:
+        return requested
+    user = await security_manager.find_user_by_id(user_id)
+    if user is None:
+        return requested
+    filters = await access_filters_fn(security_manager, user)
+    if not filters:
+        return requested
+    stmt = select(model_cls.id).where(model_cls.id.in_(requested), *filters)
+    result = await session.execute(stmt)
+    return {int(i) for i in result.scalars().all()}
+
+
 async def populate_roles(
     session: AsyncSession,
     role_ids: list[int] | None,

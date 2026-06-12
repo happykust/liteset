@@ -52,6 +52,24 @@ class DeleteChartCommand(AsyncBaseCommand[None]):
         self._chart = await self._dao.find_by_id(self._chart_id)
         if not self._chart:
             raise ObjectNotFoundError("Chart", self._chart_id)
+        # Visibility scope — upstream ``ChartDAO.find_by_ids`` applies
+        # ``ChartFilter`` (base_filter), so a chart outside the caller's
+        # scope is a 404 BEFORE the reports/ownership checks; a 403 here
+        # would disclose its existence (R14-06).
+        from superset.commands.utils import filter_visible_ids
+        from superset.db.filters import chart_access_filters
+        from superset.models.slice import Slice
+
+        visible = await filter_visible_ids(
+            self._security_manager,
+            self._user_id,
+            self._dao.session,
+            Slice,
+            [self._chart_id],
+            chart_access_filters,
+        )
+        if self._chart_id not in visible:
+            raise ObjectNotFoundError("Chart", self._chart_id)
         # Check there are no associated ReportSchedules — 1:1 with the
         # original, which raises BEFORE the ownership check (a chart with
         # alerts/reports reports "reports exist", not "forbidden").
@@ -100,6 +118,21 @@ class BulkDeleteChartsCommand(AsyncBaseCommand[None]):
         self._charts = await self._dao.find_by_ids(self._chart_ids)
         found_ids = {int(c.id) for c in self._charts}
         missing = set(self._chart_ids) - found_ids
+        # Visibility scope — ids outside the caller's ChartFilter scope read
+        # as missing, exactly like upstream's filtered find_by_ids (R14-06).
+        from superset.commands.utils import filter_visible_ids
+        from superset.db.filters import chart_access_filters
+        from superset.models.slice import Slice
+
+        visible = await filter_visible_ids(
+            self._security_manager,
+            self._user_id,
+            self._dao.session,
+            Slice,
+            list(found_ids),
+            chart_access_filters,
+        )
+        missing |= found_ids - visible
         if missing:
             # ``str({99998, 99999})`` would render as the Python set repr;
             # frontend message comparisons (and unit tests) expect a list.

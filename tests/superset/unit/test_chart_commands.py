@@ -233,6 +233,62 @@ async def test_delete_chart_not_found(mock_dao):
         await cmd.validate()
 
 
+async def test_delete_chart_invisible_is_404(mock_dao, mock_chart):
+    """A chart outside the caller's visibility scope reads as nonexistent
+    (404), not forbidden (403) — upstream ``ChartDAO.find_by_ids`` applies
+    ``ChartFilter`` (base_filter) so invisible ids never reach the ownership
+    check (superset_old/daos/chart.py:40)."""
+    import sqlalchemy as sa
+
+    mock_dao.find_by_id = AsyncMock(return_value=mock_chart)
+    _exec_returns(mock_dao, all_=[])
+    sm = AsyncMock()
+    sm.find_user_by_id = AsyncMock(return_value=MagicMock(id=42))
+    sm.raise_for_ownership = AsyncMock(side_effect=_security_exception())
+    with patch(
+        "superset.db.filters.chart_access_filters",
+        new=AsyncMock(return_value=[sa.text("1=1")]),
+    ):
+        cmd = DeleteChartCommand(
+            dao=mock_dao, chart_id=1, security_manager=sm, user_id=42
+        )
+        with pytest.raises(ObjectNotFoundError):
+            await cmd.validate()
+    sm.raise_for_ownership.assert_not_awaited()
+
+
+async def test_create_chart_invisible_dashboard_is_not_found(mock_dao):
+    """Attaching a new chart to a dashboard the user can't SEE is the 422
+    DashboardsNotFoundValidationError upstream emits (filtered
+    ``DashboardDAO.find_by_ids`` → count mismatch,
+    superset_old/commands/chart/create.py:68-70) — not a 403 that would
+    disclose the dashboard's existence."""
+    import sqlalchemy as sa
+
+    from superset.exceptions import DashboardsNotFoundValidationError
+
+    dash = MagicMock()
+    dash.id = 7
+    mock_dao.find_dashboards_by_ids = AsyncMock(return_value=[dash])
+    _exec_returns(mock_dao, all_=[])
+    sm = AsyncMock()
+    sm.find_user_by_id = AsyncMock(return_value=MagicMock(id=42))
+    sm.raise_for_ownership = AsyncMock(side_effect=_security_exception())
+    with patch(
+        "superset.db.filters.dashboard_access_filters",
+        new=AsyncMock(return_value=[sa.text("1=1")]),
+    ):
+        cmd = CreateChartCommand(
+            dao=mock_dao,
+            data={"slice_name": "Test", "dashboards": [7]},
+            user_id=42,
+            security_manager=sm,
+        )
+        with pytest.raises(DashboardsNotFoundValidationError):
+            await cmd.validate()
+    sm.raise_for_ownership.assert_not_awaited()
+
+
 async def test_delete_chart_success(mock_dao, mock_chart):
     mock_dao.find_by_id = AsyncMock(return_value=mock_chart)
     mock_dao.find_report_schedules_by_chart_id = AsyncMock(return_value=[])
