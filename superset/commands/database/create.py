@@ -151,8 +151,34 @@ class CreateDatabaseCommand(AsyncBaseCommand["Database"]):
                 DatabaseExistsValidationError,
                 DatabaseInvalidError,
             )
+            from superset.events import event_logger
 
-            raise DatabaseInvalidError(exceptions=[DatabaseExistsValidationError()])
+            exception = DatabaseInvalidError(
+                exceptions=[DatabaseExistsValidationError()]
+            )
+            # Analytics event — 1:1 with upstream create.py:146-152.
+            event_logger.log_with_context(
+                action="db_connection_failed.{}.{}".format(
+                    exception.__class__.__name__,
+                    ".".join(exception.get_list_classnames()),
+                )
+            )
+            raise exception
+
+    def _log_creation_failed(self, ex: Exception, suffix: str = "") -> None:
+        """Emit the ``db_creation_failed.<ExcCls>[suffix]`` analytics event.
+
+        1:1 with ``superset_old/commands/database/create.py`` which logs
+        ``event_logger.log_with_context(action=f"db_creation_failed.
+        {ex.__class__.__name__}", engine=uri.split(":")[0])`` on every failed
+        creation path.
+        """
+        from superset.events import event_logger
+
+        event_logger.log_with_context(
+            action=f"db_creation_failed.{ex.__class__.__name__}{suffix}",
+            engine=(self._data.get("sqlalchemy_uri") or "").split(":")[0],
+        )
 
     async def run(self) -> "Database":
         from superset.commands.database.ssh_tunnel.exceptions import (
@@ -203,11 +229,15 @@ class CreateDatabaseCommand(AsyncBaseCommand["Database"]):
             SupersetErrorsException,
             SSHTunnelingNotEnabledError,
             SSHTunnelDatabasePortError,
-        ):
+        ) as ex:
             # Re-raise so the engine-spec-extracted errors and SSH errors
-            # reach the client with the correct status code.
+            # reach the client with the correct status code.  Analytics
+            # event — 1:1 with upstream create.py:75-80.
+            self._log_creation_failed(ex)
             raise
         except Exception as ex:
+            # Analytics event — 1:1 with upstream create.py:81-86.
+            self._log_creation_failed(ex)
             raise DatabaseConnectionFailedError() from ex
 
         # -------------------------------------------------------------

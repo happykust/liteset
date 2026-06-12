@@ -191,6 +191,102 @@ async def test_create_database_validates_success(mock_dao):
     await cmd.validate()  # Should not raise
 
 
+async def test_create_database_uniqueness_failure_emits_telemetry(mock_dao):
+    """A failed name-uniqueness validation emits the upstream analytics event
+    ``db_connection_failed.<ExcCls>.<leaf-classnames>``
+    (superset_old/commands/database/create.py:143-152)."""
+    from superset.commands.database.exceptions import DatabaseInvalidError
+
+    mock_dao.validate_uniqueness = AsyncMock(return_value=False)
+    cmd = CreateDatabaseCommand(
+        dao=mock_dao,
+        data={
+            "database_name": "existing_db",
+            "sqlalchemy_uri": "postgresql://localhost/db",
+        },
+    )
+    with patch("superset.events.event_logger.log_with_context") as ev:
+        with pytest.raises(DatabaseInvalidError):
+            await cmd.validate()
+    ev.assert_called_once_with(
+        action="db_connection_failed.DatabaseInvalidError.DatabaseExistsValidationError"
+    )
+
+
+async def test_create_database_connection_failure_emits_telemetry(mock_dao):
+    """A failed pre-creation connection test emits
+    ``db_creation_failed.<ExcCls>`` with the URI scheme as ``engine``
+    (superset_old/commands/database/create.py:81-86) before being wrapped in
+    ``DatabaseConnectionFailedError``."""
+    from superset.exceptions import DatabaseConnectionFailedError
+
+    mock_dao.validate_uniqueness = AsyncMock(return_value=True)
+    cmd = CreateDatabaseCommand(
+        dao=mock_dao,
+        data={
+            "database_name": "new_db",
+            "sqlalchemy_uri": "postgresql://localhost/db",
+        },
+    )
+    await cmd.validate()
+    fake_test_cmd = MagicMock()
+    fake_test_cmd.validate = AsyncMock()
+    fake_test_cmd.run = AsyncMock(side_effect=RuntimeError("connection refused"))
+    with (
+        patch(
+            "superset.commands.database.create.DatabaseTestConnectionCommand",
+            return_value=fake_test_cmd,
+        ),
+        patch("superset.events.event_logger.log_with_context") as ev,
+    ):
+        with pytest.raises(DatabaseConnectionFailedError):
+            await cmd.run()
+    ev.assert_called_once_with(
+        action="db_creation_failed.RuntimeError", engine="postgresql"
+    )
+
+
+async def test_create_database_reraised_failure_emits_telemetry(mock_dao):
+    """SIP-40 / SSH errors are re-raised unchanged but still emit the
+    ``db_creation_failed.<ExcCls>`` event (upstream create.py:70-80)."""
+    from superset.exceptions import SupersetErrorsException
+
+    mock_dao.validate_uniqueness = AsyncMock(return_value=True)
+    cmd = CreateDatabaseCommand(
+        dao=mock_dao,
+        data={
+            "database_name": "new_db",
+            "sqlalchemy_uri": "postgresql://localhost/db",
+        },
+    )
+    await cmd.validate()
+    fake_test_cmd = MagicMock()
+    fake_test_cmd.validate = AsyncMock()
+    fake_test_cmd.run = AsyncMock(
+        side_effect=SupersetErrorsException(
+            [
+                SupersetError(
+                    error_type=SupersetErrorType.CONNECTION_INVALID_HOSTNAME_ERROR,
+                    message="bad host",
+                    level=ErrorLevel.ERROR,
+                )
+            ]
+        )
+    )
+    with (
+        patch(
+            "superset.commands.database.create.DatabaseTestConnectionCommand",
+            return_value=fake_test_cmd,
+        ),
+        patch("superset.events.event_logger.log_with_context") as ev,
+    ):
+        with pytest.raises(SupersetErrorsException):
+            await cmd.run()
+    ev.assert_called_once_with(
+        action="db_creation_failed.SupersetErrorsException", engine="postgresql"
+    )
+
+
 # ---------------------------------------------------------------------------
 # UpdateDatabaseCommand
 # ---------------------------------------------------------------------------

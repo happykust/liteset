@@ -1226,6 +1226,14 @@ class DatabaseController(Controller):
                     db_id,
                     _ssh_exc,
                 )
+                # Analytics event — 1:1 with upstream CreateDatabaseCommand.run
+                # (superset_old/commands/database/create.py:109-112).
+                event_logger.log_with_context(
+                    action=(
+                        f"db_creation_failed.{type(_ssh_exc).__name__}.ssh_tunnel"
+                    ),
+                    engine=(create_data.get("sqlalchemy_uri") or "").split(":")[0],
+                )
                 raise
 
         # Add catalog/schema DAR permissions for the newly-created database.
@@ -1257,6 +1265,14 @@ class DatabaseController(Controller):
                 db_id,
                 _perm_exc,
             )
+
+        # Stats counter — 1:1 with upstream CreateDatabaseCommand.run
+        # (superset_old/commands/database/create.py:125-126):
+        # ``if ssh_tunnel: stats_logger.incr("db_creation_success.ssh_tunnel")``.
+        if tunnel is not None:
+            from superset.extensions import stats_logger_manager
+
+            stats_logger_manager.instance.incr("db_creation_success.ssh_tunnel")
 
         await event_logger.alog_with_context(
             "database.create",
