@@ -1178,8 +1178,6 @@ class AsyncQueryContextProcessor:
         from superset.utils.dataframe import df_metrics_to_num, normalize_dttm_col
         from superset.utils.date import DateColumn
 
-        df = df.replace([np.inf, -np.inf], np.nan)
-
         # 1:1 with upstream ``normalize_df``'s ``_get_timestamp_format``
         # (``superset_old/.../query_context_processor.py:314-326``): read the
         # column's ``python_date_format`` off a sqla column object. dict specs
@@ -1281,6 +1279,12 @@ class AsyncQueryContextProcessor:
         if self.enforce_numerical_metrics and query_object.metrics:
             metric_names = get_metric_names(query_object.metrics)
             df_metrics_to_num(df, metric_names)
+
+        # Replace inf/-inf LAST — 1:1 with upstream ``normalize_df`` order
+        # (after normalize_dttm_col + df_metrics_to_num).  Doing it first would
+        # miss any inf produced by ``df_metrics_to_num`` (e.g. a ratio metric),
+        # leaving non-JSON-serialisable infinities in the result.
+        df = df.replace([np.inf, -np.inf], np.nan)
 
         return df
 
@@ -1858,6 +1862,10 @@ class AsyncQueryContextProcessor:
 
             resolved_time_range: str | None = query_object.time_range
             if not resolved_time_range:
+                # 1:1 with upstream ``get_since_until_from_query_object`` which
+                # iterates ALL filters and keeps the LAST TEMPORAL_RANGE match
+                # (no early break) — matters only when a query carries multiple
+                # TEMPORAL_RANGE filters.
                 for flt in query_object.filters or []:
                     if (
                         isinstance(flt, dict)
@@ -1865,7 +1873,6 @@ class AsyncQueryContextProcessor:
                         and isinstance(flt.get("val"), str)
                     ):
                         resolved_time_range = flt["val"]
-                        break
 
             # 1:1 with upstream ``get_since_until_from_query_object`` — pass
             # ``extras`` so config relative-time anchors + per-request overrides

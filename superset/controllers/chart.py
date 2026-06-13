@@ -320,6 +320,7 @@ def _render_chart_data_payload(  # noqa: C901
 def _table_like_file_response(
     result: dict[str, Any],
     result_format: str,
+    verbose_map: dict[str, str] | None = None,
 ) -> Response[Any]:
     """Render a chart-data ``result`` as a CSV / XLSX download.
 
@@ -351,13 +352,17 @@ def _table_like_file_response(
     if len(frames) <= 1:
         df = frames[0] if frames else pd.DataFrame()
         if result_format == "csv":
-            csv_content = AsyncQueryContextProcessor.get_data(df, "csv")
+            csv_content = AsyncQueryContextProcessor.get_data(
+                df, "csv", verbose_map=verbose_map
+            )
             return Response(
                 content=csv_content,
                 media_type="text/csv",
                 headers={"Content-Disposition": f"attachment; filename={_ts}.csv"},
             )
-        xlsx_data = AsyncQueryContextProcessor.get_data(df, "xlsx")
+        xlsx_data = AsyncQueryContextProcessor.get_data(
+            df, "xlsx", verbose_map=verbose_map
+        )
         return Response(
             content=xlsx_data,
             media_type=(
@@ -370,7 +375,9 @@ def _table_like_file_response(
     zip_buf = io.BytesIO()
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for idx, df in enumerate(frames, start=1):
-            file_data = AsyncQueryContextProcessor.get_data(df, result_format)
+            file_data = AsyncQueryContextProcessor.get_data(
+                df, result_format, verbose_map=verbose_map
+            )
             file_bytes = (
                 file_data.encode("utf-8") if isinstance(file_data, str) else file_data
             )
@@ -2010,7 +2017,11 @@ class ChartController(Controller):
                 object_ref=f"chart:{pk}",
                 user_id=current_user.id,
             )
-            return _table_like_file_response(result, _result_format_get)
+            return _table_like_file_response(
+                result,
+                _result_format_get,
+                verbose_map=getattr(query_context.datasource, "verbose_map", None),
+            )
 
         # 1:1 with the original GET endpoint (charts/data/api.py:171-178):
         # extract ``form_data`` from ``chart.params`` and pass it through
@@ -2326,7 +2337,11 @@ class ChartController(Controller):
             )
             cmd = ChartDataCommand(query_context=query_context, processor=processor)
             result = await cmd.execute()
-            return _table_like_file_response(result, result_format)
+            return _table_like_file_response(
+                result,
+                result_format,
+                verbose_map=getattr(datasource, "verbose_map", None),
+            )
 
         # --- post_processed branch — 1:1 with superset_old/charts/data/api.py ---
         # When result_type is "post_processed", execute the query (full path)

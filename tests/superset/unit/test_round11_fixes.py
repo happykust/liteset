@@ -257,7 +257,12 @@ def _csv_get_mocks():
     dao = AsyncMock()
     dao.find_all = AsyncMock(return_value=[chart])
     ds_dao = AsyncMock()
-    ds_dao.get_datasource = AsyncMock(return_value=MagicMock())
+    _ds = MagicMock()
+    # Real (empty) verbose_map — production datasources return a dict (or
+    # None for query datasources), never a MagicMock; a bare auto-attribute
+    # would be truthy and corrupt the exported CSV column names.
+    _ds.verbose_map = {}
+    ds_dao.get_datasource = AsyncMock(return_value=_ds)
     sm = MagicMock()
     sm.raise_for_access = AsyncMock()
     sm.is_guest_user = MagicMock(return_value=False)

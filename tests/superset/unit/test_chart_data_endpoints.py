@@ -404,3 +404,36 @@ async def test_data_enforces_datasource_access_before_result_type(
             current_user=mock_user,
             state=mock_state,
         )
+
+
+class TestTableLikeFileResponseVerboseMap:
+    """CSV/XLSX exports must apply the datasource verbose_map to column names
+    (1:1 with upstream get_data, which renames columns from
+    datasource.data['verbose_map'])."""
+
+    def test_csv_export_applies_verbose_map(self) -> None:
+        from superset.controllers.chart import _table_like_file_response
+
+        result = {"queries": [{"data": [{"count__col": 5, "plain": "x"}]}]}
+        resp = _table_like_file_response(
+            result, "csv", verbose_map={"count__col": "Distinct Users"}
+        )
+        body = (
+            resp.content.decode()
+            if isinstance(resp.content, bytes)
+            else str(resp.content)
+        )
+        assert "Distinct Users" in body
+        assert "count__col" not in body
+
+    def test_csv_export_without_verbose_map_keeps_raw_names(self) -> None:
+        from superset.controllers.chart import _table_like_file_response
+
+        result = {"queries": [{"data": [{"count__col": 5}]}]}
+        resp = _table_like_file_response(result, "csv")
+        body = (
+            resp.content.decode()
+            if isinstance(resp.content, bytes)
+            else str(resp.content)
+        )
+        assert "count__col" in body
