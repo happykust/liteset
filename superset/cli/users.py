@@ -417,6 +417,40 @@ def load_test_users(password: str) -> None:  # noqa: C901  # complex business lo
             await session.flush()
 
             # -----------------------------------------------------------
+            # Resolve the example DB's ``database_access`` PVM so the custom
+            # test roles can run SQL Lab against the examples database — 1:1
+            # with upstream cli/test.py:50-55 (examples_pv granted to BOTH
+            # gamma_sqllab and gamma_no_csv). Mirror upstream's
+            # ``get_example_database()`` (get_or_create_db) but in THIS async
+            # session, not its separate sync session, to avoid a cross-session
+            # identity mismatch when appending the PVM to the roles below.
+            # -----------------------------------------------------------
+            from sqlalchemy import select as _select
+
+            from superset.constants import EXAMPLES_DB_UUID
+            from superset.models.core import Database
+            from superset.security.sync_roles import _get_or_create_pvm
+
+            examples_res = await session.execute(
+                _select(Database).where(Database.database_name == "examples")
+            )
+            examples_db = examples_res.scalars().one_or_none()
+            if examples_db is None:
+                examples_uri = (
+                    getattr(settings, "sqlalchemy_examples_uri", None)
+                    or settings.sqlalchemy_database_uri
+                )
+                examples_db = Database(
+                    database_name="examples", uuid=EXAMPLES_DB_UUID
+                )
+                session.add(examples_db)
+                examples_db.set_sqlalchemy_uri(str(examples_uri))
+                await session.flush()  # assign id so ``.perm`` resolves
+            examples_pv = await _get_or_create_pvm(
+                session, "database_access", examples_db.perm
+            )
+
+            # -----------------------------------------------------------
             # Create custom test roles (gamma_sqllab, gamma_no_csv)
             # matching original superset_old/cli/test.py:50-61.
             #
@@ -459,6 +493,13 @@ def load_test_users(password: str) -> None:  # noqa: C901  # complex business lo
                             continue
 
                     new_role.permissions.append(pv)
+
+                # Grant example-DB ``database_access`` to BOTH custom roles —
+                # upstream cli/test.py:53-55 adds examples_pv to gamma_sqllab
+                # AND gamma_no_csv (the standard Gamma/sql_lab role defs do not
+                # include it, so copying their perms above is not enough).
+                if examples_pv.id not in {p.id for p in new_role.permissions}:
+                    new_role.permissions.append(examples_pv)
 
                 await session.flush()
                 # Count the permissions actually assigned, not ``seen_pv_ids``
