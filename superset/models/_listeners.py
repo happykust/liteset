@@ -291,18 +291,28 @@ def _database_after_update(
         },
     )
 
-    # Rename ``perm`` references on slices/tables that embed the old name.
+    # Rename the datasource-access ``perm`` on tables/slices.  A dataset perm
+    # is ``[dbname].[tablename](id:DATASET_ID)`` — it starts with the same
+    # ``[oldname].`` prefix as the renamed view-menus, so the prefix
+    # substitution (identical to the ab_view_menu query above) rewrites it to
+    # ``[newname].[tablename](id:DATASET_ID)``.  This is equivalent to
+    # upstream ``_update_vm_datasources_access`` which recomputes each perm via
+    # ``get_dataset_perm(id, table_name, new_db_name)``.  The previous
+    # ``REPLACE(perm, '[oldname].(id:DB_ID)', ...)`` was a no-op: the
+    # database-perm string is never a substring of a dataset perm, so after a
+    # rename the stored perm kept the old name and dataset/chart RBAC checks
+    # (``SqlaTable.perm.in_(...)`` / ``Slice.perm.in_(...)``) failed.
     for table_name in ("tables", "slices"):
         connection.execute(
             text(
                 f"UPDATE {table_name} "  # noqa: S608
-                "SET perm = REPLACE(perm, :old, :new) "
-                "WHERE perm LIKE :pattern"
+                "SET perm = :new || SUBSTR(perm, :prefix_len + 1) "
+                "WHERE SUBSTR(perm, 1, :prefix_len) = :old"
             ),
             {
-                "old": old_db_perm,
-                "new": new_db_perm,
-                "pattern": f"%{old_db_perm}%",
+                "old": old_prefix,
+                "new": new_prefix,
+                "prefix_len": len(old_prefix),
             },
         )
 
