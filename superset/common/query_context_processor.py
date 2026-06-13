@@ -1714,10 +1714,12 @@ class AsyncQueryContextProcessor:
             # ``chart.get_query_context()`` → ``AsyncQueryContextProcessor``.
             # The original imported ``viz_types`` from ``superset.viz`` at module
             # level; we do it lazily here to avoid a circular-import at load time.
-            from superset.viz import viz_types  # noqa: PLC0415
+            from superset.viz import get_active_viz_types  # noqa: PLC0415
 
             chart_viz_type = getattr(chart, "viz_type", None)
-            if chart_viz_type in viz_types:
+            # Denylist-filtered registry — a VIZ_TYPE_DENYLIST'd type must NOT
+            # be routed into the legacy BaseViz pipeline here (1:1 upstream).
+            if chart_viz_type in get_active_viz_types():
                 # Legacy chart — run through the async viz pipeline.
                 if not getattr(chart, "datasource", None):
                     raise QueryObjectValidationError(

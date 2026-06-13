@@ -363,6 +363,36 @@ def _get_time_filter_status(
 # ---------------------------------------------------------------------------
 # get_viz factory
 # ---------------------------------------------------------------------------
+def _resolve_settings() -> SupersetSettings | None:
+    """Best-effort lazy ``SupersetSettings`` for denylist enforcement."""
+    from superset.config import SupersetSettings
+
+    try:
+        return SupersetSettings()  # type: ignore[call-arg]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def get_active_viz_types(
+    settings: SupersetSettings | None = None,
+) -> dict[str | None, type[BaseViz]]:
+    """Return the viz registry with ``VIZ_TYPE_DENYLIST`` entries removed.
+
+    Mirrors upstream's module-level ``viz_types`` comprehension, which filters
+    by ``current_app.config["VIZ_TYPE_DENYLIST"]``. The port can't filter at
+    import time (settings/app may not exist yet), so it filters on access.
+    Routing guards (``if viz_type in get_active_viz_types()``) therefore skip a
+    denied type exactly as upstream did — sending it to the non-legacy path
+    instead of instantiating the legacy ``BaseViz`` pipeline.
+    """
+    if settings is None:
+        settings = _resolve_settings()
+    denylist = (getattr(settings, "viz_type_denylist", []) or []) if settings else []
+    if not denylist:
+        return dict(viz_types)
+    return {vt: c for vt, c in viz_types.items() if vt not in denylist}
+
+
 def get_viz(
     datasource: SqlaTable,
     form_data: dict[str, Any],
@@ -378,7 +408,13 @@ def get_viz(
     """
     viz_type = form_data.get("viz_type", "table")
 
-    # Apply VIZ_TYPE_DENYLIST
+    # Apply VIZ_TYPE_DENYLIST. Upstream reads
+    # ``current_app.config["VIZ_TYPE_DENYLIST"]`` unconditionally; lazily
+    # resolve settings when the caller didn't thread them so a denied type is
+    # rejected on EVERY path (warm-up / annotation included), not only when a
+    # settings object happens to be passed.
+    if settings is None:
+        settings = _resolve_settings()
     if settings is not None:
         denylist = getattr(settings, "viz_type_denylist", []) or []
         if viz_type in denylist:

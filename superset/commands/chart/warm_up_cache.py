@@ -428,7 +428,7 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
         ``{chart_id, viz_error, viz_status}`` shape with
         ``error_msg_from_exception`` matching the original error format.
         """
-        from superset.viz import viz_types
+        from superset.viz import get_active_viz_types
 
         assert self._chart is not None
         chart = self._chart
@@ -440,7 +440,9 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
             # ``datasource`` + cache_timeout, and runs ``update_time_range``.
             form_data = chart.form_data
 
-            if form_data.get("viz_type") in viz_types:
+            # Denylist-filtered registry — a VIZ_TYPE_DENYLIST'd type must route
+            # to the non-legacy branch (1:1 upstream), never the BaseViz path.
+            if form_data.get("viz_type") in get_active_viz_types():
                 error, status = await self._warm_up_legacy_cache(
                     chart,
                     form_data,

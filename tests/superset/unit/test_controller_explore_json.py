@@ -720,3 +720,39 @@ def test_routes_resolve() -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-q"])
+
+
+def test_viz_type_denylist_enforced_without_settings(monkeypatch):
+    """VIZ_TYPE_DENYLIST must be enforced on EVERY path (warm-up / annotation
+    call get_viz without threading settings). get_active_viz_types excludes the
+    denied type from routing, and get_viz raises even when settings is None."""
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from superset import viz as viz_mod
+    from superset.exceptions import SupersetException
+
+    fake_settings = MagicMock()
+    # "bubble" is a real legacy BaseViz subclass present in viz_types.
+    fake_settings.viz_type_denylist = ["bubble"]
+    monkeypatch.setattr(viz_mod, "_resolve_settings", lambda: fake_settings)
+
+    active = viz_mod.get_active_viz_types()
+    assert "bubble" not in active
+    assert len(active) > 0  # other viz types still present
+
+    with pytest.raises(SupersetException):
+        viz_mod.get_viz(datasource=MagicMock(), form_data={"viz_type": "bubble"})
+
+
+def test_viz_type_denylist_empty_keeps_all(monkeypatch):
+    """Empty denylist (the default) leaves the full registry intact."""
+    from unittest.mock import MagicMock
+
+    from superset import viz as viz_mod
+
+    fake_settings = MagicMock()
+    fake_settings.viz_type_denylist = []
+    monkeypatch.setattr(viz_mod, "_resolve_settings", lambda: fake_settings)
+    assert "bubble" in viz_mod.get_active_viz_types()
