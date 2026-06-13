@@ -275,6 +275,26 @@ class TestLoginEndpoint:
                 assert "access_token" in data
                 assert "refresh_token" not in data
 
+    async def test_login_empty_password_rejected(self, mock_user: MockUser):
+        """An empty password is rejected with a validation error before any
+        auth is attempted — prevents an LDAP unauthenticated (anonymous) bind
+        from logging a caller in as any known user with a blank password.
+        Without the guard, db-provider empty password reaches the hash check
+        and returns 401 (not a validation error)."""
+        with patch("superset.security.dao.AsyncSecurityDAO") as mock_dao_cls:
+            dao_instance = AsyncMock()
+            dao_instance.get_user_by_username = AsyncMock(return_value=mock_user)
+            mock_dao_cls.return_value = dao_instance
+
+            app = _create_test_app()
+            async with AsyncTestClient(app=app) as client:
+                resp = await client.post(
+                    "/api/v1/security/login",
+                    json={"username": "admin", "password": "", "provider": "db"},
+                )
+                assert resp.status_code in (400, 422)
+                assert "access_token" not in resp.json()
+
     async def test_login_wrong_password(self, mock_user: MockUser):
         """Wrong password returns 401."""
         with patch("superset.security.dao.AsyncSecurityDAO") as mock_dao_cls:

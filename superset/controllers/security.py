@@ -467,7 +467,7 @@ class SecurityController(Controller):
         opt={"exclude_from_auth": True, "exclude_from_csrf": True},
         status_code=200,
     )
-    async def login(
+    async def login(  # noqa: C901  # multi-provider (db/ldap) login dispatch
         self,
         data: LoginRequest,
         state: State,
@@ -497,6 +497,13 @@ class SecurityController(Controller):
 
         if not data.username:
             raise ValidationException(detail="Username is required")
+        # Reject an empty password before it reaches the LDAP bind: many LDAP
+        # servers treat a simple bind with a non-empty DN and empty password as
+        # an *unauthenticated* bind and return success, which would let a caller
+        # log in as any known user with a blank password.  Mirrors the browser
+        # login form (``login_submit``: ``if not username or not password``).
+        if not data.password:
+            raise ValidationException(detail="Password is required")
 
         # Authenticate via DAO/Security manager
         from superset.security.dao import AsyncSecurityDAO
