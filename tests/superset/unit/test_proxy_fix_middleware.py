@@ -23,12 +23,10 @@ semantics:
         return values[-trusted]
     return None
 
-R19-01: the original liteset implementation clamped the index to 0 and
-returned the LEFTMOST (client-controllable) value when the forwarded
-chain was shorter than the configured trusted-proxy count, instead of
-returning None.  Under a multi-proxy config (count >= 2) that let an
-attacker spoof X-Forwarded-For / -Proto / -Host by sending fewer values
-than configured.
+A shorter-than-configured forwarded chain must yield None rather than the
+LEFTMOST (client-controllable) value: returning the leftmost entry under a
+multi-proxy config (count >= 2) would let an attacker spoof X-Forwarded-For /
+-Proto / -Host by sending fewer values than configured.
 """
 
 from __future__ import annotations
@@ -64,7 +62,7 @@ def test_exact_count_returns_leftmost_when_equal():
 
 
 # ---------------------------------------------------------------------------
-# R19-01: shorter-than-configured chain MUST return None (werkzeug parity),
+# shorter-than-configured chain MUST return None (werkzeug parity),
 # NOT the leftmost client-controlled value.
 # ---------------------------------------------------------------------------
 

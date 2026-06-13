@@ -252,7 +252,7 @@ def test_x_content_type_options_default_emits_nosniff():
 
 
 # ---------------------------------------------------------------------------
-# force_https (R19-03) — HTTP->HTTPS redirect, mirroring talisman _force_https
+# force_https — HTTP->HTTPS redirect, mirroring talisman _force_https
 # ---------------------------------------------------------------------------
 
 from types import SimpleNamespace  # noqa: E402

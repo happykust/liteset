@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for RateLimitMiddleware (R19-02).
+"""Unit tests for RateLimitMiddleware.
 
 Pins the FAB / flask-limiter parity:
 
