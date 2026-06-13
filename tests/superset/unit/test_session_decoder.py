@@ -1,21 +1,55 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 """Tests for FlaskSessionDecoder — itsdangerous cookie decoding.
 
 Cookies are minted with Flask's exact signer configuration
-(``key_derivation="hmac"`` + SHA-1 + ``TaggedJSONSerializer``) — the
-itsdangerous *defaults* (django-concat) produce incompatible signatures,
+(``key_derivation="hmac"`` + SHA-1, default itsdangerous JSON serializer) —
+the itsdangerous *defaults* (django-concat) produce incompatible signatures,
 which is precisely the round-10 regression this file guards against.
+
+Liteset has removed Flask from the runtime, so this test must NOT import it.
+The helper reproduces Flask's signer config directly (it is byte-identical to
+Flask's own output for plain-string session payloads, since Flask's
+``TaggedJSONSerializer`` only diverges from plain JSON for special types like
+datetime/uuid/bytes — none of which appear in a login session). A frozen,
+real-Flask-minted cookie additionally guards byte-level compatibility with an
+actual Flask installation without taking a runtime dependency on it.
 """
 
 from __future__ import annotations
 
 import hashlib
 
-from flask.json.tag import TaggedJSONSerializer
 from itsdangerous import URLSafeTimedSerializer
 
 from superset.security.session_decoder import FlaskSessionDecoder
 
 SECRET_KEY = "test-secret-key-at-least-16-chars"
+
+# A session cookie minted by a REAL Flask 3.1.3 install for
+# ``{"_user_id": "5", "csrf_token": "tok"}`` with SECRET_KEY above and Flask's
+# default ``cookie-session`` salt. Frozen here so the byte-level Flask-compat
+# regression is guarded WITHOUT importing flask. Decoded with ``max_age=None``
+# because the embedded timestamp would otherwise make the fixture expire (the
+# guarded regression is the HMAC key-derivation/signature, not expiry).
+_REAL_FLASK_COOKIE = (
+    "eyJfdXNlcl9pZCI6IjUiLCJjc3JmX3Rva2VuIjoidG9rIn0"
+    ".ai3PrA.VZ2-eWT_RBQOIYu1O4KqSDta1i0"
+)
 
 
 def _create_flask_session_cookie(
@@ -23,32 +57,33 @@ def _create_flask_session_cookie(
     secret_key: str = SECRET_KEY,
     salt: str = "cookie-session",
 ) -> str:
-    """Create a real Flask-format signed session cookie for testing."""
+    """Create a Flask-format signed session cookie for testing.
+
+    Reproduces ``flask.sessions.SecureCookieSessionInterface``'s signer:
+    ``key_derivation="hmac"`` + SHA-1 over itsdangerous' default JSON
+    serializer (identical to Flask's output for plain-string payloads).
+    """
     s = URLSafeTimedSerializer(
         secret_key,
         salt=salt,
-        serializer=TaggedJSONSerializer(),
         signer_kwargs={"key_derivation": "hmac", "digest_method": hashlib.sha1},
     )
     return s.dumps(data)
 
 
-def test_decode_real_flask_session_interface_cookie():
+def test_decode_real_flask_session_cookie():
     """Regression: a cookie minted by Flask itself must decode.
 
     Pre-fix the decoder used itsdangerous' default key derivation
     (django-concat) → BadSignature on every real Flask cookie →
-    get_user_id() always None (Strangler-Fig session auth dead).
+    get_user_id() always None (Strangler-Fig session auth dead). The frozen
+    cookie above was produced by an actual Flask install.
     """
-    import flask
-
-    app = flask.Flask(__name__)
-    app.secret_key = SECRET_KEY
-    signer = flask.sessions.SecureCookieSessionInterface().get_signing_serializer(app)
-    cookie = signer.dumps({"_user_id": "5", "csrf_token": "tok"})
-
-    decoder = FlaskSessionDecoder(secret_key=SECRET_KEY)
-    assert decoder.get_user_id(cookie) == 5
+    decoder = FlaskSessionDecoder(secret_key=SECRET_KEY, max_age=None)
+    assert decoder.get_user_id(_REAL_FLASK_COOKIE) == 5
+    payload = decoder.decode(_REAL_FLASK_COOKIE)
+    assert payload is not None
+    assert payload["csrf_token"] == "tok"
 
 
 def test_decode_valid_cookie():
