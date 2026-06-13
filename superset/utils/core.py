@@ -369,9 +369,15 @@ def split_adhoc_filters_into_base_filters(
                 sql_expression = adhoc_filter.get("sqlExpression") or adhoc_filter.get(
                     "sql_expression"
                 )
-                # sanitize_clause is not available in the migration shim;
-                # migrations that call this function operate on already-stored
-                # data, so we pass the expression through unchanged.
+                # 1:1 with upstream: every SQL adhoc filter clause is run
+                # through ``sanitize_clause`` (strips SQL comments and raises
+                # QueryClauseValidationException on malformed SQL).  Without
+                # this a trailing ``--`` comment would comment out the rest of
+                # the assembled ``WHERE``/``HAVING`` clause (joined with
+                # `` AND ``), silently disabling every subsequent filter.
+                from superset.utils.sql import sanitize_clause
+
+                sql_expression = sanitize_clause(sql_expression, engine)
                 if clause == "WHERE":
                     sql_where_filters.append(sql_expression)
                 elif clause == "HAVING":
