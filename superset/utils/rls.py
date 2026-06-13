@@ -531,10 +531,16 @@ def _sync_get_guest_rls_clauses(user: Any, table: Any) -> list[str]:
 def apply_rls(
     database: Database,
     catalog: str | None,
-    schema: str,
+    schema: str | None,
     parsed_statement: BaseSQLStatement[Any],
 ) -> None:
     """Modify ``parsed_statement`` inplace to inject RLS predicates.
+
+    ``schema`` is the default schema for non-qualified table names and may be
+    ``None`` (engines without a default schema) — 1:1 with
+    ``superset_old/utils/rls.py::apply_rls``. It is passed straight to
+    :meth:`Table.qualify`; ``None`` matches a dataset stored with ``schema
+    IS NULL``, whereas an empty string would not — do not coerce it.
 
     Two strategies (chosen by ``database.db_engine_spec.get_rls_method()``):
     - replace each table reference with a ``(SELECT * FROM t WHERE rls)``

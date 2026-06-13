@@ -39,7 +39,7 @@ class _BoomRLS(Exception):  # noqa: N818
     """Sentinel raised by the mocked ``apply_rls``."""
 
 
-def _make_query() -> SimpleNamespace:
+def _make_query(default_schema: str | None = "public") -> SimpleNamespace:
     database = SimpleNamespace(
         allow_dml=True,
         allow_run_async=False,
@@ -47,7 +47,7 @@ def _make_query() -> SimpleNamespace:
             allows_sql_comments=True,
             run_multiple_statements_as_one=False,
         ),
-        get_default_schema_for_query=lambda query: "public",
+        get_default_schema_for_query=lambda query: default_schema,
     )
     return SimpleNamespace(
         id=1,
@@ -104,3 +104,59 @@ def test_apply_rls_failure_propagates_and_blocks_execution() -> None:
     execute_mock.assert_not_called()
     # session is always closed in the finally block.
     session.close.assert_called_once()
+
+
+def test_apply_rls_receives_none_default_schema_unchanged() -> None:
+    """A ``None`` default schema must reach ``apply_rls`` as ``None``, not ``""``.
+
+    ``get_default_schema_for_query`` is ``str | None``; engines without a
+    default schema return ``None``. ``apply_rls`` -> ``Table.qualify`` resolves
+    an unqualified table's schema to that value, and the dataset lookup is
+    ``SqlaTable.schema == table.schema``. ``None`` renders as ``IS NULL`` and
+    matches a dataset stored with ``schema IS NULL`` (the common case for
+    schemaless engines); ``""`` does not, so coercing ``None`` -> ``""`` would
+    silently skip RLS injection — an RLS bypass. The 3rd positional arg to
+    ``apply_rls`` must therefore be the unmodified ``None``.
+    """
+    query = _make_query(default_schema=None)
+    session = mock.MagicMock()
+
+    with (
+        mock.patch.object(sql_lab_task, "_get_session", return_value=session),
+        mock.patch.object(sql_lab_task, "_get_query", return_value=query),
+        mock.patch.object(
+            sql_lab_task, "_resolve_results_backend", return_value=(None, False)
+        ),
+        mock.patch.object(
+            sql_lab_task, "_resolve_disallowed_functions", return_value=set()
+        ),
+        mock.patch.object(
+            sql_lab_task,
+            "_is_feature_enabled",
+            side_effect=lambda name: name == "RLS_IN_SQLLAB",
+        ),
+        # Record the call, then abort early so we don't drive the executor.
+        mock.patch(
+            "superset.utils.rls.apply_rls", side_effect=_BoomRLS("stop after record")
+        ) as apply_rls_mock,
+        mock.patch.object(sql_lab_task, "_execute_query"),
+    ):
+        with pytest.raises(_BoomRLS):
+            sql_lab_task.execute_sql_statements(
+                query_id=1,
+                rendered_query="SELECT * FROM secret_table",
+                return_results=True,
+                store_results=False,
+                start_time=None,
+                expand_data=False,
+                log_params=None,
+                username=None,
+            )
+
+    assert apply_rls_mock.called
+    # signature: apply_rls(database, catalog, default_schema, statement)
+    default_schema_arg = apply_rls_mock.call_args.args[2]
+    assert default_schema_arg is None, (
+        f"default_schema coerced to {default_schema_arg!r}; "
+        "an empty string misses NULL-schema datasets and bypasses RLS"
+    )

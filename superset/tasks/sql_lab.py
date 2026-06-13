@@ -244,7 +244,16 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
         if _is_feature_enabled("RLS_IN_SQLLAB"):
             from superset.utils.rls import apply_rls
 
-            default_schema = database.get_default_schema_for_query(query) or ""
+            # NB: pass the raw result through — ``get_default_schema_for_query``
+            # is ``str | None`` and may legitimately be ``None`` for engines
+            # without a default schema. Coercing ``None`` -> ``""`` would make
+            # ``Table.qualify`` yield ``schema=""`` for unqualified tables, so
+            # the dataset lookup (``SqlaTable.schema == ""``) misses a dataset
+            # stored with ``schema IS NULL`` and silently injects NO RLS
+            # predicate — an RLS bypass. 1:1 with
+            # ``superset_old/sql_lab.py``: ``apply_rls(..., default_schema, ...)``
+            # where ``default_schema`` is the unmodified (possibly-None) value.
+            default_schema = database.get_default_schema_for_query(query)
             for statement in parsed_script.statements:
                 apply_rls(database, query.catalog, default_schema, statement)
 
