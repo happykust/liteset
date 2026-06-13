@@ -111,6 +111,7 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "DOCUMENTATION_ICON": "documentation_icon",
     # Auth / Security
     "AUTH_TYPE": "auth_type",
+    "AUTH_USERNAME_CI": "auth_username_ci",
     "AUTH_USER_REGISTRATION": "auth_user_registration",
     "AUTH_USER_REGISTRATION_ROLE": "auth_user_registration_role",
     "AUTH_ROLES_MAPPING": "auth_roles_mapping",
@@ -905,6 +906,9 @@ class SupersetSettings(BaseSettings):
 
     # ── Authentication ──
     auth_type: int = 1  # 1=AUTH_DB, 2=AUTH_LDAP, 3=AUTH_REMOTE_USER, 4=AUTH_OAUTH
+    # Case-insensitive username lookup (FAB default True). When True a user
+    # cannot self-register a case-variant duplicate via OAuth/LDAP.
+    auth_username_ci: bool = True
     auth_user_registration: bool = False
     auth_user_registration_role: str = "Public"
     public_role_like: str | None = None

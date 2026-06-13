@@ -233,6 +233,33 @@ async def test_get_user_by_email(populated_session):
     assert user.username == "admin"
 
 
+async def test_get_user_by_username_is_case_insensitive(populated_session):
+    """AUTH_USERNAME_CI defaults to True (FAB parity): a differently-cased
+    username still resolves the same user, so OAuth/LDAP self-registration
+    cannot mint a case-variant duplicate."""
+    dao = _make_dao(populated_session)
+    user = await dao.get_user_by_username("VIEWER")
+    assert user is not None
+    assert user.username == "viewer"
+
+
+async def test_get_user_by_username_multiple_case_variants_returns_none(
+    populated_session,
+):
+    """A legacy DB holding case-variant duplicates yields MultipleResultsFound
+    on the case-insensitive lookup; mirror FAB find_user by logging and
+    degrading to None rather than raising."""
+    await populated_session.execute(
+        insert(FakeUser).values(
+            {"id": 4, "username": "VIEWER", "email": "viewer2@test.com", "active": 1}
+        )
+    )
+    await populated_session.commit()
+    dao = _make_dao(populated_session)
+    user = await dao.get_user_by_username("viewer")
+    assert user is None
+
+
 async def test_get_user_roles(populated_session):
     dao = _make_dao(populated_session)
     user = await dao.get_user_by_id(1)

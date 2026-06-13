@@ -129,14 +129,41 @@ class AsyncSecurityDAO:
         return result.scalars().one_or_none()
 
     async def get_user_by_username(self, username: str) -> Any | None:
-        """Load user by username with roles eagerly loaded."""
+        """Load user by username with roles eagerly loaded.
+
+        1:1 with FAB ``SecurityManager.find_user``: when ``AUTH_USERNAME_CI``
+        is enabled (the FAB default, ``True``) the lookup is case-insensitive
+        (``lower(username) == lower(input)``), so OAuth/LDAP self-registration
+        cannot create a second user differing only in case. A
+        ``MultipleResultsFound`` (possible on a legacy DB that already holds
+        case-variant duplicates) is logged and degraded to ``None`` — exactly
+        as FAB does — rather than raising.
+        """
+        from sqlalchemy import func
+        from sqlalchemy.exc import MultipleResultsFound
+
+        from superset.config import SupersetSettings
+
+        auth_username_ci = getattr(
+            SupersetSettings(),  # type: ignore[call-arg]
+            "auth_username_ci",
+            True,
+        )
+        if auth_username_ci:
+            predicate = func.lower(self.user_model.username) == func.lower(username)
+        else:
+            predicate = self.user_model.username == username
         stmt = (
             select(self.user_model)
-            .where(self.user_model.username == username)
+            .where(predicate)
             .options(selectinload(self.user_model.roles))
         )
         result = await self.session.execute(stmt)
-        return result.scalars().one_or_none()
+        try:
+            return result.scalars().one_or_none()
+        except MultipleResultsFound:
+            logger.error("Multiple results found for user %s", username)
+            return None
 
     async def get_user_by_email(self, email: str) -> Any | None:
         """Load user by email with roles eagerly loaded."""
