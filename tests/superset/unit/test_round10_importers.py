@@ -347,3 +347,31 @@ async def test_import_chart_bundle_schema_validates_each_entry():
     errors = getattr(exc_info.value, "extra", {}).get("errors", {})
     assert "charts/bad.yaml" in errors
     assert "uuid" in errors["charts/bad.yaml"]
+
+
+async def test_import_rejects_zip_bomb_compress_ratio():
+    """Per-resource import must reject a high-compress-ratio bundle up-front via
+    _check_is_safe_zip (1:1 upstream get_contents_from_bundle), before any entry
+    is decompressed into memory. The bundle is otherwise well-formed so the
+    ONLY rejection is the zip-bomb guard."""
+    import io
+    import zipfile
+
+    import yaml
+
+    from superset.commands.chart.importers.v1 import ImportChartsCommand
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "bundle/metadata.yaml",
+            yaml.safe_dump({"version": "1.0.0", "type": "Slice"}),
+        )
+        # ~2 MB of a single repeated byte compresses ~1000x — over the 200x guard
+        zf.writestr("bundle/charts/bomb.yaml", "a" * (2 * 1024 * 1024))
+    buf.seek(0)
+
+    cmd = ImportChartsCommand(contents=buf, dao=None)
+    with pytest.raises(Exception) as ei:  # noqa: PT011 — SupersetException
+        await cmd.validate()
+    assert "compress ratio" in str(ei.value).lower()

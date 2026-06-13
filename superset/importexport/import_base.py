@@ -68,6 +68,18 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
         self._db_ssh_tunnel_private_keys: dict[str, str] = {}
         self._db_ssh_tunnel_priv_key_passws: dict[str, str] = {}
 
+    @staticmethod
+    def _zip_max_compress_ratio() -> float:
+        """``ZIP_FILE_MAX_COMPRESS_RATIO`` (default 200×) — best-effort lazy."""
+        try:
+            from superset.config import SupersetSettings
+
+            return float(
+                getattr(SupersetSettings(), "zip_file_max_compress_ratio", 200.0)
+            )
+        except Exception:  # noqa: BLE001
+            return 200.0
+
     def _parse_zip(self) -> dict[str, dict[str, Any]]:
         """Parse ZIP file into ``{filename: parsed_yaml_dict}``.
 
@@ -96,6 +108,25 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
             ) from ex
         configs: dict[str, dict[str, Any]] = {}
         with zf_ctx as zf:
+            # Zip-bomb guard — the missing half of upstream's
+            # ``check_is_safe_zip``: reject the archive when total
+            # uncompressed/compressed exceeds ``ZIP_FILE_MAX_COMPRESS_RATIO``
+            # (default 200x) BEFORE any ``zf.read`` decompresses an entry into
+            # memory. Inspects ``infolist()`` metadata only. The entry-count and
+            # path-traversal handling below remain the port's existing behavior
+            # (so we add only the ratio check rather than calling the full
+            # ``_check_is_safe_zip``, whose count/traversal semantics differ).
+            infos = zf.infolist()
+            total_uncompressed = sum(zi.file_size for zi in infos)
+            total_compressed = sum(zi.compress_size for zi in infos)
+            max_ratio = self._zip_max_compress_ratio()
+            if (
+                total_compressed
+                and total_uncompressed / total_compressed > max_ratio
+            ):
+                raise CommandInvalidError(
+                    "Zip compress ratio above allowed threshold."
+                )
             entries = [n for n in zf.namelist() if not n.endswith("/")]
             if len(entries) > MAX_ZIP_ENTRIES:
                 raise ValueError(
