@@ -48,7 +48,11 @@ from typing import Any
 
 import jwt as pyjwt
 
-from superset.security.auth.oauth import OAuthAuthBackend, OAuthCallbackError
+from superset.security.auth.oauth import (
+    _provider_remote_app,
+    OAuthAuthBackend,
+    OAuthCallbackError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,16 +82,25 @@ class OIDCAuthBackend(OAuthAuthBackend):
         # Prefer the id_token when present — it's already signed by the
         # IdP and contains the canonical user identity.
         if id_token:
-            try:
-                claims = await self.validate_id_token(
-                    id_token=id_token,
-                    jwks_uri=endpoints["jwks_uri"],
-                    issuer=endpoints["issuer"],
-                    audience=str(provider.get("client_id") or ""),
-                )
-            except OAuthCallbackError as exc:
-                logger.error("OIDC id_token validation failed: %s", exc)
-                claims = {}
+            # Resolve ``client_id`` through ``_provider_remote_app`` so the
+            # audience is enforced regardless of whether the provider uses
+            # the top-level or ``remote_app`` config layout.  Reading it
+            # straight off the raw ``provider`` dict yields ``None`` for the
+            # ``remote_app`` layout, which would set ``verify_aud=False`` and
+            # accept an id_token minted for a different relying party.
+            remote = _provider_remote_app(provider)
+            audience = str(remote.get("client_id") or "")
+            # Do NOT swallow validation failures: a bad signature or wrong
+            # audience must reject the login, not silently fall through to
+            # the UserInfo endpoint (which masks the rejection). Mirrors FAB
+            # ``_get_authentik_token_info`` raising ``InvalidLoginAttempt``
+            # on a failed signature verification.
+            claims = await self.validate_id_token(
+                id_token=id_token,
+                jwks_uri=endpoints["jwks_uri"],
+                issuer=endpoints["issuer"],
+                audience=audience,
+            )
 
             if claims:
                 return self._claims_to_userinfo(claims)

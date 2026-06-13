@@ -846,12 +846,19 @@ class AsyncSecurityManager:
             logger.debug("LDAP search returned no results")
             return None, None
 
-        # Filter out search-continuation referrals.
+        # Filter out search-continuation referrals.  ldap3 returns the
+        # per-entry ``attributes`` as a ``CaseInsensitiveDict`` which is NOT
+        # a ``dict`` subclass, so test for the more general ``Mapping`` —
+        # otherwise every real LDAP entry is discarded and indirect-bind
+        # login silently fails.  (FAB checks ``isinstance(attrs, dict)``
+        # because python-ldap's ``search_s`` yields plain dicts.)
+        from collections.abc import Mapping
+
         entries: list[Any] = [
             entry
             for entry in (con.response or [])
             if entry.get("type") == "searchResEntry"
-            and isinstance(entry.get("attributes"), dict)
+            and isinstance(entry.get("attributes"), Mapping)
         ]
         if len(entries) > 1:
             logger.error(

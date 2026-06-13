@@ -309,3 +309,324 @@ class TestLoginPageNoCacheHeaders:
         )
         assert result.headers.get("Pragma") == "no-cache"
         assert result.headers.get("Expires") == "0"
+
+
+# ===================================================================
+# OAuth / OIDC login wiring
+# ===================================================================
+
+_oauth_login_fn = _get_raw_method(AuthController, "oauth_login")
+_oauth_authorized_fn = _get_raw_method(AuthController, "oauth_authorized")
+
+
+def _oauth_settings() -> MagicMock:
+    """A settings mock configured for AUTH_OAUTH with one Keycloak provider."""
+    settings = MagicMock()
+    settings.auth_type = 4  # AUTH_OAUTH
+    settings.secret_key = "x" * 32
+    settings.session_cookie_name = "session"
+    settings.session_cookie_secure = False
+    settings.session_cookie_httponly = True
+    settings.session_cookie_samesite = "lax"
+    settings.session_max_age = 3600
+    settings.oauth_providers = [
+        {
+            "name": "keycloak",
+            "remote_app": {
+                "client_id": "liteset",
+                "client_secret": "secret",
+                "authorize_url": "https://idp/auth",
+                "access_token_url": "https://idp/token",
+                "userinfo_url": "https://idp/userinfo",
+            },
+        }
+    ]
+    return settings
+
+
+class _FakeAsyncSession:
+    """Minimal async-context-manager session for callback tests."""
+
+    def __init__(self) -> None:
+        self.committed = False
+
+    async def __aenter__(self) -> _FakeAsyncSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def commit(self) -> None:
+        self.committed = True
+
+
+_login_submit_fn = _get_raw_method(AuthController, "login_submit")
+
+
+class TestBrowserLdapLogin:
+    """POST /login/ dispatches to LDAP when AUTH_TYPE == AUTH_LDAP."""
+
+    @pytest.mark.asyncio
+    async def test_ldap_success_sets_session_cookie(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A successful LDAP bind issues the session cookie + commits."""
+        controller = MagicMock()
+
+        request = MagicMock()
+        request.content_type = "application/x-www-form-urlencoded"
+
+        async def _form() -> dict[str, str]:
+            return {"username": "alice", "password": "secret"}
+
+        request.form = _form
+        request.query_params.get = MagicMock(return_value="")
+        request.headers.get = MagicMock(return_value="liteset.local")
+
+        settings = MagicMock()
+        settings.auth_type = 2  # AUTH_LDAP
+        settings.secret_key = "x" * 32
+        settings.session_cookie_name = "session"
+        settings.session_max_age = 3600
+
+        session = _FakeAsyncSession()
+        state = MagicMock()
+        state.settings = settings
+        state.session_factory = MagicMock(return_value=session)
+
+        ldap_user = MagicMock()
+        ldap_user.id = 7
+
+        import superset.controllers.auth as auth_mod
+
+        sm = MagicMock()
+
+        async def _auth_ldap(*a: object, **k: object):
+            return ldap_user
+
+        sm.auth_user_ldap = _auth_ldap
+        monkeypatch.setattr(auth_mod, "_build_session_manager", lambda *a, **k: sm)
+
+        result = await _login_submit_fn(controller, request=request, state=state)
+
+        assert isinstance(result, Redirect)
+        assert result.url == "/"
+        assert session.committed is True
+        assert "session" in {c.key for c in result.cookies}
+
+    @pytest.mark.asyncio
+    async def test_ldap_failure_redirects_to_login(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed LDAP bind redirects to the login page (no session cookie)."""
+        controller = MagicMock()
+
+        request = MagicMock()
+        request.content_type = "application/x-www-form-urlencoded"
+
+        async def _form() -> dict[str, str]:
+            return {"username": "alice", "password": "wrong"}
+
+        request.form = _form
+        request.query_params.get = MagicMock(return_value="")
+        request.headers.get = MagicMock(return_value="liteset.local")
+
+        settings = MagicMock()
+        settings.auth_type = 2
+        settings.secret_key = "x" * 32
+
+        session = _FakeAsyncSession()
+        state = MagicMock()
+        state.settings = settings
+        state.session_factory = MagicMock(return_value=session)
+
+        import superset.controllers.auth as auth_mod
+
+        sm = MagicMock()
+
+        async def _auth_ldap(*a: object, **k: object):
+            return None
+
+        sm.auth_user_ldap = _auth_ldap
+        monkeypatch.setattr(auth_mod, "_build_session_manager", lambda *a, **k: sm)
+
+        result = await _login_submit_fn(controller, request=request, state=state)
+
+        assert isinstance(result, Redirect)
+        assert result.url.startswith("/login/")
+        assert session.committed is False
+
+
+class TestOAuthLoginRoute:
+    """GET /login/oauth/{provider} initiates the Authorization-Code flow."""
+
+    @pytest.mark.asyncio
+    async def test_authorize_redirect_sets_state_cookie(self) -> None:
+        """A configured provider yields a 302 to the IdP plus a state cookie."""
+        controller = MagicMock()
+        request = MagicMock()
+        request.user = None
+        request.query_params.get = MagicMock(return_value="")
+        request.headers.get = MagicMock(return_value="liteset.local")
+
+        state = MagicMock()
+        state.settings = _oauth_settings()
+
+        result = await _oauth_login_fn(
+            controller, provider="keycloak", request=request, state=state
+        )
+
+        assert isinstance(result, Redirect)
+        assert result.url.startswith("https://idp/auth?")
+        assert "client_id=liteset" in result.url
+        # A signed state cookie must be set for the callback to verify.
+        cookie_keys = {c.key for c in result.cookies}
+        assert "superset_oauth_state" in cookie_keys
+
+    @pytest.mark.asyncio
+    async def test_unknown_provider_redirects_to_login(self) -> None:
+        """An unconfigured provider name redirects back to the login page."""
+        controller = MagicMock()
+        request = MagicMock()
+        request.user = None
+        request.query_params.get = MagicMock(return_value="")
+        request.headers.get = MagicMock(return_value="liteset.local")
+
+        state = MagicMock()
+        state.settings = _oauth_settings()
+
+        result = await _oauth_login_fn(
+            controller, provider="does-not-exist", request=request, state=state
+        )
+
+        assert isinstance(result, Redirect)
+        assert result.url == "/login/"
+
+    @pytest.mark.asyncio
+    async def test_non_oauth_auth_type_redirects_to_login(self) -> None:
+        """When AUTH_TYPE != AUTH_OAUTH the route refuses the flow."""
+        controller = MagicMock()
+        request = MagicMock()
+        request.user = None
+        request.query_params.get = MagicMock(return_value="")
+        request.headers.get = MagicMock(return_value="liteset.local")
+
+        settings = _oauth_settings()
+        settings.auth_type = 1  # AUTH_DB
+        state = MagicMock()
+        state.settings = settings
+
+        result = await _oauth_login_fn(
+            controller, provider="keycloak", request=request, state=state
+        )
+
+        assert isinstance(result, Redirect)
+        assert result.url == "/login/"
+
+
+class TestOAuthAuthorizedRoute:
+    """GET /oauth-authorized/{provider} completes the flow + sets session."""
+
+    @pytest.mark.asyncio
+    async def test_successful_callback_sets_session_cookie(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A successful callback issues the Liteset session cookie + commits."""
+        controller = MagicMock()
+
+        request = MagicMock()
+        request.query_params.get = MagicMock(
+            side_effect=lambda k, d="": {"code": "the-code", "state": "st"}.get(k, d)
+        )
+        request.cookies.get = MagicMock(return_value="st")
+        request.headers.get = MagicMock(return_value="liteset.local")
+        request.url.scheme = "https"
+
+        session = _FakeAsyncSession()
+        state = MagicMock()
+        state.settings = _oauth_settings()
+        state.session_factory = MagicMock(return_value=session)
+
+        # Patch the backend factory so no real HTTP/DB happens.
+        import superset.controllers.auth as auth_mod
+
+        authed_user = MagicMock()
+        authed_user.id = 42
+
+        class _FakeBackend:
+            def __init__(self, *a: object, **k: object) -> None:
+                pass
+
+            async def handle_callback(self, *a: object, **k: object):
+                return authed_user, "/dashboard/list/"
+
+        monkeypatch.setattr(
+            auth_mod, "_make_oauth_backend", lambda *a, **k: _FakeBackend()
+        )
+
+        result = await _oauth_authorized_fn(
+            controller, provider="keycloak", request=request, state=state
+        )
+
+        assert isinstance(result, Redirect)
+        assert result.url == "/dashboard/list/"
+        assert session.committed is True
+        cookie_keys = {c.key for c in result.cookies}
+        assert "session" in cookie_keys
+
+    @pytest.mark.asyncio
+    async def test_callback_without_code_redirects_to_login(self) -> None:
+        """A callback missing the auth code redirects to the login page."""
+        controller = MagicMock()
+        request = MagicMock()
+        request.query_params.get = MagicMock(return_value="")
+        request.cookies.get = MagicMock(return_value="")
+        request.headers.get = MagicMock(return_value="liteset.local")
+        request.url.scheme = "https"
+
+        state = MagicMock()
+        state.settings = _oauth_settings()
+
+        result = await _oauth_authorized_fn(
+            controller, provider="keycloak", request=request, state=state
+        )
+
+        assert isinstance(result, Redirect)
+        assert result.url.startswith("/login/")
+
+    @pytest.mark.asyncio
+    async def test_failed_auth_redirects_to_login(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the backend returns no user, redirect to login (no cookie)."""
+        controller = MagicMock()
+        request = MagicMock()
+        request.query_params.get = MagicMock(
+            side_effect=lambda k, d="": {"code": "c", "state": "st"}.get(k, d)
+        )
+        request.cookies.get = MagicMock(return_value="st")
+        request.headers.get = MagicMock(return_value="liteset.local")
+        request.url.scheme = "https"
+
+        session = _FakeAsyncSession()
+        state = MagicMock()
+        state.settings = _oauth_settings()
+        state.session_factory = MagicMock(return_value=session)
+
+        import superset.controllers.auth as auth_mod
+
+        class _FakeBackend:
+            async def handle_callback(self, *a: object, **k: object):
+                return None, ""
+
+        monkeypatch.setattr(
+            auth_mod, "_make_oauth_backend", lambda *a, **k: _FakeBackend()
+        )
+
+        result = await _oauth_authorized_fn(
+            controller, provider="keycloak", request=request, state=state
+        )
+
+        assert isinstance(result, Redirect)
+        assert result.url.startswith("/login/")
+        assert session.committed is False

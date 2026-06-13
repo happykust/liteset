@@ -686,3 +686,103 @@ async def test_get_catalogs_accessible_by_user_admin_non_hierarchical_with_perm(
     )
 
     assert result == ["cat1"]
+
+
+# ---------------------------------------------------------------------------
+# LDAP search result parsing — ldap3 returns a case-insensitive mapping for
+# the per-entry ``attributes`` (not a plain ``dict``).  The referral filter
+# must accept it, otherwise every real LDAP user is dropped and indirect-bind
+# login silently fails.
+# ---------------------------------------------------------------------------
+
+
+def _build_search_manager() -> AsyncSecurityManager:
+    return AsyncSecurityManager(
+        dao=MagicMock(),
+        admin_role_name="Admin",
+        public_role_name="Public",
+        guest_role_name="Guest",
+        dashboard_rbac_enabled=False,
+        embedded_superset_enabled=False,
+    )
+
+
+def test_search_ldap_accepts_non_dict_mapping_attributes() -> None:
+    """A search entry whose ``attributes`` is a Mapping (not ``dict``) resolves.
+
+    Mirrors ldap3 returning ``CaseInsensitiveDict`` for entry attributes —
+    the referral filter must keep the entry instead of discarding it.
+    """
+    from collections.abc import Mapping
+
+    # A Mapping that is explicitly NOT a ``dict`` subclass, like ldap3's type.
+    class _Attrs(Mapping):
+        def __init__(self, data: dict) -> None:
+            self._d = data
+
+        def __getitem__(self, k):  # type: ignore[no-untyped-def]
+            return self._d[k]
+
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            return iter(self._d)
+
+        def __len__(self) -> int:
+            return len(self._d)
+
+    assert not isinstance(_Attrs({}), dict)
+
+    con = MagicMock()
+    con.search.return_value = True
+    con.response = [
+        {
+            "type": "searchResEntry",
+            "dn": "cn=bob,ou=people,dc=example,dc=org",
+            "attributes": _Attrs(
+                {
+                    "givenName": ["Bob"],
+                    "sn": ["Builder"],
+                    "mail": ["bob@example.org"],
+                }
+            ),
+        },
+    ]
+
+    settings = MagicMock()
+    settings.auth_ldap_search = "ou=people,dc=example,dc=org"
+    settings.auth_ldap_uid_field = "uid"
+    settings.auth_ldap_search_filter = ""
+    settings.auth_ldap_firstname_field = "givenName"
+    settings.auth_ldap_lastname_field = "sn"
+    settings.auth_ldap_email_field = "mail"
+    settings.auth_roles_mapping = {}
+
+    sm = _build_search_manager()
+    user_dn, attrs = sm._search_ldap_sync(con, "bob", settings)
+
+    assert user_dn == "cn=bob,ou=people,dc=example,dc=org"
+    assert attrs is not None
+    assert attrs.get("mail") == [b"bob@example.org"]
+
+
+def test_search_ldap_still_filters_referrals() -> None:
+    """Search-continuation referrals (no ``searchResEntry`` type) are dropped."""
+    con = MagicMock()
+    con.search.return_value = True
+    con.response = [
+        {"type": "searchResRef", "uri": ["ldap://other"]},
+    ]
+
+    settings = MagicMock()
+    settings.auth_ldap_search = "ou=people,dc=example,dc=org"
+    settings.auth_ldap_uid_field = "uid"
+    settings.auth_ldap_search_filter = ""
+    settings.auth_ldap_firstname_field = "givenName"
+    settings.auth_ldap_lastname_field = "sn"
+    settings.auth_ldap_email_field = "mail"
+    settings.auth_roles_mapping = {}
+
+    sm = _build_search_manager()
+    user_dn, attrs = sm._search_ldap_sync(con, "bob", settings)
+
+    assert user_dn is None
+    assert attrs is None

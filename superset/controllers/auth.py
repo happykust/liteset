@@ -30,7 +30,7 @@ from urllib.parse import urlparse
 
 import jwt
 from litestar import Controller, get, post, Request
-from litestar.datastructures import State
+from litestar.datastructures import Cookie, State
 from litestar.response import Redirect, Template
 
 from superset.config import SupersetSettings
@@ -51,6 +51,13 @@ _INVALID_LOGIN_MESSAGE: str = "Invalid login. Please try again."
 
 # Cookie name for one-shot flash messages (read once then cleared).
 _FLASH_COOKIE_NAME: str = "_flash"
+
+# Cookie holding the signed OAuth ``state`` between the authorize redirect
+# and the callback (replaces FAB's server-side ``session["oauth_state"]``).
+_OAUTH_STATE_COOKIE_NAME: str = "superset_oauth_state"
+
+# AUTH_OAUTH numeric value (mirrors FAB ``AUTH_OAUTH = 4``).
+_AUTH_OAUTH: int = 4
 
 # Pre-computed hash used for timing balance when the user is not found or
 # inactive.  Mirrors Flask-AppBuilder's ``AUTH_DB_FAKE_PASSWORD_HASH_CHECK``.
@@ -322,6 +329,59 @@ class AuthController(Controller):
         session_factory = state.session_factory
 
         # ------------------------------------------------------------------
+        # LDAP browser login (AUTH_LDAP). Mirrors FAB AuthLDAPView.login
+        # dispatching to auth_user_ldap. On success, issue the session
+        # cookie exactly as the DB path does below.
+        # ------------------------------------------------------------------
+        auth_type = getattr(settings, "auth_type", 1)
+        if auth_type == 2:  # AUTH_LDAP
+            ldap_user_id: int | None = None
+            try:
+                async with session_factory() as session:
+                    sm = _build_session_manager(settings, session)
+                    ldap_user = await sm.auth_user_ldap(
+                        username, password, settings=settings
+                    )
+                    if ldap_user is not None:
+                        ldap_user_id = ldap_user.id
+                        await session.commit()
+            except Exception:  # noqa: BLE001
+                logger.debug("LDAP browser login failed for '%s'", username)
+                ldap_user_id = None
+
+            if ldap_user_id is None:
+                return _login_failed_redirect(next_url=next_url)
+
+            secret_key = _get_secret_key(settings)
+            session_max_age: int = getattr(
+                settings, "session_max_age", _DEFAULT_SESSION_MAX_AGE
+            )
+            cookie_value = _create_session_cookie(
+                secret_key, ldap_user_id, max_age_seconds=session_max_age
+            )
+            cookie_name = getattr(settings, "session_cookie_name", "session")
+            logger.info("User '%s' logged in via LDAP", username)
+            redirect = Redirect(path=safe_redirect_target)
+            redirect.headers["Cache-Control"] = (
+                "no-store, no-cache, must-revalidate, max-age=0"
+            )
+            redirect.headers["Pragma"] = "no-cache"
+            redirect.headers["Expires"] = "0"
+            redirect.cookies.append(
+                _make_session_cookie(
+                    cookie_name,
+                    cookie_value,
+                    max_age=session_max_age,
+                    secure=getattr(settings, "session_cookie_secure", False),
+                    httponly=getattr(settings, "session_cookie_httponly", True),
+                    samesite=str(
+                        getattr(settings, "session_cookie_samesite", "lax")
+                    ).lower(),
+                ),
+            )
+            return redirect
+
+        # ------------------------------------------------------------------
         # User lookup (mirrors FAB's auth_user_db timing balance)
         # Always perform both by-username and by-email queries so that the
         # total DB round-trips are identical regardless of the result.
@@ -395,7 +455,7 @@ class AuthController(Controller):
         # Authentication successful -- create session cookie
         # ------------------------------------------------------------------
         secret_key = _get_secret_key(settings)
-        session_max_age: int = getattr(
+        session_max_age = getattr(
             settings, "session_max_age", _DEFAULT_SESSION_MAX_AGE
         )
         cookie_value = _create_session_cookie(
@@ -437,6 +497,189 @@ class AuthController(Controller):
                     getattr(settings, "session_cookie_samesite", "lax")
                 ).lower(),
             ),
+        )
+        return redirect
+
+    @get(
+        "/login/{provider:str}",
+        exclude_from_auth=True,
+    )
+    async def oauth_login(
+        self,
+        provider: str,
+        request: Request[Any, Any, Any],
+        state: State,
+    ) -> Redirect:
+        """GET /login/{provider} -- initiate the OAuth/OIDC flow.
+
+        Builds the IdP authorize URL via the OAuth backend, stores the
+        signed ``state`` in the ``superset_oauth_state`` cookie, and
+        redirects the browser to the provider.
+
+        Mirrors :pymeth:`flask_appbuilder.security.views.AuthOAuthView.login`
+        (``views.py:667-707``) — the ``state`` is signed so the callback can
+        verify it without leaning on Flask's server-side session.
+        """
+        settings: SupersetSettings = state.settings
+
+        # If already authenticated, redirect to home (FAB views.py:670-672).
+        try:
+            user = request.user
+        except Exception:  # noqa: BLE001
+            user = None
+        if user is not None and getattr(user, "is_authenticated", False):
+            return Redirect(path="/")
+
+        provider_cfg = _resolve_oauth_provider(provider, settings)
+        if provider_cfg is None:
+            return Redirect(path="/login/")
+
+        # The authorize step performs no DB writes; build the backend with a
+        # transient (un-entered) session — only OIDC discovery (HTTP) runs.
+        from superset.security.auth.oauth import OAuthAuthBackend
+        from superset.security.auth.oidc import OIDCAuthBackend
+
+        backend_cls = (
+            OIDCAuthBackend if _is_oidc_provider(provider_cfg) else OAuthAuthBackend
+        )
+        backend = backend_cls(None, settings=settings)
+
+        next_url = request.query_params.get("next", "")
+        redirect_uri = _oauth_redirect_uri(request, provider)
+        try:
+            redirect_url, signed_state = await backend.build_authorize_url(
+                provider,
+                redirect_uri=redirect_uri,
+                next_url=next_url,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # FAB flashes invalid_login_message and redirects to index on any
+            # authorize error (views.py:705-707).
+            logger.error("Error on OAuth authorize: %s", exc)
+            return _login_failed_redirect(next_url=next_url)
+
+        redirect = Redirect(path=redirect_url)
+        redirect.cookies.append(
+            Cookie(
+                key=_OAUTH_STATE_COOKIE_NAME,
+                value=signed_state,
+                max_age=600,  # 10 min — long enough for the IdP round-trip
+                path="/",
+                httponly=True,
+                secure=getattr(settings, "session_cookie_secure", False),
+                samesite="lax",
+            )
+        )
+        return redirect
+
+    @get(
+        "/oauth-authorized/{provider:str}",
+        exclude_from_auth=True,
+    )
+    async def oauth_authorized(  # noqa: C901
+        self,
+        provider: str,
+        request: Request[Any, Any, Any],
+        state: State,
+    ) -> Redirect:
+        """GET /oauth-authorized/{provider} -- OAuth/OIDC callback.
+
+        Exchanges the authorization ``code`` for tokens, authenticates /
+        registers the user, and sets the Liteset session cookie (same
+        mechanism as ``login_submit``).
+
+        Mirrors :pymeth:`AuthOAuthView.oauth_authorized`
+        (``views.py:709-767``) — the callback path is the FAB-standard
+        ``oauth-authorized/<provider>``.
+        """
+        settings: SupersetSettings = state.settings
+
+        provider_cfg = _resolve_oauth_provider(provider, settings)
+        if provider_cfg is None:
+            return _login_failed_redirect()
+
+        code = request.query_params.get("code", "")
+        cb_state = request.query_params.get("state", "")
+        # The IdP may redirect back with an error instead of a code
+        # (e.g. the user denied consent).  FAB redirects to the login page.
+        if not code or request.query_params.get("error"):
+            logger.warning(
+                "OAuth callback for '%s' has no code (error=%s)",
+                provider,
+                request.query_params.get("error"),
+            )
+            return _login_failed_redirect()
+
+        signed_state_cookie = request.cookies.get(_OAUTH_STATE_COOKIE_NAME, "")
+        redirect_uri = _oauth_redirect_uri(request, provider)
+
+        # The callback authenticates / registers the user, so it needs a live
+        # session for the SM's DB writes.  Commit before issuing the cookie.
+        user_id: int | None = None
+        next_url: str = ""
+        session_factory = state.session_factory
+        try:
+            async with session_factory() as session:
+                backend = _make_oauth_backend(provider_cfg, settings, session)
+                user, next_url = await backend.handle_callback(
+                    provider,
+                    code=code,
+                    state=cb_state,
+                    signed_state_cookie=signed_state_cookie,
+                    redirect_uri=redirect_uri,
+                )
+                if user is not None:
+                    user_id = user.id
+                    await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Error authorizing OAuth access token: %s", exc)
+            return _login_failed_redirect()
+
+        if user_id is None:
+            logger.info("OAuth login failed for provider '%s'", provider)
+            return _login_failed_redirect()
+
+        # ------------------------------------------------------------------
+        # Authentication successful -- create session cookie (same mechanism
+        # as login_submit so SupersetAuthMiddleware decodes it identically).
+        # ------------------------------------------------------------------
+        secret_key = _get_secret_key(settings)
+        session_max_age: int = getattr(
+            settings, "session_max_age", _DEFAULT_SESSION_MAX_AGE
+        )
+        cookie_value = _create_session_cookie(
+            secret_key, user_id, max_age_seconds=session_max_age
+        )
+        cookie_name = getattr(settings, "session_cookie_name", "session")
+
+        request_host = request.headers.get("host", "")
+        safe_redirect_target = _get_safe_redirect(
+            next_url, request_host=request_host, fallback="/"
+        )
+
+        logger.info("User '%s' logged in via OAuth provider '%s'", user.id, provider)
+
+        redirect = Redirect(path=safe_redirect_target)
+        redirect.headers["Cache-Control"] = (
+            "no-store, no-cache, must-revalidate, max-age=0"
+        )
+        redirect.headers["Pragma"] = "no-cache"
+        redirect.headers["Expires"] = "0"
+        redirect.cookies.append(
+            _make_session_cookie(
+                cookie_name,
+                cookie_value,
+                max_age=session_max_age,
+                secure=getattr(settings, "session_cookie_secure", False),
+                httponly=getattr(settings, "session_cookie_httponly", True),
+                samesite=str(
+                    getattr(settings, "session_cookie_samesite", "lax")
+                ).lower(),
+            ),
+        )
+        # Expire the one-shot state cookie.
+        redirect.cookies.append(
+            Cookie(key=_OAUTH_STATE_COOKIE_NAME, value="", max_age=0, path="/")
         )
         return redirect
 
@@ -556,6 +799,97 @@ def _login_failed_redirect(next_url: str = "") -> Redirect:
         )
     )
     return redirect
+
+
+def _build_session_manager(settings: SupersetSettings, session: Any) -> Any:
+    """Build a request-local :class:`AsyncSecurityManager`.
+
+    Mirrors the LDAP branch in ``controllers/security.py`` — the SM is
+    bound to the request session so registration / role-sync writes commit
+    through the same transaction.
+    """
+    from superset.security.dao import AsyncSecurityDAO
+    from superset.security.manager import AsyncSecurityManager
+
+    dao = AsyncSecurityDAO(session)
+    feature_flags = getattr(settings, "feature_flags", {}) or {}
+    embedded_enabled = bool(getattr(settings, "embedded_superset", False)) or bool(
+        feature_flags.get("EMBEDDED_SUPERSET", False)
+    )
+    return AsyncSecurityManager(
+        dao=dao,
+        admin_role_name=getattr(settings, "auth_role_admin", "Admin"),
+        public_role_name=getattr(settings, "auth_role_public", "Public"),
+        guest_role_name=getattr(settings, "guest_role_name", "Guest"),
+        dashboard_rbac_enabled=getattr(settings, "dashboard_rbac", False),
+        embedded_superset_enabled=embedded_enabled,
+    )
+
+
+def _is_oidc_provider(provider_cfg: dict[str, Any]) -> bool:
+    """Return ``True`` when a provider entry should use OIDC validation.
+
+    A provider is treated as OIDC when it exposes a ``server_metadata_url``
+    (the discovery document) — the same signal FAB uses to enable id_token
+    validation against the provider's JWKS.
+    """
+    from superset.security.auth.oauth import _provider_remote_app
+
+    remote = _provider_remote_app(provider_cfg)
+    return bool(remote.get("server_metadata_url") or remote.get("jwks_uri"))
+
+
+def _resolve_oauth_provider(
+    provider: str,
+    settings: SupersetSettings,
+) -> dict[str, Any] | None:
+    """Return the configured provider entry, or ``None`` when unusable.
+
+    ``None`` when ``AUTH_TYPE`` is not ``AUTH_OAUTH`` or the provider name
+    is not present in ``OAUTH_PROVIDERS``.
+    """
+    auth_type = getattr(settings, "auth_type", 1)
+    if auth_type != _AUTH_OAUTH:
+        logger.warning("OAuth login attempted but AUTH_TYPE != AUTH_OAUTH")
+        return None
+    providers = getattr(settings, "oauth_providers", []) or []
+    for entry in providers:
+        if entry.get("name") == provider:
+            return entry
+    logger.warning("OAuth login got an unknown provider '%s'", provider)
+    return None
+
+
+def _make_oauth_backend(
+    provider_cfg: dict[str, Any],
+    settings: SupersetSettings,
+    session: Any,
+) -> Any:
+    """Build the OAuth/OIDC backend bound to a request-local SM.
+
+    Picks :class:`OIDCAuthBackend` for providers with a discovery document
+    (full id_token validation) and :class:`OAuthAuthBackend` otherwise,
+    mirroring how FAB enables OIDC validation per-provider.
+    """
+    from superset.security.auth.oauth import OAuthAuthBackend
+    from superset.security.auth.oidc import OIDCAuthBackend
+
+    sm = _build_session_manager(settings, session)
+    backend_cls = (
+        OIDCAuthBackend if _is_oidc_provider(provider_cfg) else OAuthAuthBackend
+    )
+    return backend_cls(sm, settings=settings)
+
+
+def _oauth_redirect_uri(request: Request[Any, Any, Any], provider: str) -> str:
+    """Build the absolute callback URL for a provider.
+
+    Mirrors FAB's ``url_for(".oauth_authorized", provider=provider,
+    _external=True)`` — the IdP redirects here with the auth code.
+    """
+    scheme = request.url.scheme
+    host = request.headers.get("host", request.url.netloc)
+    return f"{scheme}://{host}/oauth-authorized/{provider}"
 
 
 def _make_session_cookie(
