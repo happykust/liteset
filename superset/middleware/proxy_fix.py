@@ -39,14 +39,21 @@ def _get_trusted_value(
 ) -> str | None:
     """Extract a trusted value from a comma-separated forwarded header.
 
-    Werkzeug ProxyFix semantics: the header contains a list of values
-    appended by each proxy.  ``num_proxies`` controls how many proxy
-    hops to trust, counting from the **right** of the list.  If
-    ``num_proxies`` is 1, the rightmost value (i.e. the one set by
-    the nearest trusted proxy) is used.  If the header has fewer
-    values than ``num_proxies``, the leftmost value is returned.
+    Werkzeug ProxyFix semantics (``_get_real_value``): the header
+    contains a list of values appended by each proxy.  ``num_proxies``
+    controls how many proxy hops to trust, counting from the **right**
+    of the list — with ``num_proxies`` of 1 the rightmost value (set by
+    the nearest trusted proxy) is used.
 
-    Returns ``None`` when *raw* is empty/absent or *num_proxies* < 1.
+    Crucially, when the header carries **fewer** values than
+    ``num_proxies`` the chain is shorter than the configured trust
+    boundary, so werkzeug returns ``None`` (the value cannot be
+    trusted).  Returning the leftmost entry instead — as an earlier
+    version did — would trust a client-controllable, spoofable value
+    under a multi-proxy config (``num_proxies >= 2``).
+
+    Returns ``None`` when *raw* is empty/absent, *num_proxies* < 1, or
+    there are fewer comma-separated values than *num_proxies*.
     """
     if not raw or num_proxies < 1:
         return None
@@ -54,15 +61,13 @@ def _get_trusted_value(
     decoded = raw.decode("latin-1")
     parts = [p.strip() for p in decoded.split(",")]
 
-    if not parts:
+    # Mirror werkzeug exactly: trust the value only when the chain is at
+    # least ``num_proxies`` long, then take the ``num_proxies``-th from
+    # the right.  A shorter chain is untrusted -> None.
+    if len(parts) < num_proxies:
         return None
 
-    # Index from the right: with N proxies the trusted value is at
-    # position ``len(parts) - num_proxies``.  Clamp to 0 so that
-    # when there are fewer values than proxies we fall back to the
-    # leftmost (most-upstream) entry.
-    idx = max(0, len(parts) - num_proxies)
-    value = parts[idx].strip()
+    value = parts[-num_proxies].strip()
     return value if value else None
 
 
