@@ -146,7 +146,7 @@ class AsyncEventManager:
 
     def __init__(
         self,
-        redis: Redis,
+        redis: Redis[Any],
         stream_prefix: str = "async-events-",
         global_stream_key: str = "async-events-full",
         global_stream_limit: int = 1_000_000,

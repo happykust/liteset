@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import secrets
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from litestar.middleware.base import ASGIMiddleware
 from litestar.types import ASGIApp, Message, Receive, Scope, Send
@@ -406,7 +406,7 @@ class SecurityHeadersMiddleware(ASGIMiddleware):
                         ],
                     }
                 )
-                await send({"type": "http.response.body", "body": b""})
+                await send(cast("Message", {"type": "http.response.body", "body": b""}))
                 return
 
         headers = self._build_headers(scope, talisman_config)

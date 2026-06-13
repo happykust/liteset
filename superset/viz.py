@@ -35,6 +35,7 @@ import logging
 import math
 import re
 from collections import defaultdict, OrderedDict
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from itertools import product
 from typing import Any, cast, TYPE_CHECKING
@@ -2675,14 +2676,18 @@ class PartitionViz(NVD3TimeSeriesViz):
         times.sort()
         until = times[len(times) - 1]
         since = times[0]
-        func = {
+        # Annotate the registry so the heterogeneous lambdas (one takes a
+        # ``fill_value`` default, one doesn't) get an expected callable type
+        # instead of tripping mypy's "Cannot infer type of lambda".
+        funcs: dict[str, list[Callable[..., Any]]] = {
             "point_diff": [pd.Series.sub, lambda a, b, fill_value: a - b],
             "point_factor": [pd.Series.div, lambda a, b, fill_value: a / float(b)],
             "point_percent": [
                 lambda a, b, fill_value=0: a.div(b, fill_value=fill_value) - 1,
                 lambda a, b, fill_value: a / float(b) - 1,
             ],
-        }[time_op]
+        }
+        func = funcs[time_op]
         agg_df = df.groupby(DTTM_ALIAS).sum(numeric_only=True)
         levels = {
             0: pd.Series(

@@ -36,13 +36,18 @@ in (matches old behaviour of "pyinstrument is not installed").
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from urllib.parse import parse_qs
 
-try:
+if TYPE_CHECKING:
     from pyinstrument import Profiler
-except ModuleNotFoundError:  # pragma: no cover - optional dep
-    Profiler = None
+else:
+    # pyinstrument is an optional dependency; under TYPE_CHECKING the real class
+    # provides precise types, at runtime we fall back to ``None``.
+    try:
+        from pyinstrument import Profiler
+    except ModuleNotFoundError:  # pragma: no cover - optional dep
+        Profiler = None
 
 
 class SupersetProfiler:  # pylint: disable=too-few-public-methods

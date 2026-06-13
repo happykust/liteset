@@ -224,6 +224,7 @@ development = [
     "docker",
     "freezegun",
     "grpcio>=1.55.3",
+    "mypy>=1.15.0",
     "openapi-spec-validator",
     "parameterized",
     "pip",
@@ -242,6 +243,18 @@ development = [
     "sqloxide",
     "statsd",
     "httpx>=0.27.0",  # litestar test client
+    # Type stubs for ``uv run mypy superset`` (mirror the pre-commit hook's
+    # additional_dependencies so local + CI type-checking match).
+    "types-croniter",
+    "types-Markdown",
+    "types-paramiko",
+    "types-python-dateutil",
+    "types-pytz",
+    "types-PyYAML",
+    "types-redis",
+    "types-requests",
+    "types-setuptools",
+    "types-simplejson",
 ]
 
 [project.scripts]

@@ -29,12 +29,13 @@ import hmac
 import logging
 import os
 import time
+from typing import cast
 
 from litestar.middleware.base import (
     DefineMiddleware,
     MiddlewareProtocol,
 )
-from litestar.types import ASGIApp, Receive, Scope, Send
+from litestar.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
 
@@ -279,7 +280,7 @@ class CSRFMiddleware(MiddlewareProtocol):
                         ],
                     }
                 )
-                await send({"type": "http.response.body", "body": b""})
+                await send(cast("Message", {"type": "http.response.body", "body": b""}))
                 return
 
             # JSON request → 400 with GENERIC_BACKEND_ERROR (mirrors show_http_exception
@@ -319,10 +320,13 @@ class CSRFMiddleware(MiddlewareProtocol):
                 }
             )
             await send(
-                {
-                    "type": "http.response.body",
-                    "body": body,
-                }
+                cast(
+                    "Message",
+                    {
+                        "type": "http.response.body",
+                        "body": body,
+                    },
+                )
             )
             return
 

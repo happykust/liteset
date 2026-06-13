@@ -2377,7 +2377,7 @@ class AsyncSecurityManager:
         guest_rls = self.get_guest_rls_filters_str(datasource, user=user)
         return guest_rls + rls_clauses_with_group_key
 
-    async def invalidate_user_cache(self, redis: "Redis", user: Any) -> None:
+    async def invalidate_user_cache(self, redis: "Redis[Any]", user: Any) -> None:
         """Invalidate Redis auth cache for a user.
 
         Deletes all possible cache keys: by id, username, and email.

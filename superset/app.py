@@ -936,10 +936,7 @@ def _build_redis_sentinel_client(cache_config: dict[str, Any]) -> Any:
         master_kwargs["password"] = password
     if ssl:
         _apply_ssl_kwargs(master_kwargs, cache_config)
-    # redis.asyncio.sentinel.Sentinel is untyped in the bundled stubs.
-    sentinel = AsyncSentinel(  # type: ignore[no-untyped-call]
-        sentinels, sentinel_kwargs=sentinel_kwargs
-    )
+    sentinel = AsyncSentinel(sentinels, sentinel_kwargs=sentinel_kwargs)
     logger.info(
         "GAQ event stream: using RedisSentinelCache backend, master=%s sentinels=%s",
         master,
@@ -1254,7 +1251,7 @@ def create_app(  # noqa: C901
             state, "redis", None
         )
         return _aem_mod.AsyncEventManager(
-            redis=cast("Redis", _event_redis),
+            redis=cast("Redis[Any]", _event_redis),
             stream_prefix=_aem_prefix,
             # Firehose key derived from the prefix (see startup-manager note).
             global_stream_key=f"{_aem_prefix}full",
