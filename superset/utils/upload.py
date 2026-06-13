@@ -32,7 +32,13 @@ import json as _json
 import logging
 from typing import Any, Iterable, Optional
 
+from superset.exceptions import CommandInvalidError
+
 logger = logging.getLogger(__name__)
+
+#: ``if_exists`` strategies accepted by ``UploadPostSchema.already_exists``
+#: (upstream ``validate=OneOf(("fail", "replace", "append"))``).
+_ALREADY_EXISTS_CHOICES: frozenset[str] = frozenset({"fail", "replace", "append"})
 
 
 __all__ = [
@@ -220,6 +226,20 @@ def parse_upload_form(form: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
                 parsed["column_data_types"] = _json.loads(raw_cdt)
             except (TypeError, ValueError) as exc:
                 raise ValueError("Invalid JSON format for column_data_types") from exc
+
+    # --- field validation (1:1 with UploadPostSchema Range/OneOf) ----------
+    # Upstream Marshmallow rejects these with a 422 before the value reaches
+    # pandas; without the checks ``rows_to_read=0`` silently writes an empty
+    # table and a bad ``already_exists`` bubbles to ``to_sql`` as a 500.
+    if "rows_to_read" in parsed and parsed["rows_to_read"] < 1:
+        raise CommandInvalidError("rows_to_read must be greater than or equal to 1.")
+    if (
+        "already_exists" in parsed
+        and parsed["already_exists"] not in _ALREADY_EXISTS_CHOICES
+    ):
+        raise CommandInvalidError(
+            "already_exists must be one of: fail, replace, append."
+        )
 
     return parsed
 
