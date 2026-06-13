@@ -103,6 +103,20 @@ class OIDCAuthBackend(OAuthAuthBackend):
             )
 
             if claims:
+                # Authentik uses an idiosyncratic claim mapping (FAB
+                # ``get_oauth_user_info`` authentik branch): ``email`` comes
+                # from ``preferred_username`` and ``username`` from
+                # ``nickname`` — distinct from the standard OIDC names the
+                # generic translator applies. The id_token is already
+                # signature-validated above.
+                if provider_name == "authentik":
+                    return {
+                        "email": claims.get("preferred_username", ""),
+                        "first_name": claims.get("given_name", ""),
+                        "last_name": claims.get("family_name", ""),
+                        "username": claims.get("nickname", ""),
+                        "role_keys": claims.get("groups", []) or [],
+                    }
                 return self._claims_to_userinfo(claims)
 
         # Fall back to UserInfo endpoint when the IdP is OAuth-only or

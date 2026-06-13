@@ -102,3 +102,100 @@ async def test_handle_callback_rejects_provider_mismatch():
             signed_state_cookie=signed,
             redirect_uri="https://app/oauth-authorized/keycloak",
         )
+
+
+# ---------------------------------------------------------------------------
+# get_user_info — per-provider identity mapping (openshift / authentik / azure)
+# ---------------------------------------------------------------------------
+
+import jwt as _pyjwt  # noqa: E402
+from unittest.mock import AsyncMock  # noqa: E402
+
+_ENDPOINTS = {
+    "userinfo_url": "",
+    "jwks_uri": "",
+    "issuer": "",
+    "token_url": "",
+    "authorize_url": "",
+}
+
+
+def _unsigned_jwt(claims: dict) -> str:
+    return _pyjwt.encode(claims, "irrelevant-secret", algorithm="HS256")
+
+
+async def test_get_user_info_openshift_uses_cluster_user_api():
+    """OpenShift has no OIDC userinfo; identity comes from the cluster's
+    custom user API (GET apis/user.openshift.io/v1/users/~)."""
+    backend = _backend()
+    backend._http_get_json = AsyncMock(return_value={"metadata": {"name": "alice"}})
+    info = await backend.get_user_info(
+        provider_name="openshift",
+        provider={"name": "openshift", "api_base_url": "https://oc.example.com/"},
+        token_resp={"access_token": "tok"},
+        endpoints=_ENDPOINTS,
+    )
+    assert info == {"username": "openshift_alice"}
+    called_url = backend._http_get_json.call_args.args[0]
+    assert called_url == "https://oc.example.com/apis/user.openshift.io/v1/users/~"
+
+
+async def test_get_user_info_authentik_maps_nickname_and_preferred_username():
+    """Authentik's idiosyncratic mapping: username<-nickname, email<-
+    preferred_username (distinct from the generic OIDC claim names)."""
+    backend = _backend()
+    id_token = _unsigned_jwt(
+        {
+            "preferred_username": "alice@corp.com",
+            "nickname": "alice",
+            "given_name": "Alice",
+            "family_name": "Doe",
+            "groups": ["admins"],
+        }
+    )
+    info = await backend.get_user_info(
+        provider_name="authentik",
+        provider={"name": "authentik"},
+        token_resp={"id_token": id_token},
+        endpoints=_ENDPOINTS,
+    )
+    assert info["username"] == "alice"
+    assert info["email"] == "alice@corp.com"
+    assert info["role_keys"] == ["admins"]
+
+
+async def test_get_user_info_azure_unsafe_decode_is_default():
+    """Azure default (verify_signature unset) decodes the id_token without
+    network validation — 1:1 with FAB's default branch."""
+    backend = _backend()
+    id_token = _unsigned_jwt(
+        {"oid": "az-oid", "given_name": "Bob", "upn": "bob@corp.com", "roles": ["r1"]}
+    )
+    info = await backend.get_user_info(
+        provider_name="azure",
+        provider={"name": "azure"},
+        token_resp={"id_token": id_token},
+        endpoints=_ENDPOINTS,
+    )
+    assert info["username"] == "az-oid"
+    assert info["email"] == "bob@corp.com"
+    assert info["role_keys"] == ["r1"]
+
+
+async def test_get_user_info_azure_verify_signature_validates(monkeypatch):
+    """When verify_signature is set, Azure id_token must be validated against
+    Microsoft's JWKS — a failure rejects the login (no silent unsafe decode)."""
+    backend = _backend()
+    id_token = _unsigned_jwt({"oid": "az-oid"})
+
+    async def _boom(tok):
+        raise OAuthCallbackError("Azure id_token validation failed: bad signature")
+
+    backend._validate_azure_jwt = _boom
+    with pytest.raises(OAuthCallbackError, match="Azure id_token validation failed"):
+        await backend.get_user_info(
+            provider_name="azure",
+            provider={"name": "azure", "client_kwargs": {"verify_signature": True}},
+            token_resp={"id_token": id_token},
+            endpoints=_ENDPOINTS,
+        )

@@ -387,9 +387,20 @@ class OAuthAuthBackend:
                 "email": data.get("email", ""),
             }
 
-        # Azure AD — decode the id_token (mirrors FAB azure branch)
+        # Azure AD — decode the id_token (mirrors FAB azure branch
+        # ``_decode_and_validate_azure_jwt``). When the provider config sets
+        # ``client_kwargs.verify_signature`` (default False, as in FAB) the
+        # token signature is validated against Microsoft's static JWKS;
+        # otherwise it is decoded unverified.
         if provider_name == "azure":
-            claims = self._decode_id_token_unsafe(id_token)
+            remote = _provider_remote_app(provider)
+            verify_signature = bool(
+                remote.get("client_kwargs", {}).get("verify_signature", False)
+            )
+            if verify_signature:
+                claims = await self._validate_azure_jwt(id_token)
+            else:
+                claims = self._decode_id_token_unsafe(id_token)
             return {
                 "email": claims.get("upn", "") or claims.get("email", ""),
                 "first_name": claims.get("given_name", ""),
@@ -437,9 +448,39 @@ class OAuthAuthBackend:
                 "role_keys": data.get("groups", []) or [],
             }
 
+        # OpenShift — no OIDC discovery; identity comes from the cluster's
+        # custom user API (mirrors FAB ``get_oauth_user_info`` openshift
+        # branch: ``GET apis/user.openshift.io/v1/users/~``).
+        if provider_name == "openshift":
+            remote = _provider_remote_app(provider)
+            api_base = str(remote.get("api_base_url", "")).rstrip("/")
+            data = await self._http_get_json(
+                f"{api_base}/apis/user.openshift.io/v1/users/~",
+                bearer=access_token,
+            )
+            metadata = data.get("metadata") or {}
+            return {"username": "openshift_" + str(metadata.get("name", ""))}
+
+        # Authentik — identity from the id_token claims with Authentik's
+        # idiosyncratic mapping (mirrors FAB ``get_oauth_user_info``
+        # authentik branch: ``email = preferred_username``, ``username =
+        # nickname``). This base backend decodes WITHOUT signature
+        # verification (it's the no-discovery path); deployments that
+        # configure a ``server_metadata_url`` / ``jwks_uri`` are routed to
+        # :class:`OIDCAuthBackend`, which validates the id_token first.
+        if provider_name == "authentik":
+            claims = self._decode_id_token_unsafe(id_token)
+            return {
+                "email": claims.get("preferred_username", ""),
+                "first_name": claims.get("given_name", ""),
+                "last_name": claims.get("family_name", ""),
+                "username": claims.get("nickname", ""),
+                "role_keys": claims.get("groups", []) or [],
+            }
+
         # Generic OIDC fallback — matches the standard
-        # OpenID Connect claim names, used by Authentik and any
-        # custom provider with a discovery document.
+        # OpenID Connect claim names, used by any custom provider with a
+        # discovery document.
         if userinfo_url and access_token:
             data = await self._http_get_json(userinfo_url, bearer=access_token)
             if data:
@@ -573,3 +614,41 @@ class OAuthAuthBackend:
         except pyjwt.PyJWTError:
             logger.exception("Failed to decode id_token without verification")
             return {}
+
+    # Static JWKS endpoint for Azure AD / Microsoft identity platform.
+    # Mirrors FAB ``const.MICROSOFT_KEY_SET_URL``.
+    MICROSOFT_KEY_SET_URL = "https://login.microsoftonline.com/common/discovery/keys"
+
+    async def _validate_azure_jwt(self, id_token: str) -> dict[str, Any]:
+        """Validate an Azure AD ``id_token`` against Microsoft's JWKS.
+
+        Mirrors FAB ``_decode_and_validate_azure_jwt`` when
+        ``verify_signature`` is set: the token must carry a valid signature
+        from Microsoft's published key set. A validation failure rejects the
+        login (raises) rather than silently degrading to an unverified
+        decode.
+        """
+        if not id_token:
+            return {}
+
+        import asyncio
+
+        def _validate() -> dict[str, Any]:
+            jwk_client = pyjwt.PyJWKClient(self.MICROSOFT_KEY_SET_URL)
+            signing_key = jwk_client.get_signing_key_from_jwt(id_token).key
+            algorithms = [pyjwt.get_unverified_header(id_token).get("alg", "RS256")]
+            # FAB's authlib path validates the signature; audience/issuer
+            # checks are not enforced there, so we match that surface.
+            return pyjwt.decode(
+                id_token,
+                signing_key,
+                algorithms=algorithms,
+                options={"verify_signature": True, "verify_aud": False},
+            )
+
+        try:
+            return await asyncio.to_thread(_validate)
+        except pyjwt.PyJWTError as exc:
+            raise OAuthCallbackError(
+                f"Azure id_token validation failed: {exc}"
+            ) from exc
