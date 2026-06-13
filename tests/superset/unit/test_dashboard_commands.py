@@ -809,7 +809,15 @@ def _make_import_zip(dashboard_title: str = "Imported") -> io.BytesIO:
         )
         zf.writestr(
             "bundle/dashboards/test.yaml",
-            yaml.safe_dump({"dashboard_title": dashboard_title}),
+            yaml.safe_dump(
+                {
+                    "dashboard_title": dashboard_title,
+                    # uuid + version are present in every real export and are
+                    # required by the per-entry ImportV1Dashboard schema.
+                    "uuid": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+                    "version": "1.0.0",
+                }
+            ),
         )
     buf.seek(0)
     return buf
@@ -833,13 +841,25 @@ async def test_import_dashboards_success(mock_dao):
 
 
 async def test_import_dashboards_missing_title(mock_dao):
+    # Bundle is well-formed except for the required ``dashboard_title`` — the
+    # per-entry ImportV1Dashboard schema rejects it with a field-keyed 422
+    # ("Missing data for required field." under ``dashboard_title``).
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("bundle/metadata.yaml", yaml.safe_dump({"version": "1.0.0"}))
-        zf.writestr("bundle/dashboards/bad.yaml", yaml.safe_dump({"slug": "no-title"}))
+        zf.writestr(
+            "bundle/dashboards/bad.yaml",
+            yaml.safe_dump(
+                {
+                    "slug": "no-title",
+                    "uuid": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+                    "version": "1.0.0",
+                }
+            ),
+        )
     buf.seek(0)
     cmd = ImportDashboardsCommand(contents=buf, dao=mock_dao)
-    with pytest.raises(CommandInvalidError, match="Missing dashboard_title"):
+    with pytest.raises(CommandInvalidError, match="dashboard_title"):
         await cmd.execute()
 
 

@@ -174,7 +174,57 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
             if isinstance(content, dict):
                 self._apply_password(content, file_name)
 
+        # Per-entry schema validation — restores the ``schema.load(config)``
+        # step that ``superset_old/commands/importers/v1/utils.py:load_configs``
+        # runs for EVERY bundle entry (the base ``ImportModelsCommand.validate``
+        # called ``load_configs`` with the command's schema map). Without it a
+        # malformed nested YAML (e.g. a chart missing ``slice_name`` or a
+        # database with a non-string ``sqlalchemy_uri``) slipped past validate()
+        # and blew up mid-import with a non-422 error. Errors are collected and
+        # surfaced as a single field-keyed 422, ``{<file>: {<field>: [<msg>]}}``,
+        # exactly like the original Marshmallow ``ex.messages = {file_name: ...}``.
+        self._validate_entry_schemas(validatable)
+
         await self._validate(validatable)
+
+    def _validate_entry_schemas(
+        self, validatable: dict[str, dict[str, Any]]
+    ) -> None:
+        """Validate each recognized bundle entry against its prefix schema.
+
+        Mirrors ``load_configs``' per-entry ``schema(config)`` call using the
+        shared :data:`ASSET_SCHEMAS` registry. Validation runs on a deep copy
+        so a validator's normalisation (e.g. ``database_schema``'s
+        ``allow_file_upload`` rename) never mutates the config that the import
+        path later consumes.
+        """
+        import copy
+
+        from superset.commands.importers.v1.utils import ASSET_SCHEMAS
+
+        errors: dict[str, Any] = {}
+        for file_name, content in validatable.items():
+            if not isinstance(content, dict):
+                continue
+            prefix = f"{file_name.split('/')[0]}/"
+            schema = ASSET_SCHEMAS.get(prefix)
+            if schema is None:
+                continue
+            try:
+                schema(copy.deepcopy(content))
+            except CommandInvalidError as exc:
+                # Validators raise ``CommandInvalidError({prefix: {field: [...]}})``;
+                # the structured dict lives in ``extra["errors"]`` (CommandException
+                # stringifies ``message``). Re-key by the actual file name so the
+                # 422 payload matches the original Marshmallow shape.
+                structured = getattr(exc, "extra", {}).get("errors")
+                if isinstance(structured, dict):
+                    errors[file_name] = structured.get(prefix, structured)
+                else:
+                    errors[file_name] = getattr(exc, "message", None) or str(exc)
+
+        if errors:
+            raise CommandInvalidError(errors)
 
     async def run(self) -> None:
         # Ensure validate() was called first — it parses the ZIP and runs

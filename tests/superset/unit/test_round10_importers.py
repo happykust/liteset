@@ -311,3 +311,39 @@ async def test_import_chart_overwrite_allowed_for_admin(import_env):
     )
     assert chart.id == existing.id
     assert chart.slice_name == "imported chart"
+
+
+async def test_import_chart_bundle_schema_validates_each_entry():
+    """Per-entry schema validation (load_configs parity): a bundle whose chart
+    YAML has a valid ``slice_name`` (so the subclass ``_validate`` passes) but
+    is missing the schema-required ``uuid`` must still be rejected with a
+    field-keyed 422 — proving the base ``validate()`` runs the ImportV1Chart
+    schema on every entry, not just the targeted slice_name check."""
+    import io
+    import zipfile
+
+    import yaml
+
+    from superset.commands.chart.importers.v1 import ImportChartsCommand
+    from superset.exceptions import CommandInvalidError
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            "bundle/metadata.yaml",
+            yaml.safe_dump({"version": "1.0.0", "type": "Slice"}),
+        )
+        zf.writestr(
+            "bundle/charts/bad.yaml",
+            # valid slice_name + viz_type, but no uuid / version / dataset_uuid
+            yaml.safe_dump({"slice_name": "ok name", "viz_type": "table"}),
+        )
+    buf.seek(0)
+
+    cmd = ImportChartsCommand(contents=buf, dao=None)
+    with pytest.raises(CommandInvalidError) as exc_info:
+        await cmd.validate()
+    # The structured payload keys the failure by file name and lists uuid.
+    errors = getattr(exc_info.value, "extra", {}).get("errors", {})
+    assert "charts/bad.yaml" in errors
+    assert "uuid" in errors["charts/bad.yaml"]

@@ -648,7 +648,14 @@ def _make_import_zip(db_name: str = "imported_db") -> io.BytesIO:
         zf.writestr(
             "bundle/databases/test.yaml",
             yaml.safe_dump(
-                {"database_name": db_name, "sqlalchemy_uri": "sqlite:///"},
+                {
+                    "database_name": db_name,
+                    "sqlalchemy_uri": "sqlite:///",
+                    # uuid + version are present in every real export and are
+                    # required by the per-entry ImportV1Database schema.
+                    "uuid": "11111111-1111-1111-1111-111111111111",
+                    "version": "1.0.0",
+                },
             ),
         )
         zf.writestr(
@@ -686,11 +693,19 @@ async def test_import_databases_validate_skips_non_dict_config(mock_dao):
 
 
 async def test_import_databases_missing_name(mock_dao):
+    # Bundle is well-formed except for the required ``database_name`` — the
+    # per-entry ImportV1Database schema rejects it with a field-keyed 422.
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
             "bundle/databases/bad.yaml",
-            yaml.safe_dump({"sqlalchemy_uri": "sqlite:///"}),
+            yaml.safe_dump(
+                {
+                    "sqlalchemy_uri": "sqlite:///",
+                    "uuid": "11111111-1111-1111-1111-111111111111",
+                    "version": "1.0.0",
+                }
+            ),
         )
         zf.writestr(
             "bundle/metadata.yaml",
@@ -698,7 +713,7 @@ async def test_import_databases_missing_name(mock_dao):
         )
     buf.seek(0)
     cmd = ImportDatabasesCommand(contents=buf, dao=mock_dao)
-    with pytest.raises(CommandInvalidError, match="Missing database_name"):
+    with pytest.raises(CommandInvalidError, match="database_name"):
         await cmd.execute()
 
 
