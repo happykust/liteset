@@ -256,3 +256,27 @@ async def test_delete_value_owner_mismatch_raises_permission_denied():
                 security_manager=AsyncMock(),
                 current_user=user,
             )
+
+
+async def test_get_value_non_dict_entry_raises_not_found():
+    """A non-dict cache entry (corrupt/legacy — the create path always stores a
+    TemporaryExploreState dict) must NOT be returned without an access check;
+    it is treated as not found instead of being leaked verbatim."""
+    cache = MagicMock()
+    cache.get = AsyncMock(return_value="corrupt-non-dict-entry")
+
+    get_fn = ExploreFormDataController.get_value.fn
+    with patch(
+        "superset.controllers.explore_form_data._form_data_cache",
+        return_value=cache,
+    ):
+        with pytest.raises(ObjectNotFoundError):
+            await get_fn(
+                _controller_self(),
+                key="some-key",
+                chart_dao=AsyncMock(),
+                dataset_dao=AsyncMock(),
+                query_dao=AsyncMock(),
+                security_manager=AsyncMock(),
+                current_user=MagicMock(),
+            )

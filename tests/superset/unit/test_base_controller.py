@@ -16,7 +16,7 @@
 # under the License.
 """Unit tests for base controller utilities."""
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -25,6 +25,7 @@ from superset.controllers.base import (
     extract_ids,
     extract_ids_required,
     extract_pagination,
+    get_distinct_payload,
     get_info_payload,
     get_related_payload,
     serialize_list_response,
@@ -280,3 +281,26 @@ async def test_get_related_payload_unknown_relationship_raises_404():
                 "nonexistent_rel",
                 allowed_fields=frozenset({"nonexistent_rel"}),
             )
+
+
+async def test_get_distinct_payload_preserves_raw_value_type():
+    """/distinct ``text`` must preserve the raw column value type (not str()),
+    1:1 with upstream views/base_api.py which uses ``item[0]`` for both
+    ``text`` and ``value`` — e.g. an int column yields {"text": 5, ...}."""
+    from superset.models.sql_lab import SavedQuery
+
+    dao = MagicMock()
+    dao.model_cls = SavedQuery  # real model so the column ops build cleanly
+    dao.session = MagicMock()
+    dao.session.scalar = AsyncMock(return_value=2)
+    result_obj = MagicMock()
+    result_obj.scalars.return_value.all.return_value = [5, 6]
+    dao.session.execute = AsyncMock(return_value=result_obj)
+
+    out = await get_distinct_payload(dao, "id")
+
+    assert out["result"] == [
+        {"text": 5, "value": 5},
+        {"text": 6, "value": 6},
+    ]
+    assert isinstance(out["result"][0]["text"], int)

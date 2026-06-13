@@ -189,6 +189,13 @@ class ExploreFormDataController(Controller):
         if entry is None:
             raise ObjectNotFoundError(self.resource, key)
 
+        # The create path always stores a ``TemporaryExploreState`` dict.  A
+        # non-dict entry is a corrupt/legacy cache value with no datasource to
+        # authorise — never return it without an access check (the original
+        # would TypeError on ``state["datasource_id"]``).  Treat as not found.
+        if not isinstance(entry, dict):
+            raise ObjectNotFoundError(self.resource, key)
+
         if isinstance(entry, dict):
             datasource_id: int = entry.get("datasource_id") or 0
             datasource_type: str = entry.get("datasource_type") or "table"

@@ -66,7 +66,29 @@ def test_create_body_with_values():
         ExplorePermalinkCreateSchema,
     )
     assert body.form_data == {"viz_type": "table"}
-    assert body.url_params == [["foo", "bar"]]
+    # urlParams items are 2-tuples (1:1 with upstream fields.Tuple); msgspec
+    # decodes the JSON pair into a tuple.
+    assert body.url_params == [("foo", "bar")]
+
+
+def test_create_body_url_params_allows_null_pair_elements():
+    """fields.Tuple((String(allow_none=True), String(allow_none=True))) — each
+    element may be null."""
+    body = msgspec.convert(
+        {"formData": {}, "urlParams": [["k", None]]},
+        ExplorePermalinkCreateSchema,
+    )
+    assert body.url_params == [("k", None)]
+
+
+def test_create_body_url_params_rejects_wrong_arity():
+    """A urlParams item that is not a 2-element pair must be rejected
+    (upstream fields.Tuple enforces exactly two elements)."""
+    with pytest.raises(msgspec.ValidationError):
+        msgspec.convert(
+            {"formData": {}, "urlParams": [["a", "b", "c"]]},
+            ExplorePermalinkCreateSchema,
+        )
 
 
 # ---------------------------------------------------------------------------

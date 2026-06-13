@@ -70,7 +70,12 @@ class ExplorePermalinkCreateSchema(msgspec.Struct, rename="camel"):
     # ``urlParams`` is ``allow_none=True`` upstream: an EXPLICIT null is kept
     # in the loaded dict (and thus in the stored state), while an absent field
     # is omitted — hence UNSET, not None, as the absent marker.
-    url_params: list[list[str]] | None | msgspec.UnsetType = msgspec.UNSET
+    # Each item is a 2-element ``(key, value)`` pair — 1:1 with upstream
+    # ``fields.Tuple((String(allow_none=True), String(allow_none=True)))``
+    # (explore/permalink/schemas.py): a list of any other length is rejected.
+    url_params: (
+        list[tuple[str | None, str | None]] | None | msgspec.UnsetType
+    ) = msgspec.UNSET
 
 
 class ExplorePermalinkController(Controller):

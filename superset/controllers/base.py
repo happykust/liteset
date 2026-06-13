@@ -992,7 +992,10 @@ async def get_distinct_payload(
 
         return {
             "count": total or 0,
-            "result": [{"text": str(v), "value": v} for v in values],
+            # 1:1 with upstream views/base_api.py:674-678 which uses the raw
+            # column value for BOTH text and value ({"text": item[0], ...}); do
+            # not stringify ``text`` or non-string columns (int/datetime) diverge.
+            "result": [{"text": v, "value": v} for v in values],
         }
     except (SQLAlchemyError, AttributeError, ValueError):
         logger.warning("Failed to get distinct '%s'", column_name, exc_info=True)
