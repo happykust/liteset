@@ -899,8 +899,13 @@ async def test_delete_ssh_tunnel_success(mock_dao):
 # ---------------------------------------------------------------------------
 
 
-async def test_delete_non_owner_raises_forbidden(mock_dao, mock_database):
+async def test_delete_does_not_check_ownership(mock_dao, mock_database):
+    """Database delete is gated by RBAC (can_write) + the reports/datasets
+    guards only — 1:1 with upstream DeleteDatabaseCommand. Databases have no
+    ``owners`` relationship, so the command must NOT invoke raise_for_ownership
+    (which would wrongly block a non-creator can_write holder)."""
     mock_dao.find_by_id = AsyncMock(return_value=mock_database)
+    mock_dao.has_dependent_datasets = AsyncMock(return_value=False)
     sm = AsyncMock()
     sm.raise_for_ownership = AsyncMock(
         side_effect=_security_exception("You don't have permission")
@@ -908,8 +913,9 @@ async def test_delete_non_owner_raises_forbidden(mock_dao, mock_database):
     cmd = DeleteDatabaseCommand(
         dao=mock_dao, database_id=1, security_manager=sm, user_id=42
     )
-    with pytest.raises(SupersetSecurityException, match="permission"):
-        await cmd.validate()
+    # Must not raise on ownership grounds, and must not consult ownership at all.
+    await cmd.validate()
+    sm.raise_for_ownership.assert_not_called()
 
 
 async def test_delete_with_dependent_datasets_raises(mock_dao, mock_database):

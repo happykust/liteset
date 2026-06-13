@@ -53,10 +53,12 @@ class DeleteDatabaseCommand(AsyncBaseCommand[None]):
         self._database = await self._dao.find_by_id(self._database_id)
         if not self._database:
             raise ObjectNotFoundError("Database", self._database_id)
-        if self._security_manager is not None:
-            await self._security_manager.raise_for_ownership(
-                self._database, self._user_id
-            )
+        # NOTE: no per-object ownership check here — 1:1 with upstream
+        # DeleteDatabaseCommand.validate(), which gates deletion purely on the
+        # API-level ``can_write Database`` RBAC plus the reports/datasets guards
+        # below.  Databases have no ``owners`` relationship, so
+        # ``raise_for_ownership`` is semantically wrong here and would block a
+        # legitimate (non-creator) ``can_write`` holder that upstream allows.
         # Check there are no associated ReportSchedules — 1:1 with the
         # original ``DeleteDatabaseCommand``, which raises this BEFORE the
         # dataset check.
