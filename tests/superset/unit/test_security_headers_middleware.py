@@ -249,3 +249,100 @@ def test_x_content_type_options_false_omits_header():
 def test_x_content_type_options_default_emits_nosniff():
     headers = _headers_dict({})
     assert headers["x-content-type-options"] == "nosniff"
+
+
+# ---------------------------------------------------------------------------
+# force_https (R19-03) — HTTP->HTTPS redirect, mirroring talisman _force_https
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from superset.middleware.security_headers import (  # noqa: E402
+    _build_force_https_location,
+)
+
+
+def _make_scope(scheme: str = "http", host: str = "superset.example.com",
+                path: str = "/dashboard/1/", query: bytes = b"") -> dict:
+    return {
+        "type": "http",
+        "scheme": scheme,
+        "path": path,
+        "query_string": query,
+        "headers": [(b"host", host.encode())],
+        "state": {},
+        "app": None,
+    }
+
+
+async def _drive(scope: dict, talisman_config: dict, talisman_enabled: bool = True):
+    """Drive SecurityHeadersMiddleware.handle once; return (status, headers)."""
+    settings = SimpleNamespace(
+        debug=False,
+        talisman_enabled=talisman_enabled,
+        talisman_config=talisman_config,
+        talisman_dev_config=talisman_config,
+    )
+    scope["app"] = SimpleNamespace(state=SimpleNamespace(settings=settings))
+    captured: dict = {"status": None, "headers": {}}
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            captured["status"] = message["status"]
+            captured["headers"] = {
+                k.decode(): v.decode() for k, v in message.get("headers", [])
+            }
+
+    async def next_app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    await SecurityHeadersMiddleware().handle(scope, receive, send, next_app)
+    return captured
+
+
+def test_force_https_location_builds_https_url():
+    loc = _build_force_https_location(
+        _make_scope(path="/c/", query=b"a=1&b=2")
+    )
+    assert loc == b"https://superset.example.com/c/?a=1&b=2"
+
+
+async def test_force_https_redirects_http_to_https():
+    res = await _drive(_make_scope(scheme="http"), {"force_https": True})
+    assert res["status"] == 302
+    assert res["headers"]["location"] == "https://superset.example.com/dashboard/1/"
+
+
+async def test_force_https_permanent_uses_301():
+    res = await _drive(
+        _make_scope(scheme="http"),
+        {"force_https": True, "force_https_permanent": True},
+    )
+    assert res["status"] == 301
+
+
+async def test_force_https_no_redirect_when_already_https():
+    res = await _drive(_make_scope(scheme="https"), {"force_https": True})
+    assert res["status"] == 200
+
+
+async def test_force_https_respects_x_forwarded_proto():
+    scope = _make_scope(scheme="http")
+    scope["headers"].append((b"x-forwarded-proto", b"https"))
+    res = await _drive(scope, {"force_https": True})
+    assert res["status"] == 200
+
+
+async def test_no_redirect_when_force_https_disabled():
+    res = await _drive(_make_scope(scheme="http"), {"force_https": False})
+    assert res["status"] == 200
+
+
+async def test_no_redirect_when_force_https_absent_default():
+    # Default (key absent) must NOT redirect — Superset ships force_https=False.
+    res = await _drive(_make_scope(scheme="http"), {})
+    assert res["status"] == 200

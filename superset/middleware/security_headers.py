@@ -114,6 +114,31 @@ def _build_csp_string(
     return "; ".join(parts)
 
 
+def _build_force_https_location(scope: Mapping[str, Any]) -> bytes | None:
+    """Return the ``https://`` redirect target for the current request, or None.
+
+    Mirrors flask-talisman's ``_force_https`` which rewrites
+    ``request.url`` from ``http://`` to ``https://``.  The host is taken
+    from the (ProxyFix-corrected) ``Host`` header; path and query string
+    come from the scope.  Returns ``None`` only when no Host header is
+    present (so we cannot build an absolute redirect).
+    """
+    host: bytes = b""
+    for h_name, h_value in scope.get("headers", []):
+        if h_name.lower() == b"host":
+            host = h_value
+            break
+    if not host:
+        return None
+    path: str = scope.get("path", "/") or "/"
+    raw_qs = scope.get("query_string", b"") or b""
+    query = raw_qs.decode("latin-1", errors="replace") if raw_qs else ""
+    target = b"https://" + host + path.encode("latin-1", errors="replace")
+    if query:
+        target += b"?" + query.encode("latin-1", errors="replace")
+    return target
+
+
 def _resolve_is_https(scope: Mapping[str, Any]) -> bool:
     """Return True when the request was received over HTTPS.
 
@@ -356,6 +381,34 @@ class SecurityHeadersMiddleware(ASGIMiddleware):
             return
 
         talisman_config = self._resolve_talisman_config(settings)
+
+        # ── force_https (talisman.py _force_https) ─────────────────────────────
+        # When force_https is set and the request did not arrive over HTTPS,
+        # redirect to the https:// equivalent before doing anything else.
+        # 301 when force_https_permanent, else 302.  Superset's shipped
+        # TALISMAN_CONFIG sets force_https=False, so the default deploy never
+        # redirects; an operator who enables it gets talisman's behaviour.
+        if talisman_config.get("force_https", False) and not _resolve_is_https(scope):
+            location = _build_force_https_location(scope)
+            if location is not None:
+                status = (
+                    301
+                    if talisman_config.get("force_https_permanent", False)
+                    else 302
+                )
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": status,
+                        "headers": [
+                            (b"location", location),
+                            (b"content-length", b"0"),
+                        ],
+                    }
+                )
+                await send({"type": "http.response.body", "body": b""})
+                return
+
         headers = self._build_headers(scope, talisman_config)
 
         async def send_with_headers(message: Message) -> None:
