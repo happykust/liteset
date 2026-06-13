@@ -30,6 +30,7 @@ These are safe — the actual models always have these attributes.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select, text
@@ -37,6 +38,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _GroupRoleRef:
+    """Lightweight role reference for a group-derived role.
+
+    ``get_group_roles`` returns ``(id, name)`` rows, not ORM Role objects;
+    wrap them so callers of :meth:`AsyncSecurityDAO.get_user_roles` can read
+    ``.id`` / ``.name`` uniformly across direct and group-inherited roles.
+    """
+
+    id: int
+    name: str
 
 
 class AsyncSecurityDAO:
@@ -141,8 +155,26 @@ class AsyncSecurityDAO:
         return result.scalars().first()
 
     async def get_user_roles(self, user: Any) -> list[Any]:
-        """Get all roles for a user. Assumes roles are already loaded."""
-        return list(getattr(user, "roles", []))
+        """Get all roles for a user — direct AND group-inherited.
+
+        1:1 with FAB ``BaseSecurityManager.get_user_roles`` which returns
+        ``user.roles + [role for group in user.groups for role in group.roles]``.
+        Group-derived roles are wrapped in :class:`_GroupRoleRef` (``.id`` /
+        ``.name``).  Omitting them caused RLS role-scope filters and
+        DASHBOARD_RBAC role intersections to miss roles a user holds only via a
+        FAB group.
+        """
+        roles: list[Any] = list(getattr(user, "roles", []))
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            return roles
+        seen: set[Any] = {getattr(r, "id", None) for r in roles}
+        for grp in await self.get_user_groups(user_id):
+            for role_id, role_name in await self.get_group_roles(grp[0]):
+                if role_id not in seen:
+                    seen.add(role_id)
+                    roles.append(_GroupRoleRef(id=role_id, name=role_name))
+        return roles
 
     async def get_role_permissions(self, role_id: int) -> list[Any]:
         """Get all PermissionView entries for a role."""

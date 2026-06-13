@@ -2207,7 +2207,13 @@ class AsyncSecurityManager:
             user, "is_authenticated", True
         )
         if not is_anonymous:
-            return list(getattr(user, "roles", []) or [])
+            # Include group-inherited roles (dao.get_user_roles expands
+            # ab_user_group -> ab_group_role) — 1:1 with upstream
+            # ``get_rls_filters`` which uses FAB ``get_user_roles`` (direct +
+            # group roles).  Without the group roles, a REGULAR RLS filter
+            # scoped to a group-assigned role never matches and the row
+            # restriction is silently skipped (data exposure).
+            return await self.dao.get_user_roles(user)
 
         public_role_name = self._public_role_name
         if not public_role_name:

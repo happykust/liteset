@@ -102,9 +102,41 @@ def test_anonymous_public_role_missing_returns_empty_list():
 
 
 def test_authenticated_user_returns_role_ids():
+    # No ``id`` → no group lookup; direct roles only.
     user = SimpleNamespace(
         is_anonymous=False,
         is_authenticated=True,
         roles=[SimpleNamespace(id=1), SimpleNamespace(id=7)],
     )
-    assert rls_module._sync_resolve_user_role_ids(user) == [1, 7]
+    assert sorted(rls_module._sync_resolve_user_role_ids(user)) == [1, 7]
+
+
+def test_authenticated_user_includes_group_roles():
+    """RLS role resolution must include group-inherited roles — 1:1 with FAB
+    get_user_roles (direct + group.roles). A role assigned only via a group was
+    previously omitted, so a REGULAR RLS filter scoped to it never matched and
+    the row restriction was silently skipped (data exposure)."""
+    user = SimpleNamespace(
+        is_anonymous=False,
+        is_authenticated=True,
+        id=1,
+        roles=[SimpleNamespace(id=2)],
+    )
+
+    class _Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, _stmt):
+            class _R:
+                def scalars(self):
+                    return [5]  # group-derived role id
+
+            return _R()
+
+    with patch.object(rls_module, "_metadata_sync_session", return_value=_Session()):
+        result = rls_module._sync_resolve_user_role_ids(user)
+    assert set(result) == {2, 5}

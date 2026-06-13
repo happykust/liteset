@@ -266,20 +266,46 @@ def _sync_resolve_user_role_ids(user: Any) -> list[int] | None:
         from sqlalchemy.orm.exc import DetachedInstanceError
 
         try:
-            return [r.id for r in (getattr(user, "roles", []) or [])]
+            role_ids: set[int] = {r.id for r in (getattr(user, "roles", []) or [])}
         except DetachedInstanceError:
-            user_id = getattr(user, "id", None)
-            if user_id is None:
-                return []
-            from superset.models.security import ab_user_role
+            # Detached executor user (report/alert path) — re-query below.
+            role_ids = set()
 
-            with _metadata_sync_session() as session:
-                rows = session.execute(
-                    select(ab_user_role.c.role_id).where(
-                        ab_user_role.c.user_id == user_id
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            return list(role_ids)
+
+        from superset.models.security import (
+            ab_group_role,
+            ab_user_group,
+            ab_user_role,
+        )
+
+        with _metadata_sync_session() as session:
+            if not role_ids:
+                role_ids = {
+                    int(rid)
+                    for rid in session.execute(
+                        select(ab_user_role.c.role_id).where(
+                            ab_user_role.c.user_id == user_id
+                        )
+                    ).scalars()
+                }
+            # Group-inherited roles — 1:1 with FAB ``get_user_roles`` (direct +
+            # group roles). Omitting them let a REGULAR RLS filter scoped to a
+            # group-assigned role slip through (row restriction skipped).
+            group_role_ids = session.execute(
+                select(ab_group_role.c.role_id)
+                .select_from(
+                    ab_user_group.join(
+                        ab_group_role,
+                        ab_user_group.c.group_id == ab_group_role.c.group_id,
                     )
-                ).scalars()
-                return [int(rid) for rid in rows]
+                )
+                .where(ab_user_group.c.user_id == user_id)
+            ).scalars()
+            role_ids.update(int(rid) for rid in group_role_ids)
+        return list(role_ids)
 
     settings = _cached_settings()
     # 1:1 with upstream ``get_user_roles``: the public role is granted to
