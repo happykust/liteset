@@ -1,3 +1,19 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 """Tests for authentication controller -- password hashing, email login,
 timing-safe behaviour, and no-cache header enforcement.
 """
@@ -630,3 +646,86 @@ class TestOAuthAuthorizedRoute:
         assert isinstance(result, Redirect)
         assert result.url.startswith("/login/")
         assert session.committed is False
+
+    @pytest.mark.asyncio
+    async def test_callback_external_next_is_not_open_redirect(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An external ``next`` from the flow must collapse to '/' (no open
+        redirect), even on a successful login."""
+        controller = MagicMock()
+        request = MagicMock()
+        request.query_params.get = MagicMock(
+            side_effect=lambda k, d="": {"code": "c", "state": "st"}.get(k, d)
+        )
+        request.cookies.get = MagicMock(return_value="st")
+        request.headers.get = MagicMock(return_value="liteset.local")
+        request.url.scheme = "https"
+
+        session = _FakeAsyncSession()
+        state = MagicMock()
+        state.settings = _oauth_settings()
+        state.session_factory = MagicMock(return_value=session)
+
+        import superset.controllers.auth as auth_mod
+
+        authed_user = MagicMock()
+        authed_user.id = 42
+
+        class _FakeBackend:
+            async def handle_callback(self, *a: object, **k: object):
+                return authed_user, "https://evil.example.com/phish"
+
+        monkeypatch.setattr(
+            auth_mod, "_make_oauth_backend", lambda *a, **k: _FakeBackend()
+        )
+
+        result = await _oauth_authorized_fn(
+            controller, provider="keycloak", request=request, state=state
+        )
+
+        assert isinstance(result, Redirect)
+        assert result.url == "/"
+        assert "evil.example.com" not in result.url
+
+    @pytest.mark.asyncio
+    async def test_callback_backend_error_redirects_to_login_no_commit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the backend raises (state/CSRF mismatch, id_token signature
+        failure), the callback redirects to login and does NOT commit/issue a
+        session."""
+        from superset.security.auth.oauth import OAuthCallbackError
+
+        controller = MagicMock()
+        request = MagicMock()
+        request.query_params.get = MagicMock(
+            side_effect=lambda k, d="": {"code": "c", "state": "st"}.get(k, d)
+        )
+        request.cookies.get = MagicMock(return_value="st")
+        request.headers.get = MagicMock(return_value="liteset.local")
+        request.url.scheme = "https"
+
+        session = _FakeAsyncSession()
+        state = MagicMock()
+        state.settings = _oauth_settings()
+        state.session_factory = MagicMock(return_value=session)
+
+        import superset.controllers.auth as auth_mod
+
+        class _FakeBackend:
+            async def handle_callback(self, *a: object, **k: object):
+                raise OAuthCallbackError("OAuth state mismatch")
+
+        monkeypatch.setattr(
+            auth_mod, "_make_oauth_backend", lambda *a, **k: _FakeBackend()
+        )
+
+        result = await _oauth_authorized_fn(
+            controller, provider="keycloak", request=request, state=state
+        )
+
+        assert isinstance(result, Redirect)
+        assert result.url.startswith("/login/")
+        assert session.committed is False
+        assert "session" not in {c.key for c in result.cookies}

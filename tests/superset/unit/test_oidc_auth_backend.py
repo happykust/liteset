@@ -49,7 +49,7 @@ def _make_backend() -> OIDCAuthBackend:
 
 
 # ---------------------------------------------------------------------------
-# Audience resolution (R24-02): remote_app layout must still enforce aud
+# Audience resolution: remote_app layout must still enforce aud
 # ---------------------------------------------------------------------------
 
 
