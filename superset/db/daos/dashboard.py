@@ -393,31 +393,56 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         return list(dashboard.slices) if dashboard.slices else []
 
     async def get_datasets_for_dashboard(self, dashboard: Dashboard) -> list[Any]:
-        """Get all datasets used by a dashboard's charts."""
+        """Get all datasources used by a dashboard's charts.
+
+        1:1 with upstream ``Dashboard.datasets_trimmed_for_slices`` which groups
+        slices by ``(cls_model, datasource_id)`` across ALL datasource types
+        (table / query / saved_query) — not just ``SqlaTable``.  Charts may be
+        backed by a SQL Lab ``Query`` or ``SavedQuery`` datasource; restricting
+        to ``datasource_type == 'table'`` silently dropped those from
+        ``GET /dashboard/{id}/datasets``.
+        """
         slices = await self.get_charts_for_dashboard(dashboard)
         if not slices:
             return []
-        datasource_ids = {
-            s.datasource_id
-            for s in slices
-            if s.datasource_id and s.datasource_type == "table"
-        }
-        if not datasource_ids:
-            return []
-        from superset.models.connectors import SqlaTable
 
-        stmt = (
-            select(SqlaTable)
-            .where(SqlaTable.id.in_(datasource_ids))
-            .options(
-                selectinload(SqlaTable.database),
-                selectinload(SqlaTable.columns),
-                selectinload(SqlaTable.metrics),
-                selectinload(SqlaTable.owners),
+        from superset.models.connectors import SqlaTable
+        from superset.models.sql_lab import Query, SavedQuery
+
+        ids_by_type: dict[str, set[int]] = {}
+        for s in slices:
+            if s.datasource_id and s.datasource_type:
+                ids_by_type.setdefault(s.datasource_type, set()).add(s.datasource_id)
+
+        datasets: list[Any] = []
+
+        if ids_by_type.get("table"):
+            stmt = (
+                select(SqlaTable)
+                .where(SqlaTable.id.in_(ids_by_type["table"]))
+                .options(
+                    selectinload(SqlaTable.database),
+                    selectinload(SqlaTable.columns),
+                    selectinload(SqlaTable.metrics),
+                    selectinload(SqlaTable.owners),
+                )
             )
-        )
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+            datasets.extend((await self.session.execute(stmt)).scalars().all())
+
+        # Query / SavedQuery datasources: ``.database`` is a relationship, so
+        # eager-load it to avoid a sync lazy-load (MissingGreenlet) when the
+        # serializer reads it.  ``Query.columns`` is a property derived from
+        # ``extra['columns']`` (no DB access), so it needs no selectinload.
+        for ds_type, model in (("query", Query), ("saved_query", SavedQuery)):
+            if ids_by_type.get(ds_type):
+                stmt = (
+                    select(model)
+                    .where(model.id.in_(ids_by_type[ds_type]))
+                    .options(selectinload(model.database))
+                )
+                datasets.extend((await self.session.execute(stmt)).scalars().all())
+
+        return datasets
 
     async def get_dashboard_and_slices_changed_on(
         self,

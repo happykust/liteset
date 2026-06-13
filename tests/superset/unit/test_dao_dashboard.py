@@ -526,3 +526,36 @@ async def test_embedded_upsert_update(async_session: AsyncSession) -> None:
     stmt = select(FakeEmbeddedDashboard).where(FakeEmbeddedDashboard.dashboard_id == 42)
     result = await async_session.execute(stmt)
     assert len(list(result.scalars().all())) == 1
+
+
+async def test_get_datasets_for_dashboard_includes_query_datasources():
+    """get_datasets_for_dashboard must return Query/SavedQuery datasources too,
+    not only SqlaTable — 1:1 with upstream datasets_trimmed_for_slices which
+    groups slices across all datasource types. A chart backed by a SQL Lab
+    Query was previously dropped from GET /dashboard/{id}/datasets."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from superset.db.daos.dashboard import AsyncDashboardDAO
+
+    table_slice = MagicMock(datasource_id=1, datasource_type="table")
+    query_slice = MagicMock(datasource_id=7, datasource_type="query")
+    dashboard = MagicMock()
+    dashboard.slices = [table_slice, query_slice]
+
+    table_ds = MagicMock()
+    query_ds = MagicMock()
+    res_table = MagicMock()
+    res_table.scalars.return_value.all.return_value = [table_ds]
+    res_query = MagicMock()
+    res_query.scalars.return_value.all.return_value = [query_ds]
+
+    session = AsyncMock(spec=AsyncSession)
+    session.refresh = AsyncMock()
+    session.execute = AsyncMock(side_effect=[res_table, res_query])
+
+    dao = AsyncDashboardDAO(session)
+    result = await dao.get_datasets_for_dashboard(dashboard)
+
+    assert table_ds in result, "table datasource must be returned"
+    assert query_ds in result, "query datasource must be returned (was dropped)"
+    assert session.execute.await_count == 2
