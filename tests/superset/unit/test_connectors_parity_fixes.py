@@ -66,6 +66,33 @@ def test_time_grain_sqla_empty_when_no_grains():
     assert [(g.duration, g.name) for g in tbl.database.grains() or []] == []
 
 
+# --- Fix: DATASET_HEALTH_CHECK config hook (was hardcoded None) -----------
+
+
+def test_health_check_message_uses_config_hook(monkeypatch):
+    """``health_check_message`` invokes the configured ``DATASET_HEALTH_CHECK``
+    callable with ``self`` — 1:1 with the original property (was hardcoded
+    ``None``, so a deployed hook was silently ignored)."""
+    from superset.models.connectors import SqlaTable
+
+    tbl = SqlaTable()
+    settings = MagicMock()
+    settings.dataset_health_check = lambda ds: f"unhealthy:{ds is tbl}"
+    monkeypatch.setattr("superset.config.SupersetSettings", lambda *a, **k: settings)
+    assert tbl.health_check_message == "unhealthy:True"
+
+
+def test_health_check_message_none_when_hook_unset(monkeypatch):
+    """No configured hook -> None (the default), never a crash."""
+    from superset.models.connectors import SqlaTable
+
+    tbl = SqlaTable()
+    settings = MagicMock()
+    settings.dataset_health_check = None
+    monkeypatch.setattr("superset.config.SupersetSettings", lambda *a, **k: settings)
+    assert tbl.health_check_message is None
+
+
 # --- Fix 2 ----------------------------------------------------------------
 
 

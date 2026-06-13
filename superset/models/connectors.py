@@ -1376,6 +1376,26 @@ class SqlaTable(
             )
             return None
 
+    @property
+    def health_check_message(self) -> str | None:
+        """Result of the optional ``DATASET_HEALTH_CHECK`` config hook.
+
+        1:1 with the original ``SqlaTable.health_check_message`` (line
+        1340-1343): ``check = config["DATASET_HEALTH_CHECK"]; return
+        check(self) if check else None``. The hook is a rarely-used
+        enterprise callable; it defaults to ``None`` (no message). Read
+        lazily from :class:`SupersetSettings` because models must not import
+        config at module load.
+        """
+        from superset.config import SupersetSettings
+
+        check = getattr(
+            SupersetSettings(),  # type: ignore[call-arg]
+            "dataset_health_check",
+            None,
+        )
+        return check(self) if check else None
+
     def external_metadata(self) -> list[dict[str, Any]]:
         """Fetch column metadata from the underlying database.
 
@@ -1671,7 +1691,7 @@ class SqlaTable(
         data_["fetch_values_predicate"] = self.fetch_values_predicate
         data_["template_params"] = self.template_params
         data_["is_sqllab_view"] = self.is_sqllab_view
-        data_["health_check_message"] = None
+        data_["health_check_message"] = self.health_check_message
         data_["extra"] = self.extra
         data_["owners"] = [
             {
