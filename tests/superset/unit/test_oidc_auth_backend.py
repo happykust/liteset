@@ -70,7 +70,12 @@ async def test_get_user_info_enforces_audience_from_remote_app_layout(
     captured: dict[str, Any] = {}
 
     async def _fake_validate(
-        *, id_token: str, jwks_uri: str, issuer: str = "", audience: str = ""
+        *,
+        id_token: str,
+        jwks_uri: str,
+        issuer: str = "",
+        audience: str = "",
+        nonce: str = "",
     ) -> dict[str, Any]:
         captured["audience"] = audience
         return {"preferred_username": "alice", "email": "alice@example.com"}
@@ -108,7 +113,12 @@ async def test_get_user_info_enforces_audience_from_toplevel_layout(
     captured: dict[str, Any] = {}
 
     async def _fake_validate(
-        *, id_token: str, jwks_uri: str, issuer: str = "", audience: str = ""
+        *,
+        id_token: str,
+        jwks_uri: str,
+        issuer: str = "",
+        audience: str = "",
+        nonce: str = "",
     ) -> dict[str, Any]:
         captured["audience"] = audience
         return {"preferred_username": "bob"}
@@ -146,7 +156,12 @@ async def test_id_token_validation_failure_does_not_fall_through(
     backend = _make_backend()
 
     async def _boom(
-        *, id_token: str, jwks_uri: str, issuer: str = "", audience: str = ""
+        *,
+        id_token: str,
+        jwks_uri: str,
+        issuer: str = "",
+        audience: str = "",
+        nonce: str = "",
     ) -> dict[str, Any]:
         raise OAuthCallbackError("bad signature")
 
@@ -218,3 +233,62 @@ async def test_validate_id_token_rejects_wrong_audience(
             jwks_uri="https://idp/jwks",
             audience="expected-rp",
         )
+
+
+# ---------------------------------------------------------------------------
+# validate_id_token: OIDC nonce replay-protection
+# ---------------------------------------------------------------------------
+
+
+def _signed_token(claims: dict[str, Any]):
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    token = pyjwt.encode(claims, private_key, algorithm="RS256")
+    return token, private_key.public_key()
+
+
+def _patch_jwks(monkeypatch, public_key) -> None:
+    class _SigningKey:
+        key = public_key
+
+    class _FakeJWKClient:
+        def __init__(self, uri: str) -> None:
+            pass
+
+        def get_signing_key_from_jwt(self, token: str) -> Any:
+            return _SigningKey()
+
+    monkeypatch.setattr(pyjwt, "PyJWKClient", _FakeJWKClient)
+
+
+@pytest.mark.asyncio
+async def test_validate_id_token_rejects_nonce_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An id_token whose nonce differs from the authorization request fails."""
+    id_token, public_key = _signed_token({"sub": "alice", "nonce": "minted-NONCE"})
+    _patch_jwks(monkeypatch, public_key)
+    backend = _make_backend()
+    with pytest.raises(OAuthCallbackError):
+        await backend.validate_id_token(
+            id_token=id_token,
+            jwks_uri="https://idp/jwks",
+            nonce="expected-NONCE",
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_id_token_accepts_matching_nonce(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A matching nonce passes validation and returns the claims."""
+    id_token, public_key = _signed_token({"sub": "alice", "nonce": "shared-NONCE"})
+    _patch_jwks(monkeypatch, public_key)
+    backend = _make_backend()
+    claims = await backend.validate_id_token(
+        id_token=id_token,
+        jwks_uri="https://idp/jwks",
+        nonce="shared-NONCE",
+    )
+    assert claims["sub"] == "alice"

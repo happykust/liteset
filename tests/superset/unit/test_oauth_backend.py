@@ -25,8 +25,9 @@ run before any network call), not a mocked backend.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
+import jwt as _pyjwt
 import pytest
 
 from superset.security.auth.oauth import OAuthAuthBackend, OAuthCallbackError
@@ -107,9 +108,6 @@ async def test_handle_callback_rejects_provider_mismatch():
 # ---------------------------------------------------------------------------
 # get_user_info — per-provider identity mapping (openshift / authentik / azure)
 # ---------------------------------------------------------------------------
-
-import jwt as _pyjwt  # noqa: E402
-from unittest.mock import AsyncMock  # noqa: E402
 
 _ENDPOINTS = {
     "userinfo_url": "",
@@ -199,3 +197,53 @@ async def test_get_user_info_azure_verify_signature_validates(monkeypatch):
             token_resp={"id_token": id_token},
             endpoints=_ENDPOINTS,
         )
+
+
+# ---------------------------------------------------------------------------
+# OIDC nonce is minted into the authorize URL and the signed state
+# ---------------------------------------------------------------------------
+
+
+def _backend_with_authorize_url() -> OAuthAuthBackend:
+    settings = SimpleNamespace(
+        secret_key="test-secret-key-at-least-32-bytes-long-xx",
+        oauth_providers=[
+            {
+                "name": "keycloak",
+                "remote_app": {
+                    "client_id": "rp",
+                    "authorize_url": "https://idp/authorize",
+                },
+            }
+        ],
+    )
+    return OAuthAuthBackend(MagicMock(), settings=settings)
+
+
+async def test_build_authorize_url_mints_nonce_into_params_and_state():
+    """A fresh nonce is sent to the IdP and stored in the signed state so the
+    callback can bind the returned id_token to this request."""
+    from urllib.parse import parse_qs, urlparse
+
+    backend = _backend_with_authorize_url()
+    url, state = await backend.build_authorize_url(
+        "keycloak", redirect_uri="https://app/oauth-authorized/keycloak"
+    )
+    qs = parse_qs(urlparse(url).query)
+    assert qs["nonce"][0]
+    payload = backend.verify_state(state)
+    assert payload["nonce"] == qs["nonce"][0]
+
+
+async def test_get_user_info_okta_missing_sub_does_not_raise():
+    """A userinfo response missing ``sub`` must not raise a KeyError (500)."""
+    backend = _backend()
+    backend._http_get_json = AsyncMock(return_value={"email": "a@b.com"})
+    info = await backend.get_user_info(
+        provider_name="okta",
+        provider={"name": "okta"},
+        token_resp={"access_token": "tok"},
+        endpoints={**_ENDPOINTS, "userinfo_url": "https://idp/userinfo"},
+    )
+    assert info["username"] == "okta_"
+    assert info["email"] == "a@b.com"

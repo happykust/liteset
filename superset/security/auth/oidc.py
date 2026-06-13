@@ -73,6 +73,7 @@ class OIDCAuthBackend(OAuthAuthBackend):
         provider: dict[str, Any],
         token_resp: dict[str, Any],
         endpoints: dict[str, str],
+        expected_nonce: str = "",
     ) -> dict[str, Any]:
         """Return validated user-info claims for an OIDC flow."""
 
@@ -100,6 +101,7 @@ class OIDCAuthBackend(OAuthAuthBackend):
                 jwks_uri=endpoints["jwks_uri"],
                 issuer=endpoints["issuer"],
                 audience=audience,
+                nonce=expected_nonce,
             )
 
             if claims:
@@ -136,12 +138,17 @@ class OIDCAuthBackend(OAuthAuthBackend):
         jwks_uri: str,
         issuer: str = "",
         audience: str = "",
+        nonce: str = "",
     ) -> dict[str, Any]:
         """Validate an OIDC ``id_token`` against the provider's JWKS.
 
         Uses :mod:`PyJWT`'s :class:`PyJWKClient` to fetch and cache the
         JWKS.  Mirrors :pymeth:`BaseSecurityManager._validate_jwt`
         (FAB ``manager.py:794-801``) which does the same with authlib.
+
+        When ``nonce`` is supplied the token's ``nonce`` claim must match it
+        exactly (replay / token-injection protection); a mismatch rejects
+        the login.
         """
         if not id_token or not jwks_uri:
             raise OAuthCallbackError("OIDC validation requires id_token and jwks_uri")
@@ -173,7 +180,17 @@ class OIDCAuthBackend(OAuthAuthBackend):
             if issuer:
                 decode_kwargs["issuer"] = issuer
 
-            return pyjwt.decode(id_token, signing_key, **decode_kwargs)
+            claims = pyjwt.decode(id_token, signing_key, **decode_kwargs)
+
+            if nonce:
+                import hmac
+
+                token_nonce = str(claims.get("nonce") or "")
+                if not hmac.compare_digest(token_nonce, nonce):
+                    raise pyjwt.InvalidTokenError(
+                        "id_token nonce does not match the authorization request"
+                    )
+            return claims
 
         try:
             return await asyncio.to_thread(_validate)

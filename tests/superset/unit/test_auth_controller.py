@@ -169,6 +169,27 @@ class TestCheckPasswordHash:
         assert _check_password_hash(SCRYPT_HASH, "correct-password") is True
         assert _check_password_hash(SCRYPT_HASH, "almost-correct-password") is False
 
+    def test_hash_check_invokes_compare_digest(self, monkeypatch) -> None:
+        """The final comparison MUST go through ``hmac.compare_digest``.
+
+        Asserting behaviour (match/mismatch) cannot distinguish a
+        constant-time compare from ``==``; spy on the primitive itself so a
+        regression to ``computed == hash_value`` is caught.
+        """
+        import superset.utils.password as pw
+
+        real = pw.hmac.compare_digest
+        calls: list[tuple[str, str]] = []
+
+        def _spy(a, b):
+            calls.append((a, b))
+            return real(a, b)
+
+        monkeypatch.setattr(pw.hmac, "compare_digest", _spy)
+        assert _check_password_hash(SCRYPT_HASH, "correct-password") is True
+        assert _check_password_hash(SCRYPT_HASH, "wrong-password") is False
+        assert len(calls) == 2, "hmac.compare_digest not used for both checks"
+
 
 # ===================================================================
 # Werkzeug interop (validates our implementation matches werkzeug)

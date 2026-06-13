@@ -233,7 +233,15 @@ class OAuthAuthBackend:
             or "openid email profile"
         )  # noqa: E501
 
-        state = self.sign_state({"provider": provider_name, "next": next_url})
+        # OIDC nonce — binds the issued id_token to this authorization
+        # request (replay / token-injection defense, mirrors what FAB's
+        # authlib client sets automatically). Carried inside the signed,
+        # tamper-proof state so the callback can compare it to the
+        # id_token's ``nonce`` claim without a separate cookie.
+        nonce = secrets.token_urlsafe(32)
+        state = self.sign_state(
+            {"provider": provider_name, "next": next_url, "nonce": nonce}
+        )
 
         params = {
             "client_id": remote["client_id"],
@@ -241,6 +249,7 @@ class OAuthAuthBackend:
             "redirect_uri": redirect_uri,
             "scope": scope,
             "state": state,
+            "nonce": nonce,
         }
         delim = "&" if "?" in endpoints["authorize_url"] else "?"
         return f"{endpoints['authorize_url']}{delim}{urlencode(params)}", state
@@ -277,6 +286,7 @@ class OAuthAuthBackend:
         if payload.get("provider") != provider_name:
             raise OAuthCallbackError("OAuth state provider mismatch")
         next_url: str = str(payload.get("next") or "") or ""
+        expected_nonce: str = str(payload.get("nonce") or "")
 
         provider = self.get_provider(provider_name)
         remote = _provider_remote_app(provider)
@@ -300,6 +310,7 @@ class OAuthAuthBackend:
             provider=provider,
             token_resp=token_resp,
             endpoints=endpoints,
+            expected_nonce=expected_nonce,
         )
 
         # Apply email whitelist (mirrors FAB views.py:736-747).
@@ -329,8 +340,16 @@ class OAuthAuthBackend:
         provider: dict[str, Any],
         token_resp: dict[str, Any],
         endpoints: dict[str, str],
+        expected_nonce: str = "",
     ) -> dict[str, Any]:
         """Pull the user profile from the IdP.
+
+        ``expected_nonce`` is accepted for signature parity with
+        :class:`OIDCAuthBackend`; this base backend decodes id_tokens
+        without signature verification, so a nonce comparison on an
+        unverified token would add no security and is intentionally not
+        performed here. Providers that need replay protection are routed
+        to :class:`OIDCAuthBackend`, which validates the signature first.
 
         Ports the per-provider branches in
         :pymeth:`BaseSecurityManager.get_oauth_user_info` (``manager.py:647``)
@@ -419,7 +438,10 @@ class OAuthAuthBackend:
                 )
                 return {}
             return {
-                "username": f"okta_{data['sub']}",
+                # ``.get`` rather than ``data['sub']`` — a userinfo response
+                # missing ``sub`` must not raise a KeyError (HTTP 500); an
+                # empty username is rejected downstream by auth_user_oauth.
+                "username": f"okta_{data.get('sub', '')}",
                 "first_name": data.get("given_name", ""),
                 "last_name": data.get("family_name", ""),
                 "email": data.get("email", ""),
@@ -430,7 +452,7 @@ class OAuthAuthBackend:
         if provider_name == "auth0":
             data = await self._http_get_json(userinfo_url, bearer=access_token)
             return {
-                "username": f"auth0_{data['sub']}",
+                "username": f"auth0_{data.get('sub', '')}",
                 "first_name": data.get("given_name", ""),
                 "last_name": data.get("family_name", ""),
                 "email": data.get("email", ""),
