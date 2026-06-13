@@ -14,11 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async SecurityManager — full reimplementation of FAB SecurityManager.
+"""Async SecurityManager — full reimplementation of the upstream SecurityManager.
 
-Reads from the same ab_* tables as Flask-AppBuilder but via AsyncSession.
-Zero database migration needed. Used by AuthMiddleware (short-lived session)
-and by controllers/guards (request-scoped session from DI).
+Reads from the same ab_* tables as the upstream security layer but via
+AsyncSession. Zero database migration needed. Used by AuthMiddleware
+(short-lived session) and by controllers/guards (request-scoped session from DI).
 """
 
 from __future__ import annotations
@@ -204,12 +204,12 @@ class AsyncSecurityManager:
 
     @property
     def user_model(self) -> type:
-        """FAB ``SecurityManager.user_model`` contract (delegates to the DAO)."""
+        """Upstream ``SecurityManager.user_model`` contract (delegates to the DAO)."""
         return self.dao.user_model
 
     @property
     def role_model(self) -> type:
-        """FAB ``SecurityManager.role_model`` contract (delegates to the DAO)."""
+        """Upstream ``SecurityManager.role_model`` contract (delegates to the DAO)."""
         return self.dao.role_model
 
     @staticmethod
@@ -239,25 +239,24 @@ class AsyncSecurityManager:
     # LDAP authentication
     # ------------------------------------------------------------------
     #
-    # Ported 1:1 from
-    # ``flask_appbuilder/security/manager.py::auth_user_ldap`` and
-    # surrounding helpers (``_search_ldap``, ``_bind_ldap``,
-    # ``_ldap_bind_indirect``, ``_ldap_calculate_user_roles``,
-    # ``ldap_extract``, ``ldap_extract_list``).
+    # Ported 1:1 from the upstream
+    # ``security/manager.py::auth_user_ldap`` and surrounding helpers
+    # (``_search_ldap``, ``_bind_ldap``, ``_ldap_bind_indirect``,
+    # ``_ldap_calculate_user_roles``, ``ldap_extract``, ``ldap_extract_list``).
     #
-    # Implementation differences with the original FAB code:
+    # Implementation differences with the upstream code:
     #
     # * We use the pure-Python ``ldap3`` package (rather than the C-extension
     #   ``python-ldap``) so the call-graph stays free of build-time native
     #   dependencies.  ``ldap3`` is itself synchronous; we wrap blocking
     #   calls with :func:`asyncio.to_thread` to keep the controller
     #   coroutine-safe.
-    # * FAB reads ``current_app.config[...]``; we accept ``settings``
+    # * Upstream reads ``current_app.config[...]``; we accept ``settings``
     #   (a :class:`SupersetSettings` instance) as an explicit parameter.
-    # * FAB calls ``self.add_user`` which lives on the FAB sqla manager;
-    #   we inline the equivalent insert via :class:`AsyncSecurityDAO`.
+    # * Upstream calls ``self.add_user`` which lives on the upstream sqla
+    #   manager; we inline the equivalent insert via :class:`AsyncSecurityDAO`.
     # * Role syncing follows ``AUTH_ROLES_SYNC_AT_LOGIN`` (default False)
-    #   and ``AUTH_ROLES_MAPPING`` exactly as in FAB.
+    #   and ``AUTH_ROLES_MAPPING`` exactly as upstream.
 
     async def auth_user_ldap(  # noqa: C901
         self,
@@ -268,8 +267,8 @@ class AsyncSecurityManager:
     ) -> Any | None:
         """Authenticate a user via LDAP.
 
-        1:1 port of
-        ``BaseSecurityManager.auth_user_ldap`` from Flask-AppBuilder.
+        1:1 port of the upstream
+        ``BaseSecurityManager.auth_user_ldap``.
 
         :param username: The username to authenticate
         :param password: The plaintext password to validate
@@ -293,12 +292,12 @@ class AsyncSecurityManager:
         # Search the metadata DB for the user.
         user = await self.dao.get_user_by_username(username)
 
-        # If user exists but is inactive, deny silently — mirrors FAB.
+        # If user exists but is inactive, deny silently — mirrors upstream.
         if user is not None and not getattr(user, "active", True):
             return None
 
         # If user is unknown and self-registration is disabled, deny.
-        # Mirrors FAB: ``if (not user) and (not self.auth_user_registration)``.
+        # Mirrors upstream: ``if (not user) and (not self.auth_user_registration)``.
         auth_user_registration = bool(
             getattr(settings, "auth_user_registration", False)
         )
@@ -327,7 +326,7 @@ class AsyncSecurityManager:
 
         if ldap_result is None:
             # Bind failed or search came up empty — auth failure.
-            # Mirror FAB by recording a failed-login stat for known users.
+            # Mirror upstream by recording a failed-login stat for known users.
             if user is not None:
                 await self._update_user_auth_stat(user, success=False)
             return None
@@ -395,9 +394,9 @@ class AsyncSecurityManager:
     ) -> Any | None:
         """Authenticate a user resolved from the ``REMOTE_USER`` variable.
 
-        1:1 port of
-        :pymeth:`flask_appbuilder.security.manager.BaseSecurityManager.auth_user_remote_user`
-        (flask_appbuilder/security/manager.py:1407-1435).
+        1:1 port of the upstream
+        ``BaseSecurityManager.auth_user_remote_user``
+        (upstream security/manager.py:1407-1435).
         """
         user = await self.dao.get_user_by_username(username)
 
@@ -435,11 +434,11 @@ class AsyncSecurityManager:
         *,
         settings: Any,
     ) -> list[Any]:
-        """Map OAuth userinfo to a list of FAB :class:`Role` objects.
+        """Map OAuth userinfo to a list of :class:`Role` objects.
 
-        1:1 port of
-        :pymeth:`flask_appbuilder.security.manager.BaseSecurityManager._oauth_calculate_user_roles`
-        (flask_appbuilder/security/manager.py:1437-1467):
+        1:1 port of the upstream
+        ``BaseSecurityManager._oauth_calculate_user_roles``
+        (upstream security/manager.py:1437-1467):
 
         * ``AUTH_ROLES_MAPPING`` translates the IdP's ``role_keys`` claim
           into one or more Superset role names (``get_roles_from_keys``).
@@ -449,7 +448,7 @@ class AsyncSecurityManager:
         """
         user_role_objects: dict[int, Any] = {}
 
-        # apply AUTH_ROLES_MAPPING (FAB ``get_roles_from_keys``)
+        # apply AUTH_ROLES_MAPPING (upstream ``get_roles_from_keys``)
         roles_mapping = getattr(settings, "auth_roles_mapping", {}) or {}
         if roles_mapping:
             user_role_keys = set(userinfo.get("role_keys", []) or [])
@@ -507,9 +506,9 @@ class AsyncSecurityManager:
     ) -> Any | None:
         """Authenticate a user via an OAuth userinfo document.
 
-        1:1 port of
-        :pymeth:`flask_appbuilder.security.manager.BaseSecurityManager.auth_user_oauth`
-        (flask_appbuilder/security/manager.py:1469-1526).
+        1:1 port of the upstream
+        ``BaseSecurityManager.auth_user_oauth``
+        (upstream security/manager.py:1469-1526).
 
         :param userinfo: dict with user information
             (keys are the same as User model columns)
@@ -594,7 +593,7 @@ class AsyncSecurityManager:
         Returns ``None`` on authentication failure (bind failed, search
         miss, etc.), or a ``(user_dn, user_attributes)`` tuple on success.
         ``user_dn`` may legitimately be ``None`` in the direct-bind flow
-        when ``AUTH_LDAP_SEARCH`` is not configured — mirrors FAB which
+        when ``AUTH_LDAP_SEARCH`` is not configured — mirrors upstream which
         leaves ``user_dn = None`` in that path.
         """
 
@@ -604,7 +603,7 @@ class AsyncSecurityManager:
         def _do_ldap_flow() -> (  # noqa: C901
             tuple[str | None, dict[str, list[bytes]] | None] | None
         ):
-            # Build a TLS context that mirrors the FAB knobs.
+            # Build a TLS context that mirrors the upstream knobs.
             tls = self._build_ldap_tls(ldap_module, settings)
 
             server = ldap_module.Server(
@@ -621,7 +620,7 @@ class AsyncSecurityManager:
                 client_strategy=ldap_module.SYNC,
                 raise_exceptions=False,
             )
-            # ``referrals`` is set to False (mirrors FAB's
+            # ``referrals`` is set to False (mirrors upstream's
             # ``set_option(OPT_REFERRALS, 0)``).
             con.referrals = False
 
@@ -638,7 +637,7 @@ class AsyncSecurityManager:
                     return None
 
             try:
-                # Define defaults — mirror FAB lines 1275-1276
+                # Define defaults — mirror upstream lines 1275-1276
                 # (``user_dn = None``; ``user_attributes = {}``).
                 user_dn: str | None = None
                 user_attributes: dict[str, list[bytes]] | None = {}
@@ -686,10 +685,10 @@ class AsyncSecurityManager:
                     )
                     return None
 
-                # Mirror FAB: in the direct-bind flow ``user_dn`` stays
+                # Mirror upstream: in the direct-bind flow ``user_dn`` stays
                 # ``None`` unless ``AUTH_LDAP_SEARCH`` is configured —
                 # ``bind_username`` is NOT a DN and must not be returned
-                # as one (FAB code: ``flask_appbuilder/security/manager.py``
+                # as one (upstream code: ``security/manager.py``
                 # lines 1275, 1313-1356).
                 if ldap_search:
                     user_dn, user_attributes = self._search_ldap_sync(
@@ -709,7 +708,7 @@ class AsyncSecurityManager:
 
     @staticmethod
     def _build_ldap_tls(ldap_module: Any, settings: Any) -> Any | None:
-        """Construct a ``ldap3.Tls`` instance from FAB-style TLS knobs.
+        """Construct a ``ldap3.Tls`` instance from upstream-style TLS knobs.
 
         Mirrors the ``ldap.set_option(OPT_X_TLS_*)`` calls in
         ``BaseSecurityManager.auth_user_ldap``.  Returns ``None`` when no
@@ -850,7 +849,7 @@ class AsyncSecurityManager:
         # per-entry ``attributes`` as a ``CaseInsensitiveDict`` which is NOT
         # a ``dict`` subclass, so test for the more general ``Mapping`` —
         # otherwise every real LDAP entry is discarded and indirect-bind
-        # login silently fails.  (FAB checks ``isinstance(attrs, dict)``
+        # login silently fails.  (Upstream checks ``isinstance(attrs, dict)``
         # because python-ldap's ``search_s`` yields plain dicts.)
         from collections.abc import Mapping
 
@@ -907,10 +906,10 @@ class AsyncSecurityManager:
         """Async wrapper around :meth:`_search_ldap_sync`.
 
         Exposed as ``async`` to satisfy the contract documented in the
-        FAB port plan; delegates to the blocking helper via
+        upstream port plan; delegates to the blocking helper via
         :func:`asyncio.to_thread`.
         """
-        del ldap  # signature-compatibility with FAB
+        del ldap  # signature-compatibility with upstream
         return await asyncio.to_thread(self._search_ldap_sync, con, username, settings)
 
     async def _bind_ldap(
@@ -921,7 +920,7 @@ class AsyncSecurityManager:
         password: str,
     ) -> bool:
         """Async wrapper around :meth:`_bind_ldap_sync`."""
-        del ldap  # signature-compatibility with FAB
+        del ldap  # signature-compatibility with upstream
         return await asyncio.to_thread(self._bind_ldap_sync, con, username, password)
 
     async def _ldap_bind_indirect(
@@ -932,7 +931,7 @@ class AsyncSecurityManager:
         settings: Any,
     ) -> bool:
         """Async wrapper around :meth:`_ldap_bind_indirect_sync`."""
-        del ldap  # signature-compatibility with FAB
+        del ldap  # signature-compatibility with upstream
         return await asyncio.to_thread(self._ldap_bind_indirect_sync, con, settings)
 
     @staticmethod
@@ -943,7 +942,7 @@ class AsyncSecurityManager:
     ) -> str:
         """Extract the first value of an LDAP attribute as ``str``.
 
-        Mirrors :pymeth:`BaseSecurityManager.ldap_extract` from FAB.
+        Mirrors the upstream :pymeth:`BaseSecurityManager.ldap_extract`.
         """
         raw_value = ldap_dict.get(field_name) or [b""]
         first = raw_value[0]
@@ -963,7 +962,7 @@ class AsyncSecurityManager:
     ) -> list[str]:
         """Extract a multi-valued LDAP attribute as ``list[str]``.
 
-        Mirrors :pymeth:`BaseSecurityManager.ldap_extract_list` from FAB.
+        Mirrors the upstream :pymeth:`BaseSecurityManager.ldap_extract_list`.
         Empty strings are filtered out, exactly as in the original.
         """
         raw_list = attributes.get(name) or []
@@ -986,7 +985,7 @@ class AsyncSecurityManager:
         *,
         settings: Any,
     ) -> list[Any]:
-        """Map LDAP attributes to a list of FAB :class:`Role` objects.
+        """Map LDAP attributes to a list of :class:`Role` objects.
 
         Ports :pymeth:`BaseSecurityManager._ldap_calculate_user_roles` 1:1:
 
@@ -1042,7 +1041,7 @@ class AsyncSecurityManager:
     ) -> Any | None:
         """Insert a new ``ab_user`` row for an externally authenticated user.
 
-        Mirrors :pymeth:`SecurityManager.add_user` from FAB but skips the
+        Mirrors the upstream :pymeth:`SecurityManager.add_user` but skips the
         password hashing step — LDAP/OAuth users authenticate against the
         external IdP, not the local password column.  ``ab_user.password``
         is left ``NULL`` so the row cannot be used for DB-auth login.
@@ -1050,11 +1049,11 @@ class AsyncSecurityManager:
         user_model: Any = self.dao.user_model
         session = self.dao.session
 
-        # Mirror FAB AuditMixin defaults: created/changed timestamps are
-        # naive local time (``datetime.now()`` — see
-        # ``flask_appbuilder/security/sqla/models.py`` lines 177-181).
+        # Mirror upstream AuditMixin defaults: created/changed timestamps are
+        # naive local time (``datetime.now()`` — see the upstream
+        # ``security/sqla/models.py`` lines 177-181).
         # ``created_by_fk``/``changed_by_fk`` default to
-        # ``cls.get_user_id`` which returns ``g.user.id`` if available,
+        # ``cls.get_user_id`` which returns the current user's id if available,
         # else ``None`` — for self-registration there is no admin user
         # so both are ``None`` (the columns are nullable).
         now = dt.datetime.now()
@@ -1071,7 +1070,7 @@ class AsyncSecurityManager:
             changed_on=now,
         )
         # Set audit FKs explicitly — these columns are inherited from
-        # FAB's ``AuditMixin`` and are nullable.  The Liteset User model
+        # the upstream ``AuditMixin`` and are nullable.  The Liteset User model
         # may not declare them as ORM-mapped columns, so we assign via
         # ``setattr`` so SQLAlchemy persists them only when the column
         # exists on the mapped table.
@@ -1108,7 +1107,7 @@ class AsyncSecurityManager:
                 user.fail_login_count = 0
             if success:
                 user.login_count = (user.login_count or 0) + 1
-                # FAB uses naive local time; mirror exactly.
+                # Upstream uses naive local time; mirror exactly.
                 user.last_login = dt.datetime.now()
                 user.fail_login_count = 0
             else:
@@ -1148,7 +1147,7 @@ class AsyncSecurityManager:
         if isinstance(user_perms, (set, frozenset)):
             return (permission_name, view_name) in user_perms
         # Slow path: DAO query for ORM users. Resolve permissions across both
-        # the user's direct roles AND group-inherited roles — 1:1 with FAB's
+        # the user's direct roles AND group-inherited roles — 1:1 with upstream's
         # ``_has_view_access`` which walks ``ab_user_role`` + ``ab_user_group``
         # → ``ab_group_role``. Without the group roles a user whose access is
         # granted solely via a group would get a spurious 403.
@@ -1780,7 +1779,7 @@ class AsyncSecurityManager:
         """Check if user can access a specific table.
 
         Mirrors ``SupersetSecurityManager.can_access_table`` from the
-        original FAB-based security manager.
+        original security manager.
 
         :param database: The Database model instance
         :param table: A ``Table`` instance with ``.table``, ``.schema``,
@@ -1807,7 +1806,7 @@ class AsyncSecurityManager:
 
         Looks up SqlaTable rows matching the given table name and checks
         if the user has ``datasource_access`` or is owner of any matching
-        datasource.  Mirrors the original FAB table-level access check
+        datasource.  Mirrors the original table-level access check
         where individual datasource permissions are checked after
         database/catalog/schema checks fail.
         """
@@ -1924,7 +1923,7 @@ class AsyncSecurityManager:
     def is_owner(self, resource: Any, user: Any) -> bool:
         """Check if user is an owner of the resource (owners M2M only).
 
-        Mirrors ``raise_for_ownership`` in the original Flask-AppBuilder
+        Mirrors ``raise_for_ownership`` in the original upstream
         SecurityManager: admins are deemed owners of every resource and
         skip the ``owners`` check entirely.
 
@@ -2204,7 +2203,7 @@ class AsyncSecurityManager:
           the metadata DB; otherwise ``None`` to signal "no roles, no
           filtering — return [] from ``get_rls_filters``".
         """
-        # ``g.user is None`` → skip RLS entirely (upstream returns [] before
+        # ``user is None`` → skip RLS entirely (upstream returns [] before
         # touching roles). Distinct from an *anonymous* user, which proceeds
         # with an (often empty) role list so BASE filters still apply.
         if user is None:
@@ -2216,7 +2215,7 @@ class AsyncSecurityManager:
         if not is_anonymous:
             # Include group-inherited roles (dao.get_user_roles expands
             # ab_user_group -> ab_group_role) — 1:1 with upstream
-            # ``get_rls_filters`` which uses FAB ``get_user_roles`` (direct +
+            # ``get_rls_filters`` which uses upstream ``get_user_roles`` (direct +
             # group roles).  Without the group roles, a REGULAR RLS filter
             # scoped to a group-assigned role never matches and the row
             # restriction is silently skipped (data exposure).
@@ -2448,17 +2447,17 @@ class AsyncSecurityManager:
 
     # --- Permission / view-menu / permission-view CRUD helpers ---
     #
-    # Direct async ports of the corresponding methods on
-    # ``flask_appbuilder.security.sqla.manager.SecurityManager``. They are
+    # Direct async ports of the corresponding methods on the upstream
+    # ``security.sqla.manager.SecurityManager``. They are
     # used by ``SyncPermissionsCommand`` (and any future code path that needs
-    # to materialise FAB permission rows) to look up or create the
+    # to materialise permission rows) to look up or create the
     # ``ab_permission`` / ``ab_view_menu`` / ``ab_permission_view`` rows that
-    # the original Flask SecurityManager would have created via SQLAlchemy
+    # the original SecurityManager would have created via SQLAlchemy
     # session.query(...) — the AsyncSession layer cannot run those sync
     # queries safely so we re-implement them here.
 
     async def find_permission(self, name: str) -> Any | None:
-        """Find a row in ``ab_permission`` by name. Mirrors FAB ``find_permission``."""
+        """Find a row in ``ab_permission`` by name. Mirrors ``find_permission``."""
         from sqlalchemy import select
 
         from superset.models.security import Permission
@@ -2468,7 +2467,7 @@ class AsyncSecurityManager:
         return result.scalars().one_or_none()
 
     async def find_view_menu(self, name: str) -> Any | None:
-        """Find a row in ``ab_view_menu`` by name. Mirrors FAB ``find_view_menu``."""
+        """Find a row in ``ab_view_menu`` by name. Mirrors ``find_view_menu``."""
         from sqlalchemy import select
 
         from superset.models.security import ViewMenu
@@ -2482,7 +2481,7 @@ class AsyncSecurityManager:
     ) -> Any | None:
         """Find a row in ``ab_permission_view`` for the given (perm, view_menu) pair.
 
-        Direct port of FAB ``find_permission_view_menu``.
+        Direct port of the upstream ``find_permission_view_menu``.
         """
         from sqlalchemy import select
 
@@ -2502,7 +2501,7 @@ class AsyncSecurityManager:
     async def add_permission(self, name: str) -> Any | None:
         """Insert a row into ``ab_permission`` if missing.
 
-        Direct port of FAB ``add_permission``. Returns the (possibly new)
+        Direct port of the upstream ``add_permission``. Returns the (possibly new)
         :class:`Permission` instance, or ``None`` if creation fails.
         """
         from superset.models.security import Permission
@@ -2522,7 +2521,7 @@ class AsyncSecurityManager:
     async def add_view_menu(self, name: str) -> Any | None:
         """Insert a row into ``ab_view_menu`` if missing.
 
-        Direct port of FAB ``add_view_menu``.
+        Direct port of the upstream ``add_view_menu``.
         """
         from superset.models.security import ViewMenu
 
@@ -2543,7 +2542,7 @@ class AsyncSecurityManager:
     ) -> Any | None:
         """Insert a row into ``ab_permission_view`` if missing.
 
-        Direct port of FAB ``add_permission_view_menu``: idempotently
+        Direct port of the upstream ``add_permission_view_menu``: idempotently
         creates the permission, view-menu and the join row.
         """
         from superset.models.security import PermissionView
@@ -3174,7 +3173,7 @@ class SyncSecurityManagerProxy:
 
         return get_user_id()
 
-    # 1:1 alias with original FAB ``SupersetSecurityManager.current_user_id``.
+    # 1:1 alias with original ``SupersetSecurityManager.current_user_id``.
     @property
     def current_user_id(self) -> int | None:
         return self.get_user_id()

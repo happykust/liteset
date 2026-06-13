@@ -23,7 +23,7 @@ The original update command performs tab_id-based key rotation:
 when ``tab_id`` changes (or is falsy), a new key is generated and the
 contextual mapping is updated. This liteset port replicates that logic
 using uuid5 deterministic keys (same approach as CreateFilterStateCommand)
-instead of Flask's ``session._id`` + ``cache_manager`` contextual keys.
+instead of the upstream ``session._id`` + ``cache_manager`` contextual keys.
 """
 
 from __future__ import annotations

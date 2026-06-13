@@ -20,7 +20,7 @@
 
 Liteset's primary logging entry point is
 :func:`superset.logging.configure_logging` (structlog-based, called
-from :mod:`superset.app`).  The original Flask code paths exposed
+from :mod:`superset.app`).  The original code paths exposed
 :class:`LoggingConfigurator` so operators could ship their own logging
 setup via ``LOGGING_CONFIGURATOR`` in ``superset_config.py``;
 :class:`DefaultLoggingConfigurator` was the stock implementation.
@@ -31,8 +31,8 @@ operator-provided subclass implements :meth:`configure_logging`, and
 invoked from the boot path (or from third-party CLIs that still call
 the legacy hook).
 
-The Flask-specific bits — importing ``flask.config.Config`` for the
-type hint and silencing ``flask_appbuilder`` — have been removed.
+The legacy-stack-specific bits — importing the upstream config type
+for the type hint and silencing the upstream logger — have been removed.
 The implementation now accepts a plain ``Mapping[str, Any]`` (most
 commonly :class:`SupersetSettings` itself, which supports
 ``__getitem__`` via Pydantic's ``model_dump``-backed mapping access,
@@ -53,7 +53,7 @@ def _read(config: Any, key: str, default: Any = None) -> Any:
     """Read a config key from either a Pydantic settings instance or a
     plain mapping.
 
-    The original Flask implementation indexed ``app_config["FOO"]``
+    The original implementation indexed ``app_config["FOO"]``
     directly; in Liteset operators may pass either a
     :class:`SupersetSettings` instance (snake_case attributes) or a
     plain dict (UPPER_CASE keys).  We try both surfaces transparently
@@ -103,7 +103,7 @@ class DefaultLoggingConfigurator(  # pylint: disable=too-few-public-methods
     plus an optional :class:`TimedRotatingFileHandler`.
 
     Mirrors the original implementation byte-for-byte except for the
-    Flask-AppBuilder logger silencing (no longer applicable).
+    upstream logger silencing (no longer applicable).
     """
 
     def configure_logging(self, app_config: Any, debug_mode: bool) -> None:

@@ -26,7 +26,8 @@ against pre-V1 Superset releases keeps working.
 Each command is a 1:1 port of its upstream counterpart with the
 following adaptations:
 
-* ``flask.g.user`` is replaced by an explicit ``override_user`` context
+* the request-scoped current user is replaced by an explicit
+  ``override_user`` context
   obtained from :func:`superset.utils.core.override_user` (already
   ported to the AsyncSession surface).
 * ``security_manager.find_user`` is invoked through the async

@@ -14,13 +14,13 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""ASGI equivalent of Werkzeug's ProxyFix middleware.
+"""ASGI equivalent of the upstream ProxyFix middleware.
 
 Reads X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host,
 X-Forwarded-Port, and X-Forwarded-Prefix headers and updates
 the ASGI scope accordingly.  Respects configurable proxy chain
 depth (``x_for``, ``x_proto``, ``x_host``, ``x_port``,
-``x_prefix``) matching Werkzeug ProxyFix semantics.
+``x_prefix``) matching the upstream ProxyFix semantics.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def _get_trusted_value(
 ) -> str | None:
     """Extract a trusted value from a comma-separated forwarded header.
 
-    Werkzeug ProxyFix semantics (``_get_real_value``): the header
+    Upstream ProxyFix semantics (``_get_real_value``): the header
     contains a list of values appended by each proxy.  ``num_proxies``
     controls how many proxy hops to trust, counting from the **right**
     of the list — with ``num_proxies`` of 1 the rightmost value (set by
@@ -47,7 +47,7 @@ def _get_trusted_value(
 
     Crucially, when the header carries **fewer** values than
     ``num_proxies`` the chain is shorter than the configured trust
-    boundary, so werkzeug returns ``None`` (the value cannot be
+    boundary, so the upstream returns ``None`` (the value cannot be
     trusted).  Returning the leftmost entry instead — as an earlier
     version did — would trust a client-controllable, spoofable value
     under a multi-proxy config (``num_proxies >= 2``).
@@ -61,7 +61,7 @@ def _get_trusted_value(
     decoded = raw.decode("latin-1")
     parts = [p.strip() for p in decoded.split(",")]
 
-    # Mirror werkzeug exactly: trust the value only when the chain is at
+    # Mirror the upstream exactly: trust the value only when the chain is at
     # least ``num_proxies`` long, then take the ``num_proxies``-th from
     # the right.  A shorter chain is untrusted -> None.
     if len(parts) < num_proxies:
@@ -72,7 +72,7 @@ def _get_trusted_value(
 
 
 class ProxyFixMiddleware(ASGIMiddleware):
-    """ASGI equivalent of Werkzeug's ProxyFix.
+    """ASGI equivalent of the upstream ProxyFix.
 
     Reads ``X-Forwarded-For``, ``X-Forwarded-Proto``,
     ``X-Forwarded-Host``, ``X-Forwarded-Port``, and
@@ -133,7 +133,7 @@ class ProxyFixMiddleware(ASGIMiddleware):
         headers: dict[bytes, bytes] = {}
         for name, value in scope.get("headers", []):
             # Use the first occurrence of each header (consistent
-            # with Werkzeug behaviour).
+            # with the upstream behaviour).
             headers.setdefault(name, value)
 
         # --- X-Forwarded-For -> scope["client"] ---
@@ -207,8 +207,8 @@ class ProxyFixMiddleware(ASGIMiddleware):
             self.x_prefix,
         )
         if forwarded_prefix is not None:
-            # REPLACE root_path with the forwarded prefix — 1:1 with Werkzeug
-            # ProxyFix (``environ["SCRIPT_NAME"] = x_forwarded_prefix``).
+            # REPLACE root_path with the forwarded prefix — 1:1 with the
+            # upstream ProxyFix (``environ["SCRIPT_NAME"] = x_forwarded_prefix``).
             # Prepending instead would double-count the prefix in a sub-path
             # deployment where the server already set ``root_path``.
             prefix = forwarded_prefix.rstrip("/")

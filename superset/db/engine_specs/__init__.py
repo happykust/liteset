@@ -149,7 +149,7 @@ def get_async_engine_spec(engine: str) -> type[BaseAsyncEngineSpec]:
     """Return an async engine spec for the given engine name.
 
     Tries native async specs first; falls back to wrapping the sync
-    Flask BaseEngineSpec via SyncFallbackEngineSpec when superset is
+    BaseEngineSpec via SyncFallbackEngineSpec when superset is
     installed.
     """
     if engine in _NATIVE_SPECS:

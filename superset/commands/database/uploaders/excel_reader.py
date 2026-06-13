@@ -18,7 +18,7 @@
 
 Mirrors the original Excel reader 1:1.  ``file`` is normalised via
 :func:`_to_stream` so the reader works with Litestar ``UploadFile``,
-Werkzeug ``FileStorage`` (legacy callers), or a raw ``IO[bytes]`` /
+a legacy file-storage object, or a raw ``IO[bytes]`` /
 ``bytes`` payload.
 """
 

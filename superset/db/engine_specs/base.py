@@ -59,7 +59,7 @@ class BaseAsyncEngineSpec(ABC):
     """Abstract base class for async database engine specifications.
 
     Provides a simplified async interface for executing SQL queries
-    against various database backends. Not a 1:1 copy of the Flask
+    against various database backends. Not a 1:1 copy of the upstream
     BaseEngineSpec — only what's needed for async SQL execution.
     """
 

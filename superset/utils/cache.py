@@ -16,7 +16,7 @@
 # under the License.
 """Async cache utilities — port of ``superset_old/utils/cache.py``.
 
-Replaces the Flask-Caching primitives with async, cache-agnostic helpers:
+Replaces the upstream caching primitives with async, cache-agnostic helpers:
 
 * :func:`generate_cache_key` — deterministic ``md5`` hashing (unchanged).
 * :func:`set_and_log_cache` — write to cache + optional ``CacheKey`` row
@@ -33,12 +33,12 @@ Replaces the Flask-Caching primitives with async, cache-agnostic helpers:
   independent Redis clients (both pointed at the same cluster — see
   :class:`CacheManager`) cleanly removes that whole class of bug.
 * :func:`etag_cache` — *removed*.  Litestar provides native ``Cache``
-  config and ``ETag`` middleware; the original Flask response-cache
+  config and ``ETag`` middleware; the original response-cache
   decorator is no longer used anywhere in the Liteset code base
   (verified by grep).  The placeholder remains commented in
   documentation.
 
-`flask`, `flask_caching`, `werkzeug` are no longer imported.
+The legacy WSGI caching stack is no longer imported.
 """
 
 from __future__ import annotations
@@ -131,7 +131,7 @@ async def set_and_log_cache(
 
     Differences from the original:
 
-    * ``cache`` is an :class:`AsyncCacheProtocol` rather than a Flask
+    * ``cache`` is an :class:`AsyncCacheProtocol` rather than the upstream
       ``Cache``; the no-op detection now checks the imported
       :class:`NullAsyncCacheManager` class instead of ``NullCache``.
     * Persistence of ``CacheKey`` rows is performed via the supplied
@@ -175,7 +175,7 @@ async def set_and_log_cache(
                 session.add(ck)
             else:
                 # No session passed in -- fall back to a short-lived
-                # *sync* metadata session.  Mirrors the original Flask
+                # *sync* metadata session.  Mirrors the original
                 # behaviour where ``db.session`` was a process-wide
                 # implicit handle: missing one would silently drop the
                 # audit trail, which is exactly what we want to avoid.
@@ -215,7 +215,7 @@ def memoized_func(  # noqa: C901  # complex business logic
 ) -> Callable[..., Any]:
     """Async-only memoization decorator with configurable key and backend.
 
-    Same calling convention as the original Flask-Caching helper::
+    Same calling convention as the upstream caching helper::
 
         @memoized_func(key="{a}+{b}", cache=cache_manager.data_cache)
         async def my_sum(a: int, b: int) -> int:
@@ -245,7 +245,7 @@ def memoized_func(  # noqa: C901  # complex business logic
     of the named sibling slots: ``sync_data_cache`` /
     ``sync_thumbnail_cache`` / etc.) directly.  Both the sync and
     async slots point at the same Redis cluster, so the keyspace
-    stays unified — exactly the behaviour the original Flask Superset
+    stays unified — exactly the behaviour the original Superset
     relied on, just with the loop topology made explicit.
     """
 

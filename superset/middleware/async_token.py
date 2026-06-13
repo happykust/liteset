@@ -23,10 +23,10 @@
 Whenever an authenticated user makes a request, this middleware:
 
 * Mints a per-browser ``channel_id`` when needed.  In the original
-  Flask code the channel id was stashed on the Flask session (a
+  code the channel id was stashed on the legacy session (a
   per-browser signed cookie); here the ``async-token`` cookie itself
   (already ``HttpOnly``) persists the channel across requests for that
-  browser — exactly as the Flask session did.  A fresh ``uuid4`` is
+  browser — exactly as the legacy session did.  A fresh ``uuid4`` is
   minted on first contact and reused via the cookie on subsequent
   requests; no Redis look-up is performed during minting.
 * Encodes ``{channel, sub}`` as an HS256 JWT (the same shape the
@@ -101,7 +101,7 @@ def _decode_existing_cookie(
         return None
     try:
         # verify_sub=False: the anonymous cookie carries ``sub=None`` (1:1 with
-        # the original Flask handler); pyjwt >= 2.10 otherwise rejects a null
+        # the original handler); pyjwt >= 2.10 otherwise rejects a null
         # sub, which would force a needless re-mint on every anonymous response.
         return pyjwt.decode(
             morsel.value,
@@ -123,7 +123,7 @@ def _build_set_cookie(
 ) -> bytes:
     """Compose a ``Set-Cookie`` header value for the async-token JWT.
 
-    Mirrors the original Flask ``response.set_cookie`` invocation:
+    Mirrors the original ``response.set_cookie`` invocation:
     ``HttpOnly`` is always set; ``Secure``, ``SameSite`` and ``Domain``
     are conditional on the matching settings.
     """
@@ -144,7 +144,7 @@ class AsyncTokenMiddleware(ASGIMiddleware):
     HTTP response.
 
     Mirrors ``AsyncQueryManager.register_request_handlers`` from the
-    original Flask Superset.
+    original Superset.
     """
 
     async def handle(
@@ -276,7 +276,7 @@ class AsyncTokenMiddleware(ASGIMiddleware):
         if not AsyncTokenMiddleware._needs_token_refresh(existing, user_id):
             return None
 
-        # Mint a fresh per-browser channel id (1:1 with the original Flask
+        # Mint a fresh per-browser channel id (1:1 with the original
         # handler which stored a new uuid4 in the session on first contact).
         # The async-token cookie itself (HttpOnly) persists the channel across
         # requests for this browser — no Redis look-up needed here.

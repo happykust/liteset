@@ -116,7 +116,7 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "AUTH_USER_REGISTRATION_ROLE": "auth_user_registration_role",
     "AUTH_ROLES_MAPPING": "auth_roles_mapping",
     "AUTH_ROLES_SYNC_AT_LOGIN": "auth_roles_sync_at_login",
-    # LDAP knobs (mirrors Flask-AppBuilder)
+    # LDAP knobs (mirrors the upstream auth builder)
     "AUTH_LDAP_SERVER": "auth_ldap_server",
     "AUTH_LDAP_SEARCH": "auth_ldap_search",
     "AUTH_LDAP_SEARCH_FILTER": "auth_ldap_search_filter",
@@ -273,7 +273,7 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "RATELIMIT_APPLICATION": "ratelimit_application",
     "AUTH_RATE_LIMITED": "auth_rate_limited",
     "AUTH_RATE_LIMIT": "auth_rate_limit",
-    # ── FAB ──
+    # ── Auth builder ──
     "FAB_API_SWAGGER_UI": "fab_api_swagger_ui",
     # ── Babel ──
     "BABEL_DEFAULT_LOCALE": "babel_default_locale",
@@ -382,11 +382,11 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "CUSTOM_TEMPLATE_PROCESSORS": "custom_template_processors",
     # ── Roles / Permissions ──
     "ROBOT_PERMISSION_ROLES": "robot_permission_roles",
-    # ── Flask app mutator ──
+    # ── App mutator ──
     "FLASK_APP_MUTATOR": "flask_app_mutator",
     # ── Misc SMTP/infra ──
     "ENABLE_CHUNK_ENCODING": "enable_chunk_encoding",
-    # ── FAB security ──
+    # ── Auth-builder security ──
     "SILENCE_FAB": "silence_fab",
     "FAB_ADD_SECURITY_VIEWS": "fab_add_security_views",
     "FAB_ADD_SECURITY_API": "fab_add_security_api",
@@ -802,7 +802,7 @@ class SupersetSettings(BaseSettings):
     host: str = "0.0.0.0"  # noqa: S104
     port: int = 8088
     debug: bool = False
-    # Flask ``TESTING`` flag equivalent — gates dev-only helpers such as
+    # The ``TESTING`` flag equivalent — gates dev-only helpers such as
     # ``superset load-test-users`` (1:1 with upstream which wraps the body in
     # ``if current_app.config["TESTING"]:``).
     testing: bool = False
@@ -906,7 +906,7 @@ class SupersetSettings(BaseSettings):
 
     # ── Authentication ──
     auth_type: int = 1  # 1=AUTH_DB, 2=AUTH_LDAP, 3=AUTH_REMOTE_USER, 4=AUTH_OAUTH
-    # Case-insensitive username lookup (FAB default True). When True a user
+    # Case-insensitive username lookup (upstream default True). When True a user
     # cannot self-register a case-variant duplicate via OAuth/LDAP.
     auth_username_ci: bool = True
     auth_user_registration: bool = False
@@ -922,8 +922,8 @@ class SupersetSettings(BaseSettings):
     auth_roles_sync_at_login: bool = False
 
     # ── LDAP authentication ──
-    # Mirrors Flask-AppBuilder's LDAP configuration knobs 1:1.  Defaults
-    # match FAB's ``setdefault`` calls in ``BaseSecurityManager.__init__``.
+    # Mirrors the upstream LDAP configuration knobs 1:1.  Defaults
+    # match the upstream ``setdefault`` calls in ``BaseSecurityManager.__init__``.
     auth_ldap_server: str = ""
     auth_ldap_search: str = ""
     auth_ldap_search_filter: str = ""
@@ -1189,7 +1189,7 @@ class SupersetSettings(BaseSettings):
     auth_rate_limited: bool = True
     auth_rate_limit: str = "5 per second"
 
-    # ── FAB ──
+    # ── Auth builder ──
     fab_api_swagger_ui: bool = True
 
     # ── Babel ──
@@ -1303,11 +1303,11 @@ class SupersetSettings(BaseSettings):
     celery_beat_scheduler_expires: int = 604800  # 1 week in seconds
     celery_config: Any | None = CeleryConfig  # CeleryConfig class or None
     # When True, commit the scoped sync session in task_postrun (mirrors
-    # original SQLALCHEMY_COMMIT_ON_TEARDOWN Flask config key).
+    # original SQLALCHEMY_COMMIT_ON_TEARDOWN config key).
     sqlalchemy_commit_on_teardown: bool = False
     # When True, skip session.remove() in task_postrun so the session stays
     # alive after task completion (useful for Celery eager-mode test patterns).
-    # Mirrors original CELERY_ALWAYS_EAGER Flask config key.
+    # Mirrors original CELERY_ALWAYS_EAGER config key.
     celery_always_eager: bool = False
 
     # ── HTTP headers ──
@@ -1344,13 +1344,13 @@ class SupersetSettings(BaseSettings):
         "sql_lab",
     ]
 
-    # ── Flask app mutator ──
+    # ── App mutator ──
     flask_app_mutator: Any | None = None  # Callable or None
 
     # ── Misc SMTP/infra ──
     enable_chunk_encoding: bool = False
 
-    # ── FAB security ──
+    # ── Auth-builder security ──
     silence_fab: bool = True
     fab_add_security_views: bool = True
     fab_add_security_api: bool = True
@@ -1358,9 +1358,9 @@ class SupersetSettings(BaseSettings):
     fab_add_security_view_menu_view: bool = False
     fab_add_security_permission_views_view: bool = False
     # When True the password field on PUT /api/v1/me/ is validated against the
-    # FAB default complexity rules (≥2 uppercase, ≥1 special char, ≥2 digits,
-    # ≥3 lowercase, ≥10 chars total) or a custom callable stored in
-    # ``fab_password_complexity_validator``.  Mirrors FAB's own
+    # upstream default complexity rules (≥2 uppercase, ≥1 special char,
+    # ≥2 digits, ≥3 lowercase, ≥10 chars total) or a custom callable stored in
+    # ``fab_password_complexity_validator``.  Mirrors the upstream
     # ``FAB_PASSWORD_COMPLEXITY_ENABLED`` / ``FAB_PASSWORD_COMPLEXITY_VALIDATOR``
     # config keys 1:1.
     fab_password_complexity_enabled: bool = False

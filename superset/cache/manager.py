@@ -29,12 +29,12 @@ Provides:
   write the *same* Redis keyspace as the async runtime without paying
   the cost of a sync→async bridge or risking a cross-loop Redis client
   reuse.  The original Apache Superset achieved the same effect with a
-  single Flask-Caching ``Cache`` instance shared by the request thread
+  single ``Cache`` instance shared by the request thread
   and Celery workers; we mirror that here by giving every async slot a
   matching sync sibling slot, both pointing at the *same* Redis
   cluster.
 * :class:`CacheManager` – the multi-cache holder that mirrors the
-  original ``superset_old.utils.cache_manager.CacheManager`` Flask
+  original ``superset_old.utils.cache_manager.CacheManager``
   extension.  Exposes ``cache``, ``data_cache``, ``thumbnail_cache``,
   ``filter_state_cache`` and ``explore_form_data_cache`` properties so
   legacy code paths (``utils.cache.memoized_func``, ``viz.py``,
@@ -92,7 +92,7 @@ class AsyncCacheProtocol(Protocol):
 class NullAsyncCacheManager:
     """No-op cache used when Redis is not configured.
 
-    Mirrors ``flask_caching.backends.NullCache`` semantics: every read
+    Mirrors the upstream ``NullCache`` semantics: every read
     returns ``None``, writes are silently dropped.
     """
 
@@ -131,18 +131,18 @@ class NullAsyncCacheManager:
 
 
 class SimpleAsyncCacheManager:
-    """In-process dict-based cache with TTL — async port of
-    ``flask_caching.backends.SimpleCache``.
+    """In-process dict-based cache with TTL — async port of the upstream
+    ``SimpleCache``.
 
     Mirrors the original behaviour:
 
     * threshold-bounded dict — once it overflows, the oldest entry is
-      evicted (FIFO via ``dict`` insertion order, same as Werkzeug's
+      evicted (FIFO via ``dict`` insertion order, same as the upstream
       ``SimpleCache``).
     * per-key TTL stored alongside the value; expired reads return
       ``None`` and lazily evict.
     * shared dict between async and sync siblings is **not** required —
-      Flask-Caching also gave each cache slot its own backing store; we
+      the upstream cache also gave each cache slot its own backing store; we
       preserve that semantic.
     """
 
@@ -159,7 +159,7 @@ class SimpleAsyncCacheManager:
 
     def _prune(self) -> None:
         # Drop expired entries first; if still over threshold, evict
-        # in insertion order (oldest first) — mirrors Werkzeug.
+        # in insertion order (oldest first) — mirrors the upstream cache.
         if not self._store:
             return
         for key in list(self._store.keys()):
@@ -183,7 +183,7 @@ class SimpleAsyncCacheManager:
             ttl_val = ttl if ttl is not None else self._default_ttl
             expiry = time.time() + ttl_val if ttl_val else None
             # Re-insert so insertion order reflects most-recent write
-            # (matches Werkzeug's overwrite behaviour).
+            # (matches the upstream cache's overwrite behaviour).
             self._store.pop(key, None)
             self._store[key] = (expiry, value)
             self._prune()
@@ -241,7 +241,7 @@ class SimpleAsyncCacheManager:
 # distinct sync clients keeps the loop topology clean while still
 # pointing both clients at the same Redis cluster (operator-configured
 # via ``CACHE_REDIS_URL`` / ``CACHE_REDIS_HOST`` etc.) so the keyspace
-# stays unified — exactly the behaviour the original Flask Superset
+# stays unified — exactly the behaviour the original Superset
 # code relied on.
 
 
@@ -266,7 +266,7 @@ class NullSyncCacheManager:
 
     Used when Redis is not configured for a given slot.  Reads always
     miss, writes are silently dropped — matches the behaviour of
-    ``flask_caching.backends.NullCache`` that the original Apache
+    the upstream ``NullCache`` that the original Apache
     Superset fell back to in the same conditions.
     """
 
@@ -296,7 +296,7 @@ class SimpleSyncCacheManager:
 
     Backed by a thread-safe dict so Celery worker threads can hit it
     without the asyncio Lock overhead.  Same threshold + TTL semantics
-    as ``flask_caching.backends.SimpleCache``.
+    as the upstream ``SimpleCache``.
     """
 
     def __init__(self, default_ttl: int = 300, threshold: int = 500) -> None:
@@ -361,7 +361,7 @@ class SyncRedisCacheAdapter:
     JSON-encodes values on write and decodes on read so the on-the-wire
     format is identical to what an async caller would see when reading
     the same key — both sides round-trip through ``json.dumps`` /
-    ``json.loads`` exactly like Flask-Caching's ``RedisCache`` did
+    ``json.loads`` exactly like the upstream ``RedisCache`` did
     historically.  ``bytes`` payloads are returned verbatim (legacy
     binary blobs from older deployments).
 
@@ -618,7 +618,7 @@ def _build_sync_redis_from_config(
 
 
 def _coerce_threshold(raw: Any) -> int:
-    """Coerce a Flask-Caching ``CACHE_THRESHOLD`` value to a finite int.
+    """Coerce an upstream ``CACHE_THRESHOLD`` value to a finite int.
 
     ``math.inf`` / ``None`` / non-positive values all map to the
     practical maximum so the FIFO eviction loop effectively never fires.
@@ -670,7 +670,7 @@ def _build_sync_cache_for_slot(
     key_prefix: str = "",
     config_key: str = "",
 ) -> SyncCacheProtocol:
-    """Wire a single sync cache slot from a Flask-Caching-style config.
+    """Wire a single sync cache slot from an upstream-style config.
 
     Mirrors :func:`_build_cache_for_slot` decisions exactly, just on the
     sync side.  Returns a :class:`NullSyncCacheManager` whenever Redis
@@ -866,7 +866,7 @@ class MetastoreAsyncCacheManager:
 
     Each method opens a dedicated AsyncSession via ``session_factory``
     and commits once the DAO call returns; this matches the original
-    Flask version's ``db.session.commit()`` after every set/delete.
+    version's ``db.session.commit()`` after every set/delete.
     Storing a long-lived session on the manager would cross event-loop
     boundaries on shared Litestar workers and lead to overlapping
     transactions.
@@ -977,7 +977,7 @@ class JsonValueCacheAdapter:
     entries.  The metastore backend encodes them via its codec, but the raw
     Redis backend stores bytes verbatim — this adapter JSON-encodes on write
     and decodes on read so the temporary-cache commands can work with dicts
-    on any backend.  (Upstream Flask-Caching ``RedisCache`` pickled values;
+    on any backend.  (The upstream ``RedisCache`` pickled values;
     JSON is the safe equivalent for these untrusted payloads.)
     """
 
@@ -1043,12 +1043,12 @@ class ExploreFormDataCache:
 
 
 # ---------------------------------------------------------------------------
-# CacheManager (multi-cache Flask-extension-style holder)
+# CacheManager (multi-cache extension-style holder)
 # ---------------------------------------------------------------------------
 
 # Recognised ``CACHE_TYPE`` values that map to ``NullCache`` semantics
 # (writes no-op, reads always miss).  Mirrors the operator-friendly
-# aliases accepted by Flask-Caching.
+# aliases accepted by the upstream cache.
 _NULL_CACHE_TYPES = frozenset({None, "NullCache", "null", "NoneType", "none"})
 
 # Recognised ``CACHE_TYPE`` values that map to a Redis backend.
@@ -1063,7 +1063,7 @@ _REDIS_CACHE_TYPES = frozenset(
 )
 
 # Recognised ``CACHE_TYPE`` values that map to an in-process dict-based
-# cache (Flask-Caching's ``SimpleCache``).
+# cache (the upstream ``SimpleCache``).
 _SIMPLE_CACHE_TYPES = frozenset(
     {
         "SimpleCache",
@@ -1093,7 +1093,7 @@ def _build_async_redis_from_config(
 ) -> Any | None:
     """Build (or reuse) an ``redis.asyncio.Redis`` client per cache slot.
 
-    Decision tree mirrors Flask-Caching:
+    Decision tree mirrors the upstream cache:
 
     * ``CACHE_REDIS_URL`` → connect via ``redis.asyncio.Redis.from_url``.
     * ``CACHE_REDIS_HOST``/``CACHE_REDIS_PORT``/``CACHE_REDIS_DB``/
@@ -1188,7 +1188,7 @@ def _build_metastore_cache_from_config(
         namespace = uuid3(UUID("ee0e7df5-4ce8-4d0a-9b69-3018ea8c2e0c"), seed)
 
     # Honour a user-supplied ``CODEC`` if it exposes encode()/decode().
-    # Default to JSON — original Apache Superset configures
+    # Default to JSON — the original Apache Superset configures
     # ``JsonKeyValueCodec`` for both filter_state and explore_form_data,
     # which is the safe choice for untrusted payloads.
     codec = cfg.get("CODEC")
@@ -1247,9 +1247,9 @@ def _build_cache_for_slot(
     json_values: bool = False,
     config_key: str = "",
 ) -> AsyncCacheProtocol:
-    """Wire a single cache slot from a Flask-Caching-style config dict.
+    """Wire a single cache slot from an upstream-style config dict.
 
-    Honours the original Flask-Caching ``CACHE_TYPE`` semantics:
+    Honours the original ``CACHE_TYPE`` semantics:
 
     * ``NullCache`` (or unset / ``None``) → :class:`NullAsyncCacheManager`.
     * ``RedisCache`` → :class:`AsyncCacheManager` wrapping either an
@@ -1285,7 +1285,7 @@ def _build_cache_for_slot(
         )
 
     if cache_type in _SIMPLE_CACHE_TYPES:
-        # ``math.inf`` is legitimate in Flask-Caching's SimpleCache and is
+        # ``math.inf`` is legitimate in the upstream SimpleCache and is
         # used by the Liteset test config — coerce to a large finite int
         # so the FIFO eviction loop never triggers in practice.
         inner = SimpleAsyncCacheManager(
@@ -1350,7 +1350,7 @@ async def _close_async_redis(client: Any | None) -> None:
 
 
 class CacheManager:
-    """Multi-cache holder mirroring the original Flask CacheManager.
+    """Multi-cache holder mirroring the original CacheManager.
 
     Holds five named caches: ``cache`` (default), ``data_cache``,
     ``thumbnail_cache``, ``filter_state_cache`` and
@@ -1410,11 +1410,11 @@ class CacheManager:
         ``redis`` is the *default* async Redis client (the same handle
         that :func:`superset.app.on_startup` builds from
         ``settings.redis_url``).  Each ``*_cache_config`` argument is
-        the corresponding Flask-Caching-style settings dict
+        the corresponding upstream-style settings dict
         (``CACHE_TYPE``, ``CACHE_REDIS_URL``, ``CACHE_DEFAULT_TIMEOUT``
         …).  Per-slot ``CACHE_REDIS_URL`` overrides the default Redis
         client so an operator can point thumbnails at a separate Redis
-        cluster from chart-data, exactly like the original Flask
+        cluster from chart-data, exactly like the original
         Superset.
 
         ``sync_redis`` (optional) is the *default* sync Redis client
@@ -1566,7 +1566,7 @@ class CacheManager:
     async def has(self, key: str) -> bool:
         return await self._cache.has(key)
 
-    # ---- properties (parity with original Flask CacheManager) -----------
+    # ---- properties (parity with original CacheManager) -----------
     @property
     def cache(self) -> AsyncCacheProtocol:
         return self._cache

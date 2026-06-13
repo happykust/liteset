@@ -156,12 +156,12 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
     The only mechanical adjustments are:
 
     - Sessions: ``superset.db.session.get_sync_session()`` instead of
-      Flask's ``db.session``.
+      the legacy ``db.session``.
     - Results backend / msgpack flag: read from
       :class:`SupersetSettings` rather than module-level globals.
     - User context: looked up via the sync session by ``username``
       (the parameter is passed by ``ExecuteSQLCommand``).
-    - The ``override_user`` Flask-thread-local helper is replaced by
+    - The ``override_user`` thread-local helper is replaced by
       :func:`superset.utils.core.set_current_user`.
     """
     from superset.extensions import stats_logger_manager
@@ -933,9 +933,9 @@ def _execute_query(
     try:
         # QUERY_LOGGER audit hook — 1:1 with the original ``execute_query``,
         # invoked before executing each statement. ``security_manager`` is the
-        # FAB instance in the original; the port's security manager is async &
-        # per-session, so we pass ``None`` here (the configurable hook owns its
-        # use of the arg).
+        # upstream instance in the original; the port's security manager is
+        # async & per-session, so we pass ``None`` here (the configurable hook
+        # owns its use of the arg).
         log_query = _resolve_query_logger()
         if log_query:
             # Called UNGUARDED inside the main execution try — 1:1 with the

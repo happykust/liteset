@@ -44,7 +44,7 @@ class FeatureFlagManager:
     ) -> None:
         """Initialise from config.
 
-        Mirrors ``FeatureFlagManager.init_app`` in the original Flask code:
+        Mirrors ``FeatureFlagManager.init_app`` in the upstream code:
         ``superset_old/utils/feature_flag_manager.py:29-33``.
         """
         self._feature_flags = deepcopy(feature_flags)

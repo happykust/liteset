@@ -17,7 +17,7 @@
 """Base async command for KV-backed distributed-lock operations.
 
 Async port of ``superset_old/commands/distributed_lock/base.py``.
-The Flask ``db.session`` global is replaced with an explicit
+The legacy ``db.session`` global is replaced with an explicit
 :class:`~sqlalchemy.ext.asyncio.AsyncSession` passed to ``__init__``.
 """
 

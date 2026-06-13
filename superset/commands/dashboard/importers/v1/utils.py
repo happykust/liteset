@@ -286,9 +286,9 @@ async def _import_dashboard(  # noqa: C901
     from superset.models.dashboard import Dashboard
 
     # ``AsyncSecurityManager.can_access`` takes the user explicitly
-    # (keyword-only) — upstream's Flask manager reads ``g.user`` internally.
-    # No user in context → deny, like upstream (R12-02; 1:1 with the
-    # chart-importer fix from R10).
+    # (keyword-only) — the upstream manager reads the request-scoped current
+    # user internally. No user in context → deny, like upstream (1:1 with the
+    # chart-importer fix).
     can_write = True
     if security_manager is not None:
         can_write = current_user is not None and await security_manager.can_access(
@@ -316,8 +316,8 @@ async def _import_dashboard(  # noqa: C901
                 # ``can_access_dashboard``/``is_admin`` are user-explicit
                 # (keyword-only / positional); ``is_admin`` is SYNC — the
                 # previous ``can_access_dashboard(existing)`` /
-                # ``await is_admin()`` raised TypeError (R12-02; 1:1 with the
-                # R10 chart-importer fix).
+                # ``await is_admin()`` raised TypeError (1:1 with the
+                # chart-importer fix).
                 await session.refresh(existing, ["owners"])
                 can_access = await security_manager.can_access_dashboard(
                     existing, user=current_user

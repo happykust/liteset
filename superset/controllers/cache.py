@@ -105,7 +105,7 @@ class CacheController(Controller):
 
     @post(
         "/invalidate",
-        # 1:1 with FAB: ``CacheRestApi`` exposes ``invalidate`` with
+        # 1:1 with upstream: ``CacheRestApi`` exposes ``invalidate`` with
         # ``class_permission_name = "CacheRestApi"`` and no
         # ``method_permission_name`` override, so the resolved permission is
         # ``("can_invalidate", "CacheRestApi")``
@@ -125,7 +125,7 @@ class CacheController(Controller):
         corresponding entries from the cache backend, and removes the
         database records.
 
-        This is a 1:1 port of the original Flask endpoint.
+        This is a 1:1 port of the original endpoint.
         """
         # -- statsd_metrics parity (superset_old/views/base_api.py:112-131) --
         # The original ``@statsd_metrics`` decorator wraps the entire method
@@ -293,7 +293,7 @@ class CacheController(Controller):
             # 1:1 with superset_old/cachekeys/api.py:128-131:
             #   ``db.session.rollback(); logger.error(ex, exc_info=True);
             #   return self.response_500(str(ex))``
-            # FAB's response_500 returns {"message": str(ex)}, so we must
+            # The upstream response_500 returns {"message": str(ex)}, so we must
             # pass the actual exception text — not a fixed string — to match
             # the client-visible response body.
             await dao.session.rollback()

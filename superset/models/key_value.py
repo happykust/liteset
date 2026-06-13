@@ -16,7 +16,7 @@
 # under the License.
 """Key-value entry model for the key-value store.
 
-Pure SQLAlchemy -- no Flask dependencies.
+Pure SQLAlchemy -- no legacy WSGI dependencies.
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ class KeyValueEntry(AuditMixinNullable, ImportExportMixin, Base):
     resource = Column(String(32), nullable=False)
     value = Column(LargeBinary(length=2**24 - 1), nullable=False)
     # UUID column created by migration 6766938c6065; the original
-    # Flask model at superset_old/key_value/models.py forgets to
+    # model at superset_old/key_value/models.py forgets to
     # declare it but code assigns ``entry.uuid = key`` directly.
     # Declare it explicitly so our async DAO can query it.
     uuid = Column(BytesUUID(), default=uuid4)

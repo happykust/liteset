@@ -49,7 +49,7 @@ class _SqlLabPermalinkGetFailedError(SupersetException):
     Port of ``SqlLabPermalinkGetFailedError(CommandException)`` from
     ``superset_old/sqllab/permalink/exceptions.py``.  CommandException
     inherits ``SupersetException.status = 500`` with no override, so the
-    original Flask ``@safe`` decorator also returns HTTP 500 for this error.
+    original ``@safe`` decorator also returns HTTP 500 for this error.
     """
 
     status_code = 500

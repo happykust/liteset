@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""User controllers — full CRUD for FAB users (ab_user table)."""
+"""User controllers — full CRUD for upstream users (ab_user table)."""
 
 from __future__ import annotations
 
@@ -105,7 +105,7 @@ def _user_to_response(user: Any) -> UserResponse:
         last_login=user.last_login.isoformat() if user.last_login else None,
         created_on=user.created_on.isoformat() if user.created_on else None,
         changed_on=user.changed_on.isoformat() if user.changed_on else None,
-        # FAB serialises only ``created_by.id``/``changed_by.id`` — build the
+        # Upstream serialises only ``created_by.id``/``changed_by.id`` — build the
         # refs from the FK columns directly (no lazy relationship access).
         created_by=(
             UserAuditRef(id=user.created_by_fk)
@@ -121,10 +121,9 @@ def _user_to_response(user: Any) -> UserResponse:
 
 
 def _check_password_complexity(password: str, settings: Any | None) -> None:
-    """Raise HTTPException(400) if the password fails FAB complexity rules.
+    """Raise HTTPException(400) if the password fails the complexity rules.
 
-    Mirrors PasswordComplexityValidator.__call__
-    (Flask-AppBuilder/flask_appbuilder/security/sqla/apis/user/validator.py)
+    Mirrors the upstream PasswordComplexityValidator.__call__
     and the equivalent check in user_me.py:224-239.
     """
     if settings is None:
@@ -155,12 +154,12 @@ async def _validate_entity_ids(
 ) -> None:
     """Raise HTTPException when any requested ID does not exist in the DB.
 
-    Mirrors FAB UserApi behavior:
+    Mirrors the upstream UserApi behavior:
     - POST (post()): response_400 → status_code=400 (default)
     - PUT  (put()):  response_404 → status_code=404
 
-    FAB UserApi.post() lines 132-159 use response_400(...).
-    FAB UserApi.put() lines 249-276 use response_404(...) for the same check.
+    UserApi.post() lines 132-159 use response_400(...).
+    UserApi.put() lines 249-276 use response_404(...) for the same check.
     """
     if not requested_ids:
         return
@@ -189,7 +188,7 @@ def _hash_password(password: str, settings: Any | None = None) -> str:
     Mirrors pre_update (superset_old/views/users/api.py:52-56) which reads
     FAB_PASSWORD_HASH_METHOD (default 'scrypt') and
     FAB_PASSWORD_HASH_SALT_LENGTH (default 16) from app.config and passes
-    them to werkzeug's generate_password_hash.
+    them to the secure-hash helper generate_password_hash.
     """
     from superset.utils.password import generate_password_hash
 
@@ -235,8 +234,8 @@ def _validate_user_update_payload(
 ) -> None:
     """Guard against clearing a user's last role/group assignment.
 
-    Mirrors FAB UserApi.put() lines 225-244 which return HTTP 400 in three
-    cases:
+    Mirrors the upstream UserApi.put() lines 225-244 which return HTTP 400 in
+    three cases:
     1. Both roles and groups are explicitly cleared to [].
     2. Roles are cleared to [] and the user has no existing groups (and none
        are being assigned).
@@ -272,12 +271,13 @@ async def _validate_user_update_extended(
 ) -> None:
     """Run async/settings-dependent validation for a user PUT request.
 
-    Mirrors FAB UserApi.put() lines 245-283:
+    Mirrors the upstream UserApi.put() lines 245-283:
     - PasswordComplexityValidator on the new password (if provided).
     - Role/group ID existence checks (HTTP 404 if any ID is missing).
 
-    Note: FAB UserApi.put() uses response_404() for missing role/group IDs
-    (lines 252-276), unlike post() which uses response_400() (lines 135-158).
+    Note: the upstream UserApi.put() uses response_404() for missing role/group
+    IDs (lines 252-276), unlike post() which uses response_400() (lines
+    135-158).
 
     Extracted from ``update`` to keep that handler's cyclomatic complexity
     within the C901 threshold.
@@ -353,7 +353,7 @@ def _build_user_filters(rison_params: dict[str, Any] | None) -> list[Any]:
 
 
 class UserController(Controller):
-    """Full CRUD controller for FAB users."""
+    """Full CRUD controller for upstream users."""
 
     path = "/api/v1/security/users"
     tags = ["Security Users"]
@@ -388,7 +388,7 @@ class UserController(Controller):
             "email",
             "active",
             "last_login",
-            # FAB list_columns include both counters → orderable upstream.
+            # Upstream list_columns include both counters → orderable upstream.
             "login_count",
             "fail_login_count",
             "created_on",
@@ -457,7 +457,7 @@ class UserController(Controller):
         if not data.password:
             raise SupersetValidationException("Password is required")
 
-        # FAB UserPostSchema.validate_roles_or_groups_present():
+        # The upstream UserPostSchema.validate_roles_or_groups_present():
         # raises ValidationError (→ response_400) when both roles and groups
         # are empty or absent.  Mirror that guard here (HTTP 400).
         if not data.roles and not data.groups:
@@ -471,10 +471,10 @@ class UserController(Controller):
 
         settings = getattr(state, "settings", None)
 
-        # FAB UserPostSchema: validate=[PasswordComplexityValidator()] on password
+        # Upstream UserPostSchema: validate=[PasswordComplexityValidator()] on pwd
         _check_password_complexity(data.password, settings)
 
-        # FAB UserApi.post() lines 132-159: verify role/group IDs exist → 400
+        # Upstream UserApi.post() lines 132-159: verify role/group IDs exist → 400
         await _validate_entity_ids(user_dao.session, data.roles, "Role", "roles")
         await _validate_entity_ids(user_dao.session, data.groups, "Group", "groups")
 
@@ -499,7 +499,7 @@ class UserController(Controller):
         await event_logger.alog_with_context(
             "user.create", extra={"username": data.username}
         )
-        # 1:1 with FAB UserApi.post() (security/sqla/apis/user/api.py:169):
+        # 1:1 with the upstream UserApi.post():
         # ``self.response(201, id=model.id)`` — no ``result`` key.
         return {"id": user.id}
 
@@ -523,12 +523,12 @@ class UserController(Controller):
         if user is None:
             raise ObjectNotFoundError("User", pk)
 
-        # FAB UserApi.put() lines 225-244: three guard blocks that prevent
+        # Upstream UserApi.put() lines 225-244: three guard blocks that prevent
         # clearing a user's last role/group, returning HTTP 400.
         _validate_user_update_payload(data.roles, data.groups, user)
 
         settings = getattr(state, "settings", None)
-        # FAB UserPutSchema: password complexity + role/group ID checks (400)
+        # Upstream UserPutSchema: password complexity + role/group ID checks (400)
         await _validate_user_update_extended(data, user_dao.session, settings)
 
         attrs: dict[str, Any] = {"changed_on": datetime.now()}
@@ -555,7 +555,8 @@ class UserController(Controller):
         await user_dao.update(user, attrs)
         await event_logger.alog_with_context("user.update", object_ref=str(pk))
 
-        # 1:1 with FAB UserApi.put() return: echoes the provided fields without `id`.
+        # 1:1 with the upstream UserApi.put() return: echoes the provided fields
+        # without `id`.
         result_dict = {
             k: getattr(data, k)
             for k in data.__struct_fields__
@@ -621,10 +622,10 @@ class UserController(Controller):
 class RegisterUserPostBody(msgspec.Struct):
     """POST body for creating a user registration request.
 
-    Mirrors FAB's auto-generated ``add_model_schema`` for RegisterUser.
+    Mirrors the upstream auto-generated ``add_model_schema`` for RegisterUser.
     All non-PK model columns are accepted. ``registration_date`` and
     ``registration_hash`` are optional (nullable in the model).
-    Column order follows FAB's RegisterUser model definition:
+    Column order follows the upstream RegisterUser model definition:
     first_name, last_name, username, password, email,
     registration_date, registration_hash.
     """
@@ -642,7 +643,7 @@ class RegisterUserPutBody(msgspec.Struct):
     """PUT body for updating a user registration request.
 
     All fields are optional — only provided fields are updated.
-    Mirrors FAB's auto-generated ``edit_model_schema`` for RegisterUser.
+    Mirrors the upstream auto-generated ``edit_model_schema`` for RegisterUser.
     """
 
     username: str | None = None
@@ -692,7 +693,7 @@ _REG_DISTINCT_COLUMNS = frozenset(
 def _reg_to_dict(reg: Any, is_list: bool = False) -> dict[str, Any]:
     """Serialize a RegisterUser model instance to a dict.
 
-    Matches FAB's auto-generated show_columns which includes all non-PK
+    Matches the upstream auto-generated show_columns which includes all non-PK
     columns. The ``id`` is NOT included here because it is returned at
     the top level of the response (``{"id": ..., "result": ...}``),
     avoiding duplication.
@@ -751,7 +752,7 @@ def _build_reg_filters(rison_params: dict[str, Any] | None) -> list[Any]:
 def _build_reg_update_attrs(data: RegisterUserPutBody) -> dict[str, Any]:
     """Build update attributes dict from PUT body.
 
-    Mirrors FAB's ``ModelRestApi.put_headless`` which merges the request
+    Mirrors the upstream ``ModelRestApi.put_headless`` which merges the request
     JSON into the existing item and persists. Data is stored as received
     — no password hashing (that only happens in the register FORM flow).
     Uniqueness is enforced by the database constraints (unique on
@@ -780,14 +781,14 @@ class UserRegistrationsController(Controller):
 
     Ported 1:1 from ``:UserRegistrationsRestAPI`` in
     ``superset_old/security/api.py``
-    which extends ``BaseSupersetModelRestApi`` (FAB's ``ModelRestApi``) with
-    ``SQLAInterface(RegisterUser)``.
+    which extends ``BaseSupersetModelRestApi`` (the upstream ``ModelRestApi``)
+    with ``SQLAInterface(RegisterUser)``.
 
     Original list_columns:
         id, username, email, first_name, last_name, registration_date,
         registration_hash
 
-    The original FAB ``ModelRestApi`` automatically exposes:
+    The original ``ModelRestApi`` automatically exposes:
         GET /         (get_list)
         GET /{pk}     (get)
         POST /        (post)
@@ -833,7 +834,7 @@ class UserRegistrationsController(Controller):
         to the Admin role by default.
 
         Supports Rison query parameters for pagination, ordering, and filtering.
-        Mirrors FAB's ``ModelRestApi.get_list`` behavior.
+        Mirrors the upstream ``ModelRestApi.get_list`` behavior.
         """
         params = rison_params or {}
         page, page_size = extract_pagination(rison_params)
@@ -878,7 +879,7 @@ class UserRegistrationsController(Controller):
         await event_logger.alog_with_context(
             "user_registrations.show", object_ref=str(pk)
         )
-        # FAB auto-populates show_columns from ALL model columns (incl. id),
+        # Upstream auto-populates show_columns from ALL model columns (incl. id),
         # so ``id`` appears inside ``result`` AND at the top level —
         # 88e43b6c2d applied the same to other resources.
         return {"id": pk, "result": {"id": reg.id, **_reg_to_dict(reg)}}
@@ -898,7 +899,7 @@ class UserRegistrationsController(Controller):
     ) -> dict[str, Any]:
         """POST /api/v1/security/user_registrations/ — create a registration request.
 
-        Mirrors FAB's ``ModelRestApi.post_headless``: validates via marshmallow
+        Mirrors the upstream ``ModelRestApi.post_headless``: validates via marshmallow
         schema (msgspec in our case), then persists via ``session.add() +
         session.flush()``. Data is stored as received — no password hashing
         or ``registration_hash`` generation (those only happen in the
@@ -937,7 +938,7 @@ class UserRegistrationsController(Controller):
     ) -> dict[str, Any]:
         """PUT /api/v1/security/user_registrations/{pk} — update a registration.
 
-        Mirrors FAB's ``ModelRestApi.put`` for RegisterUser.
+        Mirrors the upstream ``ModelRestApi.put`` for RegisterUser.
         Only provided (non-None) fields are updated.
         """
         reg = await reg_dao.find_by_id(pk)
@@ -967,7 +968,7 @@ class UserRegistrationsController(Controller):
     ) -> dict[str, str]:
         """DELETE /api/v1/security/user_registrations/{pk} — delete a registration.
 
-        Mirrors FAB's ``SecurityManager.del_register_user``.
+        Mirrors the upstream ``SecurityManager.del_register_user``.
         """
         reg = await reg_dao.find_by_id(pk)
         if reg is None:
@@ -989,11 +990,11 @@ class UserRegistrationsController(Controller):
     async def get_info(self) -> dict[str, Any]:
         """GET /api/v1/security/user_registrations/_info — metadata.
 
-        Mirrors FAB's ``ModelRestApi.info`` endpoint. Returns permissions,
+        Mirrors the upstream ``ModelRestApi.info`` endpoint. Returns permissions,
         column metadata for add/edit forms, and available filters.
         """
         permissions = ["can_read", "can_write"]
-        # Column order matches FAB's RegisterUser model definition:
+        # Column order matches the upstream RegisterUser model definition:
         # first_name, last_name, username, password, email,
         # registration_date, registration_hash
         add_columns = [
@@ -1035,7 +1036,7 @@ class UserRegistrationsController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/security/user_registrations/distinct/{column_name}.
 
-        Mirrors FAB's ``ModelRestApi.distinct`` endpoint. Returns distinct
+        Mirrors the upstream ``ModelRestApi.distinct`` endpoint. Returns distinct
         values for the specified column, used by frontend filter UIs.
         """
         if column_name not in _REG_DISTINCT_COLUMNS:
@@ -1070,9 +1071,9 @@ class UserRegistrationsController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/security/user_registrations/related/{column_name}.
 
-        Mirrors FAB's ``ModelRestApi.related`` endpoint. RegisterUser has
+        Mirrors the upstream ``ModelRestApi.related`` endpoint. RegisterUser has
         no relationship columns, so this always returns an empty result
-        set — matching the original behavior where FAB would return empty
+        set — matching the original behavior where upstream would return empty
         for models without relationships on the requested column.
         """
         # RegisterUser has no relationship columns (no ForeignKeys to other
@@ -1085,13 +1086,13 @@ class UserRegistrationsController(Controller):
 # ---------------------------------------------------------------------------
 # Ported from superset_old/views/users/api.py ``UserRestApi``
 # (resource_name = "user", path = /api/v1/user).
-# This is the public-facing user endpoint, separate from the FAB CRUD
+# This is the public-facing user endpoint, separate from the upstream CRUD
 # controller at /api/v1/security/users.
 # ---------------------------------------------------------------------------
 
 
 def _provide_user_dao(session: Any) -> Any:
-    """Lazy provider for AsyncUserDAO — avoids eager Flask imports."""
+    """Lazy provider for AsyncUserDAO — avoids eager legacy-stack imports."""
     from superset.db.daos.user import AsyncUserDAO
 
     return AsyncUserDAO(session)

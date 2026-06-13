@@ -165,7 +165,7 @@ def _validate_field_lengths(
 
 
 def _safe_filename(name: str) -> str:
-    """Create a safe filename from a model name (like werkzeug's secure_filename)."""
+    """Create a safe filename from a model name (like a secure-filename helper)."""
     name = _SAFE_FILENAME_RE.sub("", name).strip()
     return name or "unnamed"
 
@@ -219,7 +219,7 @@ async def add_permissions(
       the new ``Database`` model surfaces driver errors through the sync
       inspector run in a thread).
 
-    Unlike the original (which used Flask's blocking ``Database.get_all_*_names``)
+    Unlike the original (which used the blocking ``Database.get_all_*_names``)
     the port runs the blocking sync inspector via ``asyncio.to_thread`` and uses
     the async ``security_manager.add_permission_view_menu`` to create the PVM
     rows on the active ``AsyncSession``.

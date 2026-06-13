@@ -17,7 +17,7 @@
 # mypy: ignore-errors
 """SQL Lab models: Query, SavedQuery, TabState, TableSchema.
 
-Pure SQLAlchemy -- no Flask dependencies.
+Pure SQLAlchemy -- no legacy WSGI dependencies.
 """
 
 import enum

@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """Legacy ``/datasource/*`` routes ported from the original
-``superset/views/datasource/views.py`` Flask-AppBuilder views.
+``superset/views/datasource/views.py`` upstream views.
 
 Full-functionality port of ``POST /datasource/samples``, used by the
 Explore "View samples" panel and drill-to-detail. Mirrors the original
@@ -436,7 +436,7 @@ async def _parse_samples_payload(
 
 
 class LegacyDatasourceController(Controller):
-    """Legacy ``/datasource`` routes ported from the original FAB view."""
+    """Legacy ``/datasource`` routes ported from the original upstream view."""
 
     path = "/datasource"
     tags = ["Legacy", "Datasource"]
@@ -896,7 +896,7 @@ class LegacyDatasourceController(Controller):
                 # above; roll it back so the denied save persists nothing.
                 # Upstream only ``db.session.commit()``s on the success
                 # path — early error returns discard the dirty change at
-                # Flask teardown. The liteset request wrapper instead
+                # request teardown. The liteset request wrapper instead
                 # COMMITS a returned Response, so we must roll back here.
                 await ds_dao.session.rollback()  # type: ignore[attr-defined]
                 return Response(

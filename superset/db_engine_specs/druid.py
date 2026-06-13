@@ -15,9 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Apache Druid engine spec -- sync/Flask-compatible.
+"""Apache Druid engine spec -- sync-compatible.
 
-Ported 1:1 from ``superset_old/db_engine_specs/druid.py`` with Flask
+Ported 1:1 from ``superset_old/db_engine_specs/druid.py`` with legacy
 imports removed.  Only overridden methods and attributes are included.
 """
 

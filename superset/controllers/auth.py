@@ -46,22 +46,22 @@ logger = logging.getLogger(__name__)
 # Overridden at runtime by ``settings.session_max_age``.
 _DEFAULT_SESSION_MAX_AGE: int = 86400 * 31
 
-# Flash message matching Flask-AppBuilder's invalid_login_message.
+# Flash message matching the upstream invalid_login_message.
 _INVALID_LOGIN_MESSAGE: str = "Invalid login. Please try again."
 
 # Cookie name for one-shot flash messages (read once then cleared).
 _FLASH_COOKIE_NAME: str = "_flash"
 
 # Cookie holding the signed OAuth ``state`` between the authorize redirect
-# and the callback (replaces FAB's server-side ``session["oauth_state"]``).
+# and the callback (replaces the upstream server-side ``session["oauth_state"]``).
 _OAUTH_STATE_COOKIE_NAME: str = "superset_oauth_state"
 
-# AUTH_OAUTH numeric value (mirrors FAB ``AUTH_OAUTH = 4``).
+# AUTH_OAUTH numeric value (mirrors the upstream ``AUTH_OAUTH = 4``).
 _AUTH_OAUTH: int = 4
 
 # Pre-computed hash used for timing balance when the user is not found or
-# inactive.  Mirrors Flask-AppBuilder's ``AUTH_DB_FAKE_PASSWORD_HASH_CHECK``.
-# Format: scrypt:32768:8:1 (werkzeug 3.0+ default).
+# inactive.  Mirrors the upstream ``AUTH_DB_FAKE_PASSWORD_HASH_CHECK``.
+# Format: scrypt:32768:8:1 (the upstream password-hash default).
 _FAKE_PASSWORD_HASH = (
     "scrypt:32768:8:1$FakeTimingSalt01$"  # noqa: S105
     "0000000000000000000000000000000000000000000000000000"
@@ -73,8 +73,8 @@ _FAKE_PASSWORD_HASH = (
 def _is_safe_redirect_url(url: str, request_host: str = "") -> bool:
     """Check whether a redirect URL is safe (relative or same-host).
 
-    Mirrors Flask-AppBuilder's ``is_safe_redirect_url`` but without
-    Flask dependencies.  Prevents open-redirect attacks by rejecting
+    Mirrors the upstream ``is_safe_redirect_url`` but without
+    legacy WSGI dependencies.  Prevents open-redirect attacks by rejecting
     URLs with external hosts or non-http(s) schemes.
 
     Args:
@@ -108,7 +108,7 @@ def _is_safe_redirect_url(url: str, request_host: str = "") -> bool:
 def _get_safe_redirect(url: str, request_host: str = "", fallback: str = "/") -> str:
     """Return *url* if safe, otherwise return *fallback*.
 
-    Mirrors Flask-AppBuilder's ``get_safe_redirect``.
+    Mirrors the upstream ``get_safe_redirect``.
     """
     if url and _is_safe_redirect_url(url, request_host=request_host):
         return url
@@ -187,7 +187,8 @@ class AuthController(Controller):
             user = None
 
         # If already authenticated, redirect to home.
-        # Mirrors FAB @no_cache wrapping ALL return paths of SupersetAuthView.login:
+        # Mirrors upstream @no_cache wrapping ALL return paths of
+        # SupersetAuthView.login:
         # the early-return redirect(appbuilder.get_url_for_index) also received
         # Cache-Control/Pragma/Expires headers in the original.
         if user is not None and getattr(user, "is_authenticated", False):
@@ -207,14 +208,14 @@ class AuthController(Controller):
         if flash_raw:
             flash_messages.append(["warning", urllib.parse.unquote(flash_raw)])
         # "danger" category cookie set by register_activation errors --
-        # mirrors Flask flash(msg, "danger") for registration not found /
+        # mirrors the upstream flash(msg, "danger") for registration not found /
         # add_user failed.
         flash_danger_raw = request.cookies.get("_flash_danger")
         if flash_danger_raw:
             flash_messages.append(["danger", urllib.parse.unquote(flash_danger_raw)])
 
         # Build anonymous user with Public role permissions (if configured),
-        # matching Flask-AppBuilder behaviour where anonymous visitors see
+        # matching the upstream behaviour where anonymous visitors see
         # the Public role's permissions in bootstrap data.
         anon_user = UnauthenticatedUser()
         role_name = getattr(settings, "auth_role_public", "")
@@ -255,7 +256,7 @@ class AuthController(Controller):
                 "csrf_token": "",
             },
         )
-        # Mirrors Flask-AppBuilder's @no_cache decorator on the login view.
+        # Mirrors the upstream @no_cache decorator on the login view.
         # Sets Cache-Control: no-store, no-cache, must-revalidate, max-age=0;
         # Pragma: no-cache; Expires: 0.  Prevents browsers and proxies from
         # caching the login page (which could expose stale auth state).
@@ -280,7 +281,7 @@ class AuthController(Controller):
     ) -> Redirect:
         """POST /login/ -- authenticate and set session cookie.
 
-        Mirrors Flask-AppBuilder ``auth_user_db`` behaviour:
+        Mirrors the upstream ``auth_user_db`` behaviour:
         - Tries username first, then falls back to email lookup.
         - Always performs both lookups for timing balance.
         - On user-not-found / inactive: fake hash check + noop DB write
@@ -311,7 +312,7 @@ class AuthController(Controller):
             password = str(form_data.get("password", ""))
 
         # Read the ``next`` redirect target from query params or form data.
-        # Mirrors FAB's ``get_safe_redirect(request.args.get("next", ""))``.
+        # Mirrors the upstream ``get_safe_redirect(request.args.get("next", ""))``.
         next_url = request.query_params.get("next", "")
         if not next_url:
             if "application/json" in content_type:
@@ -329,7 +330,7 @@ class AuthController(Controller):
         session_factory = state.session_factory
 
         # ------------------------------------------------------------------
-        # LDAP browser login (AUTH_LDAP). Mirrors FAB AuthLDAPView.login
+        # LDAP browser login (AUTH_LDAP). Mirrors upstream AuthLDAPView.login
         # dispatching to auth_user_ldap. On success, issue the session
         # cookie exactly as the DB path does below.
         # ------------------------------------------------------------------
@@ -382,7 +383,7 @@ class AuthController(Controller):
             return redirect
 
         # ------------------------------------------------------------------
-        # User lookup (mirrors FAB's auth_user_db timing balance)
+        # User lookup (mirrors the upstream auth_user_db timing balance)
         # Always perform both by-username and by-email queries so that the
         # total DB round-trips are identical regardless of the result.
         # ------------------------------------------------------------------
@@ -435,7 +436,7 @@ class AuthController(Controller):
             return _login_failed_redirect(next_url=next_url)
 
         # ------------------------------------------------------------------
-        # Verify password (FAB stores werkzeug-hashed passwords)
+        # Verify password (the upstream stores securely hashed passwords)
         # ------------------------------------------------------------------
         if not user_password or not _check_password_hash(user_password, password):
             logger.debug(
@@ -479,7 +480,7 @@ class AuthController(Controller):
 
         # Redirect to ``?next=`` target (validated) or home
         redirect = Redirect(path=safe_redirect_target)
-        # Mirrors Flask-AppBuilder's @no_cache on the combined GET+POST login
+        # Mirrors the upstream @no_cache on the combined GET+POST login
         # handler — applies to every response path including POST success.
         redirect.headers["Cache-Control"] = (
             "no-store, no-cache, must-revalidate, max-age=0"
@@ -516,13 +517,13 @@ class AuthController(Controller):
         signed ``state`` in the ``superset_oauth_state`` cookie, and
         redirects the browser to the provider.
 
-        Mirrors :pymeth:`flask_appbuilder.security.views.AuthOAuthView.login`
+        Mirrors the upstream ``AuthOAuthView.login``
         (``views.py:667-707``) — the ``state`` is signed so the callback can
-        verify it without leaning on Flask's server-side session.
+        verify it without leaning on the legacy server-side session.
         """
         settings: SupersetSettings = state.settings
 
-        # If already authenticated, redirect to home (FAB views.py:670-672).
+        # If already authenticated, redirect to home (upstream views.py:670-672).
         try:
             user = request.user
         except Exception:  # noqa: BLE001
@@ -553,8 +554,8 @@ class AuthController(Controller):
                 next_url=next_url,
             )
         except Exception as exc:  # noqa: BLE001
-            # FAB flashes invalid_login_message and redirects to index on any
-            # authorize error (views.py:705-707).
+            # The upstream flashes invalid_login_message and redirects to index
+            # on any authorize error (views.py:705-707).
             logger.error("Error on OAuth authorize: %s", exc)
             return _login_failed_redirect(next_url=next_url)
 
@@ -589,7 +590,7 @@ class AuthController(Controller):
         mechanism as ``login_submit``).
 
         Mirrors :pymeth:`AuthOAuthView.oauth_authorized`
-        (``views.py:709-767``) — the callback path is the FAB-standard
+        (``views.py:709-767``) — the callback path is the upstream-standard
         ``oauth-authorized/<provider>``.
         """
         settings: SupersetSettings = state.settings
@@ -601,7 +602,7 @@ class AuthController(Controller):
         code = request.query_params.get("code", "")
         cb_state = request.query_params.get("state", "")
         # The IdP may redirect back with an error instead of a code
-        # (e.g. the user denied consent).  FAB redirects to the login page.
+        # (e.g. the user denied consent).  Upstream redirects to the login page.
         if not code or request.query_params.get("error"):
             logger.warning(
                 "OAuth callback for '%s' has no code (error=%s)",
@@ -716,7 +717,7 @@ class AuthController(Controller):
                 except Exception:  # noqa: BLE001, S110
                     pass
 
-            # Fallback: itsdangerous (Flask legacy cookies)
+            # Fallback: itsdangerous (legacy session cookies)
             if user_id is None and cookie_value:
                 from superset.security.session_decoder import FlaskSessionDecoder
 
@@ -764,7 +765,7 @@ class AuthController(Controller):
 def _login_failed_redirect(next_url: str = "") -> Redirect:
     """Return a redirect to /login/ with a flash cookie for the error message.
 
-    Mirrors Flask-AppBuilder's ``flash(self.invalid_login_message, "warning")``
+    Mirrors the upstream ``flash(self.invalid_login_message, "warning")``
     followed by ``redirect(get_url_for_login_with(next_url))``.  The GET /login/
     handler reads the ``_flash`` cookie, includes it in
     ``bootstrap_data.common.flash_messages``, and clears the cookie so the
@@ -782,8 +783,8 @@ def _login_failed_redirect(next_url: str = "") -> Redirect:
     if next_url:
         login_path = f"/login/?next={urllib.parse.quote(next_url, safe='')}"
     redirect = Redirect(path=login_path)
-    # Mirrors Flask-AppBuilder's @no_cache decorator on the combined GET+POST
-    # login handler (FAB security/views.py AuthDBView.login is @no_cache).
+    # Mirrors the upstream @no_cache decorator on the combined GET+POST
+    # login handler (upstream security/views.py AuthDBView.login is @no_cache).
     # The decorator wraps every response path — including POST failure redirects.
     redirect.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     redirect.headers["Pragma"] = "no-cache"
@@ -830,7 +831,7 @@ def _is_oidc_provider(provider_cfg: dict[str, Any]) -> bool:
     """Return ``True`` when a provider entry should use OIDC validation.
 
     A provider is treated as OIDC when it exposes a ``server_metadata_url``
-    (the discovery document) — the same signal FAB uses to enable id_token
+    (the discovery document) — the same signal the upstream uses to enable id_token
     validation against the provider's JWKS.
     """
     from superset.security.auth.oauth import _provider_remote_app
@@ -869,7 +870,7 @@ def _make_oauth_backend(
 
     Picks :class:`OIDCAuthBackend` for providers with a discovery document
     (full id_token validation) and :class:`OAuthAuthBackend` otherwise,
-    mirroring how FAB enables OIDC validation per-provider.
+    mirroring how the upstream enables OIDC validation per-provider.
     """
     from superset.security.auth.oauth import OAuthAuthBackend
     from superset.security.auth.oidc import OIDCAuthBackend
@@ -884,7 +885,7 @@ def _make_oauth_backend(
 def _oauth_redirect_uri(request: Request[Any, Any, Any], provider: str) -> str:
     """Build the absolute callback URL for a provider.
 
-    Mirrors FAB's ``url_for(".oauth_authorized", provider=provider,
+    Mirrors the upstream ``url_for(".oauth_authorized", provider=provider,
     _external=True)`` — the IdP redirects here with the auth code.
     """
     scheme = request.url.scheme

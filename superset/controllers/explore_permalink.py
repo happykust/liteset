@@ -218,14 +218,14 @@ class ExplorePermalinkController(Controller):
         key_value entry, re-validates datasource access (1:1 with original
         GetExplorePermalinkCommand), and returns the stored payload.
 
-        The original Flask endpoint spreads the stored fields
+        The original endpoint spreads the stored fields
         directly into the response (``**value``), so the frontend
         receives ``{chartId, datasourceId, datasource, state, ...}``.
         """
         # 1:1 with original GetExplorePermalinkCommand.run():
         # decode_permalink_id raises KeyValueParseKeyError for an invalid key.
         # The original command wraps it in ExplorePermalinkGetFailedError
-        # (CommandException, status=500), which is NOT caught by the Flask
+        # (CommandException, status=500), which is NOT caught by the
         # handler, so @safe returns HTTP 500.  We must NOT convert this to a
         # 404 — let KeyValueParseKeyError propagate; the superset_exception_handler
         # will return HTTP 500 matching the original behaviour.

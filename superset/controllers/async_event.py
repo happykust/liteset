@@ -19,11 +19,11 @@
 Preserves the existing frontend polling mechanism. The frontend calls
 ``GET /api/v1/async_event/?last_id=X`` at 500ms intervals to check
 for completed async query results. This controller is the async
-equivalent of Flask's ``AsyncEventsRestApi``.
+equivalent of the original ``AsyncEventsRestApi``.
 
 Channel id is read from the ``async-token`` JWT cookie (minted by
 :class:`superset.middleware.async_token.AsyncTokenMiddleware`) — this
-mirrors the original Flask implementation exactly and ensures the polling
+mirrors the original implementation exactly and ensures the polling
 endpoint reads from the same Redis Stream that the Celery task wrote to.
 
 The WebSocket endpoint (superset/websocket/events.py) provides real-time
@@ -83,7 +83,7 @@ class AsyncEventController(Controller):
             description: List of events
         """
         # ---------------------------------------------------------------------------
-        # Resolve channel_id from the JWT cookie — 1:1 with the original Flask path:
+        # Resolve channel_id from the JWT cookie — 1:1 with the original path:
         #   AsyncQueryManager.parse_channel_id_from_request(request)
         #   → jwt.decode(cookie["async-token"])["channel"]
         # ---------------------------------------------------------------------------
@@ -96,7 +96,7 @@ class AsyncEventController(Controller):
         )
 
         if not channel_id:
-            # 1:1 with the original Flask path
+            # 1:1 with the original path
             # (``superset_old/async_events/api.py:91-101``): a missing or
             # unparseable ``async-token`` cookie raises
             # ``AsyncQueryTokenException`` → ``self.response_401()``.  Mirror

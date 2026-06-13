@@ -29,9 +29,9 @@ The only divergence from the original is the import location of helper
 utilities (``extract_dataframe_dtypes``, ``get_column_names``,
 ``get_metric_names``) which live in :mod:`superset.utils.column` in Liteset
 rather than :mod:`superset.utils.core`, and the elimination of the
-Flask-Babel ``gettext`` shim — Liteset uses the standard ``gettext`` from
+upstream i18n ``gettext`` shim — Liteset uses the standard ``gettext`` from
 the ``gettext`` module (or a no-op fallback) since Litestar has no
-Flask-Babel dependency.
+upstream i18n dependency.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ``flask_babel.gettext`` is unavailable in Liteset.  Mirror its no-op
+# The upstream ``gettext`` is unavailable in Liteset.  Mirror its no-op
 # behaviour: substitute keyword arguments into the message and return it.
 def _gettext(message: str, **kwargs: Any) -> str:
     if kwargs:

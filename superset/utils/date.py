@@ -879,7 +879,8 @@ def _default_relative_times() -> tuple[str, str]:
     """Return the configured ``(DEFAULT_RELATIVE_START_TIME, ...END_TIME)``.
 
     Mirrors the original helper which read these straight off
-    ``flask.current_app.config``.  Cached because the values are static after
+    the upstream ``current_app.config``.  Cached because the values are static
+    after
     startup; falls back to ``"today"`` (the upstream default) if settings
     cannot be constructed (e.g. outside an initialised app).
     """
@@ -902,7 +903,7 @@ def get_since_until_from_time_range(
 ) -> tuple[datetime | None, datetime | None]:
     """Compute ``(since, until)`` from a *time_range* string.
 
-    Flask-free replacement for the original helper that lived in
+    Replacement for the original helper that lived in
     ``superset.common.utils.time_range_utils``.  The relative-time defaults
     come from ``DEFAULT_RELATIVE_START_TIME`` / ``DEFAULT_RELATIVE_END_TIME``
     (``settings.default_relative_start_time`` / ``...end_time``) — 1:1 with the

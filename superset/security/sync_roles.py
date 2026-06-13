@@ -362,7 +362,7 @@ _STANDARD_VIEW_PERMISSIONS: list[tuple[str, str]] = [
     ("can_write", "Tag"),
     ("can_read", "Explore"),
     ("can_read", "Datasource"),
-    # FAB auto-registers DatasourceRestApi's @expose methods under the
+    # Upstream auto-registers DatasourceRestApi's @expose methods under the
     # "Datasource" view menu (class_permission_name); can_get is in
     # READ_ONLY_PERMISSION so Gamma/Alpha receive it, while
     # can_get_column_values is not read-only -> Alpha+ only.
@@ -389,7 +389,7 @@ _STANDARD_VIEW_PERMISSIONS: list[tuple[str, str]] = [
     ("can_share_dashboard", "Superset"),
     ("can_share_chart", "Superset"),
     # SqlLabRestApi (class_permission_name="SQLLab") + fine-grained method
-    # permissions FAB auto-creates for the SQL Lab endpoints. Mirrors
+    # permissions the upstream auto-creates for the SQL Lab endpoints. Mirrors
     # SQLLAB_ONLY_PERMISSIONS in superset_old/security/manager.py:351-381.
     ("can_read", "SQLLab"),
     ("can_write", "SQLLab"),
@@ -418,15 +418,15 @@ _STANDARD_VIEW_PERMISSIONS: list[tuple[str, str]] = [
     ("can_grant_guest_token", "SecurityRestApi"),
     ("can_read", "SecurityRestApi"),
     # /security/roles/search lives on a SEPARATE class in the original —
-    # ``RoleRestAPI`` (superset_old/security/api.py:199-219). FAB registers
+    # ``RoleRestAPI`` (superset_old/security/api.py:199-219). Upstream registers
     # the PVM under the class name, and "RoleRestAPI" is in
     # ADMIN_ONLY_VIEW_MENUS, so this stays admin-only.
     ("can_list_roles", "RoleRestAPI"),
-    # FAB security CRUD REST APIs (AB_ADD_SECURITY_API). FAB's ModelRestApi
-    # uses per-HTTP-method permission names (can_get/can_post/can_put/
-    # can_delete/can_info), not Superset's can_read/can_write. These
+    # Upstream security CRUD REST APIs (AB_ADD_SECURITY_API). The upstream
+    # ModelRestApi uses per-HTTP-method permission names (can_get/can_post/
+    # can_put/can_delete/can_info), not Superset's can_read/can_write. These
     # resources are all in ADMIN_ONLY_VIEW_MENUS so the PVMs are granted to
-    # Admin only. See flask_appbuilder/security/sqla/apis/*/api.py.
+    # Admin only. See the upstream security/sqla/apis/*/api.py.
     ("can_get", "User"),
     ("can_post", "User"),
     ("can_put", "User"),

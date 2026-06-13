@@ -17,11 +17,11 @@
 """Synchronous, pickle-backed data cache for the legacy ``viz.py`` pipeline.
 
 The legacy ``BaseViz.get_df_payload`` calls ``data_cache.get(key)`` /
-``data_cache.set(key, value, timeout)`` *synchronously* (the original used a
-Flask-Caching ``RedisCache`` backend). Liteset's :class:`AsyncCacheManager`
+``data_cache.set(key, value, timeout)`` *synchronously* (the original used an
+upstream ``RedisCache`` backend). Liteset's :class:`AsyncCacheManager`
 slots are coroutine-based, so they cannot be handed to the viz directly. This
 module provides a thin **sync** adapter over a blocking ``redis.Redis`` client
-that mirrors the Flask-Caching contract the viz expects:
+that mirrors the upstream cache contract the viz expects:
 
 * values are pickle-serialized (``RedisCache`` stored pickle bytes), and
 * keys are namespaced with the ``superset_cache:`` prefix -- the same literal
@@ -32,10 +32,10 @@ that mirrors the Flask-Caching contract the viz expects:
 
 Both the worker (``load_explore_json_into_cache``) and the web controller
 (``/superset/explore_json/data/<key>``) build the adapter from the same
-Flask-Caching-style config dict, so the DataFrame cached during the background
+upstream-style config dict, so the DataFrame cached during the background
 job is found on the cache-first / data-fetch reads.
 
-Pickle is required here (not optional): it is the Flask-Caching ``RedisCache``
+Pickle is required here (not optional): it is the upstream ``RedisCache``
 wire format, and liteset's existing async read paths
 (``load_cached_explore_form`` / ``load_cached_query_context_form``) already
 ``pickle.loads`` these exact cache slots. JSON cannot represent the cached
@@ -45,7 +45,7 @@ pandas DataFrame payloads.
 from __future__ import annotations
 
 import logging
-import pickle  # noqa: S403 - Flask-Caching RedisCache parity (pickle wire format)
+import pickle  # noqa: S403 - upstream RedisCache parity (pickle wire format)
 from datetime import datetime, timezone
 from typing import Any
 
@@ -120,7 +120,7 @@ def build_sync_viz_cache(
     cache_config: dict[str, Any] | None,
     fallback_redis_url: str | None = None,
 ) -> SyncVizCache | None:
-    """Build (or reuse) a :class:`SyncVizCache` from a Flask-Caching config dict.
+    """Build (or reuse) a :class:`SyncVizCache` from an upstream cache config.
 
     Connection-detail resolution mirrors
     :func:`superset.cache.manager._build_async_redis_from_config` (sync twin):

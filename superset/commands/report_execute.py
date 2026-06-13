@@ -288,7 +288,8 @@ class BaseReportState:
 
         1:1 port of ``superset_old/commands/report/execute.py::_get_url``.
         Uses :func:`superset.utils.urls.get_url_path` (the Liteset replacement
-        for Flask ``url_for``).  For dashboards with stateful tab anchors and
+        for the upstream ``url_for``).  For dashboards with stateful tab
+        anchors and
         the ``ALERT_REPORT_TABS`` feature enabled, returns a permalink URL.
 
         :param result_format: If ``"csv"`` or ``"json"``, return the chart
@@ -509,7 +510,7 @@ class BaseReportState:
         initialised by ``superset.app.on_startup`` (and must be wired up
         equivalently inside the Celery worker — see the worker boot
         module).  Falls back to ``superset_old`` for transitional
-        compatibility while the Celery worker is still on Flask.
+        compatibility while the Celery worker is still on the legacy stack.
         """
         try:
             from superset.extensions import machine_auth_provider_factory

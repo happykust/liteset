@@ -43,8 +43,8 @@ from superset.utils import json as json_utils
 def _same_origin(url1: str | None, url2: str | None) -> bool:
     """Return True when *url1* and *url2* share the same scheme + netloc.
 
-    Mirrors the logic of ``flask_wtf.csrf.same_origin`` which is not
-    available in the Litestar / ASGI context.  If either argument is
+    Mirrors the logic of the upstream ``same_origin`` CSRF helper which is
+    not available in the Litestar / ASGI context.  If either argument is
     empty/None the function returns False.
     """
     if not url1 or not url2:
@@ -52,9 +52,10 @@ def _same_origin(url1: str | None, url2: str | None) -> bool:
     try:
         p1 = urlparse(url1)
         p2 = urlparse(url2)
-        # Mirror flask_wtf.csrf.same_origin exactly: use .hostname (auto-lowercased)
-        # and .port (int or None) separately so that uppercase hostnames in headers
-        # are treated case-insensitively, matching the original contract.
+        # Mirror the upstream same_origin helper exactly: use .hostname
+        # (auto-lowercased) and .port (int or None) separately so that
+        # uppercase hostnames in headers are treated case-insensitively,
+        # matching the original contract.
         return (
             p1.scheme == p2.scheme and p1.hostname == p2.hostname and p1.port == p2.port
         )

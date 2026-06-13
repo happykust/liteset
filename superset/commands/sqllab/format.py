@@ -16,7 +16,7 @@
 # under the License.
 """``POST /api/v1/sqllab/format_sql/`` command.
 
-1:1 with the original Flask handler
+1:1 with the original handler
 ``superset_old/sqllab/api.py::format_sql`` (lines 231-236) which dispatched
 to ``SQLScript(model["sql"], model.get("engine")).format()`` *without*
 catching parse/format errors — so an unparseable snippet propagates as a

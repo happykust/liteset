@@ -63,9 +63,10 @@ except ImportError:  # pragma: no cover -- optional dep
 # ---------------------------------------------------------------------------
 # security_manager proxy
 # ---------------------------------------------------------------------------
-# The original imports ``security_manager`` from ``superset`` which is a
-# Flask-AppBuilder ``LocalProxy``; it provides ``find_user(username=...)``.
-# In the port there is no Flask-AppBuilder.  We expose a thin proxy so:
+# The original imports ``security_manager`` from ``superset`` which is an
+# upstream ``LocalProxy``; it provides ``find_user(username=...)``.
+# In the port there is no upstream security manager.  We expose a thin
+# proxy so:
 #   1. Test fixtures can patch ``superset.db_engine_specs.gsheets.security_manager``
 #      exactly as the upstream tests do.
 #   2. ``impersonate_user`` can call ``security_manager.find_user(username=u)``.
@@ -195,7 +196,7 @@ class GSheetsEngineSpec(ShillelaghEngineSpec):
         """Set the ``subject`` / ``access_token`` query-params for impersonation.
 
         1:1 with ``superset_old/db_engine_specs/gsheets.py``.
-        Flask ``security_manager`` → module-level ``security_manager`` proxy.
+        Upstream ``security_manager`` → module-level ``security_manager`` proxy.
         """
         if username is not None:
             user = security_manager.find_user(username=username)
@@ -291,9 +292,9 @@ class GSheetsEngineSpec(ShillelaghEngineSpec):
         """Validate catalog entries by probing each sheet URL.
 
         1:1 with ``superset_old/db_engine_specs/gsheets.py``.
-        Flask ``g.user`` → the port's ContextVar-based
-        ``superset.utils.core.get_current_user`` (Flask is removed).
-        ``from flask_babel import gettext as __`` → plain strings (no i18n
+        The request-scoped current user → the port's ContextVar-based
+        ``superset.utils.core.get_current_user`` (legacy WSGI stack is gone).
+        Upstream's ``gettext`` helper → plain strings (no i18n
         dependency in the port).
         """
         from superset.utils.core import get_current_user
@@ -502,7 +503,7 @@ class GSheetsEngineSpec(ShillelaghEngineSpec):
         # update catalog
         catalog[table.table] = spreadsheet_url
         database.extra = json.dumps(extra)
-        # The original ``db.session.add/commit`` relies on Flask-SQLAlchemy's
+        # The original ``db.session.add/commit`` relies on the upstream
         # scoped session being the one ``database`` lives in. The port's
         # ``get_sync_session()`` returns a NEW session per call, so add + commit
         # MUST run on a single session (the instance's own when bound, else a

@@ -15,9 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Apache Impala engine spec -- sync/Flask-compatible.
+"""Apache Impala engine spec -- sync-compatible.
 
-Ported 1:1 from ``superset_old/db_engine_specs/impala.py`` with Flask
+Ported 1:1 from ``superset_old/db_engine_specs/impala.py`` with legacy
 imports replaced:
 
 * ``db.session`` -> ``sqlalchemy.orm.object_session(query)`` (the same

@@ -15,17 +15,17 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Presto engine spec -- sync/Flask-compatible.
+"""Presto engine spec -- synchronous.
 
-Ported 1:1 from ``superset_old/db_engine_specs/presto.py`` with Flask
-imports removed.  The abstract ``PrestoBaseEngineSpec`` (shared with Trino)
-lives in ``superset/db_engine_specs/trino.py``; the concrete
+Ported 1:1 from ``superset_old/db_engine_specs/presto.py`` with the legacy
+WSGI-stack imports removed.  The abstract ``PrestoBaseEngineSpec`` (shared
+with Trino) lives in ``superset/db_engine_specs/trino.py``; the concrete
 ``PrestoEngineSpec`` lives here and carries the Presto-only partition /
 column-introspection / expand-data behaviour that ``HiveEngineSpec`` also
 relies on (Hive subclasses ``PrestoEngineSpec``).
 
-Flask ``g``/``app.config`` are replaced with the port's established
-equivalents:
+The upstream request-scoped current user and app config are replaced with
+the port's established equivalents:
 
 * feature flags -> ``feature_flag_manager.is_feature_enabled``
 * ``database.get_raw_connection`` (not ported as a ``Database`` method) ->

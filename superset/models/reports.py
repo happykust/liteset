@@ -16,7 +16,7 @@
 # under the License.
 """Report / alert schedule models.
 
-Pure SQLAlchemy -- no Flask dependencies.
+Pure SQLAlchemy -- no legacy WSGI dependencies.
 """
 
 from __future__ import annotations

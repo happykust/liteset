@@ -16,11 +16,11 @@
 # under the License.
 """REMOTE_USER authentication backend.
 
-1:1 port of :pymeth:`flask_appbuilder.security.manager
-.BaseSecurityManager.auth_user_remote_user`
-(``Flask-AppBuilder/flask_appbuilder/security/manager.py:1407-1435``)
+1:1 port of the upstream
+``BaseSecurityManager.auth_user_remote_user``
+(upstream ``security/manager.py:1407-1435``)
 plus the corresponding view
-(``Flask-AppBuilder/flask_appbuilder/security/views.py:978-996``).
+(upstream ``security/views.py:978-996``).
 
 The web tier (Apache, nginx, oauth2-proxy, …) is expected to populate a
 trusted request header — by default ``REMOTE_USER`` — with the
@@ -46,7 +46,7 @@ class RemoteUserAuthBackend:
     """Authenticate users from a trusted upstream proxy header.
 
     Wraps :pymeth:`AsyncSecurityManager.auth_user_remote_user` with the
-    request-extraction glue that the FAB ``AuthRemoteUserView`` performs
+    request-extraction glue that the upstream ``AuthRemoteUserView`` performs
     inline.  Used by :class:`SupersetAuthMiddleware` when
     ``AUTH_TYPE == AUTH_REMOTE_USER (3)``.
     """
@@ -63,8 +63,8 @@ class RemoteUserAuthBackend:
         ``AUTH_REMOTE_USER_ENV_VAR`` (default ``REMOTE_USER``) is used to
         derive the matching HTTP header name (lowercase + ``_`` → ``-``).
 
-        Only the single configured header is honoured — this matches FAB's
-        ``AuthRemoteUserView`` which reads only the WSGI ``REMOTE_USER``
+        Only the single configured header is honoured — this matches the
+        upstream ``AuthRemoteUserView`` which reads only the WSGI ``REMOTE_USER``
         environ key (or whatever ``AUTH_REMOTE_USER_ENV_VAR`` names).
         There are NO fallback headers: additional headers such as
         ``X-Forwarded-User`` or ``X-Remote-User`` are NOT trusted because

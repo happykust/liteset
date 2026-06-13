@@ -35,8 +35,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # colorama is an optional dependency; the original Superset always pulled
-# it in via ``flask>=2`` but the Liteset stack does not.  Fall back to
-# blank ANSI escapes when it isn't installed so log output is unstyled
+# it in via the legacy WSGI stack but the Liteset stack does not.  Fall back
+# to blank ANSI escapes when it isn't installed so log output is unstyled
 # but still legible.
 try:  # pragma: no cover — depends on env
     from colorama import Fore, Style
@@ -173,7 +173,7 @@ except Exception as _ex:  # pragma: no cover - reraised on instantiation only
 class StatsLoggerManager:
     """Process-wide stats-logger holder.
 
-    Replaces ``BaseStatsLoggerManager.init_app(Flask)``.  Liteset bootstrap
+    Replaces ``BaseStatsLoggerManager.init_app(app)``.  Liteset bootstrap
     code calls :meth:`configure` once during :func:`superset.app.on_startup`
     with the value loaded from :class:`superset.config.SupersetSettings`.
     """

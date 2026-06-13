@@ -147,7 +147,7 @@ def _get_query_source_from_request() -> Any:
     """Resolve the :class:`QuerySource` from the in-flight request, or ``None``.
 
     1:1 with ``superset_old/utils/core.py::get_query_source_from_request``,
-    which inspected Flask's thread-local ``request.referrer``.  In the async
+    which inspected the legacy thread-local ``request.referrer``.  In the async
     port the active request is bound to a ContextVar
     (``superset.utils.core.get_current_request``); Litestar exposes the
     ``Referer`` header as ``request.headers.get("referer")``.  Returns ``None``

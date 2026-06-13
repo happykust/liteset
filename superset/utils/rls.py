@@ -158,7 +158,7 @@ def _embedded_superset_enabled() -> bool:
 
 # ===========================================================================
 # Sync path — used by SQL Lab pipeline (validate_adhoc_subquery,
-# _get_virtual_from_clause). Original Superset uses Flask-SQLAlchemy's
+# _get_virtual_from_clause). Original Superset uses the upstream
 # ``db.session``; in Liteset we open a dedicated sync session against the
 # metadata DB, mirroring ``jinja_context._sync_find_dataset``.
 # ===========================================================================
@@ -239,8 +239,8 @@ def _sync_resolve_user_role_ids(user: Any) -> list[int] | None:
     Returns the list of role ids to use for RLS filter selection, 1:1 with
     ``superset_old/security/manager.py:2588-2598`` + ``get_user_roles``:
 
-    * ``None`` user → ``None`` (caller skips RLS entirely — upstream's
-      ``if not (hasattr(g, "user") and g.user is not None): return []``).
+    * ``None`` user → ``None`` (caller skips RLS entirely — upstream
+      returns ``[]`` when there is no request-scoped current user).
     * Anonymous user → ``[AUTH_ROLE_PUBLIC role id]`` when that setting is
       configured, else ``[]``. An EMPTY list is meaningful: with no roles
       the user matches no REGULAR filter and is exempt from no BASE filter,
@@ -261,8 +261,8 @@ def _sync_resolve_user_role_ids(user: Any) -> list[int] | None:
         # computation, so the lazy load raises ``DetachedInstanceError``.
         # Re-query the role ids by ``user.id`` through the metadata sync
         # session as a fallback — identical result for an attached user,
-        # robust for a detached one. (Flask upstream never hit this: its
-        # ``g.user`` is always bound to the request-scoped session.)
+        # robust for a detached one. (Upstream never hit this: its
+        # request-scoped current user is always bound to the session.)
         from sqlalchemy.orm.exc import DetachedInstanceError
 
         try:
@@ -291,7 +291,7 @@ def _sync_resolve_user_role_ids(user: Any) -> list[int] | None:
                         )
                     ).scalars()
                 }
-            # Group-inherited roles — 1:1 with FAB ``get_user_roles`` (direct +
+            # Group-inherited roles — 1:1 with upstream ``get_user_roles`` (direct +
             # group roles). Omitting them let a REGULAR RLS filter scoped to a
             # group-assigned role slip through (row restriction skipped).
             group_role_ids = session.execute(

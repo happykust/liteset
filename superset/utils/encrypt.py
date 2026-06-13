@@ -16,8 +16,8 @@
 # under the License.
 """Encrypted field plumbing — ported 1:1 from ``superset_old/utils/encrypt.py``.
 
-The original implementation depends on Flask via ``init_app(app)`` and
-walks ``db.metadata.tables`` through the Flask-SQLAlchemy session.  This
+The original implementation depends on the app via ``init_app(app)`` and
+walks ``db.metadata.tables`` through the upstream ORM session.  This
 module exposes the same API (``EncryptedFieldFactory.create``,
 ``SecretsMigrator.run``) but pulls configuration from
 :class:`superset.config.SupersetSettings` and walks the metadata via a
@@ -143,7 +143,7 @@ class SQLAlchemyUtilsAdapter(  # pylint: disable=too-few-public-methods
 
     Mirrors the original ``SQLAlchemyUtilsAdapter`` exactly.  The ``app_config``
     parameter has been collapsed to a plain ``secret_key`` argument now that
-    we no longer depend on Flask's app context.
+    we no longer depend on the legacy app context.
     """
 
     def create(
@@ -158,7 +158,7 @@ class SQLAlchemyUtilsAdapter(  # pylint: disable=too-few-public-methods
 
 
 # ---------------------------------------------------------------------------
-# EncryptedFieldFactory — full port (without Flask)
+# EncryptedFieldFactory — full port (without the legacy stack)
 # ---------------------------------------------------------------------------
 
 
@@ -167,7 +167,7 @@ def _resolve_settings() -> Any:
 
     Importing the settings is deferred so that this module can be loaded
     before the application's environment variables are populated (mirrors
-    the late-binding behaviour of Flask's ``init_app``).
+    the late-binding behaviour of the upstream ``init_app``).
     """
     return _cached_settings()
 
@@ -190,7 +190,7 @@ def _resolve_secret_key(settings: Any) -> str | bytes:
 class EncryptedFieldFactory:
     """Builds encrypted SA column types using the configured adapter.
 
-    Equivalent to the original Flask-aware ``EncryptedFieldFactory`` but
+    Equivalent to the original ``EncryptedFieldFactory`` but
     initialised lazily from :class:`SupersetSettings`.  ``init_app`` is
     kept for backward compatibility with code that still passes a Litestar
     application object (or any object exposing a ``state.settings``).
@@ -292,7 +292,7 @@ class SecretsMigrator:
     column under the new ``SECRET_KEY``.
 
     Direct port of ``superset_old/utils/encrypt.py:SecretsMigrator``; the
-    only behaviour change is that we no longer depend on Flask-SQLAlchemy
+    only behaviour change is that we no longer depend on the upstream ORM
     (we open a sync engine ourselves) and we read both the previous *and*
     the new key from arguments / settings instead of ``app.config``.
     """

@@ -42,8 +42,8 @@ def sync_database_permissions_task(
 
     1:1 with the original task except for the auth/session bootstrap
     which now uses :func:`superset.db.session.get_sync_session` and
-    :func:`superset.utils.core.set_current_user` rather than Flask's
-    ``g.user``.
+    :func:`superset.utils.core.set_current_user` rather than the
+    request-scoped current user.
     """
     try:
         asyncio.run(

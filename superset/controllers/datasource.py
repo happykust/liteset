@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 class DatasourceController(Controller):
     """Datasource API endpoints.
 
-    Provides access to datasources by type and ID, mirroring the Flask
+    Provides access to datasources by type and ID, mirroring the original
     ``DatasourceRestApi`` and ``Datasource`` view endpoints.
     """
 
@@ -177,7 +177,7 @@ class DatasourceController(Controller):
 
         Passing a Query as ``datasource=`` (Path 3) would evaluate
         ``Query.perm`` (``"[db].[tab](id:N)"``) as a datasource_access
-        permission string — a format never registered in FAB — and would
+        permission string — a format never registered upstream — and would
         grant access only to admins and owners, denying users who have only
         table-level permissions.  The original correctly routes through
         Path 1, which parses the SQL and checks per-table grants.

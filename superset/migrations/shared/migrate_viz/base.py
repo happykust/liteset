@@ -29,7 +29,7 @@ from superset.utils.date_parser import get_since_until
 
 
 def _default_time_filter() -> Any:
-    """Resolve ``DEFAULT_TIME_FILTER`` without depending on Flask.
+    """Resolve ``DEFAULT_TIME_FILTER`` without the legacy WSGI stack.
 
     The legacy migrate-viz pipeline read the value from
     ``current_app.config['DEFAULT_TIME_FILTER']``.  In Liteset the

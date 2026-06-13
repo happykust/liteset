@@ -74,10 +74,10 @@ def _recipients_string_to_list(address_string: str | None) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Helper: get_slack_client (ported from superset.utils.slack, no Flask)
+# Helper: get_slack_client (ported from superset.utils.slack, no WSGI stack)
 # ---------------------------------------------------------------------------
 def _get_slack_client(config: dict[str, Any]) -> WebClient:
-    """Build a Slack WebClient from config dict (no Flask dependency)."""
+    """Build a Slack WebClient from config dict (no legacy WSGI dependency)."""
     token: Any = config.get("SLACK_API_TOKEN")
     if callable(token):
         token = token()
@@ -94,10 +94,10 @@ def _get_slack_client(config: dict[str, Any]) -> WebClient:
 
 
 # ---------------------------------------------------------------------------
-# Helper: should_use_v2_api (ported from superset.utils.slack, no Flask)
+# Helper: should_use_v2_api (ported from superset.utils.slack, no WSGI stack)
 # ---------------------------------------------------------------------------
 def _should_use_v2_api(config: dict[str, Any]) -> bool:
-    """Check if Slack V2 API should be used (no Flask dependency)."""
+    """Check if Slack V2 API should be used (no legacy WSGI dependency)."""
     if not feature_flag_manager.is_feature_enabled("ALERT_REPORT_SLACK_V2"):
         return False
     try:

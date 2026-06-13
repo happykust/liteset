@@ -53,7 +53,7 @@ from superset.commands.dashboard.update import (
 )
 from superset.commands.importers.exceptions import NoValidFilesFoundError
 
-# DAO imports moved to provider functions (avoid Flask import chain)
+# DAO imports moved to provider functions (avoid the legacy import chain)
 from superset.controllers.base import (
     build_rison_query_params,
     extract_ids,
@@ -405,7 +405,7 @@ class DashboardController(Controller):
         return await get_info_payload(
             dao=dao,
             model_name="Dashboard",
-            # Mirrors the original FAB-generated permission list exposed
+            # Mirrors the original upstream-generated permission list exposed
             # by ``/api/v1/dashboard/_info``; the list order is preserved to
             # match what Cypress snapshots assume.
             permissions=[

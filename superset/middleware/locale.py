@@ -16,7 +16,7 @@
 # under the License.
 """Locale middleware.
 
-Resolves the active request locale the same way the original Flask-AppBuilder
+Resolves the active request locale the same way the original upstream
 locale selector did: a chosen-language cookie (the ASGI equivalent of the
 ``session["locale"]`` set by ``/lang/<locale>``) takes precedence, then the
 ``Accept-Language`` header's best match, then the default.
@@ -140,7 +140,7 @@ def _extract_cookie_locale(
 def _best_match(header: str, allowed: set[str]) -> str | None:
     """Best-match an ``Accept-Language`` header against the allowed set.
 
-    Mirrors ``werkzeug``'s ``accept_languages.best_match(languages)``: parse
+    Mirrors the upstream ``accept_languages.best_match(languages)``: parse
     every ``tag;q=`` pair, sort by quality (descending, stable on header
     order), and return the first tag that maps to an allowed locale.
     """

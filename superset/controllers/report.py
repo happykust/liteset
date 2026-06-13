@@ -68,7 +68,7 @@ def _slack_cache_get() -> list[dict[str, str]] | None:
     Returns the cached list if present, or ``None`` on cache miss or error.
     Uses the synchronous cache interface — avoids asyncio loop conflicts when
     called from a sync function running on the event loop thread.  1:1 with the
-    original Flask ``@cache_util.memoized_func`` synchronous decorator in
+    original ``@cache_util.memoized_func`` synchronous decorator in
     ``superset_old/utils/slack.py:62-65``.
     """
     import json as _json
@@ -98,7 +98,7 @@ def _slack_cache_set(channels: list[dict[str, str]], ttl: int) -> None:
     Silently ignores errors so a cache failure never breaks the API call.
     Uses the synchronous cache interface — avoids asyncio loop conflicts when
     called from a sync function running on the event loop thread.  1:1 with the
-    original Flask ``@cache_util.memoized_func`` synchronous decorator in
+    original ``@cache_util.memoized_func`` synchronous decorator in
     ``superset_old/utils/slack.py:62-65``.
     """
     from superset.extensions import cache_manager as _cm

@@ -92,7 +92,7 @@ def _get_warmup_url() -> str:
     """Build the chart warm-up cache URL from settings.
 
     The original used ``get_url_path("ChartRestApi.warm_up_cache")`` which
-    relied on Flask's ``url_for()``. In Liteset we construct the URL
+    relied on the legacy ``url_for()``. In Liteset we construct the URL
     directly from ``webdriver_baseurl`` + the known API path.
     """
     from superset.config import SupersetSettings
@@ -116,9 +116,10 @@ def _fetch_csrf_token(
     deployment-specific deviations:
 
     * URL — the original used ``get_url_path("SecurityRestApi.csrf_token")``
-      (Flask ``url_for``); here we build it directly from ``WEBDRIVER_BASEURL``.
-    * CSRF header name — the original sent ``X-CSRF-Token`` because Flask-WTF
-      accepts both ``X-CSRFToken`` and ``X-CSRF-Token`` by default.  Liteset's
+      (legacy ``url_for``); here we build it directly from ``WEBDRIVER_BASEURL``.
+    * CSRF header name — the original sent ``X-CSRF-Token`` because the legacy
+      CSRF layer accepts both ``X-CSRFToken`` and ``X-CSRF-Token`` by default.
+      Liteset's
       :mod:`superset.middleware.csrf` reads a single header (``X-CSRFToken``,
       per ``CSRF_HEADER_NAME``), so we must send exactly that spelling or the
       warm-up PUT would be rejected.

@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Vertica engine spec -- sync/Flask-compatible.
+"""Vertica engine spec -- synchronous.
 
 Ported 1:1 from ``superset_old/db_engine_specs/vertica.py``.
 Vertica inherits all behavior from PostgresBaseEngineSpec.

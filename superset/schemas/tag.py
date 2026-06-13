@@ -65,7 +65,7 @@ class AddTagsToObjectProperties(msgspec.Struct, frozen=True):
 class AddTagsToObjectSchema(msgspec.Struct):
     """Schema for POST /{object_type}/{object_id}/ -- add tags to object.
 
-    The original Flask endpoint expects ``{"properties": {"tags": [...]}}``.
+    The original endpoint expects ``{"properties": {"tags": [...]}}``.
     """
 
     properties: AddTagsToObjectProperties = msgspec.field(

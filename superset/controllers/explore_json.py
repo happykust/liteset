@@ -16,7 +16,7 @@
 # under the License.
 """Legacy ``/superset/explore_json`` controller (deprecated, eol 5.0.0).
 
-1:1 port of the Flask ``Superset.explore_json`` and
+1:1 port of the upstream ``Superset.explore_json`` and
 ``Superset.explore_json_data`` views from ``superset_old/views/core.py``.
 
 The modern frontend uses ``/api/v1/chart/data``; this legacy surface is
@@ -127,10 +127,10 @@ def _parse_request_form_data(form_data_str: str | bytes) -> dict[str, Any]:
 async def _extract_form_data(request: Request[Any, Any, Any]) -> dict[str, Any]:
     """Extract the explore ``form_data`` from a GET or POST request.
 
-    Mirrors ``superset.utils.core.get_form_data`` (the Flask original):
+    Mirrors ``superset.utils.core.get_form_data`` (the upstream original):
     the body's ``form_data`` field (POST), or the ``form_data`` query-string
-    arg (GET), JSON-decoded.  ``g.form_data`` is not available in the async
-    web path, so we read directly from the request like the existing
+    arg (GET), JSON-decoded.  The request-global form_data is not available in
+    the async web path, so we read directly from the request like the existing
     ``/superset/explore_json`` inline handler did.
     """
     form_data: dict[str, Any] = {}
@@ -347,7 +347,7 @@ class ExploreJsonController(Controller):
         datasource_type: str | None,
         datasource_id: int | None,
     ) -> Response[Any]:
-        """Core ``explore_json`` handler — 1:1 with the Flask original."""
+        """Core ``explore_json`` handler — 1:1 with the upstream original."""
         settings = cast("SupersetSettings", getattr(state, "settings", None))
 
         response_type = _resolve_response_type(request)

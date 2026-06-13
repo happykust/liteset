@@ -24,8 +24,8 @@ needing it threaded through every signature.
 
 Why this exists
 ---------------
-The original Apache Superset relied on Flask's thread-local
-``flask.request`` proxy.  Audit logging, jinja templating, and a handful
+The original Apache Superset relied on a thread-local
+``request`` proxy.  Audit logging, jinja templating, and a handful
 of utility helpers consulted ``request.referrer`` / ``request.path`` /
 ``request.headers`` directly — the request was never passed in
 explicitly.  In the async port we cannot reach for a thread-local; this
@@ -38,7 +38,7 @@ Body parsing rules
 ------------------
 For ``POST`` / ``PUT`` / ``PATCH`` requests we *optionally* parse the
 body into the ``form_data`` ContextVar so audit logging and jinja
-templating can read the same dict the original Flask code reached for
+templating can read the same dict the original code reached for
 via ``g.form_data``.  Parsing is gated on three independent
 short-circuits to avoid materialising large or streaming uploads:
 
@@ -80,15 +80,15 @@ logger = logging.getLogger(__name__)
 
 # Methods that can carry a body we want to surface as ``form_data`` for
 # audit logging / jinja templating.  GET / DELETE bodies are non-standard
-# and we never used to ship them through to ``g.form_data`` in Flask.
+# and we never used to ship them through to ``g.form_data`` upstream.
 _FORM_BODY_METHODS: frozenset[str] = frozenset({"POST", "PUT", "PATCH"})
 
 # Cap on how much of an unexpectedly-large body we pull into memory for
 # the form_data ContextVar.  Beyond this we silently drop the form_data
 # binding rather than risk a 100 MB JSON upload turning into 100 MB of
-# RAM in the audit-log context.  Mirrors the original Flask behaviour
-# where ``MAX_CONTENT_LENGTH`` capped what FAB/Flask would parse out of
-# the request.
+# RAM in the audit-log context.  Mirrors the original behaviour
+# where ``MAX_CONTENT_LENGTH`` capped what the upstream stack would parse
+# out of the request.
 _MAX_PARSED_BODY_BYTES: int = 4 * 1024 * 1024  # 4 MiB
 
 
@@ -110,7 +110,7 @@ class RequestContextMiddleware(ASGIMiddleware):
       copy of the request body for ``POST``/``PUT``/``PATCH`` requests
       whose body is JSON / form-urlencoded and within the
       :data:`_MAX_PARSED_BODY_BYTES` limit.  This mirrors the original
-      ``g.form_data`` populated by the Flask ``set_form_data`` helper.
+      ``g.form_data`` populated by the upstream ``set_form_data`` helper.
       Multipart, oversized, and partially-received bodies are passed
       through without parsing.
 
@@ -145,7 +145,7 @@ class RequestContextMiddleware(ASGIMiddleware):
         # ----------------------------------------------------------
         # Fast paths that DON'T parse the body.
         # ----------------------------------------------------------
-        # Methods that historically never carried a form body in Flask
+        # Methods that historically never carried a form body upstream
         # (GET / HEAD / DELETE / OPTIONS) — bind the request ContextVar
         # but skip everything body-related.  ``form_data`` stays at its
         # default (empty dict) for these requests.
@@ -243,7 +243,7 @@ class RequestContextMiddleware(ASGIMiddleware):
         ``body_bytes`` is ``None`` when the body could not be safely
         materialised (incomplete stream, oversized post-drain, etc.).
         In that case we still bind the Request ContextVar but leave
-        ``form_data`` empty — exactly the behaviour the original Flask
+        ``form_data`` empty — exactly the behaviour the original
         code took when ``request.form == {}``.
         """
         request_token = None
@@ -451,8 +451,8 @@ class RequestContextMiddleware(ASGIMiddleware):
                 return {}
             if isinstance(decoded, dict):
                 return decoded
-            # JSON arrays / scalars don't map to form_data — Flask never
-            # accepted those either.
+            # JSON arrays / scalars don't map to form_data — the upstream
+            # never accepted those either.
             return {}
 
         # ---- application/x-www-form-urlencoded ----
@@ -465,7 +465,7 @@ class RequestContextMiddleware(ASGIMiddleware):
             except Exception:  # noqa: BLE001
                 return {}
             # parse_qs returns ``list[str]`` per key; flatten single-value
-            # keys to match Flask's ``request.form.to_dict()`` semantics.
+            # keys to match the upstream ``request.form.to_dict()`` semantics.
             return {k: (v[0] if len(v) == 1 else v) for k, v in parsed.items()}
 
         # ---- multipart/form-data ----

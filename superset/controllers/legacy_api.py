@@ -79,7 +79,7 @@ class LegacyApiController(Controller):
         Return ``since`` / ``until`` datetimes from human-readable ``timeRange``
         expressions (e.g. ``"Last week"``, ``"100 years ago : now"``). The
         ``q`` argument is a Rison-encoded string or list of
-        ``{timeRange, shift}`` objects. Response matches the original Flask
+        ``{timeRange, shift}`` objects. Response matches the original
         view shape:
 
             {"result": [{"since": "...", "until": "...", "timeRange": "...",

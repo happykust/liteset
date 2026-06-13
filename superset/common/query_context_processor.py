@@ -14,11 +14,12 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async QueryContextProcessor — processes QueryContext payloads without Flask.
+"""Async QueryContextProcessor — processes QueryContext payloads asynchronously.
 
 Mirrors superset.common.query_context_processor.QueryContextProcessor.
-All Flask globals (current_app.config, security_manager, cache_manager,
-AnnotationLayerDAO) are replaced by constructor-injected dependencies.
+All request-scoped globals (current_app.config, security_manager,
+cache_manager, AnnotationLayerDAO) are replaced by constructor-injected
+dependencies.
 
 All utility imports use superset.utils modules — no superset dependency.
 """
@@ -155,7 +156,7 @@ async def load_cached_query_context_form(
 # Cache-key prefix the legacy ``load_explore_json_into_cache`` Celery task
 # writes its entry under.  The default async cache slot (``AsyncCacheManager``)
 # issues an unprefixed ``redis.get``, but the task writes via the
-# Flask-Caching-style ``superset_cache:`` prefix (raw sync Redis), so the read
+# upstream-cache-style ``superset_cache:`` prefix (raw sync Redis), so the read
 # must try the prefixed key first.
 _FLASK_CACHE_KEY_PREFIX = "superset_cache:"
 
@@ -172,7 +173,7 @@ async def load_cached_explore_form(
     under the ``ejr-`` cache key.  Used by the legacy
     ``GET /superset/explore_json/data/<cache_key>`` endpoint.
 
-    The task writes via raw sync Redis under the Flask-Caching-style
+    The task writes via raw sync Redis under the upstream-cache-style
     ``superset_cache:<cache_key>`` key, while the default async cache slot
     (``AsyncCacheManager.get``) issues an unprefixed ``redis.get`` — so we try
     the prefixed key first and fall back to the bare key.
@@ -219,7 +220,8 @@ class AsyncQueryContextProcessor:
     """Processes QueryContext payloads asynchronously.
 
     Replaces superset.common.query_context_processor.QueryContextProcessor.
-    All Flask globals are replaced by constructor-injected dependencies:
+    All request-scoped globals are replaced by constructor-injected
+    dependencies:
       - current_app.config["ROW_LIMIT"] -> self._settings.row_limit
       - current_app.config["CACHE_DEFAULT_TIMEOUT"]
       - current_app.config["DATA_CACHE_CONFIG"] -> self._settings.data_cache_config
@@ -1577,7 +1579,7 @@ class AsyncQueryContextProcessor:
         Serializes the value to bytes via pickle before passing to the cache
         manager, which expects ``bytes``.  Pickle is used here (rather than
         JSON) because the cached values may contain pandas DataFrames and
-        NumPy arrays — the same approach the original Flask QueryContextProcessor
+        NumPy arrays — the same approach the original QueryContextProcessor
         takes via ``superset.extensions.cache_manager``.
 
         1:1 with ``superset_old/utils/cache.py:set_and_log_cache`` lines 61-63:
@@ -2153,7 +2155,7 @@ class AsyncQueryContextProcessor:
         offset-shifted* temporal key (:meth:`generate_join_column`) so each main
         row aligns with the corresponding shifted offset row (e.g. "today" with
         "today − 1 year"); a plain merge on the raw timestamp would mis-align
-        them. ``TIME_GRAIN_JOIN_COLUMN_PRODUCERS`` is a Flask-only extension
+        them. ``TIME_GRAIN_JOIN_COLUMN_PRODUCERS`` is an upstream-only extension
         hook (normally empty), so we default to no custom producer and fall back
         to ``generate_join_column``.
         """
@@ -2488,7 +2490,7 @@ class AsyncQueryContextProcessor:
                 df.columns = [verbose_map.get(col, col) for col in df.columns]
 
             # Read the CSV_EXPORT / EXCEL_EXPORT pandas kwargs from settings
-            # (the Flask-free equivalent of ``current_app.config[...]``).
+            # (the equivalent of the legacy ``current_app.config[...]``).
             try:
                 settings = _config.SupersetSettings()  # type: ignore[call-arg]
                 csv_export = dict(getattr(settings, "csv_export", {}) or {})

@@ -46,7 +46,7 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
     information_schema queries otherwise.
     """
 
-    _sync_spec: Any  # Flask BaseEngineSpec subclass
+    _sync_spec: Any  # synchronous BaseEngineSpec subclass
 
     @classmethod
     async def get_catalog_names(

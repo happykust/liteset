@@ -81,7 +81,7 @@ class AsyncQueryObject:
     """Describes a single query to execute against a datasource.
 
     Mirrors superset.common.query_object.QueryObject fields for
-    API contract compatibility. Does not depend on Flask.
+    API contract compatibility. Does not depend on the legacy WSGI stack.
     """
 
     datasource: dict[str, Any]

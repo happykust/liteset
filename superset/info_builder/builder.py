@@ -28,7 +28,7 @@ The builder composes the response from three sources:
 * Caller-provided ``permissions`` — runtime RBAC for the request.
 
 Together this gives a payload byte-equivalent to the original Apache
-Superset ``_info`` endpoint without the Flask-AppBuilder dependency.
+Superset ``_info`` endpoint without the upstream framework dependency.
 """
 
 from __future__ import annotations
@@ -117,7 +117,7 @@ def _field_to_dict(f: FieldSpec) -> dict[str, Any]:
 
 
 def _prettify(name: str) -> str:
-    """FAB ``_prettify_column`` — ``slice_name`` → ``"Slice Name"``."""
+    """Upstream ``_prettify_column`` — ``slice_name`` → ``"Slice Name"``."""
     return re.sub(r"[._]", " ", name).title()
 
 

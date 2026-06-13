@@ -33,7 +33,7 @@ Public API kept stable so existing call sites keep working:
 * :func:`on_security_exception` — maps a security exception to a
   Litestar-compatible JSON response payload.
 
-`flask`, `flask_appbuilder`, and `werkzeug` are no longer imported.
+The legacy WSGI stack is no longer imported.
 """
 
 from __future__ import annotations
@@ -247,8 +247,8 @@ def on_error(
 #
 # Re-entrancy is tracked on a ``ContextVar`` so concurrent async
 # requests cannot leak the "I'm already inside a transaction" flag
-# across each other.  The original Flask version used
-# ``flask.g.in_transaction`` which is implicitly per-request; the
+# across each other.  The original version used
+# a request-scoped ``g.in_transaction`` which is implicitly per-request; the
 # ContextVar gives us the same isolation guarantees in async-land.
 _in_transaction_ctx: ContextVar[bool] = ContextVar("_in_transaction_ctx", default=False)
 
@@ -379,7 +379,7 @@ def transaction(  # pylint: disable=redefined-outer-name  # noqa: C901  # comple
 def on_security_exception(self: Any, ex: Exception) -> dict[str, Any]:
     """Helper that returns a Litestar-compatible 403 response payload.
 
-    Mirrors the original Flask helper which called ``self.response(403, …)``
+    Mirrors the original helper which called ``self.response(403, …)``
     on a ``BaseSupersetView``.  The async controllers use Litestar's
     ``Response`` directly, so this function now just returns the body
     dict and the caller is responsible for wrapping it in a Response.

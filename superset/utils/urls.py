@@ -17,10 +17,10 @@
 
 """URL helpers — port of ``superset_old/utils/urls.py`` to Liteset.
 
-The original module relied on Flask's :func:`flask.url_for` to resolve
+The original module relied on the upstream ``url_for`` helper to resolve
 view names (Superset.dashboard, ExploreView.root, etc.) to URLs in a
 ``test_request_context``.  Liteset is Litestar/ASGI: there is no
-``flask.url_for`` and no Flask request context, so :func:`get_url_path`
+``url_for`` helper and no legacy request context, so :func:`get_url_path`
 ports each view name used by the screenshot / thumbnail / report /
 celery code paths to its concrete URL template.
 
@@ -29,7 +29,7 @@ Litestar router) because:
 
 * Several names — ``Superset.dashboard``, ``Superset.slice``,
   ``Superset.dashboard_permalink``, ``ExploreView.root`` — point at
-  legacy template-rendering routes that live on the Flask SPA, not on
+  legacy template-rendering routes that live on the legacy SPA, not on
   the Litestar API; their URLs are part of the public surface.
 * ``ChartDataRestApi.get_data``, ``ChartRestApi.warm_up_cache``,
   ``ChartRestApi.screenshot``, ``DashboardRestApi.thumbnail``,
@@ -39,7 +39,7 @@ Litestar router) because:
   to compute a URL.
 
 The remaining helpers (:func:`headless_url`, :func:`is_secure_url`,
-:func:`modify_url_query`) are pure stdlib and are ported verbatim.
+:func:`modify_url_query`) are pure stdlib and ported verbatim.
 """
 
 from __future__ import annotations
@@ -115,7 +115,7 @@ def headless_url(path: str, user_friendly: bool = False) -> str:
 # View-name → URL-template mapping
 # ---------------------------------------------------------------------------
 #
-# Each entry maps a legacy Flask view name (used by the original
+# Each entry maps a legacy upstream view name (used by the original
 # ``get_url_path`` callers) to:
 #
 #   1. The set of kwargs whose values fill placeholders in the URL
@@ -124,7 +124,7 @@ def headless_url(path: str, user_friendly: bool = False) -> str:
 #
 # Any kwarg passed to :func:`get_url_path` that is *not* in the
 # template's path-params set is treated as a query-string parameter,
-# matching the way Flask's ``url_for`` appends unknown kwargs as a
+# matching the way the upstream ``url_for`` appends unknown kwargs as a
 # query string.
 #
 # Empty path_params (e.g. ``ChartRestApi.warm_up_cache``) means every
@@ -133,14 +133,14 @@ def headless_url(path: str, user_friendly: bool = False) -> str:
 _PathSpec = tuple[set[str], str]
 
 _VIEW_TEMPLATES: dict[str, _PathSpec] = {
-    # ``Superset.dashboard`` — Flask SPA dashboard view.
+    # ``Superset.dashboard`` — legacy SPA dashboard view.
     "Superset.dashboard": (
         {"dashboard_id_or_slug"},
         "/superset/dashboard/{dashboard_id_or_slug}/",
     ),
-    # ``Superset.slice`` — Flask SPA explore-view shortcut by slice id.
+    # ``Superset.slice`` — legacy SPA explore-view shortcut by slice id.
     "Superset.slice": ({"slice_id"}, "/superset/slice/{slice_id}/"),
-    # ``Superset.dashboard_permalink`` — Flask SPA stateful dashboard link.
+    # ``Superset.dashboard_permalink`` — legacy SPA stateful dashboard link.
     "Superset.dashboard_permalink": (
         {"key"},
         "/superset/dashboard/p/{key}/",
@@ -149,14 +149,14 @@ _VIEW_TEMPLATES: dict[str, _PathSpec] = {
     "Superset.welcome": (set(), "/superset/welcome/"),
     # ``Superset.profile`` — current user's profile page.
     "Superset.profile": (set(), "/superset/profile/"),
-    # ``Superset.explore`` — Flask SPA explore alias (legacy URL).
+    # ``Superset.explore`` — legacy SPA explore alias (legacy URL).
     "Superset.explore": (set(), "/explore/"),
     # ``Superset.filter`` — column-filter ajax endpoint (cascading filters).
     "Superset.filter": (
         {"datasource_type", "datasource_id", "column"},
         "/superset/filter/{datasource_type}/{datasource_id}/{column}/",
     ),
-    # ``ExploreView.root`` — Flask SPA explore root (chart builder).
+    # ``ExploreView.root`` — legacy SPA explore root (chart builder).
     "ExploreView.root": (set(), "/explore/"),
     # Liteset REST: chart data endpoint.
     "ChartDataRestApi.get_data": (
@@ -201,7 +201,7 @@ def _resolve_view_path(view: str, kwargs: dict[str, Any]) -> str:
 
     Raises :class:`ValueError` for unknown views — more informative than
     the bare ``KeyError`` that ``dict[view]`` would raise, and matches
-    the spirit of Flask's ``BuildError`` ("could not build url for
+    the spirit of the upstream ``BuildError`` ("could not build url for
     endpoint").  Add the missing view to :data:`_VIEW_TEMPLATES` with
     its URL template.
     """
@@ -228,7 +228,7 @@ def _resolve_view_path(view: str, kwargs: dict[str, Any]) -> str:
 
     if query_values:
         # Use ``doseq=True`` so list-valued kwargs (rare but legal in
-        # Flask url_for) are encoded as repeated key=value pairs.
+        # the upstream url_for) are encoded as repeated key=value pairs.
         path = f"{path}?{urllib.parse.urlencode(query_values, doseq=True)}"
     return path
 
@@ -237,7 +237,7 @@ def get_url_path(view: str, user_friendly: bool = False, **kwargs: Any) -> str:
     """Return a fully-qualified URL for ``view`` against the configured
     base URL.
 
-    The original Flask version used :func:`flask.url_for` to resolve
+    The original used the upstream ``url_for`` helper to resolve
     ``view`` against the in-process URL map (under
     ``app.test_request_context`` when no real request was bound).  In
     Liteset we resolve through the static :data:`_VIEW_TEMPLATES`
@@ -249,7 +249,7 @@ def get_url_path(view: str, user_friendly: bool = False, **kwargs: Any) -> str:
 def modify_url_query(url: str, **kwargs: Any) -> str:
     """Replace or add parameters to a URL.
 
-    Verbatim port of the original — pure stdlib, no Flask dependency.
+    Verbatim port of the original — pure stdlib, no legacy dependency.
     """
     parts = list(urllib.parse.urlsplit(url))
     params = urllib.parse.parse_qs(parts[3])

@@ -17,7 +17,7 @@
 # mypy: ignore-errors
 """Core models: Database, Log, FavStar, CssTemplate, Theme, KeyValue.
 
-Pure SQLAlchemy -- no Flask dependencies.
+Pure SQLAlchemy -- no legacy WSGI dependencies.
 """
 
 from __future__ import annotations
@@ -226,7 +226,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         """Resolve the configured ``SQLALCHEMY_CUSTOM_PASSWORD_STORE`` callback.
 
         1:1 with the original's ``app.config["SQLALCHEMY_CUSTOM_PASSWORD_STORE"]``
-        lookup (``superset_old/models/core.py``). Liteset has no Flask
+        lookup (``superset_old/models/core.py``). Liteset has no legacy
         ``app.config`` so the value is discovered from ``superset.config``
         using the same two-path scheme as ``mutate_sql_based_on_config``:
         the legacy uppercase module-level constant first, then the
@@ -393,7 +393,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         1:1 with ``Database.get_sqla_engine`` in
         ``superset_old/models/core.py``.
         Wraps ``superset.utils.database.get_sync_engine`` which is the
-        Liteset-side equivalent of the Flask app's sync engine
+        Liteset-side equivalent of the original app's sync engine
         registry. Used by ``compile_sqla_query`` and ``get_df``.
 
         When ``override_ssh_tunnel`` is supplied, the engine is created
@@ -607,8 +607,9 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         ``superset_old/models/core.py``.
 
         The original is sync and decorated with ``cache_util.memoized_func``
-        for Flask-Caching.  The async port wraps the sync inspector call
-        with :func:`superset.utils.cache.memoized_func` so the same
+        for the upstream cache layer.  The async port wraps the sync
+        inspector call with :func:`superset.utils.cache.memoized_func` so the
+        same
         cache-key shape is reused (``db:{id}:catalog:{c}:schema:{s}:table_list``).
         ``force`` / ``cache`` / ``cache_timeout`` are honoured by the
         decorator at call-time exactly as in the original.
@@ -730,7 +731,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         need — ``get_user_id`` / ``current_user`` / ``is_user_admin``
         — while keeping the async :class:`AsyncSecurityManager`
         separate.  Mutators that relied on the original
-        FAB ``SecurityManager`` for those three methods continue to
+        upstream ``SecurityManager`` for those three methods continue to
         work unchanged.
         """
         try:
@@ -828,7 +829,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
 
         Returns the callable or ``None`` if unavailable. Resolved lazily
         so Celery workers pick up the operator's configured logger without
-        a Flask app context. 1:1 with the lazy-import block in
+        a legacy app context. 1:1 with the lazy-import block in
         ``get_df``.
         """
         # The config module has no module-level QUERY_LOGGER attribute —
@@ -1121,8 +1122,8 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         """1:1 with ``Database.get_schema_access_for_file_upload``
         (superset_old/models/core.py:1055-1068): ``literal_eval`` for legacy
         string-encoded lists, plus the configurable
-        ``ALLOWED_USER_CSV_SCHEMA_FUNC`` hook (the Flask ``g.user`` read is
-        replaced by the request-scoped ContextVar)."""
+        ``ALLOWED_USER_CSV_SCHEMA_FUNC`` hook (the request-scoped current
+        user read is replaced by the request-scoped ContextVar)."""
         from ast import literal_eval
 
         allowed_databases = self.get_extra().get("schemas_allowed_for_file_upload", [])

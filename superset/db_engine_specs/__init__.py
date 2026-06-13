@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Engine-spec registry for sync/Flask-compatible engine specs.
+"""Engine-spec registry for sync-compatible engine specs.
 
 Provides:
   - ``BaseEngineSpec``  -- base class for all engine specs

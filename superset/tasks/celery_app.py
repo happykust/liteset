@@ -17,7 +17,7 @@
 """Celery application factory for Superset.
 
 Replaces ``superset/tasks/celery_app.py``. The Celery app is created
-independently of Litestar (no Flask ``create_app`` call). Signal handlers
+independently of Litestar (no legacy ``create_app`` call). Signal handlers
 manage async engine disposal in forked worker processes.
 """
 
@@ -143,7 +143,7 @@ def init_worker_db_engine(**kwargs: Any) -> None:
 
     # Configure the event logger so that audit ``Log`` rows are written for
     # Celery tasks (e.g. ``execute_sql`` in sql_lab).  Mirrors the original
-    # Flask app's ``init_app()`` path, which configures ``DBEventLogger``
+    # app's ``init_app()`` path, which configures ``DBEventLogger``
     # before any task runs.  Without this, ``superset.events.event_logger``
     # stays as the no-op ``_StructuredLoggerLogger`` and no ``Log`` rows are
     # written for async SQL-Lab executions.
@@ -203,7 +203,7 @@ def teardown(  # pylint: disable=unused-argument
         try:
             from superset.db.session import remove_sync_session  # noqa: WPS433
 
-            # Mirrors Flask-SQLAlchemy's ``db.session.remove()``: deregisters
+            # Mirrors the legacy ``db.session.remove()``: deregisters
             # the thread-local Session from the scoped_session registry and
             # releases its connection back to the pool.
             remove_sync_session()

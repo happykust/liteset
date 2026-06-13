@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Session-based CSRF protection compatible with Flask-WTF.
+"""Session-based CSRF protection compatible with the upstream CSRF flow.
 
 Token is generated via HMAC(secret, random_bytes) and stored
 in the user's session cookie JWT claims.  The frontend fetches
@@ -165,7 +165,7 @@ def _extract_cookie(
 
 class CSRFMiddleware(MiddlewareProtocol):
     """CSRF middleware compatible with the original
-    Flask-WTF flow used by Apache Superset.
+    CSRF flow used by Apache Superset.
 
     - GET /api/v1/security/csrf_token/ generates and
       returns the token
@@ -247,7 +247,7 @@ class CSRFMiddleware(MiddlewareProtocol):
 
             logger.warning("Refresh CSRF token error")
 
-            # Mirror the original Flask handler:
+            # Mirror the original handler:
             # - JSON requests → 400 JSON error (CSRFError inherits BadRequest)
             # - non-JSON requests → 302 redirect to login
             content_type_header = headers.get(b"content-type", b"").decode(
@@ -284,7 +284,7 @@ class CSRFMiddleware(MiddlewareProtocol):
                 return
 
             # JSON request → 400 with GENERIC_BACKEND_ERROR (mirrors show_http_exception
-            # which uses ex.code=400 since CSRFError inherits werkzeug BadRequest)
+            # which uses ex.code=400 since CSRFError inherits the upstream BadRequest)
             body = _json.dumps(
                 {
                     "errors": [

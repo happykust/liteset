@@ -14,11 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Flask session cookie decoder for Strangler Fig coexistence.
+"""Legacy session cookie decoder for Strangler Fig coexistence.
 
 Decodes itsdangerous URLSafeTimedSerializer signed session cookies
-created by Flask/Flask-Login. This allows Litestar's AuthMiddleware
-to authenticate users who logged in through the Flask frontend without
+created by the legacy WSGI login layer. This allows Litestar's AuthMiddleware
+to authenticate users who logged in through the legacy frontend without
 requiring a separate login flow.
 """
 
@@ -34,15 +34,15 @@ logger = logging.getLogger(__name__)
 
 
 class FlaskSessionDecoder:
-    """Decodes itsdangerous-signed Flask session cookies.
+    """Decodes itsdangerous-signed legacy session cookies.
 
     Args:
-        secret_key: The SECRET_KEY used by the Flask application.
+        secret_key: The SECRET_KEY used by the legacy application.
         salt: The salt used for the session cookie (default: "cookie-session").
         max_age: Maximum age in seconds for the cookie (default: 31 days).
     """
 
-    # 31 days in seconds — matches Flask's PERMANENT_SESSION_LIFETIME default
+    # 31 days in seconds — matches the legacy PERMANENT_SESSION_LIFETIME default
     DEFAULT_MAX_AGE: int = 86400 * 31
 
     def __init__(
@@ -52,14 +52,15 @@ class FlaskSessionDecoder:
         salt: str = "cookie-session",
         max_age: int | None = DEFAULT_MAX_AGE,
     ) -> None:
-        # 1:1 with Flask's ``SecureCookieSessionInterface.get_signing_serializer``
-        # (flask/sessions.py): ``key_derivation="hmac"`` + SHA-1 digest.
+        # 1:1 with the legacy ``SecureCookieSessionInterface
+        # .get_signing_serializer`` (upstream sessions.py):
+        # ``key_derivation="hmac"`` + SHA-1 digest.
         # itsdangerous' defaults (``django-concat`` key derivation) produce
-        # signatures incompatible with Flask cookies, so without
-        # ``signer_kwargs`` every real Flask session cookie fails with
-        # BadSignature.  Flask's ``TaggedJSONSerializer`` payload tags are
-        # post-processed by :meth:`_untag` (this package must not import
-        # flask — the Strangler-Fig fallback is gone).
+        # signatures incompatible with the legacy cookies, so without
+        # ``signer_kwargs`` every real legacy session cookie fails with
+        # BadSignature.  The legacy ``TaggedJSONSerializer`` payload tags are
+        # post-processed by :meth:`_untag` (this package has no legacy WSGI
+        # dependency — the Strangler-Fig fallback is gone).
         self._serializer = URLSafeTimedSerializer(
             secret_key,
             salt=salt,
@@ -72,9 +73,9 @@ class FlaskSessionDecoder:
 
     @classmethod
     def _untag(cls, value: Any) -> Any:
-        """Resolve Flask ``TaggedJSONSerializer`` tags to plain values.
+        """Resolve legacy ``TaggedJSONSerializer`` tags to plain values.
 
-        Mirrors ``flask.json.tag`` for the tag forms that can appear in a
+        Mirrors the upstream ``json.tag`` for the tag forms that can appear in a
         session payload: ``{" t": [...]}`` (tuple), ``{" u": hex}`` (UUID),
         ``{" b": base64}`` (bytes), ``{" m": str}`` (Markup → str),
         ``{" d": RFC-822 date}`` (kept as the string — callers only read
@@ -104,7 +105,7 @@ class FlaskSessionDecoder:
         return value
 
     def decode(self, cookie_value: str | None) -> dict[str, Any] | None:
-        """Decode a Flask session cookie.
+        """Decode a legacy session cookie.
 
         Args:
             cookie_value: The raw cookie string from the request.
@@ -131,9 +132,9 @@ class FlaskSessionDecoder:
             return None
 
     def get_user_id(self, cookie_value: str | None) -> int | None:
-        """Extract user_id from a Flask session cookie.
+        """Extract user_id from a legacy session cookie.
 
-        Flask-Login stores the user ID as "_user_id" in the session.
+        The legacy login layer stores the user ID as "_user_id" in the session.
 
         Args:
             cookie_value: The raw cookie string.

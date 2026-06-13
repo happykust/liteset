@@ -65,7 +65,7 @@ async def import_theme(  # noqa: C901  # complex business logic
     # ``AsyncSecurityManager.can_access`` takes the user explicitly
     # (keyword-only) — the previous call omitted it (TypeError when this
     # branch runs, R12-01). Resolve the acting user from the request-scoped
-    # ContextVar, mirroring upstream's Flask ``g.user`` read.
+    # ContextVar, mirroring the upstream request-scoped current user.
     can_write = ignore_permissions
     if not can_write and security_manager is not None:
         from superset.utils.core import get_current_user

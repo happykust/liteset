@@ -33,7 +33,7 @@ Inputs:
 * ``contents`` — the canonical ``{filename: text}`` mapping consumed by
   v0 commands directly.  v1 commands accept :class:`io.BytesIO`
   containing a ZIP, so the dispatcher converts the dict to a fresh ZIP
-  archive before invoking v1.  The original Flask-side ``ImportAssetsCommand``
+  archive before invoking v1.  The original upstream ``ImportAssetsCommand``
   wired the v1 path the same way (parse the ZIP into a dict on entry,
   then ``v1`` rebuilds whatever it needs from the dict directly via
   :func:`load_yaml`); for v1 dashboard / dataset CLI paths the original
@@ -146,7 +146,7 @@ class ImportDashboardsCommand:
         back to the sync v0 command (run in a thread).  This mirrors the
         original ``ImportDashboardsCommand`` dispatcher
         (``superset_old/commands/dashboard/importers/dispatcher.py``) which
-        the Flask API called directly.
+        the upstream API called directly.
         """
         try:
             from superset.commands.dashboard.importers.v1 import (  # noqa: PLC0415

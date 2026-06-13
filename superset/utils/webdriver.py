@@ -19,7 +19,7 @@
 ``superset_old/utils/webdriver.py`` to Liteset.
 
 The original module read every webdriver / screenshot tunable from
-``app.config[...]`` (Flask).  Liteset has no Flask app context: this
+``app.config[...]``.  Liteset has no legacy app context: this
 module reads the same settings off :class:`SupersetSettings`, lazily
 cached at module level (see :func:`cached_settings`), so the synchronous
 Selenium / Playwright code path keeps its original shape.

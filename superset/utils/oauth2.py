@@ -22,7 +22,7 @@ Provides:
   TypedDicts.
 * :func:`encode_oauth2_state` / :func:`decode_oauth2_state` — JWT-backed
   signed-token round-trip for the OAuth2 ``state`` parameter (1:1 with the
-  Flask/jwt-based encoding from the original).
+  jwt-based encoding from the original).
 * :func:`get_oauth2_access_token` — returns a valid access token for the
   ``(database_id, user_id)`` pair, refreshing it via the engine spec when the
   cached token is expired.  Async (uses :class:`httpx.AsyncClient` for token
@@ -183,7 +183,7 @@ def _default_oauth2_redirect_uri() -> str:
     """Return the default OAuth2 redirect URI.
 
     The original calls ``url_for("DatabaseRestApi.oauth2", _external=True)``
-    inside the marshmallow ``load_default``.  Without a Flask request
+    inside the marshmallow ``load_default``.  Without a request
     context we synthesise the absolute URI from
     ``WEBDRIVER_BASEURL + DATABASE_OAUTH2_REDIRECT_URI`` (matching the
     deployment-supplied callback).  Falls back to the bare path when no

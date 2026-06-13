@@ -16,13 +16,13 @@
 # under the License.
 """Centralized DAO provider functions for Litestar DI.
 
-All DAO providers use lazy imports to avoid triggering the Flask
+All DAO providers use lazy imports to avoid triggering the legacy
 import chain from superset/ at module load time.
 
 NOTE: Return type is `Any` intentionally. Litestar's DI resolves
 dependencies by parameter name, not by type annotation. Using concrete
 DAO types (e.g. AsyncChartDAO) in return annotations would force the
-import at module level, pulling in superset models and the Flask init
+import at module level, pulling in superset models and the legacy init
 chain. This will be resolved in Phase 7 (cleanup) when superset model
 imports are no longer needed.
 """

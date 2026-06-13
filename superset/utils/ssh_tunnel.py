@@ -20,8 +20,9 @@ and ``superset_old/extensions/ssh.py`` to the Liteset runtime.
 
 Free helpers (mask/unmask passwords, port lookup) plus the ``SSHManager``
 and ``SSHManagerFactory`` classes that the original ``extensions/ssh.py``
-provided.  Flask has been removed; settings are accepted via constructor
-kwargs so the classes work in both the ASGI runtime and CLI tools.
+provided.  The legacy WSGI stack is gone; settings are accepted via
+constructor kwargs so the classes work in both the ASGI runtime and CLI
+tools.
 
 * :func:`mask_password_info` — strips secret fields from payloads.
 * :func:`unmask_password_info` — restores masked fields from the DB model.
@@ -102,7 +103,7 @@ def get_default_port(backend: str) -> int | None:
 # ---------------------------------------------------------------------------
 # SSHManager / SSHManagerFactory
 # Ported from ``superset_old/extensions/ssh.py``.
-# Flask dependency removed — settings are passed as constructor kwargs.
+# Legacy WSGI dependency removed — settings are passed as constructor kwargs.
 # ---------------------------------------------------------------------------
 
 
@@ -110,7 +111,7 @@ class SSHManager:
     """Opens SSH tunnels and rewrites SQLAlchemy URLs to use the tunnel.
 
     Ported 1:1 from ``superset_old/extensions/ssh.SSHManager`` with the
-    Flask ``app.config`` dependency replaced by explicit constructor
+    ``app.config`` dependency replaced by explicit constructor
     parameters that match the ``SupersetSettings`` field names.
     """
 
@@ -207,7 +208,7 @@ class SSHManagerFactory:
     Matches the original ``superset_old/extensions/ssh.SSHManagerFactory``
     interface except that ``init_app`` now accepts a
     :class:`~superset.config.SupersetSettings` object (or any object with
-    the ``ssh_tunnel_*`` attributes) rather than a Flask ``app``.
+    the ``ssh_tunnel_*`` attributes) rather than an app instance.
     """
 
     def __init__(self) -> None:
@@ -219,7 +220,7 @@ class SSHManagerFactory:
         The manager class is resolved via ``settings.ssh_tunnel_manager_class``
         (a dotted-path string).  If the class accepts a ``settings`` kwarg it
         is called with it; otherwise it is called with positional equivalents
-        mirroring the Flask-config-based original.
+        mirroring the config-based original.
         """
         from superset.utils.class_utils import load_class_from_name
 
@@ -232,7 +233,7 @@ class SSHManagerFactory:
 
         # Prefer the ``from_settings`` classmethod when present (our own
         # SSHManager provides it); fall back to the legacy positional
-        # constructor used by the old Flask-based class.
+        # constructor used by the old config-based class.
         if hasattr(manager_cls, "from_settings"):
             self._ssh_manager = manager_cls.from_settings(settings)
         else:

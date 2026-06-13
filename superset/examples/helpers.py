@@ -17,8 +17,8 @@
 """Helpers for loading Superset example datasets.
 
 Adapted from the original ``superset/examples/helpers.py`` to work
-without Flask.  Uses :mod:`superset.examples._ctx` for session/engine
-access instead of ``from superset import db``.
+without the legacy WSGI stack.  Uses :mod:`superset.examples._ctx` for
+session/engine access instead of ``from superset import db``.
 """
 
 from __future__ import annotations

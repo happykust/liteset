@@ -284,7 +284,7 @@ async def _load_user_from_job_metadata(
             return guest
 
     # 3. Anonymous — port of ``security_manager.get_anonymous_user()``.
-    # The original returned a Flask-Login ``AnonymousUserMixin`` instance
+    # The original returned an ``AnonymousUserMixin`` instance
     # (``is_authenticated=False``, ``is_anonymous=True``).  Liteset's
     # equivalent is :class:`UnauthenticatedUser`, which the auth
     # middleware (``_build_anonymous_user``) hands out for unauthenticated
@@ -539,7 +539,7 @@ def load_chart_data_into_cache(
             # ``init_app`` anyway). This cache manager writes both the
             # per-query RESULT and the ``qc-`` query-context FORM to the same
             # Redis the web process reads from, so ``data_from_cache`` is a
-            # cache hit. 1:1 with the original which used the Flask-global
+            # cache hit. 1:1 with the original which used the process-global
             # ``cache_manager.cache`` inside the task body.
             cache_manager = _build_async_cache_manager(settings)
             async with factory() as async_session:

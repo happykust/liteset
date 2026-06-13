@@ -29,10 +29,10 @@ class AsyncSecurityDAO(BaseAsyncDAO[RowLevelSecurityFilter]):
 
 
 class AsyncRoleDAO:
-    """Async DAO for FAB Role model.
+    """Async DAO for the upstream Role model.
 
-    Uses lazy imports for the FAB Role model to avoid triggering the
-    Flask import chain at module level.
+    Uses lazy imports for the Role model to avoid triggering the
+    legacy import chain at module level.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -270,7 +270,7 @@ class AsyncRoleDAO:
 
 
 class AsyncUserCrudDAO:
-    """Full async DAO for FAB User model with CRUD + search.
+    """Full async DAO for the upstream User model with CRUD + search.
 
     Separate from ``db.daos.user.AsyncUserDAO`` which provides
     avatar-specific helpers for the CurrentUser controller.
@@ -407,7 +407,7 @@ class AsyncUserCrudDAO:
 
 
 class AsyncGroupDAO:
-    """Async DAO for FAB Group model."""
+    """Async DAO for the upstream Group model."""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -540,7 +540,7 @@ class AsyncGroupDAO:
 
 
 class AsyncPermissionViewDAO:
-    """Async DAO for FAB PermissionView model."""
+    """Async DAO for the upstream PermissionView model."""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -608,7 +608,7 @@ class AsyncPermissionViewDAO:
         """Create a new permission-view mapping.
 
         Expects ``permission_id`` and ``view_menu_id`` in *attributes*.
-        Mirrors FAB's ``ModelRestApi.post`` for PermissionViewMenu.
+        Mirrors the upstream ``ModelRestApi.post`` for PermissionViewMenu.
         """
         from superset.models.security import PermissionView
 
@@ -622,7 +622,7 @@ class AsyncPermissionViewDAO:
     async def update(self, pv: Any, attributes: dict[str, Any]) -> Any:
         """Update a permission-view mapping in-place.
 
-        Mirrors FAB's ``ModelRestApi.put`` for PermissionViewMenu.
+        Mirrors the upstream ``ModelRestApi.put`` for PermissionViewMenu.
         """
         for key, value in attributes.items():
             setattr(pv, key, value)
@@ -633,16 +633,16 @@ class AsyncPermissionViewDAO:
     async def delete(self, pv: Any) -> None:
         """Delete a single permission-view mapping.
 
-        Mirrors FAB's ``ModelRestApi.delete`` for PermissionViewMenu.
+        Mirrors the upstream ``ModelRestApi.delete`` for PermissionViewMenu.
         """
         await self.session.delete(pv)
         await self.session.flush()
 
 
 class AsyncPermissionDAO:
-    """Async DAO for FAB Permission model (ab_permission table).
+    """Async DAO for the upstream Permission model (ab_permission table).
 
-    Read-only in the original FAB PermissionApi (include_route_methods
+    Read-only in the original PermissionApi (include_route_methods
     only allows info, get, get_list).
     """
 
@@ -696,9 +696,9 @@ class AsyncPermissionDAO:
 
 
 class AsyncViewMenuDAO:
-    """Async DAO for FAB ViewMenu model (ab_view_menu table).
+    """Async DAO for the upstream ViewMenu model (ab_view_menu table).
 
-    Full CRUD — mirrors the original FAB ViewMenuApi which exposes
+    Full CRUD — mirrors the original ViewMenuApi which exposes
     all ModelRestApi methods (get_list, get, info, post, put, delete).
     """
 
@@ -753,7 +753,7 @@ class AsyncViewMenuDAO:
     async def create(self, attributes: dict[str, Any]) -> Any:
         """Create a new view menu (resource).
 
-        Mirrors FAB's ``ModelRestApi.post`` for ViewMenu.
+        Mirrors the upstream ``ModelRestApi.post`` for ViewMenu.
         """
         from superset.models.security import ViewMenu
 
@@ -765,7 +765,7 @@ class AsyncViewMenuDAO:
     async def update(self, vm: Any, attributes: dict[str, Any]) -> Any:
         """Update a view menu in-place.
 
-        Mirrors FAB's ``ModelRestApi.put`` for ViewMenu.
+        Mirrors the upstream ``ModelRestApi.put`` for ViewMenu.
         """
         for key, value in attributes.items():
             setattr(vm, key, value)
@@ -775,17 +775,17 @@ class AsyncViewMenuDAO:
     async def delete(self, vm: Any) -> None:
         """Delete a single view menu.
 
-        Mirrors FAB's ``ModelRestApi.delete`` for ViewMenu.
+        Mirrors the upstream ``ModelRestApi.delete`` for ViewMenu.
         """
         await self.session.delete(vm)
         await self.session.flush()
 
 
 class AsyncRegisterUserDAO:
-    """Async DAO for FAB RegisterUser model (ab_register_user table).
+    """Async DAO for the upstream RegisterUser model (ab_register_user table).
 
     Mirrors the original ``UserRegistrationsRestAPI`` which uses
-    ``SQLAInterface(RegisterUser)`` through FAB's ``ModelRestApi``.
+    ``SQLAInterface(RegisterUser)`` through the upstream ``ModelRestApi``.
     Provides full CRUD + search + distinct for pending registrations.
     """
 
@@ -860,7 +860,7 @@ class AsyncRegisterUserDAO:
     async def create(self, attributes: dict[str, Any]) -> Any:
         """Create a new registration request.
 
-        Mirrors FAB's ``ModelRestApi.post_headless``: simply persists the
+        Mirrors the upstream ``ModelRestApi.post_headless``: simply persists the
         data as-is via ``session.add() + session.flush()``. Password hashing
         and ``registration_hash`` generation only happen in the register
         FORM flow (``SecurityManager.add_register_user``), NOT in the
@@ -876,7 +876,7 @@ class AsyncRegisterUserDAO:
     async def update(self, reg: Any, attributes: dict[str, Any]) -> Any:
         """Update a registration record in-place.
 
-        Mirrors FAB's ``ModelRestApi.put`` for RegisterUser.
+        Mirrors the upstream ``ModelRestApi.put`` for RegisterUser.
         """
         for key, value in attributes.items():
             setattr(reg, key, value)
@@ -886,7 +886,7 @@ class AsyncRegisterUserDAO:
     async def delete(self, reg: Any) -> None:
         """Delete a single registration record.
 
-        Mirrors FAB's ``SecurityManager.del_register_user``.
+        Mirrors the upstream ``SecurityManager.del_register_user``.
         """
         await self.session.delete(reg)
         await self.session.flush()
@@ -900,7 +900,7 @@ class AsyncRegisterUserDAO:
     ) -> tuple[list[Any], int]:
         """Get distinct values for a column (for filter dropdowns).
 
-        Mirrors FAB's ``ModelRestApi.distinct`` endpoint.
+        Mirrors the upstream ``ModelRestApi.distinct`` endpoint.
         """
         from sqlalchemy import func, select
 

@@ -18,7 +18,7 @@
 
 Mirrors the original Parquet/columnar reader 1:1, including the ZIP
 multi-file support.  ``file`` is normalised via :func:`_to_stream` so the
-reader accepts Litestar ``UploadFile`` / Werkzeug ``FileStorage`` /
+reader accepts Litestar ``UploadFile`` / the upstream ``FileStorage`` /
 ``IO[bytes]`` / raw bytes inputs.
 """
 

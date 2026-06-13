@@ -15,10 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""PostgreSQL engine spec — sync/Flask-compatible.
+"""PostgreSQL engine spec — synchronous.
 
-Ported 1:1 from ``superset_old/db_engine_specs/postgres.py`` with Flask
-imports removed.  Only overridden methods and attributes are included.
+Ported 1:1 from ``superset_old/db_engine_specs/postgres.py`` with the legacy
+WSGI-stack imports removed.  Only overridden methods and attributes are
+included.
 """
 
 from __future__ import annotations

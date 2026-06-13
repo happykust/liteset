@@ -161,7 +161,7 @@ def _parse_import_upload(filename: str, contents: bytes) -> tuple[dict[str, str]
 
 # ``DatasetDetailResult.from_model(dataset)`` (see
 # ``superset/schemas/dataset.py:270``) is used directly for create /
-# update response payloads — it mirrors the original Flask
+# update response payloads — it mirrors the original
 # ``DatasetRestApi`` Marshmallow schema via ``ModelStruct`` auto-mapping
 # plus ``_resolve_owners`` / ``_resolve_database`` custom resolvers for
 # the relationship fields.  The caller must eager-load ``columns``,
@@ -594,7 +594,7 @@ class DatasetController(Controller):
         # touches eager-loaded so the msgspec auto-mapper doesn't trigger
         # lazy loads that crash with ``MissingGreenlet`` under asyncpg.
         # The response payload must include ``columns`` / ``metrics`` /
-        # ``owners`` to match the original Flask ``DatasetRestApi.put``
+        # ``owners`` to match the original ``DatasetRestApi.put``
         # shape — the frontend's ``saveDatasource`` reducer replaces the
         # whole ``explore.datasource`` Redux slice with this dict, and a
         # thin payload causes the Explore view to render "Missing dataset"

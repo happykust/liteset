@@ -17,10 +17,10 @@
 """Pluggable authentication backends.
 
 Each module in this sub-package implements a single ``AUTH_TYPE``
-value as supported by Apache Superset / Flask-AppBuilder:
+value as supported by Apache Superset upstream:
 
 ==========================================  =================  ==================
-File                                        ``AUTH_TYPE`` int  Original FAB hook
+File                                        ``AUTH_TYPE`` int  Original hook
 ==========================================  =================  ==================
 :mod:`superset.security.auth.oauth`         ``4`` (AUTH_OAUTH) ``auth_user_oauth``
 :mod:`superset.security.auth.oidc`          ``4`` (AUTH_OAUTH) ``auth_user_oauth``
@@ -29,8 +29,9 @@ File                                        ``AUTH_TYPE`` int  Original FAB hook
 ==========================================  =================  ==================
 
 OIDC re-uses the OAuth flow with Authlib's discovery-document support,
-which is exactly how Apache Superset (since FAB 4.x) handles OpenID
-Connect — there is no separate ``auth_user_oid`` hook in modern FAB.
+which is exactly how Apache Superset (since the 4.x security layer)
+handles OpenID Connect — there is no separate ``auth_user_oid`` hook
+in the modern upstream.
 """
 
 from __future__ import annotations

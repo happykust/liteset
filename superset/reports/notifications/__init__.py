@@ -72,7 +72,7 @@ def create_notification(
             kwargs: dict[str, Any] = {}
             # Inject the config/logs_context only for plugins whose __init__
             # accepts them (EmailNotification, SlackNotification,
-            # SlackV2Notification). Upstream relies on Flask's global
+            # SlackV2Notification). Upstream relies on the global
             # ``current_app.config``/``g.logs_context``; Liteset passes them in.
             params = inspect.signature(plugin.__init__).parameters
             if "config" in params:

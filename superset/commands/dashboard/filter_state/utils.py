@@ -26,8 +26,8 @@ hierarchy:
 
 This async port mirrors the same control flow against the AsyncDashboardDAO
 and the AsyncSecurityManager.  The DAO + security manager + user are passed
-in (rather than pulled from Flask globals) because Liteset uses explicit
-DI for everything.
+in (rather than pulled from request-scoped globals) because Liteset uses
+explicit DI for everything.
 """
 
 from __future__ import annotations

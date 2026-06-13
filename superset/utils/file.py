@@ -15,12 +15,12 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Filename helpers — drop-in replacement for the werkzeug-based
-original (``superset_old/utils/file.py``).
+"""Filename helpers — drop-in replacement for the upstream
+secure-filename helper (``superset_old/utils/file.py``).
 
-Liteset has no Flask / Werkzeug runtime dependency, so we ship a
+Liteset has no legacy WSGI runtime dependency, so we ship a
 behaviour-compatible :func:`secure_filename`.  The implementation
-mirrors :func:`werkzeug.utils.secure_filename`: NFKD-normalise the
+mirrors the upstream secure-filename helper: NFKD-normalise the
 input, drop non-ASCII, collapse path separators, strip everything that
 isn't alphanumeric / underscore / dash / dot, and prefix Windows
 reserved names so they round-trip safely.
@@ -33,10 +33,10 @@ import re
 import unicodedata
 
 # Match anything that's not alphanumeric, underscore, dot, or dash.
-# Same character class werkzeug uses internally.
+# Same character class the upstream helper uses internally.
 _FILENAME_ASCII_STRIP_RE = re.compile(r"[^A-Za-z0-9_.-]")
 
-# Windows reserved device names — werkzeug prefixes these with an
+# Windows reserved device names — the upstream helper prefixes these with an
 # underscore so the resulting string can't accidentally name a device
 # file when written to a Windows filesystem.
 _WINDOWS_DEVICE_FILES = frozenset(
@@ -54,7 +54,7 @@ _WINDOWS_DEVICE_FILES = frozenset(
 def secure_filename(filename: str) -> str:
     """Return a sanitized filename safe to use on any filesystem.
 
-    Drop-in replacement for :func:`werkzeug.utils.secure_filename`:
+    Drop-in replacement for the upstream secure-filename helper:
 
     * Unicode is normalised via NFKD and stripped to ASCII.
     * OS path separators (``/``, and ``\\`` on Windows) are replaced

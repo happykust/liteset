@@ -18,7 +18,7 @@
 
 Ported 1:1 from ``superset_old/commands/importers/exceptions.py``.  Translation
 strings flow through :mod:`superset.i18n` (which is the async-safe replacement
-for ``flask_babel``).
+for the upstream translation helper).
 """
 
 from __future__ import annotations

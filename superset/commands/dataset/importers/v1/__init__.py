@@ -230,8 +230,9 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
 
         # --- Permission check ---
         # ``AsyncSecurityManager.can_access`` takes the user explicitly
-        # (keyword-only) — upstream's Flask manager reads ``g.user`` inside
-        # ``can_access`` instead. No user in context → deny, like upstream.
+        # (keyword-only) — the upstream manager reads the request-scoped
+        # current user inside ``can_access`` instead. No user in context →
+        # deny, like upstream.
         can_write = self._ignore_permissions
         if not can_write and self._security_manager is not None:
             if hasattr(self._security_manager, "can_access"):
@@ -459,7 +460,7 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         # Add the importing user as owner — 1:1 with upstream utils.py:189
         # ``if (user := get_user()) and user not in dataset.owners: ...``.
         # Resolve via the request-scoped ContextVar (the async equivalent of
-        # Flask ``g.user``); the previous gate on
+        # the request-scoped current user); the previous gate on
         # ``hasattr(security_manager, "get_current_user")`` was ALWAYS False
         # (AsyncSecurityManager has no such method), so the owner was never set.
         from superset.utils.core import get_current_user as _get_current_user

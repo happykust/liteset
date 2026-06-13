@@ -22,7 +22,7 @@ Hosts the singletons that legacy code expects to import from
 * ``encrypted_field_factory`` — async-friendly port of
   :class:`superset.utils.encrypt.EncryptedFieldFactory` used by SQLA
   models to declare encrypted columns.
-* ``machine_auth_provider_factory`` — full port of the Flask
+* ``machine_auth_provider_factory`` — full port of the upstream
   ``MachineAuthProviderFactory``; initialised in
   :func:`superset.app.on_startup` and consumed by ``utils/webdriver``
   and the Celery report task to mint screenshot/CSV-fetch cookies.

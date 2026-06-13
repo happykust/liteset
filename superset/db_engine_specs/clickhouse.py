@@ -15,9 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""ClickHouse engine spec -- sync/Flask-compatible.
+"""ClickHouse engine spec -- sync-compatible.
 
-Ported 1:1 from ``superset_old/db_engine_specs/clickhouse.py`` with Flask
+Ported 1:1 from ``superset_old/db_engine_specs/clickhouse.py`` with legacy
 imports removed.  Only overridden methods and attributes are included.
 
 Includes:
@@ -174,7 +174,7 @@ class ClickHouseEngineSpec(ClickHouseBaseEngineSpec):
 
         Results are cached per-database for SQL Lab autocomplete — the business
         equivalent of upstream's ``@cache_manager.cache.memoize()``. The port's
-        cache layer exposes no flask-caching ``memoize``, so this uses the
+        cache layer exposes no upstream ``memoize``, so this uses the
         sync cache slot (``cache_manager.sync_cache``) directly with a manual
         get/set. When no cache backend is configured the slot is a no-op
         (``NullSyncCacheManager``) and every call recomputes — exactly like
@@ -238,7 +238,8 @@ class ClickHouseEngineSpec(ClickHouseBaseEngineSpec):
 # clickhouse-connect module-level setup (ported from original).
 #
 # Deviation from original: the original reads
-# ``app.config.get("VERSION_STRING", "dev")`` from Flask's ``current_app``.
+# ``app.config.get("VERSION_STRING", "dev")`` from the upstream
+# ``current_app``.
 # In liteset we resolve it via ``SupersetSettings`` instead; the semantics
 # are identical.  If ``clickhouse-connect`` is not installed the entire
 # block is a no-op, matching the original.

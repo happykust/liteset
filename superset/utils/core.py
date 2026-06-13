@@ -19,7 +19,7 @@ superset.utils.core — public API surface for the Liteset port.
 
 All symbols from superset_old/utils/core.py that are referenced by the
 rest of the codebase are defined or re-exported here.  This module has
-NO Flask imports and NO synchronous DB calls in the request path.
+NO legacy WSGI imports and NO synchronous DB calls in the request path.
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ class QueryObjectFilterClause(TypedDict, total=False):
 
 
 # ---------------------------------------------------------------------------
-# generic_find_constraint_name  (uses Flask-SQLAlchemy db object)
+# generic_find_constraint_name  (uses the upstream ORM db object)
 # ---------------------------------------------------------------------------
 def apply_max_row_limit(
     limit: int,
@@ -117,7 +117,7 @@ def apply_max_row_limit(
 
     ``server_pagination`` selects ``TABLE_VIZ_MAX_ROW_SERVER`` vs ``SQL_MAX_ROW``
     as the ceiling; ``limit == 0`` means "no explicit limit" → use the max. The
-    config is read from ``SupersetSettings`` (the Flask-free port equivalent of
+    config is read from ``SupersetSettings`` (the port equivalent of
     ``app.config[...]``); pass an already-built instance via ``settings`` to
     avoid a second construction in hot paths.
     """
@@ -564,7 +564,7 @@ def error_msg_from_exception(ex: Exception) -> str:
 
 
 # ---------------------------------------------------------------------------
-# logs_context  --  ContextVar replacing legacy ``flask.g.logs_context``
+# logs_context  --  ContextVar replacing the legacy ``g.logs_context``
 # (used by superset.utils.decorators:logs_context)
 # ---------------------------------------------------------------------------
 _logs_context_ctx: ContextVar[dict[str, Any] | None] = ContextVar(
@@ -575,7 +575,7 @@ _logs_context_ctx: ContextVar[dict[str, Any] | None] = ContextVar(
 def get_logs_context() -> dict[str, Any]:
     """Return the per-task logs-context dict, initialising it on first read.
 
-    Mirrors the original ``flask.g.logs_context`` behaviour: callers expect
+    Mirrors the original ``g.logs_context`` behaviour: callers expect
     a *mutable* dict that survives the duration of the running request /
     Celery task.
     """
@@ -611,7 +611,7 @@ def get_user_agent(database: Any, source: QuerySource | None) -> str:
     Return the user-agent to advertise when connecting to ``database``.
 
     Ported 1:1 from ``superset_old/utils/core.py``.  The original reads
-    ``USER_AGENT_FUNC`` from Flask's ``current_app.config``; in liteset we
+    ``USER_AGENT_FUNC`` from the upstream ``current_app.config``; in liteset we
     resolve it via the pydantic settings module instead, but the behaviour
     is byte-for-byte equivalent.
 
@@ -641,7 +641,8 @@ def get_user_agent(database: Any, source: QuerySource | None) -> str:
 # ---------------------------------------------------------------------------
 # User context helpers (request-free versions for use in jinja templates)
 #
-# In the original Superset these read from Flask's ``g`` object. In Liteset
+# In the original Superset these read from the request-scoped ``g`` object.
+# In Liteset
 # the request context is threaded via Litestar's dependency injection.  For
 # code paths that do *not* have access to a ``Request`` (e.g. Celery tasks,
 # Jinja template rendering triggered outside a controller) we use a
@@ -704,7 +705,7 @@ def reset_form_data(token: Any) -> None:
 # ---------------------------------------------------------------------------
 # current_request  --  ContextVar that holds the in-flight Litestar Request.
 #
-# The original Apache Superset relied on Flask's thread-local ``request``
+# The original Apache Superset relied on the legacy thread-local ``request``
 # proxy.  In our async port we instead bind the active request to a
 # :class:`ContextVar` from a tiny ASGI middleware
 # (``superset.middleware.request_context``) so that code paths which lack
@@ -950,7 +951,7 @@ def zlib_decompress(blob: bytes, decode: bool | None = True) -> bytes | str:
 # ---------------------------------------------------------------------------
 # override_user
 # Ported 1:1 from superset_old/utils/core.py:1332-1356, adapted for
-# Liteset ContextVar-based user context (no Flask g).
+# Liteset ContextVar-based user context (no request-scoped g).
 # ---------------------------------------------------------------------------
 
 
@@ -964,7 +965,7 @@ def override_user(user: Any, force: bool = True) -> Iterator[Any]:
     execute some SQLAlchemy tasks et al. and then revert back to the original.
 
     Ported from superset_old/utils/core.py::override_user — adapted for
-    Liteset's ContextVar-based user (replaces Flask's ``flask.g.user``).
+    Liteset's ContextVar-based user (replaces the request-scoped ``g.user``).
 
     :param user: The override user
     :param force: Whether to override the current user if already set

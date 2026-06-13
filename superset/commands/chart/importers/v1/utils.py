@@ -58,7 +58,7 @@ _DATASET_JSON_KEYS = {"params", "template_params", "extra"}
 
 
 def _get_filename(name: str, model_id: int | None) -> str:
-    """Generate safe file name for export using ``werkzeug.secure_filename``.
+    """Generate safe file name for export using a secure-filename helper.
 
     Behaviour-compatible with ``superset_old.utils.file.get_filename``.
     """
@@ -140,8 +140,8 @@ async def _import_chart(  # noqa: C901
     from superset.models.slice import Slice
 
     # ``AsyncSecurityManager.can_access`` takes the user explicitly
-    # (keyword-only) — upstream's Flask manager reads ``g.user`` internally.
-    # No user in context → deny, like upstream.
+    # (keyword-only) — the upstream manager reads the request-scoped current
+    # user internally. No user in context → deny, like upstream.
     can_write = True
     if security_manager is not None:
         can_write = current_user is not None and await security_manager.can_access(
@@ -309,7 +309,7 @@ async def _import_database(  # noqa: C901
     can_write = ignore_permissions
     if not can_write and security_manager is not None:
         # Resolve the acting user from the request-scoped ContextVar — the
-        # async equivalent of upstream's ``g.user`` read inside ``can_access``.
+        # async equivalent of upstream's current-user read inside ``can_access``.
         from superset.utils.core import get_current_user
 
         _user = get_current_user()

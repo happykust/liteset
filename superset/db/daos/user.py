@@ -31,7 +31,7 @@ class AsyncUserDAO:
     """Async DAO for user operations.
 
     Does not inherit BaseAsyncDAO because the User model class depends
-    on Flask-AppBuilder's security manager configuration and is resolved
+    on the upstream security manager configuration and is resolved
     at runtime rather than being a fixed class attribute.
     """
 

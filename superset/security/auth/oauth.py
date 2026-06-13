@@ -16,13 +16,13 @@
 # under the License.
 """OAuth 2.0 / Authorization Code authentication backend.
 
-Async port of Flask-AppBuilder's OAuth flow:
+Async port of the upstream OAuth flow:
 
-* :pymeth:`flask_appbuilder.security.manager.BaseSecurityManager.auth_user_oauth`
+* the upstream ``BaseSecurityManager.auth_user_oauth``
   (``manager.py:1469``)
-* :pymeth:`flask_appbuilder.security.manager.BaseSecurityManager.get_oauth_user_info`
+* the upstream ``BaseSecurityManager.get_oauth_user_info``
   (``manager.py:647``)
-* :class:`flask_appbuilder.security.views.AuthOAuthView`
+* the upstream ``AuthOAuthView``
   (``views.py:662``)
 
 The control flow is identical:
@@ -34,15 +34,15 @@ The control flow is identical:
    document (or decode the ID token for OIDC providers).
 4. Map the returned ``role_keys`` / group claims to local roles via
    ``AUTH_ROLES_MAPPING``.
-5. Look up the user in ``ab_user`` (case-insensitive, mirrors FAB) and
-   either return them, sync their roles, or self-register a new row when
-   ``AUTH_USER_REGISTRATION`` is enabled.
+5. Look up the user in ``ab_user`` (case-insensitive, mirrors upstream)
+   and either return them, sync their roles, or self-register a new row
+   when ``AUTH_USER_REGISTRATION`` is enabled.
 
-Differences from FAB:
+Differences from upstream:
 
-* Uses ``httpx.AsyncClient`` instead of ``authlib.integrations.flask_client``.
+* Uses ``httpx.AsyncClient`` instead of the upstream authlib integration.
   The Authorization-Code → Access-Token exchange and the user-info GET
-  are pure HTTP calls, so we do not need authlib's Flask integration.
+  are pure HTTP calls, so we do not need authlib's request integration.
   When the user configures ``server_metadata_url`` (OIDC discovery), we
   still pull the document via httpx and use the discovered endpoints.
 * JWT validation for OIDC providers reuses :mod:`PyJWT` (already a
@@ -51,7 +51,7 @@ Differences from FAB:
   validation (audience checking on multiple aud claims, etc.).
 * The ``state`` parameter is signed with the application ``SECRET_KEY``
   (HS256) so stateful OAuth providers (Twitter et al.) keep their
-  request-scoped data without leaning on Flask's ``session`` dict.
+  request-scoped data without leaning on the legacy ``session`` dict.
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ def _find_provider(providers: list[dict[str, Any]], name: str) -> dict[str, Any]
 def _provider_remote_app(provider: dict[str, Any]) -> dict[str, Any]:
     """Return the ``remote_app`` config dict for a provider entry.
 
-    Apache Superset / FAB documents two equivalent layouts:
+    Apache Superset upstream documents two equivalent layouts:
     - ``remote_app`` key holding the authlib config dict, or
     - top-level keys (``client_id``, ``client_secret``, …).
 
@@ -128,7 +128,7 @@ class OAuthAuthBackend:
         """Resolve authorize / token / userinfo URLs.
 
         Uses ``server_metadata_url`` (OIDC discovery doc) when set,
-        otherwise reads the explicit URL keys (FAB layout).
+        otherwise reads the explicit URL keys (upstream layout).
         """
         remote = _provider_remote_app(provider)
         endpoints: dict[str, str] = {
@@ -161,7 +161,7 @@ class OAuthAuthBackend:
         return endpoints
 
     # ------------------------------------------------------------------
-    # State signing (replaces Flask session storage)
+    # State signing (replaces the legacy session storage)
     # ------------------------------------------------------------------
 
     def _state_secret(self) -> str:
@@ -234,9 +234,9 @@ class OAuthAuthBackend:
         )  # noqa: E501
 
         # OIDC nonce — binds the issued id_token to this authorization
-        # request (replay / token-injection defense, mirrors what FAB's
-        # authlib client sets automatically). Carried inside the signed,
-        # tamper-proof state so the callback can compare it to the
+        # request (replay / token-injection defense, mirrors what the
+        # upstream authlib client sets automatically). Carried inside the
+        # signed, tamper-proof state so the callback can compare it to the
         # id_token's ``nonce`` claim without a separate cookie.
         nonce = secrets.token_urlsafe(32)
         state = self.sign_state(
@@ -313,7 +313,7 @@ class OAuthAuthBackend:
             expected_nonce=expected_nonce,
         )
 
-        # Apply email whitelist (mirrors FAB views.py:736-747).
+        # Apply email whitelist (mirrors upstream views.py:736-747).
         whitelist = remote.get("whitelist") or provider.get("whitelist")
         if whitelist:
             email = (userinfo or {}).get("email", "")
@@ -406,9 +406,9 @@ class OAuthAuthBackend:
                 "email": data.get("email", ""),
             }
 
-        # Azure AD — decode the id_token (mirrors FAB azure branch
+        # Azure AD — decode the id_token (mirrors the upstream azure branch
         # ``_decode_and_validate_azure_jwt``). When the provider config sets
-        # ``client_kwargs.verify_signature`` (default False, as in FAB) the
+        # ``client_kwargs.verify_signature`` (default False, as upstream) the
         # token signature is validated against Microsoft's static JWKS;
         # otherwise it is decoded unverified.
         if provider_name == "azure":
@@ -471,8 +471,8 @@ class OAuthAuthBackend:
             }
 
         # OpenShift — no OIDC discovery; identity comes from the cluster's
-        # custom user API (mirrors FAB ``get_oauth_user_info`` openshift
-        # branch: ``GET apis/user.openshift.io/v1/users/~``).
+        # custom user API (mirrors the upstream ``get_oauth_user_info``
+        # openshift branch: ``GET apis/user.openshift.io/v1/users/~``).
         if provider_name == "openshift":
             remote = _provider_remote_app(provider)
             api_base = str(remote.get("api_base_url", "")).rstrip("/")
@@ -484,7 +484,7 @@ class OAuthAuthBackend:
             return {"username": "openshift_" + str(metadata.get("name", ""))}
 
         # Authentik — identity from the id_token claims with Authentik's
-        # idiosyncratic mapping (mirrors FAB ``get_oauth_user_info``
+        # idiosyncratic mapping (mirrors the upstream ``get_oauth_user_info``
         # authentik branch: ``email = preferred_username``, ``username =
         # nickname``). This base backend decodes WITHOUT signature
         # verification (it's the no-discovery path); deployments that
@@ -621,9 +621,9 @@ class OAuthAuthBackend:
     def _decode_id_token_unsafe(id_token: str) -> dict[str, Any]:
         """Decode an OIDC ``id_token`` without verifying the signature.
 
-        Mirrors FAB's
+        Mirrors the upstream
         ``jwt.decode(id_token, options={"verify_signature": False})``
-        used in :pymeth:`BaseSecurityManager._decode_and_validate_azure_jwt`
+        used in ``BaseSecurityManager._decode_and_validate_azure_jwt``
         when ``verify_signature`` is not configured.
 
         Use :meth:`OIDCAuthBackend.validate_id_token` instead for proper
@@ -638,13 +638,13 @@ class OAuthAuthBackend:
             return {}
 
     # Static JWKS endpoint for Azure AD / Microsoft identity platform.
-    # Mirrors FAB ``const.MICROSOFT_KEY_SET_URL``.
+    # Mirrors the upstream ``const.MICROSOFT_KEY_SET_URL``.
     MICROSOFT_KEY_SET_URL = "https://login.microsoftonline.com/common/discovery/keys"
 
     async def _validate_azure_jwt(self, id_token: str) -> dict[str, Any]:
         """Validate an Azure AD ``id_token`` against Microsoft's JWKS.
 
-        Mirrors FAB ``_decode_and_validate_azure_jwt`` when
+        Mirrors the upstream ``_decode_and_validate_azure_jwt`` when
         ``verify_signature`` is set: the token must carry a valid signature
         from Microsoft's published key set. A validation failure rejects the
         login (raises) rather than silently degrading to an unverified
@@ -659,7 +659,7 @@ class OAuthAuthBackend:
             jwk_client = pyjwt.PyJWKClient(self.MICROSOFT_KEY_SET_URL)
             signing_key = jwk_client.get_signing_key_from_jwt(id_token).key
             algorithms = [pyjwt.get_unverified_header(id_token).get("alg", "RS256")]
-            # FAB's authlib path validates the signature; audience/issuer
+            # The upstream authlib path validates the signature; aud/issuer
             # checks are not enforced there, so we match that surface.
             return pyjwt.decode(
                 id_token,

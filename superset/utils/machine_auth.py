@@ -17,9 +17,9 @@
 """Machine (server-to-server) authentication for headless browsers.
 
 Ported from ``superset_old/utils/machine_auth.py`` to the Litestar/ASGI
-runtime.  The original Flask implementation minted a session cookie via
-``flask_login.login_user`` + ``app.session_interface.save_session``.  In
-Liteset, sessions are stateless JWTs minted by
+runtime.  The original implementation minted a session cookie via
+the upstream ``login_user`` helper + ``app.session_interface.save_session``.
+In Liteset, sessions are stateless JWTs minted by
 ``superset.controllers.auth._create_session_cookie`` and decoded by
 ``SupersetAuthMiddleware._authenticate_cookie``.  This module mints the
 same JWT shape so that any cookie returned here is accepted by the
@@ -30,15 +30,15 @@ Architectural adaptations vs. the original:
 * ``MachineAuthProviderFactory.init_app`` now accepts either a Litestar
   ``Litestar`` instance (reading ``app.state.settings``) or a
   ``SupersetSettings`` directly via ``init_settings``.  The original
-  read ``app.config["MACHINE_AUTH_PROVIDER_CLASS"]`` from a Flask app.
+  read ``app.config["MACHINE_AUTH_PROVIDER_CLASS"]`` from the app.
 * ``get_auth_cookies`` mints a JWT using the configured ``secret_key``
-  and ``session_max_age`` rather than spinning up a Flask test request
+  and ``session_max_age`` rather than spinning up a test request
   context.  The cookie name is ``settings.session_cookie_name``
   (default ``"session"``), matching the auth controller and middleware.
 * ``get_cookies`` retains the original three-branch logic (user → mint,
   request cookies → forward, otherwise empty).  In a Celery / worker
   context there is no request, so the empty-dict branch is hit, which
-  matches what the Flask original did when invoked outside a request
+  matches what the original did when invoked outside a request
   context.
 * ``authenticate_webdriver`` and ``authenticate_browser_context`` are
   ported 1:1 — the Selenium / Playwright APIs they call are
@@ -107,7 +107,7 @@ class MachineAuthProvider:
         # Bound by ``MachineAuthProviderFactory.init_settings`` so that
         # the provider can read ``WEBDRIVER_BASEURL``, ``SECRET_KEY``,
         # ``SESSION_COOKIE_NAME`` and ``PERMANENT_SESSION_LIFETIME``
-        # without depending on a Flask ``current_app`` proxy.
+        # without depending on a ``current_app`` proxy.
         self._settings: SupersetSettings | None = None
 
     # ------------------------------------------------------------------
@@ -133,7 +133,7 @@ class MachineAuthProvider:
         driver: "WebDriver",
         user: Any,
     ) -> "WebDriver":
-        """Sets a session cookie ``flask-login`` style on a Selenium driver.
+        """Sets a session cookie on a Selenium driver.
 
         Returns the driver passed in (fluent), matching the original.
         """
@@ -202,10 +202,10 @@ class MachineAuthProvider:
 
         1. ``user`` provided  -> mint a session cookie via
            ``get_auth_cookies``.
-        2. No user, but a Flask ``request.cookies`` is available  ->
+        2. No user, but a ``request.cookies`` is available  ->
            forward those cookies.  In Liteset we have no global request
            proxy in a Celery worker context, so this branch is empty
-           by design (the same effective behaviour the Flask original
+           by design (the same effective behaviour the original
            had when invoked from a worker without a request context).
         3. Otherwise, return an empty dict.
         """
@@ -216,8 +216,8 @@ class MachineAuthProvider:
     def get_auth_cookies(self, user: Any) -> dict[str, str]:
         """Mint a session cookie that ``SupersetAuthMiddleware`` accepts.
 
-        Original behaviour (Flask):
-            * call ``flask_login.login_user(user)`` inside a
+        Original behaviour:
+            * call the upstream ``login_user(user)`` inside a
               ``test_request_context``,
             * run ``app.process_response`` so ``after_request`` hooks
               (e.g. websocket JWT auth) populate ``Set-Cookie`` headers,
@@ -318,7 +318,7 @@ class MachineAuthProvider:
 class MachineAuthProviderFactory:
     """Factory that resolves and caches the configured provider.
 
-    Behaves like the original Flask factory: ``init_app`` is called once
+    Behaves like the original factory: ``init_app`` is called once
     at startup with the running app; afterwards ``.instance`` returns
     the singleton provider for the rest of the process lifetime.
 
@@ -381,6 +381,6 @@ class MachineAuthProviderFactory:
         ``MachineAuthProvider`` for caller convenience) if the factory
         was never initialised.  Callers downstream — webdriver helpers,
         Celery report task — guard via ``AttributeError`` /
-        ``hasattr`` exactly like the Flask original.
+        ``hasattr`` exactly like the original.
         """
         return self._auth_provider  # type: ignore[return-value]

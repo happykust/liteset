@@ -17,7 +17,7 @@
 """1:1 port of ``superset_old/extensions/ssh.py``.
 
 Hosts the canonical ``SSHManager`` and ``SSHManagerFactory`` referenced by
-the default ``SSH_TUNNEL_MANAGER_CLASS`` setting.  The Flask application
+the default ``SSH_TUNNEL_MANAGER_CLASS`` setting.  The application
 parameter is replaced by a generic ``settings`` object so the manager can
 be used from both the Litestar app-startup path and from Celery tasks.
 """
@@ -44,8 +44,8 @@ def _resolve_setting(source: Any, *names: str, default: Any = None) -> Any:
     """Read a config knob from *source*.
 
     Accepts both Litestar Pydantic settings (snake_case attributes) and
-    legacy Flask-style mapping objects (``UPPER_CASE`` dict keys) so the
-    same factory can be reused across the entire codebase.
+    legacy upstream-style mapping objects (``UPPER_CASE`` dict keys) so
+    the same factory can be reused across the entire codebase.
     """
     for name in names:
         if hasattr(source, name):
@@ -63,7 +63,7 @@ class SSHManager:
     Direct port of :class:`superset_old.extensions.ssh.SSHManager`.  The
     only behavioural change is that ``app`` is generalised to any object
     exposing the SSH-tunnel knobs — the Litestar settings model, a
-    plain ``dict`` (Flask-style ``app.config``), or a Celery worker's
+    plain ``dict`` (upstream-style ``app.config``), or a Celery worker's
     ``current_app.conf``.
     """
 

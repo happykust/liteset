@@ -16,8 +16,8 @@
 # under the License.
 """ASGI port of Apache Superset's ``apply_http_headers`` after-request hook.
 
-The original Flask ``register_request_handlers`` registered a
-``@app.after_request`` callback that merged three settings dicts onto
+The original ``register_request_handlers`` registered an
+after-request callback that merged three settings dicts onto
 every response:
 
 * ``OVERRIDE_HTTP_HEADERS`` — wins over anything already on the response
@@ -40,7 +40,7 @@ from litestar.types import ASGIApp, Message, Receive, Scope, Send
 
 
 def _to_bytes(value: Any) -> bytes:
-    """Encode a header value to bytes, matching werkzeug's lenient behaviour."""
+    """Encode a header value to bytes, matching the upstream lenient behaviour."""
     if isinstance(value, bytes):
         return value
     return str(value).encode("latin-1", errors="replace")

@@ -82,7 +82,7 @@ async def authenticate_websocket(
     Attempts authentication in order:
     1. JWT token from query parameter ``?token=<jwt>``
     2. JWT token from HTTP-only cookie (``async-token``)
-    3. Session cookie (Flask itsdangerous / Liteset JWT) — fallback for
+    3. Session cookie (legacy itsdangerous / Liteset JWT) — fallback for
        browser WebSocket connections that carry the standard session cookie.
 
     Args:
@@ -90,7 +90,7 @@ async def authenticate_websocket(
         jwt_secret: Secret key for JWT/session verification.
         jwt_algorithm: JWT algorithm (default: HS256).
         cookie_name: Name of the async-token cookie.
-        session_cookie_name: Name of the session cookie (Flask compat).
+        session_cookie_name: Name of the session cookie (legacy compat).
 
     Returns:
         WebSocketAuthResult if authentication succeeds, None otherwise.
@@ -170,7 +170,7 @@ def _resolve_user_id_from_session(cookie: str, secret_key: str) -> int | None:
     except Exception:  # noqa: S110
         pass
 
-    # Fallback: itsdangerous (Flask legacy)
+    # Fallback: itsdangerous (legacy session cookie)
     try:
         from superset.security.session_decoder import FlaskSessionDecoder
 

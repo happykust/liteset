@@ -149,7 +149,7 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
 
         # ------------------------------------------------------------------
         # 5. Fetch the blob; honour ``results_backend.get`` synchronously
-        # via :func:`asyncio.to_thread` because ``flask-caching`` clients
+        # via :func:`asyncio.to_thread` because the cache backend clients
         # are sync.
         # ------------------------------------------------------------------
         blob = await self._results_backend_get(results_backend, self._key)
@@ -235,7 +235,7 @@ def _deserialize_results_payload(
     """Decode the results-backend payload.
 
     1:1 with ``superset_old/views/utils.py::_deserialize_results_payload``
-    minus the Flask ``stats_timing`` wrappers.
+    minus the ``stats_timing`` wrappers.
     """
     if use_msgpack:
         import msgpack

@@ -25,13 +25,13 @@ synchronous Selenium / Playwright capture path through
 :class:`~superset.utils.screenshots.ChartScreenshot` /
 :class:`~superset.utils.screenshots.DashboardScreenshot`.
 
-Key adaptations vs. the Flask original:
+Key adaptations vs. the original:
 
 * ``security_manager.find_user(username)`` is replaced with a direct
-  sync ``SELECT`` against the FAB ``ab_user`` table (eager-loading
+  sync ``SELECT`` against the ``ab_user`` table (eager-loading
   ``roles`` + ``groups`` so subsequent ``is_admin`` / RBAC checks made
   by the screenshot pipeline never trip a lazy load).
-* The Flask ``g``-local ``override_user`` context manager is replaced by
+* The request-scoped ``override_user`` context manager is replaced by
   :func:`superset.utils.core.override_user`, which writes the executor user
   to a per-task :class:`~contextvars.ContextVar` and restores the previous
   value on exit, so the binding never leaks between Celery tasks re-using the
@@ -43,7 +43,7 @@ Key adaptations vs. the Flask original:
   original.
 * The ``thumbnail_cache`` accessor goes through the
   ``CacheManager.sync_thumbnail_cache`` proxy exposed by
-  :mod:`superset.utils.screenshots`; the Flask original used
+  :mod:`superset.utils.screenshots`; the original used
   ``superset.thumbnail_cache`` directly.
 * ``security_manager.get_guest_user_from_token`` is replaced by
   :class:`superset.security.guest.GuestUser.from_token_payload`, which
@@ -73,7 +73,7 @@ WindowSize = tuple[int, int]
 
 
 def _find_user_by_username(session: Any, username: str) -> Any | None:
-    """Return the FAB :class:`User` for ``username`` (eager-loading
+    """Return the :class:`User` for ``username`` (eager-loading
     ``roles`` + ``groups``), or ``None`` if no such user exists.
 
     Eager loading matters because the screenshot pipeline calls
@@ -102,7 +102,7 @@ def _compute_digest(model: Any) -> str | None:
     :func:`superset.thumbnails.digest.get_chart_digest` /
     :func:`superset.thumbnails.digest.get_dashboard_digest`) so the cache
     key here matches the one embedded in the model's ``thumbnail_url``
-    property exactly — preserving the original Flask invariant
+    property exactly — preserving the original invariant
     ``thumbnail.url == cache.lookup(model.digest)``.
     """
     return getattr(model, "digest", None)
@@ -321,9 +321,9 @@ def cache_dashboard_screenshot(  # noqa: C901
         # Requests from Embedded should always use the Guest user.
         if guest_token:
             # Embedded / guest flow — mint the in-process user record
-            # directly from the JWT payload.  The original Flask code
+            # directly from the JWT payload.  The original code
             # called ``security_manager.get_guest_user_from_token``
-            # which built the same shape via the FAB user model.
+            # which built the same shape via the upstream user model.
             current_user_obj = GuestUser.from_token_payload(guest_token)
         else:
             _, exec_username = get_executor(

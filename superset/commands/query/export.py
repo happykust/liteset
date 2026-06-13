@@ -40,7 +40,7 @@ class ExportSavedQueriesCommand(AsyncExportModelsCommand):
     """Export saved queries to a ZIP bundle (1:1 with original).
 
     Uses ``SavedQuery.export_to_dict`` for the YAML payload. Filename
-    pattern uses ``werkzeug.secure_filename`` matching the original.
+    pattern uses a secure-filename helper matching the original.
     """
 
     _resource_type = "SavedQuery"

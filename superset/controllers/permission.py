@@ -14,12 +14,13 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Permission controller — read-only endpoints for FAB permissions (ab_permission).
+"""Permission controller — read-only endpoints for upstream permissions
+(ab_permission).
 
-Mirrors Flask-AppBuilder's ``PermissionApi`` which is a ``ModelRestApi``
+Mirrors the upstream ``PermissionApi`` which is a ``ModelRestApi``
 with ``include_route_methods = {"info", "get", "get_list"}``.
 
-Original: flask_appbuilder/security/sqla/apis/permission/api.py
+Original: the upstream permission security API.
 """
 
 from __future__ import annotations
@@ -46,9 +47,9 @@ logger = logging.getLogger(__name__)
 
 
 class PermissionController(Controller):
-    """Read-only controller for FAB permissions (ab_permission table).
+    """Read-only controller for upstream permissions (ab_permission table).
 
-    Provides list, show, and info endpoints matching the original FAB
+    Provides list, show, and info endpoints matching the original upstream
     ``PermissionApi(ModelRestApi)`` which restricts to
     ``include_route_methods = {"info", "get", "get_list"}``.
 
@@ -78,7 +79,7 @@ class PermissionController(Controller):
         """GET /api/v1/security/permissions/ -- list all permissions.
 
         Supports Rison query parameters for pagination and ordering.
-        Matches FAB ``PermissionApi.get_list`` with
+        Matches the upstream ``PermissionApi.get_list`` with
         ``list_columns = ["id", "name"]`` and
         ``search_columns = ["id", "name"]``.
         """
@@ -93,7 +94,7 @@ class PermissionController(Controller):
         if order_column not in ("id", "name"):
             order_column = "id"
 
-        # Build filters using the shared helper (supports all FAB operators
+        # Build filters using the shared helper (supports all upstream operators
         # on search_columns = ["id", "name"])
         rison_filters, _order_by, _page, _page_size = build_rison_query_params(
             Permission,
@@ -134,7 +135,7 @@ class PermissionController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/security/permissions/{pk} -- get single permission.
 
-        Matches FAB ``PermissionApi.get`` with
+        Matches the upstream ``PermissionApi.get`` with
         ``show_columns = ["id", "name"]``.
         """
         perm = await perm_dao.find_by_id(pk)
@@ -155,7 +156,7 @@ class PermissionController(Controller):
     async def get_info(self) -> dict[str, Any]:
         """GET /api/v1/security/permissions/_info -- metadata.
 
-        Matches FAB ``PermissionApi.info`` — read-only
+        Matches the upstream ``PermissionApi.info`` — read-only
         (``include_route_methods = {"info", "get", "get_list"}``).
         No add/edit columns since POST/PUT/DELETE are not exposed.
         """

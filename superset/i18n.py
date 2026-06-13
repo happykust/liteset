@@ -17,7 +17,7 @@
 """Contextvars-based i18n.
 
 Provides gettext() and lazy_gettext() compatible with Superset's
-translation patterns but without any Flask dependency.
+translation patterns but without any legacy WSGI-stack dependency.
 """
 
 from __future__ import annotations
@@ -65,13 +65,13 @@ def init_plural_data(
 
 
 def ngettext(singular: str, plural: str, num: int, **variables: Any) -> str:
-    """Plural-aware translation — mirrors Flask-Babel's ``ngettext``.
+    """Plural-aware translation — mirrors the upstream ``ngettext``.
 
     Selects the plural form for ``num`` using the locale's Plural-Forms
     rule (so e.g. Russian's three forms resolve correctly); falls back to
     the English ``num != 1`` rule and the untranslated msgids.
     ``num`` is also injected as the ``num`` interpolation variable, exactly
-    like Flask-Babel.
+    like the upstream implementation.
     """
     locale = _current_locale.get()
     forms = _plural_tables.get(locale, {}).get(singular)
@@ -178,7 +178,7 @@ def lazy_gettext(msgid: str, **variables: Any) -> str:
     once the string is materialised (matches the legacy lazy-gettext API).
 
     Typed as ``str`` even though a :class:`LazyString` proxy is returned —
-    the same deliberate lie the ``flask_babel`` stubs make: the proxy
+    the same deliberate lie the upstream i18n stubs make: the proxy
     duck-types ``str``, and call sites assign it to ``str``-typed fields.
     """
     return cast(str, LazyString(msgid, **variables))

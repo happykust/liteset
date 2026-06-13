@@ -16,7 +16,7 @@
 # under the License.
 """Base controller mixin providing _info, /related/, /distinct/ endpoints.
 
-Flask's BaseSupersetModelRestApi auto-generates these endpoints. This mixin
+The upstream BaseSupersetModelRestApi auto-generates these endpoints. This mixin
 provides async equivalents for Litestar controllers that need them.
 
 Usage:
@@ -140,7 +140,7 @@ def extract_order(
 
 
 # Map computed/virtual column names to the real DB column they derive from.
-# Matches Flask-AppBuilder's @renders() mappings in the original Superset.
+# Matches the upstream @renders() mappings in the original Superset.
 _COMPUTED_ORDER_COLUMNS: dict[str, str] = {
     "changed_on_delta_humanized": "changed_on",
     "changed_on_utc": "changed_on",
@@ -161,7 +161,7 @@ def build_order_by(
     compiles — sorting by a relationship makes no SQL sense without a
     join. Filter to ColumnProperty-backed attributes only; unknown
     or relationship columns return ``None`` so the caller falls back
-    to the default (PK tiebreak) order. Matches FAB's behavior where
+    to the default (PK tiebreak) order. Matches the upstream behavior where
     sorts referencing a non-column field silently no-op.
     """
     if not order_column:
@@ -240,7 +240,7 @@ def build_rison_query_params(  # noqa: C901
     ``opr`` names to callables ``(model_cls, value) -> SQLAlchemy clause``.
 
     :param default_page_size: Default page size when the client does not
-        supply ``page_size``.  Matches the FAB ``ModelRestApi.page_size``
+        supply ``page_size``.  Matches the upstream ``ModelRestApi.page_size``
         default (20) when the original endpoint did not override it.
 
     Returns:
@@ -281,7 +281,7 @@ def build_rison_query_params(  # noqa: C901
             typed_value = _cast_pk(value)
             rel_attr = getattr(model_cls, col_name)
             clause = rel_attr.any(rel_model.id == typed_value)
-            # FAB FilterRelationManyToMany has no negated arg_name, but the
+            # The upstream FilterRelationManyToMany has no negated arg_name, but
             # symmetry with nrel_o_m is useful and harmless; keep parity by
             # supporting it explicitly.
             filters.append(~clause if op == "nrel_m_m" else clause)
@@ -289,8 +289,8 @@ def build_rison_query_params(  # noqa: C901
 
         if op in ("rel_o_m", "nrel_o_m") and col_name in valid_rels:
             # Many-to-one: filter by the FK column directly when present.
-            # ``nrel_o_m`` (FAB FilterRelationOneToManyNotEqual,
-            # flask_appbuilder/models/sqla/filters.py:238) negates it.
+            # ``nrel_o_m`` (upstream FilterRelationOneToManyNotEqual,
+            # models/sqla/filters.py:238) negates it.
             typed_value = _cast_pk(value)
             fk_col_name = f"{col_name}_fk"
             if hasattr(model_cls, fk_col_name):
@@ -324,19 +324,19 @@ def build_rison_query_params(  # noqa: C901
         elif op == "nct":
             filters.append(~col_attr.ilike(f"%{escape_like(str(value))}%"))
         elif op == "nsw":
-            # Not-starts-with — 1:1 with FAB FilterNotStartsWith
-            # (flask_appbuilder/models/sqla/filters.py:101): ``~ilike(v%)``.
+            # Not-starts-with — 1:1 with upstream FilterNotStartsWith
+            # (models/sqla/filters.py:101): ``~ilike(v%)``.
             filters.append(~col_attr.ilike(f"{escape_like(str(value))}%"))
         elif op == "new":
-            # Not-ends-with — FAB FilterNotEndsWith (:119): ``~ilike(%v)``.
+            # Not-ends-with — upstream FilterNotEndsWith (:119): ``~ilike(%v)``.
             filters.append(~col_attr.ilike(f"%{escape_like(str(value))}"))
         elif op == "in":
-            # FAB FilterIn (:195): ``field.in_([...])``. RISON passes the
+            # Upstream FilterIn (:195): ``field.in_([...])``. RISON passes the
             # value as a list ``!(a,b,c)``; tolerate a scalar too.
             in_vals = value if isinstance(value, list) else [value]
             filters.append(col_attr.in_(in_vals))
         elif op == "not_in":
-            # FAB FilterNotIn (:207): ``~field.in_([...])``.
+            # Upstream FilterNotIn (:207): ``~field.in_([...])``.
             nin_vals = value if isinstance(value, list) else [value]
             filters.append(~col_attr.in_(nin_vals))
         elif op == "gt":
@@ -458,7 +458,7 @@ def _serialize_item(item: Any, columns: list[str]) -> dict[str, Any]:
     """Serialize a single model item, handling nested paths.
 
     Nested paths (``relationship.field``) are grouped into sub-dicts or
-    lists-of-dicts matching the Flask-AppBuilder API format.
+    lists-of-dicts matching the upstream API format.
     """
     result: dict[str, Any] = {}
     # Group nested columns by their relationship name
@@ -485,7 +485,7 @@ def _serialize_item(item: Any, columns: list[str]) -> dict[str, Any]:
 def _prettify_column(name: str) -> str:
     """Convert a column name to a human-readable label.
 
-    Matches Flask-AppBuilder's ``_prettify_column`` logic:
+    Matches the upstream ``_prettify_column`` logic:
     ``cache_timeout`` → ``Cache Timeout``,
     ``changed_by.first_name`` → ``Changed By First Name``.
     """
@@ -506,7 +506,7 @@ def serialize_list_response(
 
     Supports dotted paths like ``owners.id``, ``database.database_name``.
     Nested relationships are grouped into sub-objects matching the
-    Flask-AppBuilder REST API format the frontend expects.
+    upstream REST API format the frontend expects.
 
     Automatically post-processes each item:
     - ``uuid`` fields are converted to strings
@@ -520,9 +520,9 @@ def serialize_list_response(
         if "uuid" in row and row["uuid"] is not None:
             row["uuid"] = str(row["uuid"])
         # ``ids`` is declared as array of strings in the original
-        # Superset OpenAPI spec (FAB ApiListResponse); cast pks to str
+        # Superset OpenAPI spec (upstream ApiListResponse); cast pks to str
         # so contract validators don't reject integer entries.
-        # 1:1 with FAB get_keys() which calls getattr(item, pk_name) on each
+        # 1:1 with upstream get_keys() which calls getattr(item, pk_name) on each
         # ORM object, completely independent of list_columns — so ids is
         # populated even when "id" is absent from the columns list.
         row_id = row.get("id") if "id" in row else getattr(item, "id", None)
@@ -572,16 +572,16 @@ async def get_info_payload(
 
     When ``security_manager``, ``current_user`` and ``class_permission_name``
     are provided, the permissions list is dynamically filtered against the
-    current user's RBAC grants — 1:1 with FAB's
-    ``merge_current_user_permissions`` (flask_appbuilder/api/__init__.py:759).
+    current user's RBAC grants — 1:1 with the upstream
+    ``merge_current_user_permissions`` (api/__init__.py:759).
 
     When ``rison_params`` contains a ``keys`` list (``get_info_schema`` from
-    flask_appbuilder/api/schemas.py:121-160), only those response keys are
-    included — 1:1 with FAB's ``set_response_key_mappings``
-    (flask_appbuilder/api/__init__.py:741-757).
+    api/schemas.py:121-160), only those response keys are
+    included — 1:1 with the upstream ``set_response_key_mappings``
+    (api/__init__.py:741-757).
     """
     # ------------------------------------------------------------------
-    # Dynamic RBAC permission filtering (1:1 with FAB
+    # Dynamic RBAC permission filtering (1:1 with the upstream
     # merge_current_user_permissions).  The original iterates
     # ``self.base_permissions`` and keeps only those for which
     # ``self.appbuilder.sm.has_access(perm, self.class_permission_name)``
@@ -603,8 +603,8 @@ async def get_info_payload(
         payload = _build_fallback_info_payload(dao, model_name, permissions)
 
     # ------------------------------------------------------------------
-    # Selective key filtering — 1:1 with FAB set_response_key_mappings
-    # (flask_appbuilder/api/__init__.py:750-757).  When ``keys`` is an
+    # Selective key filtering — 1:1 with upstream set_response_key_mappings
+    # (api/__init__.py:750-757).  When ``keys`` is an
     # empty list or absent, all keys are returned.
     # The valid key names mirror the get_info_schema enum:
     #   add_columns, edit_columns, filters, permissions, add_title, edit_title
@@ -627,21 +627,21 @@ def _build_fallback_info_payload(
 ) -> dict[str, Any]:
     """SA-introspection fallback for resources without a RESOURCE_SPECS entry.
 
-    Produces a shape closer to the original FAB ``_info`` response than the
+    Produces a shape closer to the original upstream ``_info`` response than the
     previous ad-hoc implementation:
 
     * Column ``type`` uses Marshmallow class names (``String``, ``Integer``,
       etc.) via :func:`superset.info_builder.type_map.sa_to_marshmallow_type`
-      — matching ``field.__class__.__name__`` from FAB ``_get_field_info``
-      (flask_appbuilder/api/__init__.py:2046).
+      — matching ``field.__class__.__name__`` from upstream ``_get_field_info``
+      (api/__init__.py:2046).
     * No ``nullable`` key (not present in original).
     * No ``label_columns`` key (not present in original ``_info`` response).
     * ``add_title`` / ``edit_title`` auto-generated as ``"Add <Model>"`` /
-      ``"Edit <Model>"`` — 1:1 with FAB ``_init_titles``
-      (flask_appbuilder/api/__init__.py:1216-1219).
+      ``"Edit <Model>"`` — 1:1 with upstream ``_init_titles``
+      (api/__init__.py:1216-1219).
     * Filter operators derived via
       :func:`superset.info_builder.operators.operators_for_column`
-      for every column — matching FAB ``SQLAFilterConverter`` lookup.
+      for every column — matching the upstream ``SQLAFilterConverter`` lookup.
     """
     import re
 
@@ -651,7 +651,7 @@ def _build_fallback_info_payload(
     from superset.info_builder.type_map import sa_to_marshmallow_type
 
     def _prettify_name(name: str) -> str:
-        """FAB _prettify_name: 'HelloWorld' → 'Hello World'."""
+        """Upstream _prettify_name: 'HelloWorld' → 'Hello World'."""
         return re.sub(r"(?<=.)([A-Z])", r" \1", name)
 
     add_title = "Add " + _prettify_name(model_name)
@@ -671,7 +671,7 @@ def _build_fallback_info_payload(
                     if col_type is not None
                     else "String"
                 )
-                # label_columns is derived from col name (FAB _prettify_column)
+                # label_columns is derived from col name (upstream _prettify_column)
                 label = re.sub(r"[._]", " ", col.key).title()
                 columns.append(
                     {

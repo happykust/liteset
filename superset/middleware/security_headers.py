@@ -16,8 +16,8 @@
 # under the License.
 """Security headers middleware for Superset.
 
-Adds standard security headers to all HTTP responses, replacing
-flask-talisman functionality:
+Adds standard security headers to all HTTP responses, replacing the
+upstream talisman functionality:
 - X-Content-Type-Options
 - X-Frame-Options
 - X-XSS-Protection (only when talisman_config["x_xss_protection"] is True)
@@ -27,7 +27,7 @@ flask-talisman functionality:
   content_security_policy_nonce_in)
 - Referrer-Policy
 - Permissions-Policy (from talisman_config["permissions_policy"], defaulting to
-  flask-talisman's DEFAULT_PERMISSIONS_POLICY = {"browsing-topics": "()"})
+  the upstream talisman DEFAULT_PERMISSIONS_POLICY = {"browsing-topics": "()"})
 
 Respects TALISMAN_ENABLED: when False no security headers are injected,
 mirroring the original ``if talisman_enabled: talisman.init_app(...)`` guard.
@@ -43,13 +43,13 @@ from typing import Any, cast
 from litestar.middleware.base import ASGIMiddleware
 from litestar.types import ASGIApp, Message, Receive, Scope, Send
 
-# Matches flask-talisman's NONCE_LENGTH = 32 (bytes → hex → 64 chars).
+# Matches the upstream talisman NONCE_LENGTH = 32 (bytes → hex → 64 chars).
 # talisman uses get_random_string(32) which returns 32 alphanumeric chars;
 # secrets.token_urlsafe(32) produces ~43 URL-safe chars — same security level.
 _NONCE_LENGTH = 32
 
-# flask-talisman DEFAULT_PERMISSIONS_POLICY — used when talisman_config does not
-# supply a permissions_policy key.  talisman.py:48-51: {'browsing-topics': '()'}.
+# Upstream talisman DEFAULT_PERMISSIONS_POLICY — used when talisman_config does
+# not supply a permissions_policy key.  talisman.py:48-51: {'browsing-topics': '()'}.
 _DEFAULT_PERMISSIONS_POLICY: dict[str, str] = {"browsing-topics": "()"}
 
 # Scope-state key under which the per-request CSP nonce is stored so that
@@ -66,19 +66,19 @@ def _build_csp_string(
 ) -> str | None:
     """Serialise a Talisman-style CSP dict to a header string.
 
-    Mirrors how flask-talisman serialises its ``content_security_policy``
+    Mirrors how the upstream talisman serialises its ``content_security_policy``
     dict: each directive name maps to either a list of sources or a single
     string.  Returns ``None`` when *csp* is falsy (disabled).
 
     When *nonce_in* is a non-empty list and *nonce* is provided, appends
-    ``'nonce-<nonce>'`` to each listed directive — matching flask-talisman's
-    ``_make_nonce`` / ``content_security_policy_nonce_in`` behaviour
+    ``'nonce-<nonce>'`` to each listed directive — matching the upstream
+    talisman ``_make_nonce`` / ``content_security_policy_nonce_in`` behaviour
     (talisman.py:322-325).
     """
     if not csp:
         return None
     if isinstance(csp, str):
-        # flask-talisman _parse_policy() (talisman.py:307-314) parses a string CSP
+        # Upstream talisman _parse_policy() (talisman.py:307-314) parses a string CSP
         # into an OrderedDict and THEN injects the nonce per listed directive
         # (lines 316-327) — it does NOT pass the string through unchanged.
         # When no nonce is required, return as-is (no observable difference).
@@ -117,7 +117,7 @@ def _build_csp_string(
 def _build_force_https_location(scope: Mapping[str, Any]) -> bytes | None:
     """Return the ``https://`` redirect target for the current request, or None.
 
-    Mirrors flask-talisman's ``_force_https`` which rewrites
+    Mirrors the upstream talisman ``_force_https`` which rewrites
     ``request.url`` from ``http://`` to ``https://``.  The host is taken
     from the (ProxyFix-corrected) ``Host`` header; path and query string
     come from the scope.  Returns ``None`` only when no Host header is
@@ -200,7 +200,7 @@ def _build_hsts_header_value(talisman_config: dict[str, Any]) -> str | None:
 def _build_permissions_policy_string(policy: dict[str, str] | str | None) -> str | None:
     """Serialise a Talisman-style permissions-policy dict to a header string.
 
-    Mirrors flask-talisman's ``_parse_structured_header_policy`` (talisman.py:291-303):
+    Mirrors the upstream ``_parse_structured_header_policy`` (talisman.py:291-303):
     each key is joined with its value using ``=``, items separated by ``", "``.
     Returns ``None`` when *policy* is falsy (disabled).
     """
@@ -256,7 +256,7 @@ class SecurityHeadersMiddleware(ASGIMiddleware):
     ) -> tuple[list[str], str | None]:
         """Generate a CSP nonce and store it in scope state when required.
 
-        Mirrors flask-talisman _make_nonce / content_security_policy_nonce_in
+        Mirrors the upstream _make_nonce / content_security_policy_nonce_in
         (talisman.py:280-286): a fresh random nonce is generated per request when
         content_security_policy_nonce_in is non-empty.
         """
@@ -328,14 +328,14 @@ class SecurityHeadersMiddleware(ASGIMiddleware):
         )
 
         # ── x_content_type_options (talisman default: True) ──────────────────
-        # flask-talisman emits the header only when x_content_type_options is
+        # Upstream talisman emits the header only when x_content_type_options is
         # truthy; an explicit ``"x_content_type_options": False`` suppresses it.
         x_content_type_options: bool = bool(
             talisman_config.get("x_content_type_options", True)
         )
 
         # ── referrer_policy (talisman default: strict-origin-when-cross-origin)
-        # flask-talisman emits ``self.referrer_policy`` verbatim — honour the
+        # Upstream talisman emits ``self.referrer_policy`` verbatim — honour the
         # configured value instead of hardcoding the default.
         referrer_policy: str = str(
             talisman_config.get("referrer_policy", "strict-origin-when-cross-origin")

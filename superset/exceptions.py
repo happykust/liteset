@@ -19,7 +19,7 @@
 Maps to Superset exceptions for frontend compatibility.
 Ref: superset_old/exceptions.py, superset_old/views/error_handling.py
 
-The hierarchy is ported 1:1 from the original Flask codebase so that
+The hierarchy is ported 1:1 from the original codebase so that
 every ``except SomeException`` in business-logic modules keeps working.
 The Litestar-specific exception handlers live at the bottom of this file.
 """
@@ -72,7 +72,7 @@ class SupersetException(Exception):  # noqa: N818
     def status(self) -> int:
         """Backward-compat alias for ``status_code``.
 
-        The original Flask-era codebase used ``exc.status`` (the FAB / Werkzeug
+        The original legacy codebase used ``exc.status`` (the upstream
         convention). Litestar uses ``status_code``. Both are supported to avoid
         ``AttributeError`` in Celery tasks, CLI commands, or any non-Litestar
         code path that still reads the old attribute name.
@@ -121,7 +121,7 @@ class SupersetErrorException(SupersetException):
         """Return the SIP-40 error dict matching original
         ``dataclasses.asdict()`` shape.
 
-        The original Flask ``json_error_response`` used ``dataclasses.asdict(error)``
+        The original ``json_error_response`` used ``dataclasses.asdict(error)``
         (superset_old/views/error_handling.py:78) which unconditionally serialises
         ALL dataclass fields, including ``extra=None``.  Using ``to_dict()`` instead
         would silently drop the ``extra`` key when it is ``None`` or ``{}``, producing
@@ -200,8 +200,8 @@ class SupersetErrorsException(SupersetException):
         chosen = status if status is not None else status_code
         if chosen is not None:
             self.status_code = chosen
-        # Pick the first error's message for ``self.message`` (FAB compat —
-        # most consumers display this in a toast). Falls back to
+        # Pick the first error's message for ``self.message`` (upstream compat
+        # — most consumers display this in a toast). Falls back to
         # ``str(self.errors)`` only when no errors were supplied at all,
         # not when the list has structured dict/SupersetError elements
         # (otherwise the user sees the Python repr of the list, e.g.
@@ -1071,8 +1071,8 @@ def superset_exception_handler(
 ) -> Response[Any]:
     """SIP-40 compatible error response handler.
 
-    Includes both ``message`` (FAB compat) and ``detail`` (Litestar compat)
-    keys in the response body for backward compatibility.
+    Includes both ``message`` (upstream compat) and ``detail`` (Litestar
+    compat) keys in the response body for backward compatibility.
 
     Mirrors ``superset_old/views/error_handling.py::set_app_error_handlers``:
     - ``CommandException`` → ``GENERIC_COMMAND_ERROR`` with status-derived level,
@@ -1148,10 +1148,10 @@ def validation_error_handler(
 
     * ``unknown field`` (msgspec ``forbid_unknown_fields``) → ``422``
       Unprocessable Entity — the payload is syntactically valid JSON but
-      contains keys the server refuses to accept (FAB add_columns
+      contains keys the server refuses to accept (upstream add_columns
       whitelist semantics).
     * everything else (missing required fields, type mismatch) → ``400``
-      Bad Request, matching the original FAB / Marshmallow behaviour
+      Bad Request, matching the original upstream / Marshmallow behaviour
       that the contract tests expect.
     """
     detail = getattr(exc, "detail", "") or str(exc)
@@ -1181,7 +1181,7 @@ def integrity_error_handler(
 ) -> Response[Any]:
     """Translate SQLAlchemy IntegrityError to a 422 response.
 
-    Mirrors original Flask Superset behaviour where unique-constraint
+    Mirrors original Superset behaviour where unique-constraint
     or foreign-key violations surface as ``422 Unprocessable Entity``
     rather than ``500 Internal Server Error``.
     """

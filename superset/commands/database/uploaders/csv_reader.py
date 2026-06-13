@@ -17,7 +17,7 @@
 """Async port of ``superset_old/commands/database/uploaders/csv_reader.py``.
 
 Mirrors the original reader 1:1.  The only adaptation is the file
-input — the original accepts ``werkzeug.datastructures.FileStorage`` and
+input — the original accepts an upstream file-storage object and
 calls ``.stream``.  Liteset receives uploads via Litestar's
 ``UploadFile``/raw bytes; this module accepts any file-like with
 ``.stream`` *or* a raw ``IO[bytes]`` / ``bytes`` payload and normalises
@@ -67,13 +67,13 @@ class CSVReaderOptions(ReaderOptions, total=False):
 
 
 def _to_stream(file: Any) -> IO[bytes]:
-    """Coerce a Litestar/Werkzeug/raw-bytes input into a binary stream."""
+    """Coerce a Litestar/legacy/raw-bytes input into a binary stream."""
     if file is None:
         raise DatabaseUploadFailed(message=_("No file provided"))
     if isinstance(file, (bytes, bytearray)):
         return io.BytesIO(bytes(file))
     if hasattr(file, "stream"):
-        return file.stream  # werkzeug.FileStorage compat
+        return file.stream  # upstream file-storage compat
     if hasattr(file, "file"):
         return file.file  # litestar.datastructures.UploadFile
     if hasattr(file, "read"):

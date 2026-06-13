@@ -18,9 +18,9 @@
 
 1:1 port of ``superset_old/commands/temporary_cache/exceptions.py``.
 
-The original file uses ``flask_babel.lazy_gettext`` for the human-readable
-messages — Liteset has dropped Flask-Babel so the strings are emitted
-verbatim.  Class hierarchy and message text are otherwise identical so
+The original file uses a lazy-gettext helper for the human-readable
+messages — Liteset has dropped that translation layer so the strings are
+emitted verbatim.  Class hierarchy and message text are otherwise identical so
 controllers / clients see the same SIP-40 error envelopes.
 """
 

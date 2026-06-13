@@ -15,15 +15,15 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Apache Hive engine spec -- sync/Flask-compatible.
+"""Apache Hive engine spec -- sync-compatible.
 
-Ported 1:1 from ``superset_old/db_engine_specs/hive.py`` with Flask
+Ported 1:1 from ``superset_old/db_engine_specs/hive.py`` with legacy
 imports removed.  ``HiveEngineSpec`` subclasses ``PrestoEngineSpec`` (1:1
 with upstream) so Hive reuses the Presto partition / ``expand_data`` /
 column-introspection behaviour.
 
-Flask ``g``/``app.config`` are replaced with the port's established
-equivalents:
+The upstream request globals / ``app.config`` are replaced with the
+port's established equivalents:
 
 * ``app.config["DB_POLL_INTERVAL_SECONDS"]`` -> ``SupersetSettings``.
 * ``db.session.commit()`` -> the ``query`` ORM object's own (sync) session,
@@ -32,8 +32,8 @@ equivalents:
   get/set (matching the ClickHouse / Presto ports).
 
 The CSV/Parquet-to-Hive upload path (``upload_to_s3`` + ``df_to_sql``) is
-intentionally omitted: it is a Flask-only feature that depends on
-``g.user``, ``boto3``, ``UPLOAD_FOLDER`` and the
+intentionally omitted: it is a legacy-stack-only feature that depends on
+the request-scoped current user, ``boto3``, ``UPLOAD_FOLDER`` and the
 ``CSV_TO_HIVE_UPLOAD_DIRECTORY_FUNC`` config callable, none of which are
 wired in the port's sync metadata / SQL-Lab paths.  Likewise the
 pyhive-only ``patch`` classmethod is preserved (driver monkey-patch).
@@ -444,7 +444,7 @@ class HiveEngineSpec(PrestoEngineSpec):
 
         Results are cached per-database for SQL Lab autocomplete — the business
         equivalent of upstream's ``@cache_manager.cache.memoize()``. The port's
-        cache layer exposes no flask-caching ``memoize``, so this uses the sync
+        cache layer exposes no upstream ``memoize``, so this uses the sync
         cache slot (``cache_manager.sync_cache``) directly with a manual
         get/set, matching the ClickHouse / Presto ports.
 

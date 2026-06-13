@@ -14,9 +14,9 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""SQLAlchemy column type → FAB filter operator mapping.
+"""SQLAlchemy column type → upstream filter operator mapping.
 
-This module reproduces (without the Flask-AppBuilder dependency) the
+This module reproduces (without the upstream app-builder dependency) the
 ``SQLAFilterConverter.conversion_table`` resolution that the original
 Superset uses to expose ``GET /<resource>/_info`` filter catalogs.
 
@@ -35,13 +35,13 @@ Key edge cases:
 * ``sqlalchemy_utils.UUIDType`` is a ``TypeDecorator`` whose impl is
   ``CHAR(32)`` or ``UUID``; treated as a string for filter purposes.
 * ``LargeBinary`` is excluded from the ``In/Not In`` operator pair —
-  matches FAB's ``is_binary`` short-circuit.
+  matches the upstream ``is_binary`` short-circuit.
 * Relationships are detected via the model's ``__mapper__.relationships``
   registry; their direction (``MANYTOONE``/``ONETOMANY``/etc.) selects
   between the singular (``rel_o_m``) and plural (``rel_m_m``) operator
   shapes.  ``MANYTOONE`` with ``uselist=False`` (one-to-one) collapses
-  into the singular branch, matching FAB's ``is_relation_one_to_one``
-  predicate.
+  into the singular branch, matching the upstream
+  ``is_relation_one_to_one`` predicate.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ def _ops(*arg_names: str) -> list[dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Per-type operator lists — order matches FAB SQLAFilterConverter output
+# Per-type operator lists — order matches upstream SQLAFilterConverter output
 # ---------------------------------------------------------------------------
 
 #: Many-to-one / one-to-one relationship operators.
@@ -149,7 +149,7 @@ def _uuid_type() -> type | None:
 
 
 def operators_for_column(model_cls: type, column_name: str) -> list[dict[str, str]]:
-    """Return the FAB-style filter operator list for ``column_name``.
+    """Return the upstream-style filter operator list for ``column_name``.
 
     Resolves ``column_name`` against ``model_cls.__mapper__``:
 
@@ -160,8 +160,9 @@ def operators_for_column(model_cls: type, column_name: str) -> list[dict[str, st
       ``ONETOMANY`` return the plural (``rel_m_m``) operators.
     * Otherwise the name is looked up in ``mapper.columns`` and the
       column's ``type`` is matched against the predicate ladder
-      mirrored from FAB ``SQLAFilterConverter.conversion_table``
-      (``flask_appbuilder/models/sqla/filters.py``).
+      mirrored from the upstream
+      ``SQLAFilterConverter.conversion_table`` (the upstream
+      app-builder sqla filters module).
 
     Raises:
         KeyError: when ``column_name`` is neither a known relationship
@@ -170,8 +171,8 @@ def operators_for_column(model_cls: type, column_name: str) -> list[dict[str, st
     Notes:
         Any unmappable column type (e.g. a custom ``TypeDecorator`` that
         doesn't subclass any of the recognised SA primitives) falls
-        back to an empty list — matching FAB's behaviour, which simply
-        skips the column when no predicate matches.
+        back to an empty list — matching the upstream behaviour, which
+        simply skips the column when no predicate matches.
     """
     mapper: Any = sa.inspect(model_cls)
 
@@ -180,8 +181,8 @@ def operators_for_column(model_cls: type, column_name: str) -> list[dict[str, st
         rel = mapper.relationships[column_name]
         direction = rel.direction
         if direction is MANYTOONE:
-            # FAB treats ``uselist=False`` (one-to-one) and the ordinary
-            # many-to-one relationship the same — both yield the
+            # Upstream treats ``uselist=False`` (one-to-one) and the
+            # ordinary many-to-one relationship the same — both yield the
             # ``rel_o_m``/``nrel_o_m`` pair.
             return list(_OPS_REL_SINGULAR)
         if direction is MANYTOMANY:
@@ -199,8 +200,9 @@ def operators_for_column(model_cls: type, column_name: str) -> list[dict[str, st
 def _operators_for_type(col_type: Any) -> list[dict[str, str]]:  # noqa: C901  # complex business logic
     """First-match-wins resolution of a column ``type`` to its op list.
 
-    The check order mirrors FAB ``SQLAFilterConverter.conversion_table``
-    — in particular ``Text`` is checked **before** ``String`` so the
+    The check order mirrors the upstream
+    ``SQLAFilterConverter.conversion_table`` — in particular ``Text`` is
+    checked **before** ``String`` so the
     Superset ``MediumText``/``LongText`` variants (which are
     ``sa.Text().with_variant(...)``) get the text-specific ladder rather
     than the generic-string one.  In practice the operator lists are
@@ -254,6 +256,6 @@ def _operators_for_type(col_type: Any) -> list[dict[str, str]]:  # noqa: C901  #
     if isinstance(col_type, sa.JSON):
         return list(_OPS_JSON)
 
-    # Unknown / unrecognised — surface an empty list, mirroring FAB's
-    # behaviour of silently dropping the column from the filter catalog.
+    # Unknown / unrecognised — surface an empty list, mirroring the
+    # upstream behaviour of silently dropping the column from the catalog.
     return []

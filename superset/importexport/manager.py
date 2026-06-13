@@ -301,7 +301,7 @@ class AsyncFullAssetManager:
     ) -> ImportResult:
         """Import assets from a parsed bundle.
 
-        Mirrors the original Flask path
+        Mirrors the original path
         (``superset_old/importexport/api.py:import_``): the controller parses
         the upload via ``get_contents_from_bundle`` (which applies
         ``remove_root`` so a nested ``assets_export_<ts>/`` bundle is
@@ -336,7 +336,7 @@ class AsyncFullAssetManager:
         and its subclasses (``IncorrectFormatError`` / ``NoValidFilesFoundError``
         / ``CommandInvalidError``) propagate to the controller so the global
         exception handler maps them to the matching 4xx — matching the
-        original FAB behaviour rather than wrapping everything in a 200.
+        original upstream behaviour rather than wrapping everything in a 200.
         """
         result = ImportResult()
         by_type: dict[str, list[str]] = {}
@@ -366,7 +366,7 @@ class AsyncFullAssetManager:
 
         # ------------------------------------------------------------------
         # Delegate to ImportAssetsCommand for dependency-aware orchestration.
-        # This matches the original Flask path which routed every full-bundle
+        # This matches the original path which routed every full-bundle
         # import through ``ImportAssetsCommand`` rather than running each
         # per-type command in isolation (which would lose ordering).
         # ------------------------------------------------------------------

@@ -18,7 +18,7 @@
 
 This module contains the ``BaseViz`` class and all legacy visualization
 subclasses that are still served via the ``/superset/explore_json/``
-endpoint.  The business logic is identical to the original Flask-based
+endpoint.  The business logic is identical to the original
 ``superset/viz.py``; the only structural change is that
 ``get_df`` / ``get_df_payload`` / ``get_payload`` are now ``async``,
 calling ``datasource.async_query()`` instead of the synchronous
@@ -804,12 +804,12 @@ class BaseViz:
 
         Subclasses or callers may inject a cache_manager via ``self.cache_manager``.
         The attribute is expected to expose a ``.get()`` / ``.set()`` interface
-        (e.g. a Flask-Caching or compatible backend).
+        (e.g. an upstream caching or compatible backend).
         """
         cm = getattr(self, "cache_manager", None)
         if cm is not None:
             # cache_manager may be an object with a ``data_cache`` attribute
-            # (like the original Flask CacheManager extension) or it may
+            # (like the original CacheManager extension) or it may
             # *be* the data cache itself.
             if hasattr(cm, "data_cache"):
                 return cm.data_cache
@@ -838,7 +838,7 @@ class BaseViz:
         data_cache = self._get_data_cache()
         if cache_key and data_cache is not None and not force:
             try:
-                # ``data_cache`` is a synchronous backend (Flask-Caching parity);
+                # ``data_cache`` is a synchronous backend (upstream caching parity);
                 # off-load the blocking Redis round-trip so it doesn't stall the
                 # event loop in the async web process.
                 raw = await asyncio.to_thread(data_cache.get, cache_key)

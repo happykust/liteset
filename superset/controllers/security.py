@@ -209,7 +209,7 @@ class SecurityController(Controller):
     ) -> dict[str, str]:
         """Generate and return a CSRF token.
 
-        Compatible with Flask-WTF's ``generate_csrf()``.
+        Compatible with the upstream ``generate_csrf()``.
         Frontend stores this and sends it in ``X-CSRFToken``
         header on POST/PUT/DELETE requests.
         """
@@ -643,9 +643,10 @@ class SecurityController(Controller):
 
     @staticmethod
     def _check_password(stored_hash: str, password: str) -> bool:
-        """Verify password against a werkzeug-compatible hash.
+        """Verify password against a secure password hash.
 
-        Supports scrypt and pbkdf2 formats used by Flask-AppBuilder.
+        Supports scrypt and pbkdf2 formats used by the upstream
+        security manager.
         """
         from superset.utils.password import check_password_hash
 

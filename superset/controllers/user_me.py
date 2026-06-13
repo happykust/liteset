@@ -33,19 +33,18 @@ from superset.typing import UserProtocol
 
 
 def _provide_user_dao(session: Any) -> Any:
-    """Lazy provider for AsyncUserDAO — avoids eager Flask imports."""
+    """Lazy provider for AsyncUserDAO — avoids eager legacy-stack imports."""
     from superset.db.daos.user import AsyncUserDAO
 
     return AsyncUserDAO(session)
 
 
 def _user_is_active(user: Any) -> bool:
-    """Resolve FAB's ``is_active`` for CachedUser/ORM users.
+    """Resolve the upstream ``is_active`` for CachedUser/ORM users.
 
-    FAB ``User.is_active`` is a property over the ``active`` column
-    (flask_appbuilder/security/sqla/models.py:222-224); neither CachedUser
-    nor the liteset ORM model defines ``is_active``, so fall back to
-    ``active`` instead of a hardcoded True.
+    Upstream ``User.is_active`` is a property over the ``active`` column;
+    neither CachedUser nor the liteset ORM model defines ``is_active``, so
+    fall back to ``active`` instead of a hardcoded True.
     """
     value = getattr(user, "is_active", None)
     if value is None:
@@ -63,8 +62,7 @@ def _build_roles_map(
     Mirrors security_manager.get_user_roles_permissions().
     """
 
-    # 1:1 with FAB security_manager.get_user_roles() at
-    # flask_appbuilder/security/manager.py:1828:
+    # 1:1 with the upstream security_manager.get_user_roles():
     # ``return user.roles + [role for group in user.groups for role in group.roles]``
     # Groups contribute additional roles that must be included.
     direct_roles = list(getattr(current_user, "roles", []) or [])

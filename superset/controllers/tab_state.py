@@ -17,7 +17,7 @@
 # mypy: ignore-errors
 """TabState and TableSchema controllers — SQL Lab tab persistence.
 
-Ports the original Flask ``TabStateView`` and ``TableSchemaView``
+Ports the original ``TabStateView`` and ``TableSchemaView``
 to async Litestar controllers 1:1.
 """
 
@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 
 class TabStateController(Controller):
-    """SQL Lab tab state CRUD — mirrors Flask TabStateView."""
+    """SQL Lab tab state CRUD — mirrors the upstream TabStateView."""
 
     path = "/tabstateview"
     tags = ["SQL Lab"]
@@ -70,8 +70,8 @@ class TabStateController(Controller):
     ) -> Response[str]:
         """POST /tabstateview/ — create a new tab state.
 
-        Upstream's Flask view returns 200 via ``json_success`` (which sets
-        no explicit status_code, so Werkzeug defaults to 200). Override
+        Upstream's view returns 200 via ``json_success`` (which sets
+        no explicit status_code, so the WSGI layer defaults to 200). Override
         Litestar's @post default of 201 to match.
         """
         try:
@@ -393,7 +393,7 @@ class TabStateController(Controller):
 
 
 class TableSchemaController(Controller):
-    """SQL Lab table schema CRUD — mirrors Flask TableSchemaView."""
+    """SQL Lab table schema CRUD — mirrors the upstream TableSchemaView."""
 
     path = "/tableschemaview"
     tags = ["SQL Lab"]
@@ -524,15 +524,15 @@ class TableSchemaController(Controller):
         """POST /tableschemaview/<id>/expanded — toggle expanded state.
 
         Matches original TableSchemaView.expanded: a missing ``expanded``
-        form key raises Werkzeug's ``BadRequestKeyError`` (an HTTP 400
-        BadRequest subclass) which Flask renders as 400 — NOT 500. Invalid
+        form key raises the upstream ``BadRequestKeyError`` (an HTTP 400
+        BadRequest subclass) which renders as 400 — NOT 500. Invalid
         JSON (``json.loads`` ValueError) propagates → 500, as upstream.
         """
         from litestar.exceptions import ClientException
 
         form = await request.form()
         if "expanded" not in form:
-            # Werkzeug ImmutableMultiDict.__getitem__ → BadRequestKeyError → 400.
+            # Upstream ImmutableMultiDict.__getitem__ → BadRequestKeyError → 400.
             raise ClientException(
                 status_code=400, detail="Missing form key: 'expanded'"
             )

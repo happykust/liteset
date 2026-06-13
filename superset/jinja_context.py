@@ -16,8 +16,9 @@
 # under the License.
 """Defines the templating context for SQL Lab.
 
-Migrated from superset_old/jinja_context.py — Flask dependencies removed,
-user context resolved via context-vars (set_current_user / get_current_user).
+Migrated from superset_old/jinja_context.py — legacy WSGI dependencies
+gone, user context resolved via context-vars (set_current_user /
+get_current_user).
 """
 
 from __future__ import annotations
@@ -89,7 +90,7 @@ COLLECTION_TYPES = ("list", "dict", "tuple", "set")
 
 
 # ---------------------------------------------------------------------------
-# Config access (replaces Flask current_app.config)
+# Config access (replaces the upstream current_app.config)
 # ---------------------------------------------------------------------------
 _settings_instance: Any = None
 
@@ -217,14 +218,16 @@ class ExtraCache:
         """
         try:
             user = get_current_user()
-            # Anonymous detection mirrors FAB get_user_roles' ``is_anonymous``
-            # branch: the middleware stores a truthy ``UnauthenticatedUser``
+            # Anonymous detection mirrors the upstream get_user_roles'
+            # ``is_anonymous`` branch: the middleware stores a truthy
+            # ``UnauthenticatedUser``
             # (is_authenticated=False) in the ContextVar, so a plain
             # truthiness check would skip the public-role branch. ORM users
             # have no ``is_authenticated`` attribute -> default True.
             if not user or getattr(user, "is_authenticated", True) is False:
                 # Mirror original: anonymous users get the public role
-                # if AUTH_ROLE_PUBLIC is configured. FAB get_public_role()
+                # if AUTH_ROLE_PUBLIC is configured. The upstream
+                # get_public_role()
                 # queries the DB (sqla/manager.py:717-722) — a configured but
                 # DELETED role yields None, then ``None.name`` raises inside
                 # the original's try/except → None. Reproduce the existence
@@ -240,7 +243,7 @@ class ExtraCache:
             role_names: set[str] = {
                 role.name for role in roles if hasattr(role, "name")
             }
-            # Mirror FAB base get_user_roles:
+            # Mirror the upstream base get_user_roles:
             #   user.roles + [role for group in user.groups for role in group.roles]
             # The group term is resolved via a sync query (same pattern as
             # _sync_get_rls_rules) since Jinja rendering is synchronous.
@@ -266,7 +269,7 @@ class ExtraCache:
         Ported 1:1 from
         superset_old/jinja_context.py::ExtraCache.current_user_rls_rules.
         The original called security_manager.get_rls_filters(self.table) (sync,
-        because the original Flask SM was sync). In Liteset we reproduce the
+        because the original SM was sync). In Liteset we reproduce the
         same query synchronously via _sync_get_rls_rules which uses a cached
         sync SQLAlchemy engine — acceptable since Jinja rendering is sync.
         """
@@ -298,7 +301,8 @@ class ExtraCache:
         Read a url or post parameter and use it in your SQL Lab query.
 
         1:1 with upstream: first checks request.query_params (Litestar equivalent
-        of Flask request.args), then falls back to form_data["url_params"].
+        of the upstream request.args), then falls back to
+        form_data["url_params"].
         """
         # Mirror upstream: ``if has_request_context() and request.args.get(param)``
         _request = get_current_request()
@@ -836,8 +840,9 @@ def get_template_processor(
 # Sync dataset lookup helper
 #
 # The original Superset uses DatasetDAO.find_by_id() which is a synchronous
-# class-method backed by Flask-SQLAlchemy. In Liteset the DAO layer is fully
-# async. For synchronous template rendering we use a direct sync query.
+# class-method backed by the upstream ORM integration. In Liteset the DAO
+# layer is fully async. For synchronous template rendering we use a direct
+# sync query.
 #
 # P1-3 fix: cache the engine at module level (keyed by DB URI) so we create
 # at most one engine per process — avoiding per-call connection pool leaks.
@@ -963,7 +968,7 @@ def _sync_user_can_access_dataset(
     → ``get_dataset_access_filters(SqlaTable)``: admins and holders of
     ``all_database_access``/``all_datasource_access`` see all; everyone else
     needs the dataset's database OR its ``perm``/``catalog_perm``/``schema_perm``
-    to be granted. Roles include FAB *group* membership — upstream
+    to be granted. Roles include upstream *group* membership — upstream
     ``user_view_menu_names`` (superset_old/security/manager.py:841-880) joins
     ``assoc_user_group``/``assoc_group_role`` so group-granted permissions
     count in every check.
@@ -988,8 +993,8 @@ def _sync_user_can_access_dataset(
     role_ids = [r.id for r in roles if getattr(r, "id", None) is not None]
 
     # Group-inherited roles — 1:1 with the assoc_user_group/assoc_group_role
-    # EXISTS terms of upstream ``user_view_menu_names`` and with FAB base
-    # ``get_user_roles`` (user.roles + roles of the user's groups).
+    # EXISTS terms of upstream ``user_view_menu_names`` and with the upstream
+    # base ``get_user_roles`` (user.roles + roles of the user's groups).
     user_id = getattr(user, "id", None)
     if user_id is not None:
         try:
@@ -1021,7 +1026,8 @@ def _sync_user_can_access_dataset(
 
 
 def _sync_role_exists(role_name: str) -> bool:
-    """Check that a role row exists — sync analogue of FAB get_public_role().
+    """Check that a role row exists — sync analogue of the upstream
+    get_public_role().
 
     Uses the same module-level sync engine as ``_sync_get_rls_rules`` since
     Jinja rendering is synchronous.
@@ -1039,9 +1045,10 @@ def _sync_role_exists(role_name: str) -> bool:
 
 
 def _sync_get_user_group_roles(user_id: int) -> list[tuple[int, str]]:
-    """Return ``(id, name)`` of roles inherited via FAB group membership.
+    """Return ``(id, name)`` of roles inherited via upstream group membership.
 
-    Mirrors the group-role term of FAB base ``SecurityManager.get_user_roles``:
+    Mirrors the group-role term of the upstream base
+    ``SecurityManager.get_user_roles``:
     ``[role for group in user.groups for role in group.roles]``.
 
     Uses the same module-level sync SQLAlchemy engine as ``_sync_get_rls_rules``
@@ -1063,7 +1070,7 @@ def _sync_get_user_group_roles(user_id: int) -> list[tuple[int, str]]:
 
 
 def _sync_get_user_group_role_names(user_id: int) -> list[str]:
-    """Return role names inherited via FAB group membership for a user."""
+    """Return role names inherited via upstream group membership for a user."""
     return [name for _, name in _sync_get_user_group_roles(user_id)]
 
 
@@ -1106,9 +1113,9 @@ def _sync_get_rls_rules(table: Any, user: Any) -> list[str]:
         return sorted(clauses)
 
     # Authenticated user path: query the RowLevelSecurityFilter table.
-    # Role set mirrors FAB get_user_roles: direct roles + roles inherited
-    # via group membership (superset_old/security/manager.py:2598 →
-    # flask_appbuilder/security/manager.py:1828).
+    # Role set mirrors the upstream get_user_roles: direct roles + roles
+    # inherited via group membership (superset_old/security/manager.py:2598 →
+    # the upstream app-builder security manager).
     try:
         user_role_ids = [r.id for r in getattr(user, "roles", []) or []]
     except Exception:  # noqa: BLE001
@@ -1315,7 +1322,7 @@ def get_dataset_id_from_context(metric_key: str) -> int:
     Retrieves the Dataset ID from the template context.
 
     1:1 with ``superset_old/jinja_context.py::get_dataset_id_from_context``.
-    The original reads the Flask request JSON body, ``request.form``,
+    The original reads the request JSON body, ``request.form``,
     ``request.args`` and ``g.form_data``.  In Liteset the request-scoped
     ``_form_data_ctx`` ContextVar (set by the ``request_context``
     middleware to the full JSON body) is the primary source.  We also

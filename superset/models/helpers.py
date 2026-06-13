@@ -17,7 +17,7 @@
 # mypy: ignore-errors
 """Model base, mixin classes, and helper types for Superset.
 
-Pure SQLAlchemy -- no Flask dependencies.
+Pure SQLAlchemy -- no legacy WSGI dependencies.
 Includes ExploreMixin: the core SQL-generation engine for all chart queries.
 """
 
@@ -212,10 +212,10 @@ class UUIDMixin:
 class AuditMixinNullable:
     """Audit columns: created/changed timestamps and user FKs.
 
-    Replaces Flask-AppBuilder's AuditMixin with pure SQLAlchemy columns.
+    Replaces the upstream AuditMixin with pure SQLAlchemy columns.
     All fields are nullable so legacy rows without audit data still load.
 
-    Computed properties match the original FAB AuditMixin so that
+    Computed properties match the original upstream AuditMixin so that
     ``serialize_list_response`` can read them via ``getattr``.
     """
 
@@ -263,7 +263,7 @@ class AuditMixinNullable:
             viewonly=True,
         )
 
-    # -- Computed properties (match original FAB @renders decorators) ------
+    # -- Computed properties (match original upstream @renders decorators) -
 
     @property
     def changed_on_utc(self) -> str | None:
@@ -305,7 +305,7 @@ class AuditMixinNullable:
     def creator(self) -> str:
         """Return the formatted name of the user who created this object.
 
-        Mirrors Flask-AppBuilder's AuditMixin.creator() which is used by
+        Mirrors the upstream AuditMixin.creator() which is used by
         Superset's entity serializers (e.g., Dashboard/Slice tags).
         """
         if self.created_by:
@@ -494,7 +494,7 @@ class ImportExportMixin(UUIDMixin):
 class ExtraJSONMixin:
     """Provides an ``extra_json`` Text column with a parsed ``extra`` property.
 
-    Mirrors the original Flask-AppBuilder mixin: ``extra_json`` stores a JSON
+    Mirrors the original upstream mixin: ``extra_json`` stores a JSON
     string, ``extra`` is a property that parses/serialises it as a dict.
     """
 
@@ -678,7 +678,7 @@ class SqlaQuery(NamedTuple):
 
 
 # ---------------------------------------------------------------------------
-# validate_adhoc_subquery (Flask-free port)
+# validate_adhoc_subquery (no legacy WSGI dependency)
 # ---------------------------------------------------------------------------
 
 
@@ -730,10 +730,10 @@ class ExploreMixin:
     inside /explore.
 
     This is the core SQL-building mixin ported 1:1 from the original
-    Flask-based ``superset_old/models/helpers.py``.  Flask-specific
-    integration points (``flask.g``, ``superset.i18n._``, ``current_app.config``)
-    have been removed; the pure SQLAlchemy query-building logic is preserved
-    exactly.
+    ``superset_old/models/helpers.py``.  Legacy-stack integration
+    points (the request-scoped current user, ``superset.i18n._``, and the
+    app config) have been removed; the pure SQLAlchemy query-building logic
+    is preserved exactly.
     """
 
     sqla_aggregations: dict[str, Any] = {  # noqa: RUF012

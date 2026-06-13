@@ -135,7 +135,7 @@ class AdvancedDataTypeController(Controller):
         """GET /api/v1/advanced_data_type/convert -- convert via RISON params.
 
         Accepts ``type`` and ``values`` from the Rison query parameter,
-        matching the original Flask API signature.  The original uses
+        matching the original API signature.  The original uses
         ``@rison(advanced_data_type_convert_schema)`` which validates
         against a JSON Schema requiring both ``type`` (string) and
         ``values`` (array, minItems: 1).
@@ -148,7 +148,7 @@ class AdvancedDataTypeController(Controller):
         # The original @rison(advanced_data_type_convert_schema) requires the
         # RISON parameter to be a JSON object ({"type": "object"}).  A list
         # passes provide_rison_query but must be rejected here with 400, just
-        # as FAB's jsonschema.validate() returns 400 for a list input.
+        # as the upstream jsonschema.validate() returns 400 for a list input.
         if not isinstance(params, dict):
             return Response(
                 content={"message": "Not a valid rison schema"},

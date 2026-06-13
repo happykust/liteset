@@ -14,12 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""ViewMenu (Resources) controller — full CRUD for FAB view menus (ab_view_menu).
+"""ViewMenu (Resources) controller — full CRUD for view menus (ab_view_menu).
 
-Mirrors Flask-AppBuilder's ``ViewMenuApi`` which is a ``ModelRestApi``
+Mirrors the upstream ``ViewMenuApi`` which is a ``ModelRestApi``
 with all default route methods enabled (get_list, get, info, post, put, delete).
-
-Original: flask_appbuilder/security/sqla/apis/view_menu/api.py
 """
 
 from __future__ import annotations
@@ -53,7 +51,7 @@ logger = logging.getLogger(__name__)
 class ViewMenuPostBody(msgspec.Struct):
     """POST body for creating a view menu (resource).
 
-    Matches FAB ``ViewMenuApi.add_columns = ["name"]``.
+    Matches the upstream ``ViewMenuApi.add_columns = ["name"]``.
     """
 
     name: str
@@ -62,16 +60,16 @@ class ViewMenuPostBody(msgspec.Struct):
 class ViewMenuPutBody(msgspec.Struct):
     """PUT body for updating a view menu (resource).
 
-    Matches FAB ``ViewMenuApi.edit_columns = ["name"]``.
+    Matches the upstream ``ViewMenuApi.edit_columns = ["name"]``.
     """
 
     name: str
 
 
 class ViewMenuController(Controller):
-    """Full CRUD controller for FAB view menus / resources (ab_view_menu).
+    """Full CRUD controller for view menus / resources (ab_view_menu).
 
-    Mirrors the original FAB ``ViewMenuApi(ModelRestApi)`` which exposes
+    Mirrors the original ``ViewMenuApi(ModelRestApi)`` which exposes
     all default CRUD methods.
 
     Used by the frontend to manage resource names in the security
@@ -100,7 +98,7 @@ class ViewMenuController(Controller):
         """GET /api/v1/security/resources/ -- list all view menus.
 
         Supports Rison query parameters for pagination and ordering.
-        Matches FAB ``ViewMenuApi.get_list`` with
+        Matches the upstream ``ViewMenuApi.get_list`` with
         ``list_columns = ["id", "name"]`` and
         ``search_columns = ["id", "name"]``.
         """
@@ -115,7 +113,7 @@ class ViewMenuController(Controller):
         if order_column not in ("id", "name"):
             order_column = "id"
 
-        # Build filters using the shared helper (supports all FAB operators
+        # Build filters using the shared helper (supports all upstream operators
         # on search_columns = ["id", "name"])
         rison_filters, _order_by, _page, _page_size = build_rison_query_params(
             ViewMenu,
@@ -156,7 +154,7 @@ class ViewMenuController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/security/resources/{pk} -- get single view menu.
 
-        Matches FAB ``ViewMenuApi.get`` with
+        Matches the upstream ``ViewMenuApi.get`` with
         ``show_columns = ["id", "name"]``.
         """
         vm = await vm_dao.find_by_id(pk)
@@ -177,7 +175,7 @@ class ViewMenuController(Controller):
     async def get_info(self) -> dict[str, Any]:
         """GET /api/v1/security/resources/_info -- metadata.
 
-        Matches FAB ``ViewMenuApi.info`` response shape with
+        Matches the upstream ``ViewMenuApi.info`` response shape with
         ``add_columns = ["name"]``, ``edit_columns = ["name"]``.
         """
         return {
@@ -201,7 +199,7 @@ class ViewMenuController(Controller):
     ) -> dict[str, Any]:
         """POST /api/v1/security/resources/ -- create a new view menu.
 
-        Mirrors FAB ``ViewMenuApi.post`` with
+        Mirrors the upstream ``ViewMenuApi.post`` with
         ``add_columns = ["name"]``.
 
         Returns 201 with ``{id, result}`` on success.
@@ -210,7 +208,8 @@ class ViewMenuController(Controller):
         try:
             vm = await vm_dao.create({"name": data.name})
         except Exception as exc:
-            # Unique constraint violation -- matches FAB's DatabaseException handling
+            # Unique constraint violation -- matches the upstream DatabaseException
+            # handling
             raise SupersetValidationException(
                 f"Database exception occurred: {exc}"
             ) from exc
@@ -238,7 +237,7 @@ class ViewMenuController(Controller):
     ) -> dict[str, Any]:
         """PUT /api/v1/security/resources/{pk} -- update a view menu.
 
-        Mirrors FAB ``ViewMenuApi.put`` with
+        Mirrors the upstream ``ViewMenuApi.put`` with
         ``edit_columns = ["name"]``.
 
         Returns 200 with ``{result}`` on success.
@@ -274,7 +273,7 @@ class ViewMenuController(Controller):
     ) -> dict[str, str]:
         """DELETE /api/v1/security/resources/{pk} -- delete a view menu.
 
-        Mirrors FAB ``ViewMenuApi.delete``.
+        Mirrors the upstream ``ViewMenuApi.delete``.
 
         Returns 200 with ``{message: "OK"}`` on success.
         Returns 404 if not found.

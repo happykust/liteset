@@ -87,7 +87,7 @@ def _build_exception_handlers() -> dict[Any, Any]:
     """Exception → handler map for the Litestar app.
 
     * ``ValidationException`` (msgspec / Litestar request-body validation)
-      is mapped to ``422`` — matches original FAB/Marshmallow behaviour
+      is mapped to ``422`` — matches the original Marshmallow behaviour
       that contract tests expect.
     * SQLAlchemy ``IntegrityError`` is mapped to ``422`` so unique- and
       foreign-key violations don't surface as 500s.
@@ -98,7 +98,7 @@ def _build_exception_handlers() -> dict[Any, Any]:
       caps in the msgspec schemas the asyncpg error reached 500.
     """
     # Accumulating *InvalidError* validation errors emit a
-    # ``{"message": {field: [messages]}}`` 422 body 1:1 with upstream FAB
+    # ``{"message": {field: [messages]}}`` 422 body 1:1 with the upstream
     # ``response_422(message=ex.normalized_messages())``. Registered more
     # specifically than ``SupersetException`` so they win via MRO resolution;
     # scoped to the resources whose commands raise field-keyed errors
@@ -547,7 +547,7 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
         # call sites.  Sharing the async client across event loops
         # would deadlock on cross-loop awaits — distinct sync/async
         # clients pointing at the same Redis cluster keep keyspace
-        # behaviour identical to the original Flask Superset.
+        # behaviour identical to the original Superset.
         redis_url=settings.redis_url or None,
         # Required for ``CACHE_TYPE='SupersetMetastoreCache'`` (the
         # default for FILTER_STATE / EXPLORE_FORM_DATA in upstream
@@ -658,8 +658,8 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
 
     # ── FLASK_APP_MUTATOR ──────────────────────────────────────────────────
     # Call the user-supplied last-mile hook with the Litestar app object.
-    # Mirrors ``SupersetAppInitializer.init_app_in_ctx`` which calls
-    # ``flask_app_mutator(self.superset_app)``.
+    # Mirrors ``SupersetAppInitializer.init_app_in_ctx`` which calls the
+    # configured app-mutator with ``self.superset_app``.
     flask_app_mutator = getattr(settings, "flask_app_mutator", None)
     if callable(flask_app_mutator):
         try:
@@ -981,19 +981,17 @@ def _build_gaq_redis(settings: SupersetSettings) -> Any:
 
 
 def _build_cors_config(settings: SupersetSettings) -> CORSConfig | None:
-    """Map the upstream Flask-CORS ``CORS_OPTIONS`` dict onto Litestar's
+    """Map the upstream ``CORS_OPTIONS`` dict onto Litestar's
     ``CORSConfig``.
 
-    1:1 with ``superset_old/initialization/__init__.py::configure_middlewares``::
-
-        if self.config["ENABLE_CORS"]:
-            from flask_cors import CORS
-            CORS(self.superset_app, **self.config["CORS_OPTIONS"])
+    1:1 with ``superset_old/initialization/__init__.py::configure_middlewares``
+    which, when ``self.config["ENABLE_CORS"]`` was set, applied the upstream
+    CORS extension to the app with ``self.config["CORS_OPTIONS"]``.
 
     When ``ENABLE_CORS`` is false, CORS is OFF (returns ``None`` — no permissive
-    default), matching Flask where ``flask_cors.CORS`` is never registered.
+    default), matching upstream where the CORS extension is never registered.
 
-    Flask-CORS option -> Litestar ``CORSConfig`` field mapping:
+    The upstream CORS option -> Litestar ``CORSConfig`` field mapping:
 
     * ``origins``             -> ``allow_origins``
     * ``methods``             -> ``allow_methods``
@@ -1002,16 +1000,16 @@ def _build_cors_config(settings: SupersetSettings) -> CORSConfig | None:
     * ``supports_credentials``-> ``allow_credentials``
     * ``max_age``             -> ``max_age``
 
-    Flask-CORS defaults are applied for keys the user omits so the wildcard
-    behaviour matches upstream (Flask-CORS defaults: ``origins='*'``, all
+    The upstream defaults are applied for keys the user omits so the wildcard
+    behaviour matches upstream (defaults: ``origins='*'``, all
     standard methods, ``allow_headers='*'``, ``supports_credentials=False``).
 
-    Limitation: Flask-CORS ``resources`` (per-path scoping / regex resource
-    maps) has no equivalent in Litestar's ``CORSConfig``, which is applied
-    app-wide. The ``resources`` key is therefore ignored; the common upstream
-    ``CORS_OPTIONS`` does not set it (it only scopes via ``origins``), so this
-    matches the broad-application case. ``send_wildcard``/``vary_header`` and
-    other Flask-CORS-only knobs are likewise not expressible and are ignored.
+    Limitation: the upstream ``resources`` option (per-path scoping / regex
+    resource maps) has no equivalent in Litestar's ``CORSConfig``, which is
+    applied app-wide. The ``resources`` key is therefore ignored; the common
+    upstream ``CORS_OPTIONS`` does not set it (it only scopes via ``origins``),
+    so this matches the broad-application case. ``send_wildcard``/``vary_header``
+    and other upstream-CORS-only knobs are likewise not expressible and ignored.
     """
     if not settings.enable_cors:
         return None
@@ -1023,11 +1021,11 @@ def _build_cors_config(settings: SupersetSettings) -> CORSConfig | None:
             return [value]
         return list(value)
 
-    # Flask-CORS default origins is "*"; Litestar default allow_origins is ["*"].
+    # Upstream default origins is "*"; Litestar default allow_origins is ["*"].
     allow_origins = _as_list(opts.get("origins", ["*"]))
-    # Flask-CORS default methods cover all standard verbs; "*" expresses that.
+    # Upstream default methods cover all standard verbs; "*" expresses that.
     allow_methods = _as_list(opts["methods"]) if "methods" in opts else ["*"]
-    # Flask-CORS default allow_headers is "*".
+    # Upstream default allow_headers is "*".
     allow_headers = (
         _as_list(opts["allow_headers"]) if "allow_headers" in opts else ["*"]
     )
@@ -1199,7 +1197,7 @@ def create_app(  # noqa: C901
             key="assets_prefix",
             template_callable=lambda ctx: settings.static_assets_prefix,
         )
-        # Mirrors flask-talisman's ``app.jinja_env.globals['csp_nonce']``
+        # Mirrors talisman's ``app.jinja_env.globals['csp_nonce']``
         # (talisman.py:193).  The SecurityHeadersMiddleware generates a per-request
         # nonce and stores it under CSP_NONCE_SCOPE_KEY in scope["state"].  The
         # template callable reads it back so spa.html / asset_bundle.html can emit
@@ -1267,7 +1265,7 @@ def create_app(  # noqa: C901
             ),
         )
 
-    # Build CSRF middleware (session-based, Flask-WTF compatible)
+    # Build CSRF middleware (session-based, upstream-CSRF compatible)
     csrf_middleware = None  # Don't use Litestar built-in CSRF config
     if settings.csrf_enabled and settings.wtf_csrf_enabled:
         from superset.middleware.csrf import (
@@ -1283,7 +1281,7 @@ def create_app(  # noqa: C901
         # Start with the hard-coded baseline exempt paths (health probes + the
         # original 5 WTF_CSRF_EXEMPT_LIST entries from upstream config.py).
         # Merge the user-supplied WTF_CSRF_EXEMPT_LIST on top.  The original
-        # Flask list used dotted view-function names; we translate them to URL
+        # list used dotted view-function names; we translate them to URL
         # prefixes for ASGI compatibility.
         _baseline_exempt: list[str] = [
             # Health probes
@@ -1302,7 +1300,7 @@ def create_app(  # noqa: C901
             "/datasource/samples",
         ]
         # User-supplied WTF_CSRF_EXEMPT_LIST may be dotted view-function names
-        # (old FAB style) or plain URL paths.  We include them as-is because the
+        # (old upstream style) or plain URL paths.  We include them as-is because the
         # CSRF middleware does prefix matching — a dotted name won't match any
         # URL, so non-path entries are harmlessly ignored.
         _user_exempt: list[str] = list(
@@ -1364,7 +1362,7 @@ def create_app(  # noqa: C901
                 else []
             ),
             SecurityHeadersMiddleware(),
-            # RateLimitMiddleware mirrors FAB / flask-limiter: gated on the
+            # RateLimitMiddleware mirrors the upstream rate limiter: gated on the
             # RATELIMIT_ENABLED master switch (off by default outside
             # production, so dev/testing is unaffected), it applies the
             # RATELIMIT_APPLICATION limit to every request and the
@@ -1374,7 +1372,7 @@ def create_app(  # noqa: C901
             LocaleMiddleware(),
             # HTTPHeadersMiddleware applies OVERRIDE_HTTP_HEADERS / HTTP_HEADERS /
             # DEFAULT_HTTP_HEADERS from settings onto every response.  Equivalent
-            # to the original Flask ``register_request_handlers`` after-request hook.
+            # to the original ``register_request_handlers`` after-request hook.
             HTTPHeadersMiddleware(),
             # RequestContextMiddleware must run BEFORE the auth middleware
             # so audit-logging code paths inside auth/guards (which fire
@@ -1384,7 +1382,7 @@ def create_app(  # noqa: C901
             RequestContextMiddleware(),
             SupersetAuthMiddleware,
             # AsyncTokenMiddleware mints / refreshes the ``async-token`` JWT
-            # cookie on authenticated responses — 1:1 with the original Flask
+            # cookie on authenticated responses — 1:1 with the original
             # ``register_request_handlers`` after-request hook.  Gated on the
             # same two flags the original used (``configure_async_queries`` ran
             # only under GLOBAL_ASYNC_QUERIES, and ``init_app`` registered the

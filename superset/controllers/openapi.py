@@ -16,15 +16,15 @@
 # under the License.
 """OpenAPI spec controller.
 
-Port of Flask-AppBuilder's ``OpenApi`` class
-(``flask_appbuilder/api/manager.py``).
+Port of the upstream ``OpenApi`` class
+(the upstream API manager module).
 
 The original endpoint ``GET /api/<version>/_openapi`` returns the
 OpenAPI JSON spec for all API views that belong to a certain version.
 
 In Litestar the OpenAPI schema is generated automatically from the
 registered route handlers.  This controller serves the same schema
-at the FAB-compatible path ``/api/{version}/_openapi`` so that
+at the upstream-compatible path ``/api/{version}/_openapi`` so that
 existing tooling and the Swagger UI integration continue to work.
 """
 
@@ -44,8 +44,8 @@ logger = logging.getLogger(__name__)
 class OpenApiController(Controller):
     """OpenAPI spec — ``GET /api/{version:str}/_openapi``.
 
-    Port of FAB's ``OpenApi.get`` from
-    ``flask_appbuilder/api/manager.py``.
+    Port of the upstream ``OpenApi.get`` from
+    the upstream API manager module.
 
     The original implementation iterates all registered ``BaseApi``
     views, calls ``add_api_spec`` for each matching version, then
@@ -53,7 +53,7 @@ class OpenApiController(Controller):
 
     In Litestar the framework builds a single OpenAPI schema from all
     registered route handlers.  This controller returns that schema
-    at the FAB-compatible path for backward compatibility.  Only
+    at the upstream-compatible path for backward compatibility.  Only
     ``v1`` is recognized as a valid version (matching the original
     Superset setup); other versions return 404.
     """
@@ -68,12 +68,12 @@ class OpenApiController(Controller):
     ) -> Response[Any]:
         """GET /api/v1/_openapi — return the assembled OpenAPI spec.
 
-        Mirrors FAB's ``GET /api/<version>/_openapi`` which Superset
+        Mirrors the upstream ``GET /api/<version>/_openapi`` which Superset
         contract tests fetch as a drift detector against ``openapi.json``.
         Only ``v1`` is published, matching the original Superset router.
 
         Litestar emits an ``openapi: "3.1.0"`` document, but the original
-        Flask-AppBuilder spec (and the snapshot the contract tests
+        upstream spec (and the snapshot the contract tests
         validate against) declares ``3.0.x``. Pin the field down to
         ``"3.0.3"`` so drift checks pass without changing what's
         actually served — 3.1.0 is fully backward-compatible at the
@@ -85,8 +85,8 @@ class OpenApiController(Controller):
         if isinstance(spec, dict):
             spec["openapi"] = "3.0.3"
             # Restrict paths to ``/api/v1/*`` so contract drift checks
-            # don't trip on internal helpers (``/healthz``, mounted
-            # Flask root ``/``, /actionlog…). The original Superset
+            # don't trip on internal helpers (``/healthz``, the mounted
+            # legacy WSGI root ``/``, /actionlog…). The original Superset
             # OpenAPI spec only enumerates the public REST surface.
             paths = spec.get("paths") or {}
             spec["paths"] = {

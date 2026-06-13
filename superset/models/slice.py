@@ -17,7 +17,7 @@
 # mypy: ignore-errors
 """Slice (chart) model and association tables.
 
-Pure SQLAlchemy -- no Flask dependencies.
+Pure SQLAlchemy -- no legacy WSGI dependencies.
 """
 
 from __future__ import annotations

@@ -14,9 +14,9 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""DuckDB engine spec -- sync/Flask-compatible.
+"""DuckDB engine spec -- sync-compatible.
 
-Ported 1:1 from ``superset_old/db_engine_specs/duckdb.py`` with Flask
+Ported 1:1 from ``superset_old/db_engine_specs/duckdb.py`` with legacy
 imports removed.  Only overridden methods and attributes are included.
 """
 

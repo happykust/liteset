@@ -275,7 +275,7 @@ class ExploreFormDataController(Controller):
 
         # --- Contextual key reuse (1:1 with create.py:49-54) ---
         # ``session.get("_id")`` → session cookie value in the ASGI context.
-        # The Flask session ``_id`` is the raw itsdangerous cookie value;
+        # The upstream session ``_id`` is the raw itsdangerous cookie value;
         # the port's equivalent is the ``session`` cookie.
         session_id: str = request.cookies.get("session", "")
         ctx_str = _contextual_key_str(

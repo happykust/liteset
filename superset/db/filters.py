@@ -24,7 +24,7 @@ The returned clauses are passed directly to ``BaseAsyncDAO.find_all(filters=...)
 and ``BaseAsyncDAO.count(filters=...)``.
 
 All Superset model imports are lazy (inside function bodies) to avoid
-triggering the Flask import chain at module load time.
+triggering the legacy import chain at module load time.
 """
 
 from __future__ import annotations
@@ -142,7 +142,7 @@ def _apply_extra_dynamic_database_filters() -> list[Any]:
     1:1 port of the dynamic-filter hook from
     ``superset_old/databases/filters.py:DatabaseFilter.apply`` (lines 52-55).
 
-    The original passes the FAB ``Query`` through the callable BEFORE the
+    The original passes the upstream ``Query`` through the callable BEFORE the
     permission check, so the callable can hide/show databases independent
     of RBAC (e.g. via feature flags).  We honour the same contract: a
     ``Callable[[Query], Query]`` that may call ``query.filter(clause)``
@@ -385,8 +385,8 @@ async def dashboard_access_filters(  # noqa: C901  # full 1:1 port from old code
         user_role_ids = [getattr(r, "id", None) for r in (user_roles or [])]
         user_role_ids = [rid for rid in user_role_ids if rid is not None]
 
-        # Use the association table directly — avoids depending on FAB's
-        # ``ab_role`` model class import.
+        # Use the association table directly — avoids depending on the
+        # upstream ``ab_role`` model class import.
         try:
             from superset.models.dashboard import DashboardRoles
 

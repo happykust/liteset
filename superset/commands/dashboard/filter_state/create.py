@@ -30,10 +30,10 @@ upstream Superset instance keep resolving after a migration.
 
 The original keys the per-tab dedup with
 ``cache_key(session.get("_id"), tab_id, resource_id)`` so that repeated
-opens of the same Flask session+tab+dashboard reuse the same key.  In
-Liteset there is no Flask session id, so the deterministic-key path uses
+opens of the same session+tab+dashboard reuse the same key.  In
+Liteset there is no server-side session id, so the deterministic-key path uses
 ``uuid5(NAMESPACE_DNS, "{user_id}:{dashboard_id}:{tab_id}")`` — same
-purpose, sourced from the JWT-authenticated user instead of the Flask
+purpose, sourced from the JWT-authenticated user instead of the
 ``session._id`` cookie.  When ``tab_id`` is falsy (None or empty string)
 we fall back to a random UUID, matching the original's falsy check
 (``if not key or not tab_id: key = random_key()``).

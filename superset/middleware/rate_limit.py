@@ -16,15 +16,15 @@
 # under the License.
 """Rate-limiting middleware for Superset.
 
-ASGI port of the FAB / flask-limiter rate limiting wired up in
-``flask_appbuilder.security.manager.BaseSecurityManager``:
+ASGI port of the rate limiting wired up in the upstream
+``BaseSecurityManager``:
 
-* ``RATELIMIT_ENABLED`` is the master kill switch (flask-limiter disables
-  *all* limits — application and per-route — when this is False).  Upstream
-  default is ``SUPERSET_ENV == "production"``.
+* ``RATELIMIT_ENABLED`` is the master kill switch (the upstream limiter
+  disables *all* limits — application and per-route — when this is False).
+  Upstream default is ``SUPERSET_ENV == "production"``.
 * ``RATELIMIT_APPLICATION`` (default ``"50 per second"``) is the
   application-wide limit applied to *every* request, keyed by client IP
-  (flask-limiter ``key_func=get_remote_address``).
+  (upstream ``key_func=get_remote_address``).
 * ``AUTH_RATE_LIMITED`` (default True) + ``AUTH_RATE_LIMIT``
   (default ``"5 per second"``) limit POST requests to the login endpoint —
   brute-force protection — mirroring
@@ -33,7 +33,7 @@ ASGI port of the FAB / flask-limiter rate limiting wired up in
 Both limits are keyed by the client IP (``get_remote_address``), resolved
 from ``scope["client"]`` *after* :class:`ProxyFixMiddleware` has applied the
 trusted ``X-Forwarded-For``.  A login POST is subject to BOTH limits (just
-like the flask-limiter application limit + the blueprint ``@limit``).
+like the upstream application limit + the blueprint ``@limit``).
 
 Enforcement uses a Redis sliding-window counter.  When Redis is unavailable
 the middleware fails open (requests pass) so the application stays available.
@@ -63,13 +63,13 @@ _EXCLUDED_PATHS: frozenset[str] = frozenset(
 )
 
 # Login endpoint paths subject to the AUTH_RATE_LIMIT (POST only).  Mirrors
-# the FAB auth_view blueprint which exposes ``/login/`` (see
+# the upstream auth_view blueprint which exposes ``/login/`` (see
 # superset.controllers.auth.AuthController).
 _LOGIN_PATHS: frozenset[str] = frozenset({"/login", "/login/"})
 
 _REDIS_KEY_PREFIX = "ratelimit:"
 
-# Map a flask-limiter / ``limits`` granularity word to its length in seconds.
+# Map an upstream-limiter / ``limits`` granularity word to its length in seconds.
 _GRANULARITY_SECONDS: dict[str, int] = {
     "second": 1,
     "sec": 1,
@@ -92,7 +92,7 @@ _SLASH_RE = re.compile(r"^\s*(\d+)\s*/\s*(\d+)?\s*([a-zA-Z]+)\s*$")
 
 
 def parse_rate_limit(spec: str | None) -> tuple[int, int] | None:
-    """Parse a flask-limiter rate-limit string into ``(count, window_seconds)``.
+    """Parse an upstream rate-limit string into ``(count, window_seconds)``.
 
     Supports the ``limits``-library formats used by Superset config:
 
@@ -129,7 +129,7 @@ class RateLimitMiddleware(ASGIMiddleware):
     Reads from ``app.state.settings``:
 
     * ``ratelimit_enabled`` (bool) — master switch; when False the middleware
-      passes through unconditionally (mirrors flask-limiter ``RATELIMIT_ENABLED``).
+      passes through unconditionally (mirrors the upstream ``RATELIMIT_ENABLED``).
     * ``ratelimit_application`` (str) — application-wide limit (all requests).
     * ``auth_rate_limited`` (bool) + ``auth_rate_limit`` (str) — login POST limit.
 
@@ -145,8 +145,8 @@ class RateLimitMiddleware(ASGIMiddleware):
 
         settings = getattr(getattr(scope.get("app"), "state", None), "settings", None)
 
-        # Master kill switch — flask-limiter disables every limit (application
-        # and per-route) when RATELIMIT_ENABLED is False.
+        # Master kill switch — the upstream limiter disables every limit
+        # (application and per-route) when RATELIMIT_ENABLED is False.
         if settings is None or not getattr(settings, "ratelimit_enabled", False):
             await next_app(scope, receive, send)
             return
@@ -186,7 +186,7 @@ class RateLimitMiddleware(ASGIMiddleware):
             await next_app(scope, receive, send)
             return
 
-        # Identity = client IP (flask-limiter ``get_remote_address``), resolved
+        # Identity = client IP (upstream ``get_remote_address``), resolved
         # after ProxyFixMiddleware has applied the trusted X-Forwarded-For.
         identity = _resolve_identity(scope)
 
@@ -231,7 +231,7 @@ class RateLimitMiddleware(ASGIMiddleware):
 def _resolve_identity(scope: Scope) -> str:
     """Resolve the rate-limit key from the client IP.
 
-    Mirrors flask-limiter's default ``key_func=get_remote_address`` which
+    Mirrors the upstream default ``key_func=get_remote_address`` which
     returns ``request.remote_addr`` — the client IP (already corrected by
     ProxyFixMiddleware from a trusted ``X-Forwarded-For`` when configured).
     """

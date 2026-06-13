@@ -17,7 +17,7 @@
 """Abstract SQL validator interface ported 1:1 from
 ``superset_old/sql_validators/base.py``.
 
-The original is a synchronous Flask abstraction; this port preserves the
+The original is a synchronous abstraction; this port preserves the
 same exception/annotation surface so that controllers and the
 ``ValidateSQLCommand`` can dispatch by engine without behaviour change.
 """

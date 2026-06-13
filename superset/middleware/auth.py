@@ -16,7 +16,7 @@
 # under the License.
 """Authentication middleware for Superset.
 
-Supports cookie session (Flask itsdangerous), JWT Bearer (guest tokens),
+Supports cookie session (legacy itsdangerous), JWT Bearer (guest tokens),
 and API key authentication. Redis user cache with TTL 300s (5 min) reduces
 DB pool pressure.
 """
@@ -141,7 +141,7 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
     """Multi-strategy authentication middleware.
 
     Tries in order:
-    1. Session cookie (Flask itsdangerous) -> user_id -> DB lookup
+    1. Session cookie (legacy itsdangerous) -> user_id -> DB lookup
     2. JWT Bearer token (guest tokens for embedded dashboards)
 
     Performance: Resolved users are cached in Redis (TTL ``_USER_CACHE_TTL``,
@@ -276,7 +276,7 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         except Exception:  # noqa: S110
             pass
 
-        # Fallback: itsdangerous (Flask legacy)
+        # Fallback: itsdangerous (legacy session cookie)
         if user_id is None:
             decoder = self._get_or_create_decoder(connection)
             user_id = decoder.get_user_id(cookie)
@@ -497,13 +497,13 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         Returns a CachedUser with pre-resolved permissions so that RBAC
         guards can check ``user.permissions`` without extra DB queries.
 
-        NOTE: FAB supports ``builtin_roles`` (config key ``FAB_ROLES``)
-        which are regex-based permission sets that bypass DB queries.
-        Liteset does not currently have ``FAB_ROLES`` in its config, so
-        builtin role handling is not implemented here.  If ``FAB_ROLES``
-        support is needed in the future, the builtin role permissions
-        should be merged into the returned permission set here, matching
-        FAB's ``get_user_roles_permissions`` logic.
+        NOTE: the upstream app-builder supports ``builtin_roles`` (config
+        key ``FAB_ROLES``) which are regex-based permission sets that bypass
+        DB queries.  Liteset does not currently have ``FAB_ROLES`` in its
+        config, so builtin role handling is not implemented here.  If
+        ``FAB_ROLES`` support is needed in the future, the builtin role
+        permissions should be merged into the returned permission set here,
+        matching the upstream ``get_user_roles_permissions`` logic.
         """
         from superset.security.dao import AsyncSecurityDAO
 
@@ -513,7 +513,7 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
             user = await dao.get_user_by_id(user_id)
             if user is None:
                 return None
-            # FAB uses Integer column for active (0/1)
+            # Upstream uses an Integer column for active (0/1)
             active = getattr(user, "active", None)
             if active is not None and not active:
                 return None

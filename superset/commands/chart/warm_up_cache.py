@@ -21,13 +21,13 @@ Mirrors the original branching:
 
 * Legacy charts (``form_data["viz_type"] in viz_types``) go through
   :class:`superset.viz.BaseViz`'s :meth:`get_payload` — exactly like the
-  Flask original which set ``g.form_data`` and called ``get_viz`` from
-  ``superset.views.utils``.  The ``g.form_data`` Flask global is replaced
-  with the existing ``_form_data_ctx`` :class:`ContextVar` exposed by
+  original which set the request-scoped ``form_data`` and called ``get_viz``
+  from ``superset.views.utils``.  That request-scoped ``form_data`` is
+  replaced with the existing ``_form_data_ctx`` :class:`ContextVar` exposed by
   :func:`superset.jinja_context.set_form_data`.
 
 * Non-legacy charts (modern ``query_context``) go through the async
-  :class:`AsyncQueryContextProcessor` which is what the Flask original's
+  :class:`AsyncQueryContextProcessor` which is what the original's
   ``ChartDataCommand`` resolves to under the hood.
 
 * ``error_msg_from_exception`` mirrors the original verbatim.
@@ -85,7 +85,7 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
     async def validate(self) -> None:
         """Eagerly load the chart with its datasource + database.
 
-        Mirrors the Flask original's ``db.session.query(Slice).filter_by``
+        Mirrors the original's ``db.session.query(Slice).filter_by``
         plus the implicit lazy-load of ``chart.datasource`` later in
         ``run``. We pre-load both relationships so the inner ``run``
         body stays free of awaits-on-attribute-access.
@@ -238,8 +238,8 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
     ) -> tuple[Any, Any]:
         """Warm up cache for legacy visualizations.
 
-        1:1 port of the original ``_warm_up_legacy_cache``.  The Flask
-        original set ``g.form_data = form_data`` then called ``get_viz``;
+        1:1 port of the original ``_warm_up_legacy_cache``.  The original
+        set the request-scoped ``form_data`` then called ``get_viz``;
         we set the equivalent ``_form_data_ctx`` ContextVar exposed by
         :func:`superset.jinja_context.set_form_data` so downstream code
         (e.g. Jinja URL-param helpers) sees the same form_data the
@@ -249,7 +249,7 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
         ``viz_obj._rls_cache_key`` can be populated before
         ``viz_obj.get_payload()`` calls ``cache_key()``.  Without this
         step two users with different RLS rules would collide on the
-        same cache entry.  Mirrors the original Flask path where
+        same cache entry.  Mirrors the original path where
         ``security_manager.get_rls_cache_key(self.datasource)`` was
         called inside ``BaseViz.cache_key()`` synchronously.
         """
@@ -277,7 +277,7 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
 
             # Populate _rls_cache_key before cache_key() is called inside
             # get_payload().  Mirrors ``security_manager.get_rls_cache_key``
-            # which was invoked synchronously inside the original Flask
+            # which was invoked synchronously inside the original
             # BaseViz.cache_key().  Skipped when no security_manager is
             # available (e.g. tests) — the key defaults to [] (safe but
             # not RLS-differentiated).

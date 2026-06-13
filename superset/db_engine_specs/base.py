@@ -15,12 +15,12 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""BaseEngineSpec — sync/Flask-compatible engine spec base class.
+"""BaseEngineSpec — synchronous engine spec base class.
 
-Ported 1:1 from ``superset_old/db_engine_specs/base.py`` with Flask
-imports removed.  Only the methods/attributes actually referenced by
-the liteset codebase are included; OAuth2, file-upload, impersonation,
-and other Flask-only helpers are intentionally omitted.
+Ported 1:1 from ``superset_old/db_engine_specs/base.py`` with the legacy
+WSGI-stack imports removed.  Only the methods/attributes actually
+referenced by the liteset codebase are included; OAuth2, file-upload,
+impersonation, and other legacy-only helpers are intentionally omitted.
 """
 
 from __future__ import annotations
@@ -656,7 +656,7 @@ class BaseEngineSpec:  # noqa: PLR0904
         cls.oauth2_exception)`` — the user-bound guard keeps Celery workers
         (no request user) from supplanting the original driver error with an
         OAuth2 dance no one can complete.  The async equivalent of the
-        Flask ``g.user`` check is the request-scoped ContextVar.
+        upstream ``g.user`` check is the request-scoped ContextVar.
         """
         from superset.utils.core import get_current_user
 
@@ -674,7 +674,7 @@ class BaseEngineSpec:  # noqa: PLR0904
         1:1 with ``start_oauth2_dance`` in
         ``superset_old/db_engine_specs/base.py``
         — the original takes only ``database`` and reads ``user_id`` from
-        the Flask ``g`` global plus the redirect URI from
+        the request-scoped ``g`` global plus the redirect URI from
         ``url_for("DatabaseRestApi.oauth2", _external=True)``.
 
         In liteset the user identity lives in a :class:`ContextVar` (set by

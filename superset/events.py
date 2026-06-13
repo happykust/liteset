@@ -17,8 +17,9 @@
 """Audit event logging for Superset (Liteset port).
 
 1:1 port of ``superset_old/utils/log.py``.  The original module used
-Flask's ``g.user`` / ``request`` / ``has_request_context`` to walk the
-incoming HTTP request and resolve the authenticated user; this module
+the request-scoped ``g.user`` / ``request`` / ``has_request_context`` to
+walk the incoming HTTP request and resolve the authenticated user; this
+module
 replaces those primitives with the ``ContextVar``-based equivalents
 defined in :mod:`superset.utils.core` (``get_current_user``,
 ``get_logs_context``) and Litestar-shaped requests passed in
@@ -70,11 +71,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Flask-AppBuilder constant — used to strip the legacy raw-rison query
+# Upstream constant — used to strip the legacy raw-rison query
 # parameter from the audit payload (the rison-decoded version is also
 # present, and we never want both).  The original imported this from
-# ``flask_appbuilder.const``; we reproduce the literal value here so the
-# Liteset port can drop the FAB dependency entirely.
+# the upstream constants module; we reproduce the literal value here so
+# the Liteset port can drop that dependency entirely.
 API_URI_RIS_KEY = "q"
 
 
@@ -175,7 +176,7 @@ class EventLogger(ABC):
         return {k: v for k, v in payload.items() if k in cls.curated_form_data_params}
 
     # ------------------------------------------------------------------
-    # collect_request_payload — async port of the original Flask helper.
+    # collect_request_payload — async port of the original helper.
     # ------------------------------------------------------------------
 
     async def collect_request_payload(  # noqa: C901  # complex business logic
@@ -183,7 +184,7 @@ class EventLogger(ABC):
     ) -> dict[str, Any]:
         """Build the audit payload from a Litestar :class:`Request`.
 
-        Async equivalent of the original Flask
+        Async equivalent of the original
         ``collect_request_payload`` (``superset_old/utils/log.py:43``)::
 
             payload = {
@@ -361,9 +362,9 @@ class EventLogger(ABC):
         Direct port of ``AbstractEventLogger.log_with_context`` with the
         Liteset adjustments:
 
-        * ``flask.g.user`` is replaced by
+        * the request-scoped ``g.user`` is replaced by
           :func:`superset.utils.core.get_current_user`.
-        * ``flask.request`` is replaced by
+        * the request-scoped ``request`` is replaced by
           :func:`superset.utils.core.get_current_request` (a
           :class:`ContextVar` populated by
           :class:`superset.middleware.request_context.RequestContextMiddleware`),
@@ -376,16 +377,16 @@ class EventLogger(ABC):
         we ``asyncio.run`` the underlying coroutine and block on the
         result; if we're already on an event loop we schedule the
         underlying coroutine via ``loop.create_task`` (fire-and-forget),
-        matching the original Flask ``DBEventLogger`` behaviour where
+        matching the original ``DBEventLogger`` behaviour where
         the SQLAlchemy commit happened on the request's own thread but
-        was discoverable via ``g``.
+        was discoverable via the request-scoped global.
         """
         if request is None:
             # Fallback to the ContextVar populated by the
             # RequestContextMiddleware.  The middleware sets the active
             # Litestar Request on every inbound HTTP request, so any
             # call-site that didn't thread the request through still
-            # gets the same payload as the original Flask code path.
+            # gets the same payload as the original code path.
             request = get_current_request()
 
         coro = self._alog_with_context(
@@ -502,7 +503,7 @@ class EventLogger(ABC):
             int(duration.total_seconds() * 1000) if duration is not None else None
         )
 
-        # ``flask.g.user`` → :func:`get_current_user` (ContextVar).
+        # request-scoped ``g.user`` → :func:`get_current_user` (ContextVar).
         user = get_current_user()
         user_id = getattr(user, "id", None) if user is not None else None
         if user_id is not None:

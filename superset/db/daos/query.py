@@ -88,7 +88,7 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
         # ``query.database.db_engine_spec`` from a ``to_thread`` worker
         # (no greenlet/event loop there), so a lazy load would raise
         # ``MissingGreenlet``. The original (superset_old/daos/query.py:75)
-        # relied on Flask-SQLAlchemy's transparent sync lazy-load.
+        # relied on the upstream ORM's transparent sync lazy-load.
         from sqlalchemy.orm import selectinload
 
         stmt = (

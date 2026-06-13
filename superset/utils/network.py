@@ -69,7 +69,7 @@ def is_hostname_valid(host: str) -> bool:
 
     ``socket.getaddrinfo`` blocks for the full libc resolver retry
     chain (~4 s default on Linux) when the hostname is unresolvable.
-    In the original sync Flask backend that was tolerable because each
+    In the original sync backend that was tolerable because each
     request was handled by its own worker thread, but in the async
     Litestar port the cumulative delay across sequential
     ``validate_parameters`` requests (one per form-field blur) pushes

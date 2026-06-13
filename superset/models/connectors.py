@@ -17,7 +17,7 @@
 # mypy: ignore-errors
 """Connector models: SqlaTable, TableColumn, SqlMetric, RowLevelSecurityFilter.
 
-Pure SQLAlchemy -- no Flask dependencies.
+Pure SQLAlchemy -- no legacy WSGI dependencies.
 Includes async_query() for chart data execution via the async engine specs.
 """
 

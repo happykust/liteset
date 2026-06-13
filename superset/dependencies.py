@@ -46,7 +46,7 @@ async def provide_async_session(state: State) -> AsyncGenerator[AsyncSession, No
 
 
 class RequestCache:
-    """Per-request cache, replaces flask.g for memoization.
+    """Per-request cache, replaces the request-scoped global for memoization.
 
     Not concurrency-safe — designed for single-task-per-request usage
     within Litestar's request lifecycle. Do not share across tasks.
@@ -76,7 +76,7 @@ async def provide_request_cache() -> RequestCache:
     return RequestCache()
 
 
-# --- flask.g user helper replacements ---
+# --- request-scoped current-user helper replacements ---
 
 
 def get_current_user(request: Request[Any, Any, Any]) -> Any:

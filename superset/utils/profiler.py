@@ -107,7 +107,7 @@ class SupersetProfiler:  # pylint: disable=too-few-public-methods
         body = html.encode("utf-8")
         # Send a fresh 200 OK with the profiler HTML.  Any captured
         # messages from the wrapped app are intentionally discarded —
-        # this matches the original Flask middleware which discarded the
+        # this matches the original middleware which discarded the
         # response entirely.
         await send(
             {

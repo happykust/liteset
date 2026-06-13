@@ -14,14 +14,14 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async Data Access Object for FAB security tables.
+"""Async Data Access Object for the upstream security tables.
 
 Queries ab_user, ab_role, ab_permission, ab_view_menu,
 ab_permission_view, ab_user_role, and ab_permission_view_role
 using AsyncSession. Models are imported from superset.models.security,
 or injected via constructor for testing.
 
-mypy: FAB models are injected as ``type`` (no generic parameter), so
+mypy: the security models are injected as ``type`` (no generic param), so
 attribute access (.id, .name, .roles, etc.) triggers attr-defined errors.
 These are safe — the actual models always have these attributes.
 """
@@ -54,11 +54,11 @@ class _GroupRoleRef:
 
 
 class AsyncSecurityDAO:
-    """Async queries against FAB security tables.
+    """Async queries against the upstream security tables.
 
-    Accepts model classes via constructor to avoid hard dependency
-    on flask_appbuilder at import time. Production code resolves
-    models from FAB; tests inject lightweight fakes.
+    Accepts model classes via constructor to avoid a hard dependency
+    on the upstream security package at import time. Production code
+    resolves models from upstream; tests inject lightweight fakes.
     """
 
     def __init__(
@@ -131,13 +131,14 @@ class AsyncSecurityDAO:
     async def get_user_by_username(self, username: str) -> Any | None:
         """Load user by username with roles eagerly loaded.
 
-        1:1 with FAB ``SecurityManager.find_user``: when ``AUTH_USERNAME_CI``
-        is enabled (the FAB default, ``True``) the lookup is case-insensitive
+        1:1 with the upstream ``SecurityManager.find_user``: when
+        ``AUTH_USERNAME_CI`` is enabled (the upstream default, ``True``) the
+        lookup is case-insensitive
         (``lower(username) == lower(input)``), so OAuth/LDAP self-registration
         cannot create a second user differing only in case. A
         ``MultipleResultsFound`` (possible on a legacy DB that already holds
         case-variant duplicates) is logged and degraded to ``None`` — exactly
-        as FAB does — rather than raising.
+        as upstream does — rather than raising.
         """
         from sqlalchemy import func
         from sqlalchemy.exc import MultipleResultsFound
@@ -184,12 +185,13 @@ class AsyncSecurityDAO:
     async def get_user_roles(self, user: Any) -> list[Any]:
         """Get all roles for a user — direct AND group-inherited.
 
-        1:1 with FAB ``BaseSecurityManager.get_user_roles`` which returns
+        1:1 with the upstream ``BaseSecurityManager.get_user_roles`` which
+        returns
         ``user.roles + [role for group in user.groups for role in group.roles]``.
         Group-derived roles are wrapped in :class:`_GroupRoleRef` (``.id`` /
         ``.name``).  Omitting them caused RLS role-scope filters and
-        DASHBOARD_RBAC role intersections to miss roles a user holds only via a
-        FAB group.
+        DASHBOARD_RBAC role intersections to miss roles a user holds only via an
+        upstream group.
         """
         roles: list[Any] = list(getattr(user, "roles", []))
         user_id = getattr(user, "id", None)
@@ -208,9 +210,9 @@ class AsyncSecurityDAO:
         PV = self.permission_view_model  # noqa: N806
         Role = self.role_model  # noqa: N806
         # Join through the *forward* ``Role.permissions`` relationship —
-        # the FAB-faithful ``PermissionView`` model only carries the
+        # the upstream-faithful ``PermissionView`` model only carries the
         # singular ``role`` backref, so ``PV.roles`` does not exist
-        # (FAB's ``exist_permission_on_roles`` joins through the
+        # (the upstream ``exist_permission_on_roles`` joins through the
         # association table for the same reason).
         stmt = (
             select(PV)

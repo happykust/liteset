@@ -15,10 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Trino engine spec -- sync/Flask-compatible.
+"""Trino engine spec -- synchronous.
 
-Ported 1:1 from ``superset_old/db_engine_specs/trino.py`` with Flask
-imports removed.  Only overridden methods and attributes are included.
+Ported 1:1 from ``superset_old/db_engine_specs/trino.py`` with the legacy
+WSGI-stack imports removed.  Only overridden methods and attributes are
+included.
 
 The Presto base class is inlined here because the liteset codebase does
 not need a standalone ``presto.py`` -- Trino is the only Presto-family
@@ -568,7 +569,7 @@ class PrestoBaseEngineSpec(BaseEngineSpec, metaclass=ABCMeta):
         ``PrestoBaseEngineSpec.get_function_names``: ``SHOW FUNCTIONS``).
         Results are cached per-database — the business equivalent of
         upstream's ``@cache_manager.data_cache.memoize()``; the port's cache
-        layer exposes no flask-caching ``memoize``, so this uses the sync
+        layer exposes no upstream ``memoize``, so this uses the sync
         cache slot directly with a manual get/set.
         """
         from superset.extensions import cache_manager
@@ -663,7 +664,7 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
         ``execute_with_cursor`` instead, to handle this asynchronously.
 
         1:1 with ``superset_old/db_engine_specs/trino.py`` adapted to the
-        port's session model: upstream commits the Flask-global ``db.session``;
+        port's session model: upstream commits the global ``db.session``;
         here the ``query`` ORM object carries its own (sync) session, resolved
         via ``object_session``.  ``tracking_url`` is a read-only property in the
         port (the column is ``tracking_url_raw``), so write the raw column.
@@ -710,9 +711,9 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
         the cursor in parallel — that ID is what lets a concurrent stop request
         cancel the running query.
 
-        1:1 with ``superset_old/db_engine_specs/trino.py`` minus the Flask
+        1:1 with ``superset_old/db_engine_specs/trino.py`` minus the upstream
         ``@copy_current_request_context`` wrapper: the port's Celery worker
-        runs tasks without a Flask request/``g`` context (no ``ContextTask``),
+        runs tasks without a request/current-user context (no ``ContextTask``),
         and the sync engine spec's ``execute`` needs none, so a plain thread
         suffices.
         """
@@ -767,7 +768,7 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
         """Flag an early cancellation when no query ID has been captured yet.
 
         1:1 with upstream, committing via the query's own (sync) session
-        instead of the Flask-global ``db.session``.
+        instead of the global ``db.session``.
         """
         from sqlalchemy.orm import object_session
 
@@ -807,8 +808,9 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
         :param source: in which context is the connection needed
         :raises CertificateException: If certificate is not valid/unparseable
 
-        1:1 with ``superset_old/db_engine_specs/trino.py`` adapted: Flask's
-        ``app.config`` is gone; ``get_user_agent`` reads from SupersetSettings.
+        1:1 with ``superset_old/db_engine_specs/trino.py`` adapted: the
+        upstream ``app.config`` is gone; ``get_user_agent`` reads from
+        SupersetSettings.
         """
         from superset.utils.core import get_user_agent
 

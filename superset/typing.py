@@ -19,7 +19,7 @@
 Litestar resolves handler parameter types at runtime via get_type_hints().
 TYPE_CHECKING imports crash because the types aren't available at runtime.
 Protocol types solve this: they define the interface without importing
-the concrete DAO classes (which would pull in the Flask import chain).
+the concrete DAO classes (which would pull in the legacy import chain).
 """
 
 from __future__ import annotations

@@ -18,10 +18,10 @@
 
 1:1 port of ``superset_old/utils/mock_data.py`` with two adjustments:
 
-* ``flask_appbuilder.Model`` is replaced with the liteset declarative
-  ``Base`` (``superset.models.helpers.Base``) since FAB is no longer a
-  runtime dependency.
-* ``superset.db`` (Flask-SQLAlchemy global) is replaced with the
+* the upstream declarative model base is replaced with the liteset
+  ``Base`` (``superset.models.helpers.Base``) since the upstream app-builder
+  is no longer a runtime dependency.
+* ``superset.db`` (the upstream SQLAlchemy global) is replaced with the
   module-level sync session/engine exposed by
   :mod:`superset.examples._ctx`.  This module is only ever invoked from
   CLI/example code paths, so synchronous SQLAlchemy is appropriate
@@ -101,7 +101,7 @@ def get_type_generator(  # pylint: disable=too-many-return-statements,too-many-b
     ):
         length = random.randrange(sqltype.length or 255)  # noqa: S311
         length = max(8, length)  # for unique values
-        length = min(100, length)  # for FAB perms
+        length = min(100, length)  # for permission-name length limits
         return lambda: "".join(random.choices(string.ascii_letters, k=length))  # noqa: S311
 
     if isinstance(

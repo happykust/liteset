@@ -17,7 +17,7 @@
 """Cron expression utilities for Superset.
 
 Replaces ``superset/tasks/cron_util.py``. The window-size config value
-is read from the Superset ``SupersetSettings`` instead of Flask
+is read from the Superset ``SupersetSettings`` instead of the legacy
 ``current_app.config``.
 """
 

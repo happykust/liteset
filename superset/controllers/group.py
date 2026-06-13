@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Group controller — full CRUD for FAB groups (ab_group table)."""
+"""Group controller — full CRUD for the upstream groups (ab_group table)."""
 
 from __future__ import annotations
 
@@ -78,8 +78,8 @@ async def _validate_group_member_ids(
 ) -> None:
     """Raise HTTP 400 when any requested role/user ID does not exist.
 
-    1:1 with FAB ``GroupApi.post()``/``put()``
-    (flask_appbuilder/security/sqla/apis/group/api.py): after
+    1:1 with the upstream ``GroupApi.post()``/``put()``
+    (the upstream group security API): after
     ``_fetch_entities``, ``missing_*_ids = set(value) - {e.id for e in
     fetched}`` and a non-empty set returns ``response_400(message={field:
     ["Role(s)/User(s) with ID(s) [...] do not exist."]})``.  Without this
@@ -174,7 +174,7 @@ def _build_group_filters(rison_params: dict[str, Any] | None) -> list[Any]:
 
 
 class GroupController(Controller):
-    """Full CRUD controller for FAB groups."""
+    """Full CRUD controller for the upstream groups."""
 
     path = "/api/v1/security/groups"
     tags = ["Security Groups"]
@@ -259,7 +259,7 @@ class GroupController(Controller):
         if not data.name or not data.name.strip():
             raise SupersetValidationException("Group name is required")
 
-        # FAB GroupApi.post(): non-existent role/user IDs → HTTP 400.
+        # Upstream GroupApi.post(): non-existent role/user IDs → HTTP 400.
         await _validate_group_member_ids(group_dao.session, data.roles, "roles")
         await _validate_group_member_ids(group_dao.session, data.users, "users")
 
@@ -310,7 +310,7 @@ class GroupController(Controller):
         if data.description is not None:
             attrs["description"] = data.description.strip()
         if data.roles is not None:
-            # FAB GroupApi.put(): non-existent role IDs → HTTP 400.
+            # Upstream GroupApi.put(): non-existent role IDs → HTTP 400.
             await _validate_group_member_ids(group_dao.session, data.roles, "roles")
             attrs["role_ids"] = data.roles
         if data.users is not None:

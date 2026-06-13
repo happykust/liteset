@@ -104,7 +104,7 @@ class SqlLabController(Controller):
         """GET /api/v1/sqllab/ — bootstrap data for SqlLab UI.
 
         Loads active tab state IDs, databases exposed in SQLLab, and the
-        user's active tab — mirroring the original Flask
+        user's active tab — mirroring the original
         ``bootstrap_sqllab_data``.
         """
         all_dbs = await database_dao.find_all()

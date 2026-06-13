@@ -28,9 +28,9 @@ local files.  When the ``ENABLE_SUPERSET_META_DB`` feature flag is
 disabled the meta-DB driver is also rejected.
 
 This module is intentionally framework-agnostic — the original Apache
-Superset version pulls in ``flask_babel.lazy_gettext`` for the error
+Superset version pulls in the upstream ``lazy_gettext`` for the error
 message; Liteset substitutes the no-op shim from
-:mod:`superset.i18n` so we can run without Flask.
+:mod:`superset.i18n` so we can run without the legacy WSGI stack.
 """
 
 from __future__ import annotations

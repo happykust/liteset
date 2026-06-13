@@ -18,7 +18,8 @@
 :mod:`superset.events`.
 
 The original ``superset_old/utils/log.py`` is fully ported into
-:mod:`superset.events` (which is async-native and Flask-free).  This
+:mod:`superset.events` (which is async-native with no legacy WSGI
+dependency).  This
 module re-exports those primitives plus a handful of pure helpers
 (:func:`stats_timing`, :func:`get_logger_from_status`,
 :func:`get_event_logger_from_cfg_value`, :func:`collect_request_payload`,
@@ -113,7 +114,7 @@ def get_logger_from_status(
 
 
 # ---------------------------------------------------------------------------
-# collect_request_payload — async port of the original Flask helper.
+# collect_request_payload — async port of the original helper.
 # ---------------------------------------------------------------------------
 
 
@@ -164,7 +165,7 @@ def logs_context(
 ) -> Callable[..., Any]:
     """Add structured fields to the per-task logs-context dict.
 
-    Replaces the original Flask ``g.logs_context`` with an
+    Replaces the original ``g.logs_context`` with an
     ``asyncio.ContextVar`` (see :func:`superset.utils.core.get_logs_context`).
     Behaviour is identical: the decorator collects values from the
     decorated function's kwargs, optional ``ctx_kwargs`` and an optional

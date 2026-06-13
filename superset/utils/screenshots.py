@@ -18,8 +18,8 @@
 """Screenshot / thumbnail computation utilities — port of
 ``superset_old/utils/screenshots.py`` to Liteset.
 
-The original Flask module reached into ``app.config`` and the
-``thumbnail_cache`` LocalProxy (a ``flask_caching.Cache`` instance
+The original module reached into ``app.config`` and the
+``thumbnail_cache`` LocalProxy (an upstream ``Cache`` instance
 configured by ``THUMBNAIL_CACHE_CONFIG``).  In Liteset:
 
 * All config reads go through :class:`SupersetSettings` (lazily cached
@@ -32,8 +32,8 @@ configured by ``THUMBNAIL_CACHE_CONFIG``).  In Liteset:
   ``THUMBNAIL_CACHE_CONFIG``) so the keyspace stays unified, but the
   sync client owns its own Redis connection pool so there is no risk
   of cross-event-loop awaits when a Celery worker or Selenium /
-  Playwright thread reads from it.  The original Flask Superset
-  achieved the same effect with a single Flask-Caching ``Cache``
+  Playwright thread reads from it.  The original Superset
+  achieved the same effect with a single upstream ``Cache``
   instance shared across the request thread and Celery workers; we
   mirror that here with the sync/async sibling pair.
 * The previous implementation used a sync-bridging adapter that ran

@@ -14,12 +14,12 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""PermissionView controller — CRUD for FAB permission-view mappings.
+"""PermissionView controller — CRUD for upstream permission-view mappings.
 
-Mirrors Flask-AppBuilder's ``PermissionViewMenuApi`` which is a
+Mirrors the upstream ``PermissionViewMenuApi`` which is a
 ``ModelRestApi`` with all default route methods enabled.
 
-Original: flask_appbuilder/security/sqla/apis/permission_view_menu/api.py
+Original: the upstream permission-view-menu security API.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 class PermissionViewPostBody(msgspec.Struct):
     """POST body for creating a permission-view mapping.
 
-    Matches FAB ``PermissionViewMenuApi.add_columns``.
+    Matches the upstream ``PermissionViewMenuApi.add_columns``.
     """
 
     permission_id: int
@@ -65,7 +65,7 @@ class PermissionViewPostBody(msgspec.Struct):
 class PermissionViewPutBody(msgspec.Struct):
     """PUT body for updating a permission-view mapping.
 
-    Matches FAB ``PermissionViewMenuApi.edit_columns``.
+    Matches the upstream ``PermissionViewMenuApi.edit_columns``.
     """
 
     permission_id: int
@@ -84,9 +84,10 @@ def _pv_to_response(pv: Any) -> PermissionViewResponse:
 
 
 class PermissionViewController(Controller):
-    """Full CRUD controller for FAB permission-view entries (ab_permission_view).
+    """Full CRUD controller for upstream permission-view entries
+    (ab_permission_view).
 
-    Mirrors the original FAB ``PermissionViewMenuApi(ModelRestApi)`` which
+    Mirrors the original upstream ``PermissionViewMenuApi(ModelRestApi)`` which
     exposes all default CRUD methods.
 
     Used by the frontend to populate permission dropdowns in the
@@ -115,7 +116,7 @@ class PermissionViewController(Controller):
         """GET /api/v1/security/permissions-resources/ — list all permission-views.
 
         Supports Rison query parameters for pagination, ordering, and filtering.
-        Matches FAB ``PermissionViewMenuApi.get_list`` with
+        Matches the upstream ``PermissionViewMenuApi.get_list`` with
         ``list_columns = ["id", "permission.name", "view_menu.name"]``.
 
         Searchable columns: ``id``, ``permission_id``, ``view_menu_id``
@@ -133,7 +134,7 @@ class PermissionViewController(Controller):
         if order_column not in ("id", "permission_id", "view_menu_id"):
             order_column = "id"
 
-        # Build filters using the shared helper (supports all FAB operators)
+        # Build filters using the shared helper (supports all upstream operators)
         rison_filters, _order_by, _page, _page_size = build_rison_query_params(
             PermissionView,
             rison_params,
@@ -208,7 +209,7 @@ class PermissionViewController(Controller):
     ) -> dict[str, Any]:
         """POST /api/v1/security/permissions-resources/ — create mapping.
 
-        Mirrors FAB ``PermissionViewMenuApi.post`` with
+        Mirrors the upstream ``PermissionViewMenuApi.post`` with
         ``add_columns = ["permission_id", "view_menu_id"]``.
 
         Returns 201 with ``{id, result}`` on success.
@@ -251,7 +252,7 @@ class PermissionViewController(Controller):
     ) -> dict[str, Any]:
         """PUT /api/v1/security/permissions-resources/{pk} — update mapping.
 
-        Mirrors FAB ``PermissionViewMenuApi.put`` with
+        Mirrors the upstream ``PermissionViewMenuApi.put`` with
         ``edit_columns = ["permission_id", "view_menu_id"]``.
 
         Returns 200 with ``{result}`` on success.
@@ -300,7 +301,7 @@ class PermissionViewController(Controller):
     ) -> dict[str, str]:
         """DELETE /api/v1/security/permissions-resources/{pk} — delete mapping.
 
-        Mirrors FAB ``PermissionViewMenuApi.delete``.
+        Mirrors the upstream ``PermissionViewMenuApi.delete``.
 
         Returns 200 with ``{message: "OK"}`` on success.
         Returns 404 if not found.

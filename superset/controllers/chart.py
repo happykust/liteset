@@ -177,7 +177,7 @@ def _render_chart_data_payload(  # noqa: C901
     ``DataFrame`` to ``data``/``colnames``/``coltypes``, normalizes
     Decimal/numpy/NaN/datetime values inside row dicts, and emits the
     response through ``msgspec`` with the same ``json_int_dttm_ser``
-    fallback the original Flask serializer used.
+    fallback the original serializer used.
 
     When ``form_data`` and ``datasource`` are supplied and the result type
     is ``post_processed``, ``apply_client_processing`` is applied — 1:1
@@ -743,7 +743,7 @@ class ChartController(Controller):
         thumbnail_urls = await asyncio.to_thread(
             lambda: {chart.id: chart.thumbnail_url for chart in charts}
         )
-        # Column list matches Flask-AppBuilder ChartRestApi.list_columns
+        # Column list matches the upstream ChartRestApi.list_columns
         # (superset_old/charts/api.py:137-184). The first block are simple
         # model columns / relationships; the second block are computed
         # fields populated manually below (so list_columns / label_columns
@@ -876,7 +876,7 @@ class ChartController(Controller):
 
                 # table.default_endpoint and table.table_name
                 tbl = chart_obj.table
-                # Nested ``table`` dict matches original FAB serialization
+                # Nested ``table`` dict matches original upstream serialization
                 # (superset_old/charts/schemas.py ChartEntityResponseSchema).
                 item["table"] = (
                     {
@@ -2458,7 +2458,7 @@ class ChartController(Controller):
         # comparisons in Cypress snapshots (e.g. table viz sort tests).
         #
         # Datetime / date / Timestamp values are serialized as epoch
-        # milliseconds to match the original Flask chart data API
+        # milliseconds to match the original chart data API
         # (``json_int_dttm_ser`` in ``superset_old/utils/json.py``).
         # Frontend chart components (Table, TimeSeries, …) expect
         # numeric timestamps so they can apply ``smart_date`` formatting
@@ -2481,7 +2481,7 @@ class ChartController(Controller):
                         elif isinstance(val, Decimal):
                             # Preserve integer-ness when the value has no
                             # fractional part (e.g. SUM over BIGINT) —
-                            # matches the original Flask/SQLAlchemy path
+                            # matches the original SQLAlchemy path
                             # which emitted ints for whole-number sums.
                             if val == val.to_integral_value():
                                 row[key] = int(val)
@@ -2552,7 +2552,7 @@ class ChartController(Controller):
         # Frontend expects {"result": [...]} not {"queries": [...]}
         response_payload = {"result": result.get("queries", [])}
 
-        # Port of original Flask ``json.dumps(..., default=json_int_dttm_ser)``
+        # Port of original ``json.dumps(..., default=json_int_dttm_ser)``
         # from ``superset_old/charts/data/api.py``. The original serializer
         # walks the entire response tree and converts ANY datetime/date value
         # to epoch milliseconds — not just the ones inside ``data`` rows.
@@ -2633,7 +2633,7 @@ class ChartController(Controller):
         # context (1:1 with the original ``g.form_data = cached_data`` —
         # ``superset_old/charts/data/api.py:308-310``). The
         # ``_form_data_ctx`` ContextVar exposed by ``set_form_data`` is the
-        # Liteset equivalent of the Flask ``g.form_data`` global.
+        # Liteset equivalent of the legacy ``g.form_data`` global.
         if isinstance(form, dict):
             from superset.jinja_context import set_form_data
 

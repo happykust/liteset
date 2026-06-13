@@ -21,7 +21,8 @@ The async port keeps ``simplejson`` as the backing implementation so that
 which serializes ``NaN``/``Infinity`` as ``null`` — stdlib ``json`` would emit
 the invalid ``NaN`` token instead). Two source substitutions are made versus
 upstream: ``LazyString`` comes from :mod:`superset.i18n` (the async-stack
-replacement for ``flask_babel``), and one extra branch in ``base_json_conv``
+replacement for the upstream i18n library), and one extra branch in
+``base_json_conv``
 handles ``msgspec`` structs.
 """
 

@@ -146,8 +146,8 @@ class QueryController(Controller):
         # Apply ownership filter — mirrors ``QueryFilter.apply`` in the original:
         # non-admins without ``can_access_all_queries`` may only see their own
         # queries.  ``base_filters`` is applied to every single-record GET via
-        # ``datamodel.get(pk, self._base_filters)`` in the original FAB layer
-        # (flask_appbuilder/api/__init__.py:1486-1490).
+        # ``datamodel.get(pk, self._base_filters)`` in the original upstream
+        # REST layer.
         base_filters = await query_access_filters(security_manager, current_user)
 
         # Eager-load ``database`` so the response build below doesn't
@@ -160,7 +160,7 @@ class QueryController(Controller):
         if query is None:
             raise ObjectNotFoundError("Query", pk)
 
-        # Serialize using show_columns matching the original Flask API
+        # Serialize using show_columns matching the original API
         show_columns = [
             "id",
             "changed_on",
@@ -195,7 +195,7 @@ class QueryController(Controller):
             result[col] = val
 
         # Include nested database info — original show_columns has "database.id"
-        # (dotted path) which FAB serialises as {"database": {"id": ...}} with no
+        # (dotted path) which upstream serialises as {"database": {"id": ...}} with no
         # other database fields (superset_old/queries/api.py:104).
         # "database_id" (flat integer) is NOT in show_columns, and "database_name"
         # is only in order_columns/list_columns, not show_columns.
@@ -235,7 +235,7 @@ class QueryController(Controller):
         rison_filters, order_by, page, page_size = build_rison_query_params(
             Query,
             rison_params,
-            # FAB ``ModelRestApi.page_size = 20`` — QueryRestApi does not
+            # Upstream ``ModelRestApi.page_size = 20`` — QueryRestApi does not
             # override it, so the original list default is 20, not 25.
             default_page_size=20,
         )

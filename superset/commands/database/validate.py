@@ -105,7 +105,7 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
         # block for seconds when DNS or the target host is down, which
         # starves the asyncio event loop and cascades into 5+ sequential
         # validate requests each taking 4s on a non-resolvable host like
-        # ``badhost``.  In the original Flask backend each request was
+        # ``badhost``.  In the original backend each request was
         # on its own worker thread, so the blocking was hidden per-call.
         # Run the sync validator on the threadpool to restore that
         # concurrency model.

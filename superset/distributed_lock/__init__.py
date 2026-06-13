@@ -18,7 +18,7 @@
 
 Provides :func:`KeyValueDistributedLock`, an ``@asynccontextmanager``
 that acquires a database-backed (key-value) distributed lock.  The
-sync original used Flask's global ``db.session``; the async port takes
+sync original used the global ``db.session``; the async port takes
 an explicit :class:`~sqlalchemy.ext.asyncio.AsyncSession` because there
 is no async-session global in Litestar.
 
@@ -114,7 +114,7 @@ def sync_key_value_distributed_lock(  # noqa: N802
     ``superset_old/distributed_lock/__init__.py:KeyValueDistributedLock`` and
     its three ``CreateDistributedLock`` / ``GetDistributedLock`` /
     ``DeleteDistributedLock`` commands, but driven from the sync metadata
-    session (``get_sync_session`` / psycopg2) rather than Flask's
+    session (``get_sync_session`` / psycopg2) rather than the global
     ``db.session``. The KV operations are inlined against
     :class:`~superset.models.key_value.KeyValueEntry`, mirroring
     :class:`~superset.db.daos.key_value.AsyncKeyValueDAO`

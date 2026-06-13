@@ -202,7 +202,7 @@ def fetch_table_metadata(tbl: Any, eng: Engine) -> None:
     """Populate SqlaTable.columns from physical table introspection.
 
     Replacement for the original ``tbl.fetch_metadata()`` which relied
-    on Flask-AppBuilder infrastructure. Introspects the actual database
+    on the upstream framework infrastructure. Introspects the actual database
     table and creates/updates ``TableColumn`` records, matching the
     original behavior.
     """

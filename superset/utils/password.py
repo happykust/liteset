@@ -14,11 +14,12 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Werkzeug-compatible password hashing without werkzeug dependency.
+"""Upstream-compatible password hashing without the upstream dependency.
 
-Supports the two formats FAB / werkzeug may produce:
-- ``scrypt:N:r:p$salt$hash``  (werkzeug >= 3.0 default)
-- ``pbkdf2:hash_name:iterations$salt$hash``  (werkzeug < 3.0 default)
+Supports the two formats the upstream app-builder / hashing library may
+produce:
+- ``scrypt:N:r:p$salt$hash``  (hashing-library >= 3.0 default)
+- ``pbkdf2:hash_name:iterations$salt$hash``  (hashing-library < 3.0 default)
 """
 
 from __future__ import annotations
@@ -29,9 +30,9 @@ import re
 import secrets
 
 # ---------------------------------------------------------------------------
-# Password complexity — ported 1:1 from
-# flask_appbuilder/validators.py::password_complexity_regex +
-# default_password_complexity().  Used by PUT /api/v1/me/ when
+# Password complexity — ported 1:1 from the upstream app-builder
+# validators ``password_complexity_regex`` +
+# ``default_password_complexity()``.  Used by PUT /api/v1/me/ when
 # FAB_PASSWORD_COMPLEXITY_ENABLED is True.
 # ---------------------------------------------------------------------------
 
@@ -59,13 +60,14 @@ class PasswordComplexityError(ValueError):
 
 
 def default_password_complexity(password: str) -> None:
-    """FAB-compatible default password complexity check.
+    """Upstream-compatible default password complexity check.
 
     Raises :class:`PasswordComplexityError` if *password* does not satisfy
-    the FAB complexity rules (≥2 uppercase, ≥1 special char, ≥2 digits,
+    the upstream complexity rules (≥2 uppercase, ≥1 special char, ≥2 digits,
     ≥3 lowercase, ≥10 total characters).
 
-    Ported 1:1 from ``flask_appbuilder.validators.default_password_complexity``.
+    Ported 1:1 from the upstream app-builder
+    ``validators.default_password_complexity``.
     """
     if not re.search(_PASSWORD_COMPLEXITY_RE, password):
         raise PasswordComplexityError(_PASSWORD_COMPLEXITY_MSG)
@@ -75,14 +77,14 @@ _SALT_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
 def _gen_salt(length: int = 16) -> str:
-    """Generate a random salt string (matches werkzeug gen_salt)."""
+    """Generate a random salt string (matches the upstream gen_salt)."""
     return "".join(secrets.choice(_SALT_CHARS) for _ in range(length))
 
 
 def _hash_internal(method: str, salt: str, password: str) -> str:
     """Compute a password hash for the given method and salt.
 
-    Re-implements werkzeug's internal hashing using only :mod:`hashlib`.
+    Re-implements the upstream internal hashing using only :mod:`hashlib`.
     """
     parts = method.split(":")
     algo = parts[0]
@@ -116,9 +118,9 @@ def generate_password_hash(
     method: str = "scrypt",
     salt_length: int = 16,
 ) -> str:
-    """Hash a password producing a werkzeug-compatible string.
+    """Hash a password producing an upstream-compatible string.
 
-    Default method is ``scrypt:32768:8:1`` (werkzeug 3.0+ default).
+    Default method is ``scrypt:32768:8:1`` (hashing-library 3.0+ default).
     Output format: ``method$salt$hash``.
     """
     salt = _gen_salt(salt_length)
@@ -148,7 +150,7 @@ def generate_password_hash(
 
 
 def check_password_hash(stored_hash: str, password: str) -> bool:
-    """Verify a werkzeug-style password hash.
+    """Verify an upstream-style password hash.
 
     Uses :func:`hmac.compare_digest` for timing-safe comparison.
     """

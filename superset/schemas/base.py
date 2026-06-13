@@ -124,7 +124,7 @@ class ModelStruct(msgspec.Struct):
 
     Note: ``omit_defaults`` is intentionally **disabled** so that fields
     with ``None`` / ``False`` / ``[]`` values are always serialised.
-    The original Superset API (Flask/Marshmallow) always includes every
+    The original Superset API (Marshmallow) always includes every
     column in the response, even when the value is null.  The frontend
     relies on this: e.g. ``position_json``, ``json_metadata``, ``owners``
     must be present even when empty.

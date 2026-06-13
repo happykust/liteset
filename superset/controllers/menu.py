@@ -16,7 +16,7 @@
 # under the License.
 """Menu API controller.
 
-Port of Flask-AppBuilder's ``MenuApi`` (``flask_appbuilder/menu.py``).
+Port of the upstream ``MenuApi`` (the upstream menu module).
 
 The original endpoint ``GET /api/v1/menu/`` returns a forest-like menu
 structure filtered by the current user's ``menu_access`` permissions.
@@ -25,14 +25,15 @@ This Litestar controller reproduces that behaviour:
 1. A static menu tree mirrors the items registered via
    ``appbuilder.add_view`` / ``appbuilder.add_link`` in the original
    ``superset/initialization/__init__.py``.
-2. Each item may carry a ``cond`` callable that mirrors FAB's
+2. Each item may carry a ``cond`` callable that mirrors the upstream
    ``MenuItem.should_render()`` — if it returns falsy the item is hidden.
-3. The tree is walked *recursively* exactly like FAB's ``Menu.get_data()``:
+3. The tree is walked *recursively* exactly like the upstream
+   ``Menu.get_data()``:
    - ``should_render()`` / ``cond`` is evaluated first.
    - Separator items (``name == "-"``) are passed through.
    - Items whose ``name`` is not in the user's allowed-menus set are skipped.
    - Category items recurse into ``childs``; leaf items emit ``url``.
-4. Labels are wrapped with ``gettext()`` for i18n, matching FAB's
+4. Labels are wrapped with ``gettext()`` for i18n, matching the upstream
    ``__(str(item.label))``.
 """
 
@@ -51,10 +52,10 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# MenuItem: lightweight mirror of ``flask_appbuilder.menu.MenuItem``
+# MenuItem: lightweight mirror of the upstream ``MenuItem``
 # ---------------------------------------------------------------------------
 class MenuItem:
-    """Static menu item, matching FAB's ``MenuItem`` API."""
+    """Static menu item, matching the upstream ``MenuItem`` API."""
 
     __slots__ = ("name", "href", "icon", "label", "childs", "cond")
 
@@ -75,7 +76,7 @@ class MenuItem:
         self.cond = cond
 
     def should_render(self) -> bool:
-        """Evaluate the condition lambda, matching FAB's logic."""
+        """Evaluate the condition lambda, matching the upstream logic."""
         return bool(self.cond()) if self.cond is not None else True
 
 
@@ -273,12 +274,12 @@ def _build_menu_tree(settings: Any) -> list[MenuItem]:
 
 
 # ---------------------------------------------------------------------------
-# Recursive get_data — mirrors FAB's ``Menu.get_data()`` exactly.
+# Recursive get_data — mirrors the upstream ``Menu.get_data()`` exactly.
 # ---------------------------------------------------------------------------
 def _get_flat_name_list(menu: list[MenuItem]) -> list[str]:
     """Collect all menu item names recursively (for permission lookup).
 
-    Mirrors FAB's ``Menu.get_flat_name_list()``.
+    Mirrors the upstream ``Menu.get_flat_name_list()``.
     """
     result: list[str] = []
     for item in menu:
@@ -294,8 +295,8 @@ def _get_data(
 ) -> list[dict[str, Any]]:
     """Walk the menu tree and produce the JSON response.
 
-    This is a direct port of FAB's ``Menu.get_data()`` (lines 65-99 of
-    ``flask_appbuilder/menu.py``):
+    This is a direct port of the upstream ``Menu.get_data()`` (lines 65-99
+    of the upstream menu module):
 
     - ``should_render()`` is checked first (evaluates ``cond`` lambdas).
     - Separator items (``name == "-"``) are passed through.
@@ -304,7 +305,7 @@ def _get_data(
       key holds the filtered children.
     - Leaf items emit ``url`` (no ``childs`` key).
     - Categories are included even when ``childs`` is empty after
-      filtering, matching FAB's ``get_data()`` behavior.
+      filtering, matching the upstream ``get_data()`` behavior.
     - Labels are wrapped with ``gettext`` for i18n.
     """
     ret_list: list[dict[str, Any]] = []
@@ -324,7 +325,7 @@ def _get_data(
 
         if item.childs:
             # Category item — recurse into children.
-            # FAB's get_data() includes categories even when childs is empty
+            # The upstream get_data() includes categories even when childs is empty
             # after filtering, so we do NOT skip empty categories.
             filtered_childs = _get_data(item.childs, allowed_menus)
             ret_list.append(
@@ -358,7 +359,7 @@ def _filter_menu_for_user(
 ) -> list[dict[str, Any]]:
     """Filter the menu tree by user permissions and conditions.
 
-    Reproduces the full filtering pipeline from FAB's ``Menu.get_data()``:
+    Reproduces the full filtering pipeline from the upstream ``Menu.get_data()``:
 
     1. Build the static menu tree with condition lambdas.
     2. Collect all item names (flat) for the allowed-menus set.
@@ -386,7 +387,7 @@ def _filter_menu_for_user(
         allowed_menus: set[str] = set(all_names)
     else:
         # Non-admin: intersect tree names with user's menu_access perms.
-        # This mirrors FAB's SecurityManager.get_user_menu_access() which
+        # This mirrors the upstream SecurityManager.get_user_menu_access() which
         # returns the set of menu names where the user has the
         # ``(menu_access, <name>)`` permission.
         user_perms: set[tuple[str, str]] = getattr(user, "permissions", set())
@@ -406,8 +407,8 @@ def _filter_menu_for_user(
 class MenuController(Controller):
     """Menu API — ``GET /api/v1/menu/``.
 
-    Port of FAB's ``MenuApi.get_menu_data`` from
-    ``flask_appbuilder/menu.py``.
+    Port of the upstream ``MenuApi.get_menu_data`` from
+    the upstream menu module.
 
     Returns a forest-like menu structure filtered by the current user's
     ``menu_access`` permissions.
@@ -428,7 +429,7 @@ class MenuController(Controller):
         """Get the menu data structure.
 
         Returns a forest-like structure with the menu items the user
-        has access to.  Mirrors FAB's ``GET /api/v1/menu/`` response::
+        has access to.  Mirrors the upstream ``GET /api/v1/menu/`` response::
 
             {"result": [<menu_items>]}
         """

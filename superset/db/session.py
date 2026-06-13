@@ -162,7 +162,7 @@ def _ensure_sync_session_factory() -> scoped_session[Session]:
     Returns a :class:`~sqlalchemy.orm.scoped_session` so that all callers in
     the same thread (task body *and* the ``task_postrun`` teardown handler)
     share the **same** :class:`~sqlalchemy.orm.Session` object — exactly
-    mirroring Flask-SQLAlchemy's ``db.session`` which is itself a
+    mirroring the upstream ``db.session`` which is itself a
     ``scoped_session`` proxy.
     """
     global _sync_engine, _sync_session_factory  # noqa: PLW0603
@@ -198,7 +198,7 @@ def get_sync_session() -> Session:
     Uses a :class:`~sqlalchemy.orm.scoped_session` registry so that all code
     executing in the same Celery worker thread — including both the task body
     and the ``task_postrun`` teardown handler — receives the **same** Session
-    object.  This matches the behaviour of Flask-SQLAlchemy's ``db.session``
+    object.  This matches the behaviour of the upstream ``db.session``
     (which is also a ``scoped_session``) in the original Superset.
 
     Call :func:`remove_sync_session` in ``task_postrun`` to deregister the
@@ -210,7 +210,7 @@ def get_sync_session() -> Session:
 def remove_sync_session() -> None:
     """Remove the thread-local sync session from the scoped registry.
 
-    Equivalent to Flask-SQLAlchemy's ``db.session.remove()``.  Should be
+    Equivalent to the upstream ``db.session.remove()``.  Should be
     called once per Celery task in the ``task_postrun`` signal handler so
     that the connection is released and the thread-local registry entry is
     cleared before the worker thread is reused.

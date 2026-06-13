@@ -15,9 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Apache Doris engine spec -- sync/Flask-compatible.
+"""Apache Doris engine spec -- sync-compatible.
 
-Ported 1:1 from ``superset_old/db_engine_specs/doris.py`` with Flask
+Ported 1:1 from ``superset_old/db_engine_specs/doris.py`` with legacy
 imports removed.  Only overridden methods and attributes are included.
 """
 

@@ -17,7 +17,7 @@
 # mypy: ignore-errors
 """Dashboard model and association tables.
 
-Pure SQLAlchemy -- no Flask dependencies.
+Pure SQLAlchemy -- no legacy WSGI dependencies.
 """
 
 from __future__ import annotations
@@ -181,7 +181,7 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
     ]
     extra_import_fields = ["is_managed_externally", "external_url", "theme_id"]
 
-    # -- Computed properties (match original FAB model) ------------------------
+    # -- Computed properties (match original upstream model) -------------------
 
     @property
     def url(self) -> str:

@@ -18,7 +18,7 @@
 
 Renders the HTML page that bootstraps the React frontend.
 Uses explicit prefix-based routes to avoid intercepting un-migrated
-API endpoints that must fall through to the Flask ASGI fallback mount.
+API endpoints that must fall through to the legacy ASGI fallback mount.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ SPA_ROUTE_PREFIXES: frozenset[str] = frozenset(
 
 # Explicit route paths: each prefix gets both /{prefix} and /{prefix}/{path:path}.
 # Un-matched paths (API, static, un-migrated endpoints) are NOT intercepted
-# and fall through to the Flask ASGI fallback mount during Strangler Fig coexistence.
+# and fall through to the legacy ASGI fallback mount during Strangler Fig coexistence.
 _SPA_PATHS: list[str] = (
     ["/"]
     + [f"/{prefix}/{{path:path}}" for prefix in SPA_ROUTE_PREFIXES]
@@ -346,7 +346,7 @@ def _build_menu_data(user: Any, settings: Any) -> dict[str, Any]:
     items from ``menu`` into ``settings`` client-side.
 
     Menu filtering is delegated to ``superset.controllers.menu`` which
-    implements FAB's recursive ``Menu.get_data()`` logic with proper
+    implements the upstream recursive ``Menu.get_data()`` logic with proper
     per-child permission checks and ``should_render()`` condition lambdas.
     """
     from superset.controllers.menu import _filter_menu_for_user
@@ -443,7 +443,7 @@ def _build_user_data(user: Any) -> dict[str, Any]:
     access.  Works with both CachedUser and UnauthenticatedUser.
 
     Permissions are stored as ``set[tuple[str, str]]`` — (action, resource)
-    tuples matching the original FAB ``get_user_roles_permissions`` format.
+    tuples matching the upstream ``get_user_roles_permissions`` format.
     The frontend expects ``roles: {roleName: [[action, resource], ...]}``.
     """
     from superset.middleware.auth import UnauthenticatedUser
@@ -501,8 +501,8 @@ def _build_user_data(user: Any) -> dict[str, Any]:
 
     # Build roles dict: {role_name: [[action, resource], ...]}
     #
-    # Known simplification vs. FAB's get_user_roles_permissions:
-    # The original FAB returns per-role permissions (each role maps only
+    # Known simplification vs. the upstream get_user_roles_permissions:
+    # The original returns per-role permissions (each role maps only
     # to its own permission set).  Here we attach the union of ALL
     # permissions to every role.  This is functionally equivalent because
     # the frontend's ``findPermission`` (src/utils/findPermission.ts)
@@ -744,7 +744,7 @@ def _build_bootstrap_data(user: Any, settings: Any, **kw: Any) -> dict[str, Any]
             "Public",
         )
         # RECAPTCHA only for non-OAuth registration
-        # AUTH_OAUTH = 4 in FAB
+        # AUTH_OAUTH = 4 upstream
         if auth_type != 4:
             frontend_config["RECAPTCHA_PUBLIC_KEY"] = getattr(
                 settings,
@@ -918,8 +918,9 @@ async def _render_welcome_dashboard(
             _sec_mgr = await provide_security_manager(_dash_session, state)
 
             # View-level permission check: 1:1 with @has_access on
-            # Superset.dashboard — FAB's @has_access returns 403 (Forbidden)
-            # for an AUTHENTICATED user lacking the permission, not 404.
+            # Superset.dashboard — the upstream @has_access returns 403
+            # (Forbidden) for an AUTHENTICATED user lacking the permission,
+            # not 404.
             # NOTE: ``user`` is keyword-only on AsyncSecurityManager.has_access;
             # the previous positional call raised TypeError which the broad
             # except below silently turned into a 404 for everyone.
@@ -1026,9 +1027,9 @@ class SPAController(Controller):
 
     @get(
         ["/lang/{locale:str}", "/lang/{locale:str}/"],
-        # 1:1 with FAB ``LocaleView.index`` (@expose, no permission check
-        # beyond login-irrelevance) — the menu's ``config.languages[*].url``
-        # entries point here.
+        # 1:1 with the upstream ``LocaleView.index`` (@expose, no permission
+        # check beyond login-irrelevance) — the menu's
+        # ``config.languages[*].url`` entries point here.
         opt={"exclude_from_auth": True},
     )
     async def set_language(
@@ -1039,10 +1040,9 @@ class SPAController(Controller):
     ) -> Response[Any]:
         """GET /lang/<locale> — switch the UI language.
 
-        Mirrors FAB ``LocaleView.index``
-        (flask_appbuilder/babel/views.py:14-19): unsupported locale → 404;
-        otherwise persist the choice and redirect back.  FAB stores the
-        locale in the Flask session; the Litestar port persists it in the
+        Mirrors the upstream ``LocaleView.index``: unsupported locale → 404;
+        otherwise persist the choice and redirect back.  Upstream stored the
+        locale in the legacy session; the Litestar port persists it in the
         ``language`` cookie that :class:`LocaleMiddleware` reads first.
         """
         settings = getattr(state, "settings", None)
@@ -1074,7 +1074,7 @@ class SPAController(Controller):
     ) -> Any:
         """GET /dashboard/new/ — create blank dashboard and redirect to edit mode.
 
-        Mirrors the original Flask ``Dashboard.new`` view which uses
+        Mirrors the original ``Dashboard.new`` view which uses
         ``@has_access`` with ``method_permission_name = {"new": "write"}``
         and ``class_permission_name = "Dashboard"``, requiring
         ``can_write`` on ``Dashboard``.
@@ -1135,7 +1135,7 @@ class SPAController(Controller):
 
         _logger = _log.getLogger(__name__)
 
-        # --- Error message constants (mirrors FAB / SupersetRegisterUserView) ---
+        # --- Error message constants (mirrors upstream SupersetRegisterUserView) -
         _error_message = "Not possible to register you at the moment, try again later"
         _false_error_message = "Registration not found"
         _logmsg_err_no_hash = "Attempt to activate user with false hash: %s"
@@ -1196,7 +1196,7 @@ class SPAController(Controller):
                 role = role_result.scalars().one_or_none()
 
                 # add_user: create User row with hashed_password stored as-is
-                # (mirrors FAB add_user with hashed_password kwarg)
+                # (mirrors upstream add_user with hashed_password kwarg)
                 new_user = User()
                 new_user.first_name = reg_data["first_name"]
                 new_user.last_name = reg_data["last_name"]
@@ -1332,7 +1332,7 @@ class SPAController(Controller):
 
         # Other SPA paths: anonymous users without Public perms -> login.
         # Anonymous users with Public perms fall through and render SPA;
-        # FAB-equivalent permission checks happen at API-call time via guards.
+        # equivalent permission checks happen at API-call time via guards.
         elif not is_auth and not has_perms:
             return Redirect(path="/login/")
 
@@ -1421,7 +1421,7 @@ class SPAController(Controller):
                 user = getattr(request, "user", None)
                 user_id = getattr(user, "id", None)
 
-                # Upstream writes action="log" (the Flask view function name) for
+                # Upstream writes action="log" (the view function name) for
                 # ALL frontend events.  The per-event "event_name" (e.g.
                 # "mount_dashboard") lives inside the json column, not in action.
                 # recent_activity queries: action=="log" AND json contains event_name.

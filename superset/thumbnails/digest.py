@@ -18,11 +18,11 @@
 
 1:1 port of ``superset_old/thumbnails/digest.py``.
 
-The two adaptations versus the Flask original:
+The two adaptations versus the original:
 
 * ``app.config["..."]`` → :class:`SupersetSettings` (cached via
   :func:`superset.utils.webdriver.cached_settings`).
-* ``security_manager.find_user`` / ``override_user`` Flask thread-locals
+* ``security_manager.find_user`` / ``override_user`` request-scoped state
   → synchronous metadata-DB lookup + :class:`ContextVar` binding via
   :func:`superset.utils.core.set_current_user`.  The RLS predicate
   evaluation goes through :func:`superset.utils.rls.compose_rls_text_clauses`

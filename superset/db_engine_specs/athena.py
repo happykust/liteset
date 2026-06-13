@@ -14,10 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Amazon Athena engine spec -- sync/Flask-compatible.
+"""Amazon Athena engine spec -- synchronous.
 
-Ported 1:1 from ``superset_old/db_engine_specs/athena.py`` with Flask
-imports removed.  Only overridden methods and attributes are included.
+Ported 1:1 from ``superset_old/db_engine_specs/athena.py`` with the
+legacy WSGI-stack imports removed.  Only overridden methods and
+attributes are included.
 """
 
 from __future__ import annotations

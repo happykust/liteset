@@ -56,7 +56,7 @@ async def get_tag(
 
     Port of ``superset_old/tags/models.py::get_tag`` -- async version.
 
-    The original Flask code is the same naive read-then-insert and has the
+    The original code is the same naive read-then-insert and has the
     same race; under the sync stack it surfaced rarely because most paths
     served one request per process at a time.  Under async + Locust the
     race fires on every burst:

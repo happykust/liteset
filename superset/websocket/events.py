@@ -198,7 +198,7 @@ class AsyncQueryWebSocket(Controller):
         # Resolve per-browser channel id.  The JWT ``channel`` claim is the
         # canonical source — it is the uuid4 minted by AsyncTokenMiddleware
         # when the browser first contacted the server (1:1 with the original
-        # Flask handler which stored it in the session cookie).  If the claim
+        # handler which stored it in the session cookie).  If the claim
         # is absent (rare: session-cookie-only auth with no async-token cookie)
         # the relay idles harmlessly until the client disconnects.
         channel = auth_result.channel

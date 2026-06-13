@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Error types and structures -- Flask-free port of superset_old/errors.py."""
+"""Error types and structures -- port of superset_old/errors.py."""
 
 from __future__ import annotations
 

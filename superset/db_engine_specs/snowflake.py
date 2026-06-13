@@ -15,10 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Snowflake engine spec -- sync/Flask-compatible.
+"""Snowflake engine spec -- synchronous.
 
-Ported 1:1 from ``superset_old/db_engine_specs/snowflake.py`` with Flask
-imports removed.  Only overridden methods and attributes are included.
+Ported 1:1 from ``superset_old/db_engine_specs/snowflake.py`` with the legacy
+WSGI-stack imports removed.  Only overridden methods and attributes are
+included.
 """
 
 from __future__ import annotations

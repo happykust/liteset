@@ -16,9 +16,9 @@
 # under the License.
 """User-related models.
 
-Pure SQLAlchemy -- no Flask dependencies.
+Pure SQLAlchemy -- no legacy WSGI dependencies.
 
-Note: The ``User`` model itself is defined by Flask-AppBuilder in the
+Note: The ``User`` model itself is defined upstream in the
 ``ab_user`` table and is referenced by string (``"User"``) in
 relationships throughout the codebase.  We do **not** re-define it here
 to avoid duplicate mapper registrations.
