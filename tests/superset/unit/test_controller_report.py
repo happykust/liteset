@@ -830,3 +830,33 @@ def test_slack_channels_requires_can_write() -> None:
         if isinstance(c, tuple) and len(c) == 2
     ]
     assert ("can_write", "ReportSchedule") in perm_tuples, perm_tuples
+
+
+def test_report_schedule_invalid_error_uses_field_keyed_handler():
+    """ReportScheduleInvalidError must be routed to the per-field 422 handler so
+    the response carries {field: [messages]} — 1:1 with upstream reports/api.py
+    ``response_422(message=ex.normalized_messages())`` — instead of a flat
+    string message."""
+    from superset.app import _build_exception_handlers
+    from superset.commands.dataset.exceptions import dataset_invalid_error_handler
+    from superset.commands.report_exceptions import ReportScheduleInvalidError
+
+    handlers = _build_exception_handlers()
+    assert handlers.get(ReportScheduleInvalidError) is dataset_invalid_error_handler
+
+
+def test_report_schedule_invalid_error_normalized_messages_is_field_keyed():
+    """normalized_messages() builds the {field_name: [messages]} mapping the
+    front-end consumes."""
+    from superset.commands.report_exceptions import (
+        ReportScheduleInvalidError,
+        ReportScheduleValidationError,
+    )
+
+    exc = ReportScheduleInvalidError(
+        exceptions=[
+            ReportScheduleValidationError("Owners are invalid", field_name="owners")
+        ]
+    )
+    assert exc.status_code == 422
+    assert exc.normalized_messages() == {"owners": ["Owners are invalid"]}

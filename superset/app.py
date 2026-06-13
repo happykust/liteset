@@ -113,12 +113,17 @@ def _build_exception_handlers() -> dict[Any, Any]:
         dataset_invalid_error_handler,
         DatasetInvalidError,
     )
+    from superset.commands.report_exceptions import ReportScheduleInvalidError
 
     return {
         DatasetInvalidError: dataset_invalid_error_handler,
         DashboardInvalidError: dataset_invalid_error_handler,
         DatabaseInvalidError: dataset_invalid_error_handler,
         AnnotationLayerInvalidError: dataset_invalid_error_handler,
+        # ReportScheduleInvalidError overrides normalized_messages() to emit the
+        # {field: [messages]} mapping (e.g. {"owners": [...]}) — 1:1 with upstream
+        # reports/api.py response_422(message=ex.normalized_messages()).
+        ReportScheduleInvalidError: dataset_invalid_error_handler,
         SupersetException: superset_exception_handler,
         _ValidationException: validation_error_handler,
         _IntegrityError: integrity_error_handler,
