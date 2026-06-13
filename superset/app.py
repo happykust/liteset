@@ -78,6 +78,7 @@ from superset.middleware.auth import SupersetAuthMiddleware
 from superset.middleware.http_headers import HTTPHeadersMiddleware
 from superset.middleware.locale import LocaleMiddleware
 from superset.middleware.proxy_fix import ProxyFixMiddleware
+from superset.middleware.rate_limit import RateLimitMiddleware
 from superset.middleware.request_context import RequestContextMiddleware
 from superset.middleware.security_headers import SecurityHeadersMiddleware
 
@@ -1358,7 +1359,13 @@ def create_app(  # noqa: C901
                 else []
             ),
             SecurityHeadersMiddleware(),
-            # RateLimitMiddleware(),  # disabled — too aggressive for dev/testing
+            # RateLimitMiddleware mirrors FAB / flask-limiter: gated on the
+            # RATELIMIT_ENABLED master switch (off by default outside
+            # production, so dev/testing is unaffected), it applies the
+            # RATELIMIT_APPLICATION limit to every request and the
+            # AUTH_RATE_LIMIT to login POSTs.  Placed after ProxyFix so the
+            # client IP used as the limit key is the corrected one.
+            RateLimitMiddleware(),
             LocaleMiddleware(),
             # HTTPHeadersMiddleware applies OVERRIDE_HTTP_HEADERS / HTTP_HEADERS /
             # DEFAULT_HTTP_HEADERS from settings onto every response.  Equivalent
