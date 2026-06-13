@@ -191,3 +191,46 @@ def test_get_df_mutator_returning_dataframe_used() -> None:
     # post_process_df must have been called with mutated_df, not original_df
     assert len(received) == 1
     assert received[0] is mutated_df
+
+
+# ---------------------------------------------------------------------------
+# get_raw_connection
+# ---------------------------------------------------------------------------
+
+
+def test_get_raw_connection_yields_conn_and_runs_prequeries() -> None:
+    """get_raw_connection opens a sync engine, runs the engine-spec prequeries,
+    and yields the raw DBAPI connection — 1:1 with upstream
+    Database.get_raw_connection. The sync engine-spec helpers
+    (estimate_query_cost, BigQuery get_latest_partition, GSheets
+    get_table_metadata) call it and would AttributeError without it."""
+    from superset.models.core import Database
+
+    db = Database.__new__(Database)
+
+    fake_cursor = MagicMock()
+    fake_conn = MagicMock()
+    fake_conn.cursor.return_value = fake_cursor
+    fake_engine = MagicMock()
+    fake_engine.raw_connection.return_value = fake_conn
+
+    @contextmanager
+    def fake_engine_ctx(*_a, **_k):
+        yield fake_engine
+
+    spec = MagicMock()
+    spec.get_prequeries.return_value = ["SET search_path = myschema"]
+
+    with (
+        patch.object(Database, "get_sqla_engine", fake_engine_ctx),
+        patch.object(
+            Database, "db_engine_spec", new_callable=PropertyMock, return_value=spec
+        ),
+    ):
+        with db.get_raw_connection(catalog="c", schema="myschema") as conn:
+            assert conn is fake_conn
+
+    spec.get_prequeries.assert_called_once()
+    fake_cursor.execute.assert_called_once_with("SET search_path = myschema")
+    # closing() must have closed the raw connection on exit.
+    fake_conn.close.assert_called_once()

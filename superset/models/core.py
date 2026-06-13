@@ -411,6 +411,50 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
             source=source,
         )
 
+    def get_raw_connection(
+        self,
+        catalog: str | None = None,
+        schema: str | None = None,
+        nullpool: bool = True,
+        source: Any | None = None,
+    ) -> Any:
+        """Return a context manager yielding a raw DBAPI connection.
+
+        1:1 with ``Database.get_raw_connection`` in
+        ``superset_old/models/core.py``: open a sync engine, run the
+        engine-spec prequeries (which select the catalog/schema), then yield
+        the raw connection.  Used by the **sync** engine-spec helpers
+        ``BaseEngineSpec.estimate_query_cost``,
+        ``BigQueryEngineSpec.get_latest_partition`` and
+        ``GSheetsEngineSpec.get_table_metadata`` — without this method those
+        paths raise ``AttributeError``.
+
+        Note: upstream additionally wraps the body in ``check_for_oauth2`` to
+        trigger OAuth2 re-auth; that helper is async-only in the port and
+        cannot run inside this synchronous context manager, so it is omitted.
+        """
+        from contextlib import closing, contextmanager
+
+        @contextmanager
+        def _ctx() -> Any:
+            with self.get_sqla_engine(
+                catalog=catalog,
+                schema=schema,
+                nullpool=nullpool,
+                source=source,
+            ) as engine:
+                with closing(engine.raw_connection()) as conn:
+                    for prequery in self.db_engine_spec.get_prequeries(
+                        database=self,
+                        catalog=catalog,
+                        schema=schema,
+                    ):
+                        cursor = conn.cursor()
+                        cursor.execute(prequery)
+                    yield conn
+
+        return _ctx()
+
     def has_table(self, table: Any) -> bool:
         """Check that a physical table exists on the database.
 
