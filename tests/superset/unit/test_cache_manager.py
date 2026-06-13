@@ -134,3 +134,31 @@ async def test_binary_cache_default_is_non_decoding():
     assert getattr(mgr._cache, "_redis", None) is default_async
     assert getattr(mgr._cache, "_redis", None) is not auth_client
     await mgr.close()
+
+
+def test_metastore_namespace_seeds_from_config_key():
+    """filter_state and explore_form_data metastore slots must get DISTINCT
+    UUID namespaces, seeded from the config-key NAME — 1:1 with upstream
+    (``cache_config.get("CACHE_KEY_PREFIX", cache_config_key)``). Collapsing
+    both to ``get_uuid_namespace("")`` drops per-slot isolation and fails to
+    read back rows an upstream Superset wrote under the named namespace."""
+    from unittest.mock import MagicMock
+
+    from superset.cache.manager import _build_metastore_cache_from_config
+    from superset.key_value.utils import get_uuid_namespace
+
+    def _sf():
+        return MagicMock()
+
+    fs = _build_metastore_cache_from_config(
+        cfg={}, session_factory=_sf, fallback_default_ttl=300,
+        config_key="FILTER_STATE_CACHE_CONFIG",
+    )
+    ex = _build_metastore_cache_from_config(
+        cfg={}, session_factory=_sf, fallback_default_ttl=300,
+        config_key="EXPLORE_FORM_DATA_CACHE_CONFIG",
+    )
+    assert fs._namespace == get_uuid_namespace("FILTER_STATE_CACHE_CONFIG")
+    assert ex._namespace == get_uuid_namespace("EXPLORE_FORM_DATA_CACHE_CONFIG")
+    assert fs._namespace != ex._namespace
+    assert fs._namespace != get_uuid_namespace("")

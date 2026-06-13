@@ -633,12 +633,15 @@ def _coerce_threshold(raw: Any) -> int:
 def _build_sync_metastore_cache(
     cfg: dict[str, Any],
     fallback_default_ttl: int,
+    config_key: str = "",
 ) -> SyncCacheProtocol:
     """Build a :class:`MetastoreSyncCacheManager` from a config dict.
 
     Extracted from :func:`_build_sync_cache_for_slot` to reduce complexity.
     """
-    seed = cfg.get("CACHE_KEY_PREFIX", "") or ""
+    # See _build_metastore_cache_from_config: seed falls back to the config-key
+    # NAME (per-slot distinct UUID namespace) for upstream parity.
+    seed = cfg.get("CACHE_KEY_PREFIX") or config_key or ""
     try:
         from superset.key_value.utils import get_uuid_namespace
 
@@ -665,6 +668,7 @@ def _build_sync_cache_for_slot(
     *,
     fallback_default_ttl: int = 300,
     key_prefix: str = "",
+    config_key: str = "",
 ) -> SyncCacheProtocol:
     """Wire a single sync cache slot from a Flask-Caching-style config.
 
@@ -709,7 +713,7 @@ def _build_sync_cache_for_slot(
         )
 
     if cache_type in _METASTORE_CACHE_TYPES:
-        return _build_sync_metastore_cache(cfg, fallback_default_ttl)
+        return _build_sync_metastore_cache(cfg, fallback_default_ttl, config_key)
 
     logger.warning(
         "Unsupported CACHE_TYPE %r in sync cache slot config; falling "
@@ -1150,6 +1154,7 @@ def _build_metastore_cache_from_config(
     cfg: dict[str, Any],
     session_factory: Callable[[], Any] | None,
     fallback_default_ttl: int,
+    config_key: str = "",
 ) -> AsyncCacheProtocol:
     """Construct a :class:`MetastoreAsyncCacheManager` for a slot.
 
@@ -1168,7 +1173,13 @@ def _build_metastore_cache_from_config(
             default_ttl=int(cfg.get("CACHE_DEFAULT_TIMEOUT", fallback_default_ttl))
         )
 
-    seed = cfg.get("CACHE_KEY_PREFIX", "") or ""
+    # Namespace seed: upstream falls the metastore CACHE_KEY_PREFIX back to the
+    # config-key NAME (``cache_config.get("CACHE_KEY_PREFIX", cache_config_key)``
+    # + ``get_uuid_namespace(seed)``), so each slot (FILTER_STATE_CACHE_CONFIG /
+    # EXPLORE_FORM_DATA_CACHE_CONFIG) gets a DISTINCT UUID namespace. Mirror it —
+    # collapsing both to ``get_uuid_namespace("")`` drops per-slot isolation AND
+    # misses rows an upstream Superset wrote under the config-key-named namespace.
+    seed = cfg.get("CACHE_KEY_PREFIX") or config_key or ""
     try:
         from superset.key_value.utils import get_uuid_namespace
 
@@ -1234,6 +1245,7 @@ def _build_cache_for_slot(
     fallback_default_ttl: int = 300,
     session_factory: Callable[[], Any] | None = None,
     json_values: bool = False,
+    config_key: str = "",
 ) -> AsyncCacheProtocol:
     """Wire a single cache slot from a Flask-Caching-style config dict.
 
@@ -1287,6 +1299,7 @@ def _build_cache_for_slot(
             cfg=cfg,
             session_factory=session_factory,
             fallback_default_ttl=fallback_default_ttl,
+            config_key=config_key,
         )
         return _wrap_if_explore(inner, is_explore_form_data)
 
@@ -1474,6 +1487,7 @@ class CacheManager:
             fallback_default_ttl=cache_default_timeout,
             session_factory=session_factory,
             json_values=True,
+            config_key="FILTER_STATE_CACHE_CONFIG",
         )
         self._explore_form_data_cache = _build_cache_for_slot(
             explore_form_data_cache_config,
@@ -1482,6 +1496,7 @@ class CacheManager:
             fallback_default_ttl=cache_default_timeout,
             session_factory=session_factory,
             json_values=True,
+            config_key="EXPLORE_FORM_DATA_CACHE_CONFIG",
         )
 
         # ---- Sync siblings ----
@@ -1528,11 +1543,13 @@ class CacheManager:
             filter_state_cache_config,
             default_sync,
             fallback_default_ttl=cache_default_timeout,
+            config_key="FILTER_STATE_CACHE_CONFIG",
         )
         self._sync_explore_form_data_cache = _build_sync_cache_for_slot(
             explore_form_data_cache_config,
             default_sync,
             fallback_default_ttl=cache_default_timeout,
+            config_key="EXPLORE_FORM_DATA_CACHE_CONFIG",
         )
 
     # ---- pass-through to the default cache (so callers can write
