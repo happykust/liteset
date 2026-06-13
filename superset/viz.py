@@ -2679,7 +2679,7 @@ class PartitionViz(NVD3TimeSeriesViz):
             "point_diff": [pd.Series.sub, lambda a, b, fill_value: a - b],
             "point_factor": [pd.Series.div, lambda a, b, fill_value: a / float(b)],
             "point_percent": [
-                lambda a, b, fill_value=0: a.div(b, fill_value=fill_value) - 1,  # type: ignore[misc]
+                lambda a, b, fill_value=0: a.div(b, fill_value=fill_value) - 1,
                 lambda a, b, fill_value: a / float(b) - 1,
             ],
         }[time_op]

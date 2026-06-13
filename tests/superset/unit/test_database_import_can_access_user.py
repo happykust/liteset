@@ -74,7 +74,8 @@ async def test_import_single_passes_user_to_can_access():
             "databases/db.yaml", {"database_name": "x", "sqlalchemy_uri": "sqlite://"}
         )
 
-    assert sm.calls and sm.calls[0]["user"] is user
+    assert sm.calls
+    assert sm.calls[0]["user"] is user
 
 
 async def test_import_single_denies_without_user_in_context():

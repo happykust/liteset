@@ -75,7 +75,11 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
             from superset.config import SupersetSettings
 
             return float(
-                getattr(SupersetSettings(), "zip_file_max_compress_ratio", 200.0)
+                getattr(
+                    SupersetSettings(),  # type: ignore[call-arg]
+                    "zip_file_max_compress_ratio",
+                    200.0,
+                )
             )
         except Exception:  # noqa: BLE001
             return 200.0

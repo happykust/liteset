@@ -279,9 +279,7 @@ class CSRFMiddleware(MiddlewareProtocol):
                         ],
                     }
                 )
-                await send(
-                    {"type": "http.response.body", "body": b""}  # type: ignore[arg-type]
-                )
+                await send({"type": "http.response.body", "body": b""})
                 return
 
             # JSON request → 400 with GENERIC_BACKEND_ERROR (mirrors show_http_exception
@@ -321,7 +319,7 @@ class CSRFMiddleware(MiddlewareProtocol):
                 }
             )
             await send(
-                {  # type: ignore[arg-type]
+                {
                     "type": "http.response.body",
                     "body": body,
                 }

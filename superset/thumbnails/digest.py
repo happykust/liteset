@@ -343,8 +343,13 @@ def get_chart_digest(chart: "Slice") -> str | None:
     from superset.utils.rls import _metadata_sync_session
 
     with _metadata_sync_session() as session:
+        # ``Slice`` uses legacy ``Column`` mappings, so mypy types these
+        # instance attributes as ``Column[...]`` rather than the runtime
+        # int/str — narrow them to the helper's declared parameter types.
         datasources = _query_chart_datasources(
-            session, chart.datasource_id, chart.datasource_type
+            session,
+            cast("int | None", chart.datasource_id),
+            cast("str | None", chart.datasource_type),
         )
         unique_string = _adjust_string_with_rls(unique_string, datasources, executor)
 

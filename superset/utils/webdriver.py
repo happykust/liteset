@@ -61,9 +61,6 @@ WindowSize = tuple[int, int]
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from superset.models.security import User
-
-try:
     from playwright.sync_api import (
         BrowserContext,
         Error as PlaywrightError,
@@ -72,14 +69,28 @@ try:
         sync_playwright,
         TimeoutError as PlaywrightTimeout,
     )
-except ImportError:
-    # Define dummy classes when playwright is not available
-    BrowserContext = Any
-    PlaywrightError = Exception
-    PlaywrightTimeout = Exception
-    Locator = Any
-    Page = Any
-    sync_playwright = None
+
+    from superset.models.security import User
+else:
+    # Runtime: playwright is an optional dependency. Under ``TYPE_CHECKING`` the
+    # real classes above provide precise types; here we import them or fall back
+    # to permissive stand-ins so the module loads without playwright installed.
+    try:
+        from playwright.sync_api import (
+            BrowserContext,
+            Error as PlaywrightError,
+            Locator,
+            Page,
+            sync_playwright,
+            TimeoutError as PlaywrightTimeout,
+        )
+    except ImportError:
+        BrowserContext = Any
+        PlaywrightError = Exception
+        PlaywrightTimeout = Exception
+        Locator = Any
+        Page = Any
+        sync_playwright = None
 
 
 # ---------------------------------------------------------------------------

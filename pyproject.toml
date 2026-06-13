@@ -297,6 +297,14 @@ module = "cryptography.*"
 ignore_errors = true
 follow_imports = "skip"
 
+# advanced_alchemy is a third-party dependency, not project code. mypy's
+# SQLAlchemy plugin crashes (INTERNAL ERROR) while following imports into its
+# slug mixin; skip analysing its source (we only type-check our *use* of it).
+[[tool.mypy.overrides]]
+module = "advanced_alchemy.*"
+ignore_errors = true
+follow_imports = "skip"
+
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
 exclude = [

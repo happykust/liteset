@@ -31,9 +31,12 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from redis.asyncio import Redis
+
+if TYPE_CHECKING:
+    from redis.typing import EncodableT, FieldT
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +146,7 @@ class AsyncEventManager:
 
     def __init__(
         self,
-        redis: Redis[Any],
+        redis: Redis,
         stream_prefix: str = "async-events-",
         global_stream_key: str = "async-events-full",
         global_stream_limit: int = 1_000_000,
@@ -173,7 +176,7 @@ class AsyncEventManager:
             user_id=user_id,
             status="pending",
         )
-        payload = {"data": json.dumps(metadata)}
+        payload: dict[FieldT, EncodableT] = {"data": json.dumps(metadata)}
 
         # Write to channel-specific stream.  ``maxlen`` trims the stream
         # synchronously on every write (1:1 with the original
@@ -220,7 +223,7 @@ class AsyncEventManager:
             errors=errors or [],
             result_url=result_url,
         )
-        payload = {"data": json.dumps(metadata)}
+        payload: dict[FieldT, EncodableT] = {"data": json.dumps(metadata)}
 
         # Write to channel stream — trim synchronously via ``maxlen`` (1:1 with
         # the original ``xadd(..., self._stream_limit)``).

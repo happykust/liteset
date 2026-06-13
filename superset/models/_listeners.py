@@ -729,7 +729,7 @@ def _object_after_update(
             )
             .all()
         )
-        existing_owner_tag_ids = {to.tag_id for to in existing}
+        existing_owner_tag_ids = {int(to.tag_id) for to in existing}
 
         new_owner_tag_ids: set[int] = set()
         for owner_id in owner_ids:

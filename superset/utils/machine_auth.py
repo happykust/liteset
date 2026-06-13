@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, Callable, cast, TYPE_CHECKING
 from urllib.parse import urljoin, urlparse
 
 import jwt
@@ -59,14 +59,10 @@ from superset.utils.class_utils import load_class_from_name
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from playwright.sync_api import BrowserContext
     from selenium.webdriver.remote.webdriver import WebDriver
 
     from superset.config import SupersetSettings
-
-    try:
-        from playwright.sync_api import BrowserContext
-    except ModuleNotFoundError:
-        BrowserContext = Any
 
 
 # Default JWT lifetime when no settings are wired up (matches
@@ -141,9 +137,12 @@ class MachineAuthProvider:
 
         Returns the driver passed in (fluent), matching the original.
         """
-        # Short-circuit when an override callable is configured
+        # Short-circuit when an override callable is configured. The override
+        # is shared with ``authenticate_browser_context`` so its declared return
+        # is the WebDriver|BrowserContext union; in this path it returns a
+        # WebDriver.
         if self._auth_webdriver_func_override:
-            return self._auth_webdriver_func_override(driver, user)
+            return cast("WebDriver", self._auth_webdriver_func_override(driver, user))
 
         # Setting cookies requires doing a request first (Selenium quirk)
         driver.get(self._headless_url("/login/"))
@@ -162,7 +161,10 @@ class MachineAuthProvider:
     ) -> "BrowserContext":
         """Sets a session cookie on a Playwright ``BrowserContext``."""
         if self._auth_webdriver_func_override:
-            return self._auth_webdriver_func_override(browser_context, user)
+            return cast(
+                "BrowserContext",
+                self._auth_webdriver_func_override(browser_context, user),
+            )
 
         baseurl = self._webdriver_baseurl()
         url = urlparse(baseurl)

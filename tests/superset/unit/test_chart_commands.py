@@ -257,7 +257,9 @@ async def test_delete_chart_invisible_is_404(mock_dao, mock_chart):
     sm.raise_for_ownership.assert_not_awaited()
 
 
-async def test_update_chart_attach_unpublished_dashboard_is_not_found(mock_dao, mock_chart):
+async def test_update_chart_attach_unpublished_dashboard_is_not_found(
+    mock_dao, mock_chart
+):
     """Attaching a chart to a NEW dashboard outside the caller's list-filter
     scope (e.g. an unpublished dashboard they don't own) is the 422
     DashboardsNotFoundValidationError upstream emits — upstream
