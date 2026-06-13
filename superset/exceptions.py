@@ -765,6 +765,12 @@ class CommandInvalidError(CommandException):
             message=message,
             exceptions=self._exceptions,
         )
+        # CommandException.__init__ does ``self.exceptions = exceptions or []``;
+        # when ``self._exceptions`` is empty that ``or`` yields a *new* list, so
+        # ``self.exceptions`` and ``self._exceptions`` desync — later ``append()``
+        # (which only mutates ``_exceptions``) would be invisible to ``exceptions``
+        # and thus to ``to_sip40()``.  Re-alias to the single backing list.
+        self.exceptions = self._exceptions
 
     def append(self, exception: Exception) -> None:
         self._exceptions.append(exception)

@@ -122,6 +122,23 @@ def test_command_invalid_append_normalized_messages():
     assert msgs == {"field": ["bad value"]}
 
 
+def test_command_invalid_append_reflected_in_exceptions_and_sip40():
+    """append() on an empty CommandInvalidError must also surface via
+    ``self.exceptions`` / ``to_sip40()`` — not just ``self._exceptions``.
+
+    ``self.exceptions`` and ``self._exceptions`` must be the same backing list;
+    when constructed with no exceptions they can desync (``[] or []`` creates a
+    fresh list), which would make to_sip40() emit no sub-errors after append().
+    """
+    exc = CommandInvalidError("validation failed")
+    exc.append(ValueError("boom"))
+    # The public ``exceptions`` attribute must reflect the appended exception.
+    assert len(exc.exceptions) == 1
+    assert exc.exceptions is exc._exceptions
+    sip40 = exc.to_sip40()
+    assert sip40.get("errors") == ["boom"]
+
+
 def test_command_invalid_extend_normalized_messages():
     """extend() must update normalized_messages() for multiple exceptions.
 
