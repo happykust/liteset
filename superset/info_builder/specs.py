@@ -147,17 +147,30 @@ RESOURCE_SPECS: dict[str, ResourceSpec] = {
             "datasource_name",
             "datasource_type",
             "description",
+            "id",
             "last_saved_at",
             "last_saved_by",
             "owners",
             "slice_name",
             "tags",
+            "uuid",
             "viz_type",
         ],
         search_filters_custom={
             "created_by": [
                 {"name": "Has created by", "operator": "chart_has_created_by"},
                 {"name": "Created by me", "operator": "chart_created_by_me"},
+            ],
+            # The favorite / certified / owned filters key off ``id`` in
+            # upstream ChartRestApi.search_filters — surface them in _info so
+            # clients can discover the operators.
+            "id": [
+                {"name": "Is favorite", "operator": "chart_is_favorite"},
+                {"name": "Is certified", "operator": "chart_is_certified"},
+                {
+                    "name": "Owned Created or Favored",
+                    "operator": "chart_owned_created_favored_by_me",
+                },
             ],
             "slice_name": [
                 {"name": "All Text", "operator": "chart_all_text"},
@@ -262,11 +275,13 @@ RESOURCE_SPECS: dict[str, ResourceSpec] = {
             "changed_by",
             "created_by",
             "dashboard_title",
+            "id",
             "owners",
             "published",
             "roles",
             "slug",
             "tags",
+            "uuid",
         ],
         search_filters_custom={
             "created_by": [
@@ -275,6 +290,11 @@ RESOURCE_SPECS: dict[str, ResourceSpec] = {
             ],
             "dashboard_title": [
                 {"name": "Title or Slug", "operator": "title_or_slug"},
+            ],
+            # Favorite / certified filters key off ``id`` upstream.
+            "id": [
+                {"name": "Is favorite", "operator": "dashboard_is_favorite"},
+                {"name": "Is certified", "operator": "dashboard_is_certified"},
             ],
             "tags": [
                 {"name": "Is tagged", "operator": "dashboard_tag_id"},
@@ -341,12 +361,18 @@ RESOURCE_SPECS: dict[str, ResourceSpec] = {
             "changed_by",
             "created_by",
             "database",
+            "id",
             "owners",
             "schema",
             "sql",
             "table_name",
+            "uuid",
         ],
         search_filters_custom={
+            # Certified filter keys off ``id`` upstream (DatasetRestApi).
+            "id": [
+                {"name": "Is certified", "operator": "dataset_is_certified"},
+            ],
             "sql": [
                 {"name": "Null or Empty", "operator": "dataset_is_null_or_empty"},
             ],
@@ -584,11 +610,16 @@ RESOURCE_SPECS: dict[str, ResourceSpec] = {
             "changed_by",
             "created_by",
             "database",
+            "id",
             "label",
             "schema",
             "tags",
         ],
         search_filters_custom={
+            # Favorite filter keys off ``id`` upstream (SavedQueryRestApi).
+            "id": [
+                {"name": "Is favorite", "operator": "saved_query_is_fav"},
+            ],
             "label": [
                 {"name": "All Text", "operator": "all_text"},
             ],

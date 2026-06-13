@@ -304,3 +304,32 @@ async def test_get_distinct_payload_preserves_raw_value_type():
         {"text": 6, "value": 6},
     ]
     assert isinstance(out["result"][0]["text"], int)
+
+
+def test_info_payload_advertises_id_uuid_custom_filters():
+    """The _info payload must advertise the favorite/certified/owned filter
+    operators that key off ``id`` (and the ``uuid`` ops) — they were dropped
+    when ``id``/``uuid`` were absent from search_columns, so clients reading
+    filters['id'] to build the filter UI lost those toggles."""
+    from superset.info_builder.builder import build_info_payload
+
+    chart = build_info_payload("Chart")
+    chart_id_ops = {f["operator"] for f in chart["filters"].get("id", [])}
+    assert {
+        "chart_is_favorite",
+        "chart_is_certified",
+        "chart_owned_created_favored_by_me",
+    } <= chart_id_ops
+    assert "uuid" in chart["filters"]
+
+    dash = build_info_payload("Dashboard")
+    dash_id_ops = {f["operator"] for f in dash["filters"].get("id", [])}
+    assert {"dashboard_is_favorite", "dashboard_is_certified"} <= dash_id_ops
+
+    ds = build_info_payload("SqlaTable")
+    ds_id_ops = {f["operator"] for f in ds["filters"].get("id", [])}
+    assert "dataset_is_certified" in ds_id_ops
+
+    sq = build_info_payload("SavedQuery")
+    sq_id_ops = {f["operator"] for f in sq["filters"].get("id", [])}
+    assert "saved_query_is_fav" in sq_id_ops
