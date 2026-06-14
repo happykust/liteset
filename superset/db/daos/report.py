@@ -93,7 +93,12 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
                 recipient_config_json=config,
                 report_schedule_id=report.id,
             )
-            report.recipients.append(rec)
+            # Persist via the FK (report_schedule_id is set) rather than
+            # ``report.recipients.append`` — appending to the lazy="select"
+            # collection on the already-flushed (persistent) report fires a
+            # sync SELECT and raises MissingGreenlet outside a request greenlet
+            # (see [[sa-lazy-load-on-transient-asyncpg]]).
+            self.session.add(rec)
 
         return report
 
