@@ -442,6 +442,18 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
         return base in self._NUMERIC_TYPES
 
     @property
+    def is_string(self) -> bool:
+        """Check if the column has a string datatype.
+
+        1:1 with ``TableColumn.is_string`` in
+        ``superset_old/connectors/sqla/models.py`` — delegates to the
+        engine-spec generic-type resolution via :attr:`type_generic`.
+        """
+        from superset.typing import GenericDataType
+
+        return self.type_generic == int(GenericDataType.STRING)
+
+    @property
     def type_generic(self) -> int | None:
         from superset.typing import GenericDataType
 

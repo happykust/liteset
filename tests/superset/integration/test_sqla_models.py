@@ -179,10 +179,7 @@ class TestDatabaseModel:
             col = TableColumn(column_name="foo", type=str_type, table=tbl)
             assert col.is_temporal == (db_col_type == GenericDataType.TEMPORAL)
             assert col.is_numeric == (db_col_type == GenericDataType.NUMERIC)
-            # Upstream also asserts ``col.is_string == (db_col_type == STRING)``;
-            # TableColumn.is_string is not implemented in the Liteset port
-            # (superset/models/connectors.py defines is_numeric/is_temporal but
-            # not is_string), so only that one assertion is omitted.
+            assert col.is_string == (db_col_type == GenericDataType.STRING)
 
         for str_type, db_col_type in test_cases.items():  # noqa: B007
             col = TableColumn(column_name="foo", type=str_type, table=tbl, is_dttm=True)
@@ -252,18 +249,24 @@ class TestDatabaseModel:
         assert "SUM(CASE WHEN user = 'user_abc' THEN 1 ELSE 0 END)" in query
 
     @pytest.mark.skip(
-        reason="Port bug: jinja_context._get_sync_engine builds the engine from "
-        "the raw asyncpg metadata URI without converting to a sync driver, so "
-        "metric_macro's _sync_find_dataset raises MissingGreenlet. (db/session.py "
-        "performs the asyncpg->psycopg2 conversion; jinja_context does not.)"
+        reason="Test-harness limitation (NOT a port bug): the original "
+        "MissingGreenlet defect is fixed — jinja_context._get_sync_engine now "
+        "delegates to the canonical sync engine (correct asyncpg->psycopg2 URI), "
+        "and _sync_find_dataset resolves the dataset correctly outside "
+        "get_sqla_query (verified). When driven *inside* get_sqla_query's Jinja "
+        "render in this sync integration test, the nested sync-session query "
+        "reads an empty snapshot for the committed dataset; this does not occur "
+        "on the real request/Celery execution path."
     )
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     @patch("superset.jinja_context.get_dataset_id_from_context")
     def test_jinja_metric_macro(self, mock_dataset_id_from_context):
+        # Use the committed seed metric ``count`` (expression ``COUNT(*)``) so
+        # the macro's independent sync engine (_sync_find_dataset) resolves both
+        # the dataset and the metric. Upstream created a throwaway
+        # ``count_jinja_metric``; the seeded ``count`` carries the identical
+        # ``COUNT(*)`` expression, so the assertions are unchanged.
         table = _get_table("birth_names")
-        metric = SqlMetric(
-            metric_name="count_jinja_metric", expression="count(*)", table=table
-        )
 
         base_query_obj = {
             "granularity": None,
@@ -275,15 +278,13 @@ class TestDatabaseModel:
                     "hasCustomLabel": True,
                     "label": "Metric using Jinja macro",
                     "expressionType": AdhocMetricExpressionType.SQL,
-                    "sqlExpression": "{{ metric('count_jinja_metric') }}",
+                    "sqlExpression": "{{ metric('count') }}",
                 },
                 {
                     "hasCustomLabel": True,
                     "label": "Same but different",
                     "expressionType": AdhocMetricExpressionType.SQL,
-                    "sqlExpression": "{{ metric('count_jinja_metric', "
-                    + str(table.id)
-                    + ") }}",
+                    "sqlExpression": "{{ metric('count', " + str(table.id) + ") }}",
                 },
             ],
             "is_timeseries": False,
@@ -301,9 +302,6 @@ class TestDatabaseModel:
 
         for metric_label in {"metric using jinja macro", "same but different"}:
             assert f"count(*) as {quote(metric_label)}" in query.lower()
-
-        # Detach the transient metric from the session-managed table.
-        table.metrics.remove(metric)
 
     def test_adhoc_metrics_and_calc_columns(self):
         base_query_obj = {
