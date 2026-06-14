@@ -122,22 +122,50 @@ log_level_text = os.getenv("SUPERSET_LOG_LEVEL", "INFO")
 LOG_LEVEL = getattr(logging, log_level_text.upper(), logging.INFO)
 
 if os.getenv("CYPRESS_CONFIG") == "true":
-    # Cypress / e2e regression backend. The upstream
-    # tests/integration_tests/superset_test_config.py was Flask/FAB-coupled and
-    # is not part of the Liteset port, so the test overrides are applied inline
-    # in the Liteset config format (only mapped UPPERCASE keys are read).
+    # Cypress / e2e regression backend. Full 1:1 of the deleted
+    # tests/integration_tests/superset_test_config.py, restricted to the
+    # Liteset-mapped (UPPERCASE) keys. Flask/FAB-only knobs (SILENCE_FAB,
+    # FAB_ROLES, FAB_ADD_SECURITY_API, PRESERVE_CONTEXT_ON_EXCEPTION,
+    # CUSTOM_TEMPLATE_PROCESSORS) and env-specific DB/Redis/Celery overrides are
+    # intentionally omitted.
     TESTING = True
+    WTF_CSRF_ENABLED = False
+    RATELIMIT_ENABLED = False
     SQL_MAX_ROW = 50000
     SQLLAB_CTAS_NO_LIMIT = True
     AUTH_USER_REGISTRATION_ROLE = "alpha"
+    AUTH_ROLE_PUBLIC = "Public"
+    PUBLIC_ROLE_LIKE = "Gamma"
     WEBDRIVER_BASEURL = "http://0.0.0.0:8088/"
+    GLOBAL_ASYNC_QUERIES_JWT_SECRET = "test-secret-change-me-test-secret-change-me"  # noqa: E501, S105
+    ALERT_REPORTS_WORKING_TIME_OUT_KILL = True
+    ALERT_REPORTS_QUERY_EXECUTION_MAX_TRIES = 3
     FEATURE_FLAGS = {
         **FEATURE_FLAGS,
+        "foo": "bar",
         "ENABLE_TEMPLATE_PROCESSING": True,
         "ALERT_REPORTS": True,
+        "AVOID_COLORS_COLLISION": True,
         "DRILL_TO_DETAIL": True,
         "DRILL_BY": True,
-        "AVOID_COLORS_COLLISION": True,
+    }
+
+    def GET_FEATURE_FLAGS_FUNC(ff):  # noqa: N802
+        ff_copy = dict(ff)
+        ff_copy["super"] = "set"
+        return ff_copy
+
+    # In-memory caches for the form-data / filter-state stores (1:1 with the
+    # deleted test config) — 600s = timedelta(minutes=10).
+    FILTER_STATE_CACHE_CONFIG = {
+        "CACHE_TYPE": "SimpleCache",
+        "CACHE_THRESHOLD": float("inf"),
+        "CACHE_DEFAULT_TIMEOUT": 600,
+    }
+    EXPLORE_FORM_DATA_CACHE_CONFIG = {
+        "CACHE_TYPE": "SimpleCache",
+        "CACHE_THRESHOLD": float("inf"),
+        "CACHE_DEFAULT_TIMEOUT": 600,
     }
 
 #
