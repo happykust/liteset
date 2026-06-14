@@ -34,7 +34,7 @@ def histogram(
     if groupby is None:
         groupby = []
 
-    df = df.dropna(subset=[column]).copy()
+    df = df.dropna(subset=[column])
     if df.empty:
         return df
 
