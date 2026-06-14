@@ -20,7 +20,6 @@
 # Uses plain Python values only — no Flask-specific extensions.
 import logging
 import os
-import sys
 
 logger = logging.getLogger()
 
@@ -123,16 +122,23 @@ log_level_text = os.getenv("SUPERSET_LOG_LEVEL", "INFO")
 LOG_LEVEL = getattr(logging, log_level_text.upper(), logging.INFO)
 
 if os.getenv("CYPRESS_CONFIG") == "true":
-    # When running the service as a cypress backend, we need to import the config
-    # located @ tests/integration_tests/superset_test_config.py
-    base_dir = os.path.dirname(__file__)
-    module_folder = os.path.abspath(
-        os.path.join(base_dir, "../../tests/integration_tests/")
-    )
-    sys.path.insert(0, module_folder)
-    from superset_test_config import *  # noqa: F401, F403
-
-    sys.path.pop(0)
+    # Cypress / e2e regression backend. The upstream
+    # tests/integration_tests/superset_test_config.py was Flask/FAB-coupled and
+    # is not part of the Liteset port, so the test overrides are applied inline
+    # in the Liteset config format (only mapped UPPERCASE keys are read).
+    TESTING = True
+    SQL_MAX_ROW = 50000
+    SQLLAB_CTAS_NO_LIMIT = True
+    AUTH_USER_REGISTRATION_ROLE = "alpha"
+    WEBDRIVER_BASEURL = "http://0.0.0.0:8088/"
+    FEATURE_FLAGS = {
+        **FEATURE_FLAGS,
+        "ENABLE_TEMPLATE_PROCESSING": True,
+        "ALERT_REPORTS": True,
+        "DRILL_TO_DETAIL": True,
+        "DRILL_BY": True,
+        "AVOID_COLORS_COLLISION": True,
+    }
 
 #
 # Optionally import superset_config_docker.py (which will have been included on
