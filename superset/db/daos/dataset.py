@@ -110,7 +110,10 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         if dataset_id is not None:
             stmt = stmt.where(SqlaTable.id != dataset_id)
         result = await self.session.execute(stmt)
-        return result.scalars().one_or_none() is None
+        # ``first()`` (not ``one_or_none()``) — a uniqueness check only needs to
+        # know whether ANY row matches; pre-existing duplicates would otherwise
+        # raise MultipleResultsFound instead of reporting "not unique".
+        return result.scalars().first() is None
 
     async def validate_columns_exist(
         self,
