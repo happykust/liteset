@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import logging
 import re
-import threading as _threading
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
@@ -847,32 +846,18 @@ def get_template_processor(
 # P1-3 fix: cache the engine at module level (keyed by DB URI) so we create
 # at most one engine per process — avoiding per-call connection pool leaks.
 # ---------------------------------------------------------------------------
-_sync_engine_lock = _threading.Lock()
-_sync_engine_cache: dict[str, Any] = {}
-
-
 def _get_sync_engine() -> Any:
-    """Return (or create) the module-level sync SQLAlchemy engine.
+    """Return the canonical sync engine shared with :mod:`superset.db.session`.
 
-    The engine is keyed by the database URI and created at most once per
-    process, protected by a lock for thread safety in Celery workers.
+    Delegating (instead of building a private engine from ``SupersetSettings``)
+    keeps the Jinja ``metric`` macro talking to the SAME database as the rest of
+    the app: ``db.session`` prefers the live async ``_engine`` URL, which can
+    differ from a freshly-read ``SupersetSettings`` URI, and a private engine
+    also skipped the async→sync driver conversion (raising MissingGreenlet).
     """
-    from sqlalchemy import create_engine as _create_engine
+    from superset.db.session import get_sync_engine
 
-    from superset.config import SupersetSettings
-
-    settings = SupersetSettings()  # type: ignore[call-arg]
-    sync_uri = str(settings.sqlalchemy_database_uri)
-
-    if sync_uri not in _sync_engine_cache:
-        with _sync_engine_lock:
-            # Double-checked locking
-            if sync_uri not in _sync_engine_cache:
-                _sync_engine_cache[sync_uri] = _create_engine(
-                    sync_uri,
-                    pool_pre_ping=True,
-                )
-    return _sync_engine_cache[sync_uri]
+    return get_sync_engine()
 
 
 def _sync_find_dataset(dataset_id: int) -> Any:
@@ -887,6 +872,8 @@ def _sync_find_dataset(dataset_id: int) -> Any:
 
     from superset.models.connectors import SqlaTable
 
+    # ``_get_sync_engine`` now delegates to the canonical sync engine (correct
+    # asyncpg->psycopg2 URI), so this no longer raises MissingGreenlet.
     engine = _get_sync_engine()
     try:
         with Session(engine) as session:
@@ -1384,7 +1371,9 @@ def get_dataset_id_from_context(metric_key: str) -> int:
             return datasource_info["id"]
         return datasource_info.split("__")[0]
 
-    url_params = form_data.get("queries", [{}])[0].get("url_params", {})
+    # ``queries`` may be an explicit empty list, so guard the [0] access.
+    queries = form_data.get("queries") or [{}]
+    url_params = queries[0].get("url_params", {})
     if dataset_id := url_params.get("datasource_id"):
         return dataset_id
     if chart_id := (form_data.get("slice_id") or url_params.get("slice_id")):

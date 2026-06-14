@@ -207,6 +207,19 @@ def get_sync_session() -> Session:
     return _ensure_sync_session_factory()()
 
 
+def get_sync_engine() -> Engine:
+    """Return the canonical sync :class:`~sqlalchemy.engine.Engine`.
+
+    Resolves the same async→sync URI as :func:`get_sync_session` (preferring the
+    app's async ``_engine`` URL, then ``SupersetSettings``), so every sync
+    consumer — Celery tasks, the SQL Lab path, and the Jinja ``metric`` macro —
+    talks to the same database.
+    """
+    _ensure_sync_session_factory()
+    assert _sync_engine is not None  # noqa: S101
+    return _sync_engine
+
+
 def remove_sync_session() -> None:
     """Remove the thread-local sync session from the scoped registry.
 
