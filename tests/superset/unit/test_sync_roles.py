@@ -488,12 +488,15 @@ async def test_sync_preserves_existing_data_access_on_public(
     session: AsyncSession,
 ):
     """PUBLIC_ROLE_LIKE merge should preserve existing data-access permissions."""
-    # Pre-create the Public role with a data-access PVM
+    # Pre-create the Public role with a data-access PVM and a non-data PVM.
+    # Upstream test_public_sync_role_data_perms asserts the merge BOTH preserves
+    # the data-access perm AND removes the non-data perm (menu_access/Security).
     public_role = await _get_or_create_role(session, "Public")
     ds_pvm = await _get_or_create_pvm(
         session, "datasource_access", "[db].[table](id:1)"
     )
-    public_role.permissions = [ds_pvm]
+    unwanted_pvm = await _get_or_create_pvm(session, "menu_access", "Security")
+    public_role.permissions = [ds_pvm, unwanted_pvm]
     await session.flush()
 
     # Normal PVM for Gamma
@@ -515,3 +518,6 @@ async def test_sync_preserves_existing_data_access_on_public(
 
     # The data-access permission should be preserved
     assert ("datasource_access", "[db].[table](id:1)") in public_perms
+    # The non-data permission should be removed (it is not in the source Gamma
+    # role and not a data-access perm, so the merge drops it).
+    assert ("menu_access", "Security") not in public_perms

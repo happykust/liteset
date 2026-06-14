@@ -769,7 +769,9 @@ async def test_get_query_only_includes_language(mock_settings, mock_security_man
     result = await proc._get_query_only(qo)
     assert result["language"] == "sql"
     assert result["query"] == "SELECT 1"
-    assert result["error"] is None
+    # 1:1 with upstream ``_get_query``: a successful result_type=query payload
+    # carries only ``language`` + ``query`` (no ``error`` key on success).
+    assert "error" not in result
 
 
 async def test_get_query_only_validation_error_in_payload(

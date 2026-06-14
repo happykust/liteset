@@ -491,19 +491,13 @@ class AsyncQueryContextProcessor:
         datasource = self._datasource
         query_dict = query_object.to_dict()
 
-        # Engine dialect for the SQL-preview pane (default ``"sql"``).
+        # 1:1 with ``superset_old/common/query_actions.py::_get_query``: the
+        # payload carries only the engine ``language`` and the generated
+        # ``query`` (plus an ``error`` field on failure). It deliberately does
+        # NOT include the full-result keys (``status``, ``df``, ``data`` …) —
+        # no query is executed for ``result_type=query``.
         result: dict[str, Any] = {
             "language": getattr(datasource, "query_language", None) or "sql",
-            "status": "success",
-            "error": None,
-            "df": pd.DataFrame(),
-            "data": [],
-            "rowcount": 0,
-            "is_cached": False,
-            "label_map": {},
-            "applied_filters": [],
-            "rejected_filters": [],
-            "coltypes": [],
         }
 
         # IMPORTANT: route through ``_build_sql`` (which calls
@@ -786,6 +780,19 @@ class AsyncQueryContextProcessor:
                         df, query_object
                     )
                     df = time_offset_result["df"]
+                    # Append the offset subquery SQL to the main query so the
+                    # response ``query`` field splits into ``[main, offset_1,
+                    # ...]`` on ``;`` (1:1 with
+                    # ``superset_old/common/query_context_processor.py``: the
+                    # main ``query`` gets a trailing ``;\n\n`` separator
+                    # (line 281: ``query = result.query + ";\n\n"``) before the
+                    # offset queries are joined and appended with the same
+                    # separator (lines 295-298)).
+                    offset_queries = time_offset_result["queries"]
+                    if offset_queries:
+                        query_str += ";\n\n"
+                        query_str += ";\n\n".join(offset_queries)
+                        query_str += ";\n\n"
 
                 # Post-processing runs after time_offsets so it can operate
                 # on the joined, shifted DataFrame. Skipped for ``results`` /

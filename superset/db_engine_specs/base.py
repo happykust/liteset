@@ -1086,7 +1086,9 @@ class BaseEngineSpec:  # noqa: PLR0904
         """
         ret_list = []
         time_grains = builtin_time_grains.copy()
-        _, _, time_grain_addons = _time_grain_config()
+        # NB: do not unpack into ``_`` here — that name is the module-level
+        # gettext alias used a few lines below as ``_(name)``.
+        _addon_expressions, _denylist, time_grain_addons = _time_grain_config()
         time_grains.update(time_grain_addons)
         for duration, func in cls.get_time_grain_expressions().items():
             if duration in time_grains:
@@ -1380,7 +1382,10 @@ class BaseEngineSpec:  # noqa: PLR0904
         # Order matters: strip the [SQL:] payload first (it may contain
         # ``<class '…'>`` substrings inside parameter values), then the
         # leading exception-class repr.
-        raw = raw.split("\n[SQL:")[0].strip()
+        # Strip only newline artifacts, NOT spaces: several engine error
+        # regexes (e.g. Athena/Presto ``Expecting: ``) match on a trailing
+        # space that ``.strip()`` would remove, dropping the match.
+        raw = raw.split("\n[SQL:")[0].strip("\n")
         import re as _re
 
         raw = _re.sub(r"<class '[^']+'>:\s*", "", raw)
@@ -1762,7 +1767,10 @@ class BaseEngineSpec:  # noqa: PLR0904
             fields = cls._get_fields(cols)
 
         full_table_name = cls.quote_table(table, engine.dialect)
-        qry = select(fields).select_from(text(full_table_name))
+        # SQLAlchemy 2.0 ``select`` takes column expressions as *args, not a
+        # single list; ``"*"`` becomes a literal-column star.
+        select_cols = [literal_column("*")] if isinstance(fields, str) else fields
+        qry = select(*select_cols).select_from(text(full_table_name))
 
         qry = qry.limit(limit)
         if latest_partition:

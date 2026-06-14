@@ -28,6 +28,10 @@ registration.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -63,6 +67,13 @@ from litestar.datastructures import State
 from litestar.di import Provide
 from litestar.middleware import ASGIMiddleware
 from litestar.types import ASGIApp, Receive, Scope, Send
+from sqlalchemy.ext.asyncio import (
+    async_sessionmaker,
+    AsyncEngine,
+    AsyncSession,
+    create_async_engine,
+)
+from sqlalchemy.pool import NullPool
 
 from superset.exceptions import (
     generic_exception_handler,
@@ -622,3 +633,168 @@ def mock_dao() -> AsyncMock:
 @pytest.fixture
 def mock_user() -> MockUser:
     return MockUser()
+
+
+# ---------------------------------------------------------------------------
+# Real integration backend (1:1 with the upstream integration config).
+#
+# These tests run against a REAL database brought up exactly like production:
+# the schema is built by the Alembic migrations (``superset db upgrade``) and
+# the example data is seeded by the real programmatic loaders
+# (``superset.examples`` — birth_names / world_bank / energy / tabbed), the
+# same code the ``load_examples`` CLI runs. This replaces the upstream
+# ``load_birth_names_dashboard_with_slices`` example fixtures faithfully.
+#
+# The DB is the configured ``LITESET_SQLALCHEMY_DATABASE_URI`` and MUST point at
+# a real Postgres (the example loaders bulk-insert past sqlite's bind-parameter
+# limit). DB-backed fixtures ``pytest.skip`` when it is unset or not Postgres,
+# so the mock-based controller tests still run on any backend. CI provides a
+# Postgres service; locally a throwaway container works:
+#
+#   docker run -d --name liteset_itest_pg -e POSTGRES_USER=superset \
+#     -e POSTGRES_PASSWORD=superset -e POSTGRES_DB=superset_test \
+#     -p 127.0.0.1:5444:5432 postgres:16
+#   export LITESET_SECRET_KEY=test-secret-key-at-least-32-bytes-long-xx
+#   export LITESET_SQLALCHEMY_DATABASE_URI=postgresql+asyncpg://superset:superset@127.0.0.1:5444/superset_test
+# ---------------------------------------------------------------------------
+
+
+def _require_test_db_uri() -> str:
+    uri = os.environ.get("LITESET_SQLALCHEMY_DATABASE_URI", "")
+    if "postgresql" not in uri:
+        pytest.skip(
+            "DB-backed integration tests need LITESET_SQLALCHEMY_DATABASE_URI set "
+            "to a real Postgres (see conftest for the throwaway-container command)."
+        )
+    return uri
+
+
+def _run_db_upgrade(uri: str) -> None:
+    """Build the schema via the real Alembic migrations, like production."""
+    env = {**os.environ, "LITESET_SQLALCHEMY_DATABASE_URI": uri}
+    env.setdefault("LITESET_SECRET_KEY", "test-secret-key-at-least-32-bytes-long-xx")
+    superset_bin = os.path.join(os.path.dirname(sys.executable), "superset")
+    cmd = (
+        [superset_bin, "db", "upgrade"]
+        if os.path.exists(superset_bin)
+        else [sys.executable, "-m", "superset.cli.main", "db", "upgrade"]
+    )
+    subprocess.run(cmd, env=env, check=True, capture_output=True, text=True)  # noqa: S603
+
+
+def _seed_examples() -> None:
+    """Seed the real example datasets/dashboards via the programmatic loaders.
+
+    Idempotent: if ``birth_names`` is already present the DB was seeded by an
+    earlier session, so this is a no-op (keeps re-runs / local iteration fast).
+    """
+    from sqlalchemy import text
+
+    from superset.examples import _ctx, data_loading as examples
+
+    _ctx.init()
+    try:
+        already = _ctx.session.execute(
+            text("SELECT 1 FROM tables WHERE table_name = 'birth_names' LIMIT 1")
+        ).first()
+        if already:
+            return
+        examples.load_css_templates()
+        _ctx.commit()
+        examples.load_energy(only_metadata=False, force=True)
+        _ctx.commit()
+        examples.load_world_bank_health_n_pop(only_metadata=False, force=True)
+        _ctx.commit()
+        examples.load_birth_names(only_metadata=False, force=True)
+        _ctx.commit()
+        examples.load_tabbed_dashboard(False)
+        _ctx.commit()
+    finally:
+        _ctx.teardown()
+
+
+@pytest.fixture(scope="session")
+def integration_backend() -> str:
+    """Bring up the real backend once per session: migrate + seed examples.
+
+    Returns the async DB URI. Skips the whole DB-backed suite when no test
+    database is configured.
+    """
+    uri = _require_test_db_uri()
+    # The examples loader reads the examples URI; default it to the metadata DB.
+    os.environ.setdefault("LITESET_SQLALCHEMY_EXAMPLES_URI", uri)
+    _run_db_upgrade(uri)
+    _seed_examples()
+    return uri
+
+
+@pytest.fixture
+async def db_engine(integration_backend: str) -> AsyncIterator[AsyncEngine]:
+    """Function-scoped async engine bound to the seeded test database.
+
+    Per-test (not session) because asyncpg connections are bound to the running
+    event loop; pytest-asyncio uses a fresh loop per test, so a shared engine
+    would raise "Event loop is closed" on the second test's teardown.
+    """
+    engine = create_async_engine(integration_backend, poolclass=NullPool)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+async def db_session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+    """Function-scoped ``AsyncSession``; rolls back so tests stay isolated."""
+    maker = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with maker() as session:
+        try:
+            yield session
+        finally:
+            await session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# Named example-data fixtures (1:1 names with the upstream integration suite).
+#
+# The session bootstrap already seeds birth_names / world_bank / energy /
+# tabbed via the real programmatic loaders, which create the datasets AND the
+# dashboards-with-slices. These fixtures therefore just ensure the backend is
+# up and let tests keep their ``@pytest.mark.usefixtures("load_...")`` markers
+# unchanged. Data is queried through ``db_session``.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def load_birth_names_data(integration_backend: str) -> str:
+    return integration_backend
+
+
+@pytest.fixture
+def load_birth_names_dashboard_with_slices(integration_backend: str) -> str:
+    return integration_backend
+
+
+@pytest.fixture
+def load_world_bank_data(integration_backend: str) -> str:
+    return integration_backend
+
+
+@pytest.fixture
+def load_world_bank_dashboard_with_slices(integration_backend: str) -> str:
+    return integration_backend
+
+
+@pytest.fixture
+def load_energy_table_data(integration_backend: str) -> str:
+    return integration_backend
+
+
+@pytest.fixture
+def load_energy_table_with_slice(integration_backend: str) -> str:
+    return integration_backend
+
+
+@pytest.fixture
+def tabbed_dashboard(integration_backend: str) -> str:
+    return integration_backend

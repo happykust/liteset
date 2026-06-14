@@ -414,9 +414,6 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 # throughout — porting them is a separate effort, out of scope for the
 # Liteset migration's lint cleanup.
 "tests/integration_tests/**" = ["S105", "S106", "TID252"]
-# Locust load-test scenarios are run from `tests/load_testing/` as the
-# package root; relative imports are the natural form there.
-"tests/load_testing/**" = ["S105", "S106", "S311", "TID252"]
 
 [tool.ruff.lint.isort]
 case-sensitive = false

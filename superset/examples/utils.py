@@ -24,6 +24,7 @@ session from :mod:`superset.examples._ctx`.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -195,6 +196,22 @@ def _import_database(config: dict[str, Any]) -> Any:
     return db
 
 
+def _serialize_extra(value: Any) -> str | None:
+    """Coerce a YAML ``extra`` value to the JSON string the Text column expects.
+
+    Column/metric configs carry ``extra`` as a parsed dict; the ``extra`` Text
+    column stores JSON (read back via ``CertificationMixin.get_extra_dict``).
+    Mirrors the dataset-level guard and the v1 importer's serialization step.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value)
+    except TypeError:
+        logger.info("Unable to encode `extra` field: %s", value)
+        return None
+
+
 def _import_dataset_columns(
     tbl: Any,
     columns_cfg: list[dict[str, Any]],
@@ -219,7 +236,7 @@ def _import_dataset_columns(
             description=col_cfg.get("description", ""),
             verbose_name=col_cfg.get("verbose_name"),
             python_date_format=col_cfg.get("python_date_format"),
-            extra=col_cfg.get("extra"),
+            extra=_serialize_extra(col_cfg.get("extra")),
             table_id=tbl.id,
         )
         _ctx.session.add(tc)
@@ -246,7 +263,7 @@ def _import_dataset_metrics(
             metric_type=met_cfg.get("metric_type"),
             description=met_cfg.get("description", ""),
             d3format=met_cfg.get("d3format"),
-            extra=met_cfg.get("extra"),
+            extra=_serialize_extra(met_cfg.get("extra")),
             warning_text=met_cfg.get("warning_text"),
             table_id=tbl.id,
         )
@@ -287,14 +304,14 @@ def _import_dataset(config: dict[str, Any], force_data: bool = False) -> Any:
         existing.extra = (
             config.get("extra", "{}") if isinstance(config.get("extra"), str) else "{}"
         )
-        existing.template_params = config.get("template_params")
+        existing.template_params = _serialize_extra(config.get("template_params"))
         existing.fetch_values_predicate = config.get("fetch_values_predicate")
         existing.offset = config.get("offset", 0)
         existing.cache_timeout = config.get("cache_timeout")
         existing.normalize_columns = config.get("normalize_columns", False)
         existing.always_filter_main_dttm = config.get("always_filter_main_dttm", False)
         existing.catalog = config.get("catalog")
-        existing.params = config.get("params")
+        existing.params = _serialize_extra(config.get("params"))
         existing.default_endpoint = config.get("default_endpoint")
         existing.folders = config.get("folders")
 
@@ -352,7 +369,7 @@ def _import_dataset(config: dict[str, Any], force_data: bool = False) -> Any:
         extra=config.get("extra", "{}")
         if isinstance(config.get("extra"), str)
         else "{}",
-        template_params=config.get("template_params"),
+        template_params=_serialize_extra(config.get("template_params")),
         fetch_values_predicate=config.get("fetch_values_predicate"),
         offset=config.get("offset", 0),
         cache_timeout=config.get("cache_timeout"),
@@ -363,7 +380,7 @@ def _import_dataset(config: dict[str, Any], force_data: bool = False) -> Any:
         # too (superset_old/commands/dataset/importers/v1/utils.py:160) —
         # keep parity with the UPDATE branch above.
         catalog=config.get("catalog"),
-        params=config.get("params"),
+        params=_serialize_extra(config.get("params")),
         default_endpoint=config.get("default_endpoint"),
         folders=config.get("folders"),
     )
