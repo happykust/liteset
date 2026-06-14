@@ -23,17 +23,11 @@ from typing import Any
 from sqlalchemy.engine import make_url
 from sqlalchemy.engine.url import URL
 
-from superset.exceptions import CommandInvalidError
+# Re-export the single canonical class (upstream has ONE DatabaseInvalidError);
+# keep this import path for callers in models/controllers while making
+# isinstance checks consistent with the commands layer.
+from superset.commands.database.exceptions import DatabaseInvalidError
 from superset.sql.parse import Table
-
-
-class DatabaseInvalidError(CommandInvalidError):
-    """Database parameters are invalid.
-
-    Mirrors ``superset_old/commands/database/exceptions.py::DatabaseInvalidError``
-    which inherits ``CommandInvalidError`` (status_code=422) so that unhandled
-    escapes are returned as HTTP 422, not 500.
-    """
 
 
 def make_url_safe(raw_url: str | URL) -> URL:
