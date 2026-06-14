@@ -1718,6 +1718,133 @@ class SqlaTable(
         data_["normalize_columns"] = self.normalize_columns
         return data_
 
+    def data_for_slices(self, slices: list[Any]) -> dict[str, Any]:  # noqa: C901
+        """Datasource representation with only the data the given slices need.
+
+        1:1 with ``BaseDatasource.data_for_slices`` in
+        ``superset_old/connectors/sqla/models.py`` — used to shrink the
+        dashboard payload to the metrics/columns the charts actually reference.
+        The chart's ``query_context`` JSON is read directly (the legacy
+        ``Slice.get_query_context`` helper is not part of the port).
+        """
+        from superset.utils import json
+        from superset.utils.column import (
+            get_column_name,
+            get_metric_name,
+            is_adhoc_column,
+            is_adhoc_metric,
+        )
+        from superset.utils.core import as_list
+
+        metric_form_data_params = [
+            "metric",
+            "metric_2",
+            "metrics",
+            "metrics_b",
+            "percent_metrics",
+            "secondary_metric",
+            "size",
+            "timeseries_limit_metric",
+            "x",
+            "y",
+        ]
+        column_form_data_params = [
+            "all_columns",
+            "all_columns_x",
+            "columns",
+            "entity",
+            "groupby",
+            "order_by_cols",
+            "series",
+        ]
+
+        data = self.data
+        metric_names: set[str] = set()
+        column_names: set[str] = set()
+        for slc in slices:
+            form_data = slc.form_data
+            # pull out all required metrics from the form_data
+            for metric_param in metric_form_data_params:
+                for metric in as_list(form_data.get(metric_param) or []):
+                    metric_names.add(get_metric_name(metric, self.verbose_map))
+                    if is_adhoc_metric(metric):
+                        column_ = metric.get("column") or {}
+                        if column_name := column_.get("column_name"):
+                            column_names.add(column_name)
+
+            # columns used in query filters
+            column_names.update(
+                filter_["subject"]
+                for filter_ in form_data.get("adhoc_filters") or []
+                if filter_.get("clause") == "WHERE" and filter_.get("subject")
+            )
+            # columns used by Filter Box
+            column_names.update(
+                filter_config["column"]
+                for filter_config in form_data.get("filter_configs") or []
+                if "column" in filter_config
+            )
+
+            # columns referenced by the chart's query_context (if any)
+            query_context = None
+            raw_qc = getattr(slc, "query_context", None)
+            if raw_qc:
+                try:
+                    query_context = json.loads(raw_qc)
+                except (TypeError, ValueError):
+                    query_context = None
+            if query_context:
+                column_names.update(
+                    get_column_name(column_)
+                    for query in query_context.get("queries", [])
+                    for column_ in query.get("columns", [])
+                )
+            else:
+                # legacy charts: derive columns from form_data params
+                column_names.update(
+                    get_column_name(column_) if is_adhoc_column(column_) else column_
+                    for column_param in column_form_data_params
+                    for column_ in as_list(form_data.get(column_param) or [])
+                )
+
+        filtered_metrics = [
+            metric
+            for metric in data["metrics"]
+            if metric["metric_name"] in metric_names
+            or metric["verbose_name"] in metric_names
+        ]
+
+        filtered_columns: list[dict[str, Any]] = []
+        column_types: set[Any] = set()
+        for column_ in data["columns"]:
+            generic_type = column_.get("type_generic")
+            if generic_type is not None:
+                column_types.add(generic_type)
+            if column_["column_name"] in column_names:
+                filtered_columns.append(column_)
+
+        data["column_types"] = list(column_types)
+        data.pop("description", None)
+        data["metrics"] = filtered_metrics
+        data["columns"] = filtered_columns
+
+        all_columns = {
+            column_["column_name"]: column_["verbose_name"] or column_["column_name"]
+            for column_ in filtered_columns
+        }
+        verbose_map = {"__timestamp": "Time"}
+        verbose_map.update(
+            {
+                metric["metric_name"]: metric["verbose_name"] or metric["metric_name"]
+                for metric in filtered_metrics
+            }
+        )
+        verbose_map.update(all_columns)
+        data["verbose_map"] = verbose_map
+        data["column_names"] = set(all_columns.values()) | set(self.column_names)
+
+        return data
+
     @property
     def _backend(self) -> str:
         """Extract database backend name from the sqlalchemy_uri."""
@@ -2268,6 +2395,24 @@ class SqlaTable(
                 if not description:
                     return False
 
+                # Value-based temporal detection first (driver-agnostic; mirrors
+                # upstream ``SupersetResultSet`` deriving ``is_dttm`` from the
+                # fetched data via PyArrow ``is_temporal``). Drivers like
+                # psycopg2 report INTEGER type OIDs (e.g. 1114=TIMESTAMP) in
+                # ``cursor.description`` that don't map to a native-type string,
+                # but return real ``datetime``/``date``/``time`` objects — so a
+                # type-code-only check misses them on Postgres.
+                import datetime as _dt
+
+                row = result.fetchone()
+                if (
+                    row is not None
+                    and len(row)
+                    and isinstance(row[0], (_dt.datetime, _dt.date, _dt.time))
+                ):
+                    return True
+
+                # Fallback: map the DBAPI type-code via the engine spec.
                 # The probe SELECT projects only the adhoc column, so
                 # ``description[0]`` is the relevant entry.  ``type_code``
                 # may be a class, an int constant or a string depending

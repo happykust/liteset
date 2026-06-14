@@ -692,29 +692,82 @@ class TestSqlaTableModel:
         sql = tbl.get_query_str(query_obj)
         assert re.search('name AS ["`]?Given Name["`]?', sql)
 
-    @pytest.mark.skip(
-        reason="SqlaTable.data_for_slices is not implemented in the Liteset port; "
-        "the legacy BaseDatasource.data_for_slices helper has no port equivalent"
-    )
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_data_for_slices_with_no_query_context(self) -> None:
-        ...
+        tbl = _get_table("birth_names")
+        session = get_sync_session()
+        slc = (
+            session.query(Slice)
+            .filter_by(
+                datasource_id=tbl.id,
+                datasource_type="table",
+                slice_name="Genders",
+            )
+            .first()
+        )
+        data_for_slices = tbl.data_for_slices([slc])
+        assert len(data_for_slices["metrics"]) == 1
+        assert len(data_for_slices["columns"]) == 1
+        assert data_for_slices["metrics"][0]["metric_name"] == "sum__num"
+        assert data_for_slices["columns"][0]["column_name"] == "gender"
+        assert set(data_for_slices["verbose_map"].keys()) == {
+            "__timestamp",
+            "sum__num",
+            "gender",
+        }
 
-    @pytest.mark.skip(
-        reason="SqlaTable.data_for_slices is not implemented in the Liteset port; "
-        "the legacy BaseDatasource.data_for_slices helper has no port equivalent"
-    )
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_data_for_slices_with_query_context(self) -> None:
-        ...
+        tbl = _get_table("birth_names")
+        session = get_sync_session()
+        slc = (
+            session.query(Slice)
+            .filter_by(
+                datasource_id=tbl.id,
+                datasource_type="table",
+                slice_name="Pivot Table v2",
+            )
+            .first()
+        )
+        data_for_slices = tbl.data_for_slices([slc])
+        assert len(data_for_slices["metrics"]) == 1
+        assert len(data_for_slices["columns"]) == 2
+        assert data_for_slices["metrics"][0]["metric_name"] == "sum__num"
+        column_names = [col["column_name"] for col in data_for_slices["columns"]]
+        assert "name" in column_names
+        assert "state" in column_names
+        assert set(data_for_slices["verbose_map"].keys()) == {
+            "__timestamp",
+            "sum__num",
+            "name",
+            "state",
+        }
 
-    @pytest.mark.skip(
-        reason="SqlaTable.data_for_slices is not implemented in the Liteset port; "
-        "the legacy BaseDatasource.data_for_slices helper has no port equivalent"
-    )
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_data_for_slices_with_adhoc_column(self) -> None:
-        ...
+        # data_for_slices with an adhoc column on a legacy (form_data) chart
+        tbl = _get_table("birth_names")
+        slc = Slice(
+            slice_name="slice with adhoc column",
+            datasource_type="table",
+            viz_type="table",
+            params=json.dumps(
+                {
+                    "adhoc_filters": [],
+                    "granularity_sqla": "ds",
+                    "groupby": [
+                        "name",
+                        {"label": "adhoc_column", "sqlExpression": "name"},
+                    ],
+                    "metrics": ["sum__num"],
+                    "time_range": "No filter",
+                    "viz_type": "table",
+                }
+            ),
+            datasource_id=tbl.id,
+        )
+        datasource_info = tbl.data_for_slices([slc])
+        assert "database" in datasource_info
 
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_table_column_database(self) -> None:
