@@ -589,9 +589,20 @@ def _import_chart(config: dict[str, Any]) -> Any:
     from superset.models.slice import Slice
 
     slice_name = config.get("slice_name", "")
-    existing = _ctx.session.query(Slice).filter_by(slice_name=slice_name).first()
+    # Deduplicate by UUID — 1:1 with the original ``import_chart``
+    # (superset_old/commands/chart/importers/v1/utils.py:52:
+    # ``filter_by(uuid=config["uuid"])``). A slice_name-based lookup lets a
+    # chart whose uuid already exists (under a different name) fall through to an
+    # INSERT, raising a ``slices.uuid`` UniqueViolation on re-run / shared uuid.
+    chart_uuid = config.get("uuid")
+    existing = (
+        _ctx.session.query(Slice).filter_by(uuid=uuid_module.UUID(chart_uuid)).first()
+        if chart_uuid
+        else None
+    )
     if existing:
         # Update in place
+        existing.slice_name = slice_name or existing.slice_name
         existing.viz_type = config.get("viz_type", existing.viz_type)
         existing.datasource_id = config.get("datasource_id", existing.datasource_id)
         existing.datasource_type = config.get("datasource_type", "table")
