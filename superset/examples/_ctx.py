@@ -164,8 +164,24 @@ def get_example_engine(database: Any) -> Engine:
     case), reuse the already-initialised module-level engine to avoid
     credential / connectivity issues.
     """
-    db_uri = _to_sync_uri(database.sqlalchemy_uri)
-    if engine is not None and str(engine.url) == db_uri:
+    # A PERSISTED examples row masks its password in ``sqlalchemy_uri`` (the
+    # real password lives in the encrypted ``password`` column), so reconstruct
+    # the real URI via ``sqlalchemy_uri_decrypted`` when a password column is
+    # present — otherwise ``create_engine`` would connect with the literal mask
+    # (``XXXXXXXXXX``) and fail auth. A freshly-created row (built via the
+    # constructor, no password column yet) still carries the real password
+    # inline in ``sqlalchemy_uri``.
+    raw_uri = (
+        database.sqlalchemy_uri_decrypted
+        if getattr(database, "password", None)
+        else database.sqlalchemy_uri
+    )
+    db_uri = _to_sync_uri(raw_uri)
+    # Reuse the metadata engine when it targets the same DB. Render its URL WITH
+    # the password (``str(url)`` masks it) so the comparison can actually match.
+    if engine is not None and (
+        engine.url.render_as_string(hide_password=False) == db_uri
+    ):
         return engine
     return create_engine(db_uri)
 
