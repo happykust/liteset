@@ -286,14 +286,6 @@ def test_query_datasources_by_permissions_with_catalog_schema() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Liteset bug: AsyncDatasetDAO.validate_uniqueness uses "
-    "select(...).scalars().one_or_none(), which raises MultipleResultsFound when "
-    "the DB already holds duplicate NULL-catalog rows (NULL != NULL). Upstream "
-    "used `not session.query(query.exists()).scalar()`, which tolerates duplicates "
-    "and returns False. The DAO should use an EXISTS/limit-1 check.",
-)
 def test_dataset_uniqueness() -> None:
     """
     Test dataset uniqueness, adapted to the async ``AsyncDatasetDAO``.

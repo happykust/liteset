@@ -89,23 +89,11 @@ pytestmark = pytest.mark.asyncio
 #   a ``status=failed`` payload, instead of letting the validation error
 #   propagate (upstream raises it out of ``get_df_payload``).
 # ---------------------------------------------------------------------------
-_XFAIL_DEPRECATED_FIELD = pytest.mark.xfail(
-    strict=True,
-    reason="port bug: deprecated query fields (groupby/granularity_sqla/"
-    "timeseries_limit) do not override the new field when both are set; "
-    "upstream lets the deprecated value win",
-)
 _XFAIL_ADHOC_DTTM_PROBE = pytest.mark.xfail(
     strict=True,
     reason="port bug: _probe_adhoc_column_is_dttm cannot classify psycopg2 "
     "numeric type OIDs (Postgres), so adhoc BASE_AXIS timeGrain truncation is "
     "skipped",
-)
-_XFAIL_TIME_OFFSET_VALIDATION = pytest.mark.xfail(
-    strict=True,
-    reason="port bug: get_df_payload's broad except swallows the "
-    "TimeDeltaAmbiguousError from processing_time_offsets into a failed "
-    "payload instead of propagating it",
 )
 
 
@@ -742,7 +730,6 @@ class TestQueryContext:
         query_object = query_context.queries[0]
         assert query_object.metrics == ["sum__num", "abc", adhoc_metric]
 
-    @_XFAIL_DEPRECATED_FIELD
     async def test_convert_deprecated_fields(self, db_session: AsyncSession) -> None:
         """Ensure deprecated fields are converted correctly."""
         ds = await _load_datasource(db_session, "birth_names")
@@ -776,7 +763,6 @@ class TestQueryContext:
         assert "name,sum__num\n" in data
         assert len(data.split("\n")) == 12
 
-    @_XFAIL_DEPRECATED_FIELD
     async def test_sql_injection_via_groupby(self, db_session: AsyncSession) -> None:
         """Ensure that calling invalid column names in groupby are caught."""
         ds = await _load_datasource(db_session, "birth_names")
@@ -1052,7 +1038,6 @@ class TestQueryContext:
         assert "1983-01-01" in query_from_1983_to_1994
         assert "1994-01-01" in query_from_1983_to_1994
 
-    @_XFAIL_DEPRECATED_FIELD
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     async def test_time_offsets_accuracy(self, db_session: AsyncSession) -> None:
         ds = await _load_datasource(db_session, "birth_names")
@@ -1807,7 +1792,6 @@ async def test_date_range_timeshift_multiple_periods(
         await _drop_physical_dataset(db_session)
 
 
-@_XFAIL_TIME_OFFSET_VALIDATION
 async def test_date_range_timeshift_invalid_format(
     db_session: AsyncSession,
 ) -> None:

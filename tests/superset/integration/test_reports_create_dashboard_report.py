@@ -34,6 +34,7 @@ from superset.db.daos.report import AsyncReportScheduleDAO
 from superset.models.dashboard import Dashboard
 from superset.models.reports import (
     ReportCreationMethod,
+    ReportRecipientType,
     ReportScheduleType,
 )
 from superset.security.manager import build_async_security_manager
@@ -145,14 +146,10 @@ TABBED_POSITION_JSON = {
     },
 }
 
-# NB: the upstream DEFAULTS carry an EMAIL recipient. These cases assert only
-# the ``extra`` echo and the tab-id validation, neither of which touches
-# recipients. The recipient is omitted here because the async DAO appends
-# recipients to a *flushed* (persistent) ReportSchedule, and that append fires a
-# lazy SELECT on the ``recipients`` relationship which only bridges inside a real
-# request's greenlet context (asyncpg rejects it under a bare AsyncSession);
-# carrying the recipient would inject an unrelated failure into a tab-validation
-# test without changing what is being asserted.
+# Carries the upstream EMAIL recipient (1:1 with the upstream DEFAULTS). The
+# async DAO now persists recipients via the FK (``session.add``) instead of
+# appending to the flushed report's lazy="select" collection, so this no longer
+# triggers a MissingGreenlet under a bare AsyncSession.
 DASHBOARD_REPORT_SCHEDULE_DEFAULTS = {
     "type": ReportScheduleType.REPORT,
     "description": "description",
@@ -160,6 +157,12 @@ DASHBOARD_REPORT_SCHEDULE_DEFAULTS = {
     "creation_method": ReportCreationMethod.ALERTS_REPORTS,
     "grace_period": 14400,
     "working_timeout": 3600,
+    "recipients": [
+        {
+            "type": ReportRecipientType.EMAIL,
+            "recipient_config_json": {"target": "target@email.com"},
+        }
+    ],
 }
 
 
@@ -200,6 +203,9 @@ async def test_accept_valid_tab_ids(db_session: AsyncSession) -> None:
     assert report_schedule.extra == {
         "dashboard": {"activeTabs": ["TAB-L1AA", "TAB-L2AB"]}
     }
+    # The EMAIL recipient is persisted (FK-based, no MissingGreenlet).
+    recipients = await report_schedule.awaitable_attrs.recipients
+    assert [r.type for r in recipients] == [ReportRecipientType.EMAIL]
 
 
 @pytest.mark.usefixtures("tabbed_dashboard")

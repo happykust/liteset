@@ -1005,6 +1005,26 @@ def test_metric_macro_no_dataset_id_with_context_missing_info(
     find_dataset.assert_not_called()
 
 
+def test_metric_macro_no_dataset_id_with_context_empty_queries(
+    mocker: MockerFixture,
+) -> None:
+    """An explicit empty ``queries`` list must not raise ``IndexError``.
+
+    ``get_dataset_id_from_context`` reads ``queries[0]``; guard against the
+    empty-list case so it surfaces the proper "specify the Dataset ID" error.
+    """
+    find_dataset = mocker.patch("superset.jinja_context._sync_find_dataset")
+    set_form_data({"queries": []})
+
+    env = SandboxedEnvironment(undefined=DebugUndefined)
+    with pytest.raises(SupersetTemplateException) as excinfo:
+        metric_macro(env, {}, "macro_key")
+    assert str(excinfo.value) == (
+        "Please specify the Dataset ID for the ``macro_key`` metric in the Jinja macro."
+    )
+    find_dataset.assert_not_called()
+
+
 def test_metric_macro_no_dataset_id_with_context_datasource_id(
     mocker: MockerFixture,
 ) -> None:
