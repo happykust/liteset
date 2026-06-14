@@ -71,35 +71,32 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
         return result.scalars().one_or_none() is None
 
     async def create(self, attributes: dict[str, Any]) -> ReportSchedule:
-        """Create a report schedule with recipients handling.
+        """Create a report schedule with nested recipients.
 
-        Note: This method performs an intermediate flush() to obtain
-        report.id for creating recipients. This is an exception to the
-        "flush at controller level" pattern documented in BaseAsyncDAO.
+        1:1 with ``superset_old/daos/report.py``: recipients are attached to the
+        still-transient report via the ``report_schedule`` backref BEFORE the
+        flush, so the ``cascade="all, delete-orphan"`` relationship persists
+        them. (Appending to the collection AFTER a flush — on the now-persistent
+        report — would fire a sync SELECT and raise MissingGreenlet; see
+        [[sa-lazy-load-on-transient-asyncpg]].)
         """
         attributes = {**attributes}
         recipients_data = attributes.pop("recipients", [])
         report = await super().create(attributes)
-        # Exception to the "flush at controller level" pattern: recipients
-        # require report.id which is only available after INSERT is issued.
-        await self.session.flush([report])
 
         for recipient in recipients_data:
             config = recipient.get("recipient_config_json", "")
             if isinstance(config, dict):
                 config = dumps(config)
-            rec = ReportRecipients(
+            # ``report_schedule=report`` wires the backref on the transient
+            # report; the relationship cascade persists it on flush.
+            ReportRecipients(
                 type=recipient["type"],
                 recipient_config_json=config,
-                report_schedule_id=report.id,
+                report_schedule=report,
             )
-            # Persist via the FK (report_schedule_id is set) rather than
-            # ``report.recipients.append`` — appending to the lazy="select"
-            # collection on the already-flushed (persistent) report fires a
-            # sync SELECT and raises MissingGreenlet outside a request greenlet
-            # (see [[sa-lazy-load-on-transient-asyncpg]]).
-            self.session.add(rec)
 
+        await self.session.flush([report])
         return report
 
     async def update(
