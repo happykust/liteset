@@ -60,17 +60,6 @@ from superset.utils.pandas_postprocessing.utils import FLAT_COLUMN_SEPARATOR
 
 pytestmark = pytest.mark.asyncio
 
-# The adhoc-temporal probe bug (#11) is fixed (see test_date_adhoc_column). A
-# separate, deeper downstream issue remains ONLY for date-range timeshifts: the
-# offset DataFrame's temporal join column is normalized to float64 while the
-# main frame is datetime64, so processing_time_offsets' merge raises. Distinct
-# from the probe; tracked in docs/audit/port_bugs_from_test_porting.md.
-_XFAIL_DATE_RANGE_OFFSET_DTYPE = pytest.mark.xfail(
-    strict=True,
-    reason="port bug: date-range time-offset DataFrame normalizes its temporal "
-    "join column to float64 (main frame is datetime64), so the offset merge in "
-    "processing_time_offsets fails. Separate from the now-fixed adhoc-dttm probe.",
-)
 
 
 # ---------------------------------------------------------------------------
@@ -1599,7 +1588,6 @@ async def test_time_offset_with_temporal_range_filter(
         await _drop_physical_dataset(db_session)
 
 
-@_XFAIL_DATE_RANGE_OFFSET_DTYPE
 async def test_date_range_timeshift_enabled(db_session: AsyncSession) -> None:
     """Date range timeshift functionality when the feature flag is enabled."""
     datasource = await _make_physical_dataset(db_session)
@@ -1709,7 +1697,6 @@ async def test_date_range_timeshift_disabled(db_session: AsyncSession) -> None:
         await _drop_physical_dataset(db_session)
 
 
-@_XFAIL_DATE_RANGE_OFFSET_DTYPE
 async def test_date_range_timeshift_multiple_periods(
     db_session: AsyncSession,
 ) -> None:
@@ -1818,7 +1805,6 @@ async def test_date_range_timeshift_invalid_format(
         await _drop_physical_dataset(db_session)
 
 
-@_XFAIL_DATE_RANGE_OFFSET_DTYPE
 async def test_date_range_timeshift_mixed_with_relative_offsets(
     db_session: AsyncSession,
 ) -> None:

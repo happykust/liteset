@@ -2127,12 +2127,18 @@ class AsyncQueryContextProcessor:
             }
 
             if offset_metrics_df.empty:
-                offset_metrics_df = pd.DataFrame(
-                    {
-                        col: [np.nan]
-                        for col in join_keys + list(metrics_mapping.values())
-                    }
-                )
+                # Build the empty-offset placeholder with each join key typed to
+                # match the MAIN frame (so a temporal join column becomes ``NaT``,
+                # not a float ``NaN``). Upstream relied on older pandas coercing a
+                # datetime64-vs-float64 merge; SQLAlchemy/pandas 2.x raises, so we
+                # keep the dtypes consistent for the join in ``join_offset_dfs``.
+                placeholder: dict[str, Any] = {}
+                for col in join_keys:
+                    dtype = df[col].dtype if col in df.columns else None
+                    placeholder[col] = pd.Series([np.nan], dtype=dtype)
+                for col in metrics_mapping.values():
+                    placeholder[col] = [np.nan]
+                offset_metrics_df = pd.DataFrame(placeholder)
             else:
                 offset_metrics_df = self._normalize_df(
                     offset_metrics_df, query_object_clone
@@ -2267,6 +2273,13 @@ class AsyncQueryContextProcessor:
         # ``.iloc`` = positional access (the original used ``row[column_index]``,
         # which newer pandas deprecates for integer keys); semantics identical.
         value = row.iloc[column_index]
+
+        # An empty-offset placeholder row carries ``NaT`` for a temporal join
+        # column (dtype-matched to the main frame). ``NaT`` has a ``strftime``
+        # attribute but raises when called, so fall through to ``str(value)`` —
+        # a sentinel key that never matches a real bucketed timestamp.
+        if pd.isna(value):
+            return str(value)
 
         if hasattr(value, "strftime"):
             if time_offset and not AsyncQueryContextProcessor._is_valid_date_range(
