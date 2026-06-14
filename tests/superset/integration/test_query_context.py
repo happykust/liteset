@@ -60,40 +60,16 @@ from superset.utils.pandas_postprocessing.utils import FLAT_COLUMN_SEPARATOR
 
 pytestmark = pytest.mark.asyncio
 
-# ---------------------------------------------------------------------------
-# Suspected Liteset port bugs (xfail strict — the upstream assertions are kept
-# verbatim; these flip to a pass the moment the port is fixed):
-#
-# * DEPRECATED_FIELD_PRECEDENCE — ``AsyncQueryObject.from_request`` /
-#   ``__post_init__`` only fall back to a deprecated field (``groupby`` ->
-#   ``columns``, ``granularity_sqla`` -> ``granularity``, ``timeseries_limit``
-#   -> ``series_limit``) when the new field is *empty*. Upstream's
-#   ``QueryObject._rename_deprecated_fields`` always lets the deprecated value
-#   WIN when truthy (it logs a warning and ``setattr``s over the new field). So
-#   a payload carrying both ``columns: ["name"]`` and ``groupby: ["state"]``
-#   queries ``name`` in the port but ``state`` upstream.
-#
-# * ADHOC_DTTM_TYPE_PROBE_PG — ``SqlaTable._probe_adhoc_column_is_dttm`` reads
-#   the psycopg2 cursor ``description`` ``type_code``, which on Postgres is a
-#   numeric OID (e.g. ``1114`` for TIMESTAMP). It is stringified ("1114") and
-#   passed to ``db_engine_spec.get_column_spec`` which returns ``None`` -> the
-#   adhoc BASE_AXIS column is treated as non-temporal and its ``timeGrain``
-#   truncation (DATE_TRUNC) is never applied. Adhoc columns that resolve to a
-#   real ``TableColumn`` (``isColumnReference``) are unaffected (they read
-#   ``is_dttm`` off the model), which is why ``test_time_column_with_time_grain``
-#   passes.
-#
-# * TIME_OFFSET_VALIDATION_SWALLOWED — ``get_df_payload``'s broad
-#   ``except Exception`` catches the ``TimeDeltaAmbiguousError`` that
-#   ``processing_time_offsets`` raises for a malformed offset and folds it into
-#   a ``status=failed`` payload, instead of letting the validation error
-#   propagate (upstream raises it out of ``get_df_payload``).
-# ---------------------------------------------------------------------------
-_XFAIL_ADHOC_DTTM_PROBE = pytest.mark.xfail(
+# The adhoc-temporal probe bug (#11) is fixed (see test_date_adhoc_column). A
+# separate, deeper downstream issue remains ONLY for date-range timeshifts: the
+# offset DataFrame's temporal join column is normalized to float64 while the
+# main frame is datetime64, so processing_time_offsets' merge raises. Distinct
+# from the probe; tracked in docs/audit/port_bugs_from_test_porting.md.
+_XFAIL_DATE_RANGE_OFFSET_DTYPE = pytest.mark.xfail(
     strict=True,
-    reason="port bug: _probe_adhoc_column_is_dttm cannot classify psycopg2 "
-    "numeric type OIDs (Postgres), so adhoc BASE_AXIS timeGrain truncation is "
-    "skipped",
+    reason="port bug: date-range time-offset DataFrame normalizes its temporal "
+    "join column to float64 (main frame is datetime64), so the offset merge in "
+    "processing_time_offsets fails. Separate from the now-fixed adhoc-dttm probe.",
 )
 
 
@@ -1477,7 +1453,6 @@ async def test_special_chars_in_column_name(db_session: AsyncSession) -> None:
         await _drop_physical_dataset(db_session)
 
 
-@_XFAIL_ADHOC_DTTM_PROBE
 async def test_date_adhoc_column(db_session: AsyncSession) -> None:
     datasource = await _make_physical_dataset(db_session)
     try:
@@ -1624,7 +1599,7 @@ async def test_time_offset_with_temporal_range_filter(
         await _drop_physical_dataset(db_session)
 
 
-@_XFAIL_ADHOC_DTTM_PROBE
+@_XFAIL_DATE_RANGE_OFFSET_DTYPE
 async def test_date_range_timeshift_enabled(db_session: AsyncSession) -> None:
     """Date range timeshift functionality when the feature flag is enabled."""
     datasource = await _make_physical_dataset(db_session)
@@ -1734,7 +1709,7 @@ async def test_date_range_timeshift_disabled(db_session: AsyncSession) -> None:
         await _drop_physical_dataset(db_session)
 
 
-@_XFAIL_ADHOC_DTTM_PROBE
+@_XFAIL_DATE_RANGE_OFFSET_DTYPE
 async def test_date_range_timeshift_multiple_periods(
     db_session: AsyncSession,
 ) -> None:
@@ -1843,7 +1818,7 @@ async def test_date_range_timeshift_invalid_format(
         await _drop_physical_dataset(db_session)
 
 
-@_XFAIL_ADHOC_DTTM_PROBE
+@_XFAIL_DATE_RANGE_OFFSET_DTYPE
 async def test_date_range_timeshift_mixed_with_relative_offsets(
     db_session: AsyncSession,
 ) -> None:
