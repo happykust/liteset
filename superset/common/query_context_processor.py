@@ -750,6 +750,11 @@ class AsyncQueryContextProcessor:
             df = cached_df
             # Annotation data is stored alongside df in cache — skip re-fetch
         else:
+            from superset.utils.date import (
+                TimeDeltaAmbiguousError,
+                TimeRangeAmbiguousError,
+            )
+
             try:
                 result = await self._get_query_result(
                     query_object,
@@ -836,6 +841,11 @@ class AsyncQueryContextProcessor:
                         ),
                     }
                     await self._cache_set(cache_key, cache_payload, timeout)
+            except (TimeDeltaAmbiguousError, TimeRangeAmbiguousError):
+                # Ambiguous time-offset/range input is a user validation error;
+                # propagate it (1:1 upstream) instead of swallowing it into a
+                # status=failed payload.
+                raise
             except Exception as ex:
                 logger.exception("Query execution failed")
                 df = pd.DataFrame()

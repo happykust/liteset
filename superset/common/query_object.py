@@ -118,8 +118,9 @@ class AsyncQueryObject:
     granularity_sqla: str | None = None
 
     def __post_init__(self) -> None:  # noqa: C901  # complex business logic
-        # P1-9: Deprecated field renaming — backward compatibility
-        if self.granularity_sqla and not self.granularity:
+        # Deprecated field renaming — a truthy deprecated value overrides the
+        # new field (1:1 upstream ``_rename_deprecated_fields``).
+        if self.granularity_sqla:
             self.granularity = self.granularity_sqla
 
         # Metric normalization: {"label": "count"} → "count".
@@ -594,18 +595,21 @@ class AsyncQueryObject:
     def from_request(cls, q: Any, datasource_ref: dict[str, Any]) -> AsyncQueryObject:
         """Create from a dict or ChartDataQueryObject schema struct."""
         if isinstance(q, dict):
-            # P1-9: Deprecated field renaming fallbacks
+            # Deprecated field renaming. 1:1 with upstream
+            # ``QueryObject._rename_deprecated_fields``: a present, truthy
+            # deprecated value OVERRIDES the new field (not just a fallback when
+            # the new field is empty).
             columns = q.get("columns", [])
-            if not columns and q.get("groupby"):
+            if q.get("groupby"):
                 columns = q["groupby"]
             granularity = q.get("granularity")
-            if not granularity and q.get("granularity_sqla"):
+            if q.get("granularity_sqla"):
                 granularity = q["granularity_sqla"]
             series_limit = q.get("series_limit", 0)
-            if not series_limit and q.get("timeseries_limit"):
+            if q.get("timeseries_limit"):
                 series_limit = q["timeseries_limit"]
             series_limit_metric = q.get("series_limit_metric")
-            if series_limit_metric is None and q.get("timeseries_limit_metric"):
+            if q.get("timeseries_limit_metric"):
                 series_limit_metric = q["timeseries_limit_metric"]
 
             return cls(
