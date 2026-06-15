@@ -217,10 +217,31 @@ def _metadata_sync_engine() -> Any:
     The runtime DSN uses an async driver (e.g. ``postgresql+asyncpg://``);
     we strip the async marker via :func:`_to_sync_uri` before handing it
     to the sync :func:`create_engine`.
+
+    This single shared engine backs **every** sync metadata access — most
+    notably the thumbnail-digest RLS walk, which the chart/dashboard *list*
+    endpoints run once per row.  With ``create_engine``'s defaults (pool_size
+    5 + max_overflow 10 = 15, pool_timeout 30s) a burst of concurrent list
+    requests exhausts the pool and the next checkout blocks for the full 30s
+    — long enough to trip Cypress' ``cy.request`` timeout.  Give it real
+    headroom (and reuse ``SQLALCHEMY_ENGINE_OPTIONS`` pool knobs when set, so
+    it scales with the async pool).  ``pool_pre_ping`` guards against stale
+    connections after the recycle window.
     """
     settings = _cached_settings()
     sync_uri = _to_sync_uri(str(settings.sqlalchemy_database_uri))
-    return create_engine(sync_uri)
+    engine_opts = getattr(settings, "sqlalchemy_engine_options", {}) or {}
+    pool_kwargs: dict[str, Any] = {
+        "pool_size": engine_opts.get("pool_size", 15),
+        "max_overflow": engine_opts.get("max_overflow", 15),
+        "pool_timeout": engine_opts.get("pool_timeout", 30),
+        "pool_recycle": engine_opts.get("pool_recycle", 3600),
+        "pool_pre_ping": engine_opts.get("pool_pre_ping", True),
+    }
+    if sync_uri.startswith("sqlite"):
+        # SQLite uses a non-queue pool; the size knobs don't apply.
+        return create_engine(sync_uri)
+    return create_engine(sync_uri, **pool_kwargs)
 
 
 @contextmanager

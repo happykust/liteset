@@ -168,6 +168,20 @@ if os.getenv("CYPRESS_CONFIG") == "true":
         "CACHE_DEFAULT_TIMEOUT": 600,
     }
 
+    # Give the async metadata connection pool extra headroom for the e2e
+    # suite. Cypress fires its setup/cleanup ``cy.request`` calls (e.g.
+    # ``GET /api/v1/dashboard/``) while a dashboard's charts are still loading,
+    # and under a debugger every request holds its connection several times
+    # longer — peak demand can exhaust the default pool (5 + 10) and the next
+    # request then blocks for ``pool_timeout`` (30s), which is exactly Cypress'
+    # ``cy.request`` timeout. A larger pool absorbs that burst (Postgres
+    # defaults to max_connections=100, so 50 is comfortably within budget).
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        "pool_size": 15,
+        "max_overflow": 15,
+        "pool_pre_ping": True,
+    }
+
 #
 # Optionally import superset_config_docker.py (which will have been included on
 # the PYTHONPATH) in order to allow for local settings to be overridden
