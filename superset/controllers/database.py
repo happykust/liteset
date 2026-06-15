@@ -2654,19 +2654,38 @@ class DatabaseController(Controller):
 
         databases: list[dict[str, Any]] = []
 
+        # Sync engine specs (the 1:1 upstream ports built on
+        # ``BasicParametersMixin``) are the source of the connection-modal
+        # metadata, exactly as upstream's ``available`` is built purely from
+        # ``get_available_engine_specs()``.  Computed up front so the native
+        # loop below can enrich each async spec with its sync counterpart.
+        sync_specs = _get_sync_spec_map()
+
         def _build_payload(
             engine_key: str,
             spec_cls: Any,
             *,
             sync_fallback: bool,
             available_drivers: list[str] | None = None,
+            form_spec: Any = None,
         ) -> dict[str, Any]:
             engine_name = getattr(spec_cls, "engine_name", engine_key)
-            default_driver = getattr(spec_cls, "default_driver", "") or ""
+            # ``form_spec`` carries the connection-form metadata.  Native async
+            # engine specs don't implement ``BasicParametersMixin`` (no
+            # ``parameters_json_schema``/``sqlalchemy_uri_placeholder``) and
+            # advertise an async ``default_driver`` (e.g. ``asyncpg``) that is
+            # absent from the installed (sync) driver set, so the dynamic
+            # connection form would never render.  When a sync spec exists for
+            # the engine we build the connection-relevant fields from it — 1:1
+            # with upstream, which only ever sees the sync specs here.
+            params_spec = form_spec if form_spec is not None else spec_cls
+            default_driver = (
+                getattr(params_spec, "default_driver", "") or ""
+            ) or (getattr(spec_cls, "default_driver", "") or "")
             # Use the engine spec's sqlalchemy_uri_placeholder when available
             # — 1:1 with ``superset_old/databases/api.py:1904``.
             placeholder = getattr(
-                spec_cls,
+                params_spec,
                 "sqlalchemy_uri_placeholder",
                 f"{engine_key}+{default_driver}://"
                 if default_driver
@@ -2686,22 +2705,24 @@ class DatabaseController(Controller):
                 # do not, so we inline the same four keys using getattr
                 # with the same defaults as BaseEngineSpec.
                 "engine_information": (
-                    spec_cls.get_public_information()
-                    if hasattr(spec_cls, "get_public_information")
+                    params_spec.get_public_information()
+                    if hasattr(params_spec, "get_public_information")
                     else {
                         "supports_file_upload": getattr(
-                            spec_cls, "supports_file_upload", False
+                            params_spec, "supports_file_upload", False
                         ),
                         "disable_ssh_tunneling": getattr(
-                            spec_cls, "disable_ssh_tunneling", False
+                            params_spec, "disable_ssh_tunneling", False
                         ),
                         "supports_dynamic_catalog": getattr(
-                            spec_cls, "supports_dynamic_catalog", False
+                            params_spec, "supports_dynamic_catalog", False
                         ),
-                        "supports_oauth2": getattr(spec_cls, "supports_oauth2", False),
+                        "supports_oauth2": getattr(
+                            params_spec, "supports_oauth2", False
+                        ),
                     }
                 ),
-                "supports_oauth2": getattr(spec_cls, "supports_oauth2", False),
+                "supports_oauth2": getattr(params_spec, "supports_oauth2", False),
             }
             if default_driver:
                 payload["default_driver"] = default_driver
@@ -2711,15 +2732,15 @@ class DatabaseController(Controller):
             # AND ``sqlalchemy_uri_placeholder`` AND
             # ``default_driver in drivers``.
             if (
-                hasattr(spec_cls, "parameters_json_schema")
-                and hasattr(spec_cls, "sqlalchemy_uri_placeholder")
+                hasattr(params_spec, "parameters_json_schema")
+                and hasattr(params_spec, "sqlalchemy_uri_placeholder")
                 and default_driver in drivers
             ):
-                payload["parameters"] = spec_cls.parameters_json_schema()
+                payload["parameters"] = params_spec.parameters_json_schema()
                 # Re-set placeholder from the spec (it may be more specific
                 # after the conditional check, matching the original).
                 payload["sqlalchemy_uri_placeholder"] = (
-                    spec_cls.sqlalchemy_uri_placeholder
+                    params_spec.sqlalchemy_uri_placeholder
                 )
             return payload
 
@@ -2734,18 +2755,27 @@ class DatabaseController(Controller):
             _drivers = _installed_for(spec_cls, engine_key)
             if not _drivers:
                 continue
+            # Enrich with the sync spec so the connection form (parameters /
+            # placeholder / default_driver) is populated and consistent with
+            # the installed driver set.
+            _form_spec = sync_specs.get(engine_key)
+            _avail = sorted(_drivers)
+            if _form_spec is not None:
+                _form_default = getattr(_form_spec, "default_driver", "") or ""
+                if _form_default:
+                    _avail = sorted(set(_drivers) | {_form_default})
             databases.append(
                 _build_payload(
                     engine_key,
                     spec_cls,
                     sync_fallback=False,
-                    available_drivers=sorted(_drivers),
+                    available_drivers=_avail,
+                    form_spec=_form_spec,
                 )
             )
 
         # 2. Sync fallback engine specs (from superset.db_engine_specs)
         native_engines = set(_NATIVE_SPECS.keys())
-        sync_specs = _get_sync_spec_map()
         for engine_key, spec_cls in sync_specs.items():
             if engine_key in native_engines:
                 continue
