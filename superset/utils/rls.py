@@ -448,13 +448,28 @@ def compose_rls_text_clauses(  # noqa: C901  # complex business logic
         return []
     rls_filters = _sync_get_rls_filters_for_user(table.id, user_role_ids)
 
-    # Mirror the original which always renders Jinja:
-    # ``template_processor = template_processor or self.get_template_processor()``.
-    # Don't swallow init errors here — the original Superset doesn't, and a
-    # template-processor construction failure indicates a broken Database
-    # configuration that callers must surface (the outer try/except below
-    # already maps Jinja-rendering errors to QueryObjectValidationError).
-    if template_processor is None:
+    # Guest-token RLS clauses are only relevant when EMBEDDED_SUPERSET is on
+    # *and* the current user is a guest; compute them up front (cheap — reads
+    # the guest user's decoded ``rls_rules``) so we can tell whether anything
+    # actually needs Jinja rendering.
+    guest_clauses = (
+        _sync_get_guest_rls_clauses(user, table)
+        if _embedded_superset_enabled()
+        else []
+    )
+
+    # The original renders Jinja unconditionally
+    # (``template_processor = template_processor or self.get_template_processor()``)
+    # but with no RLS filters AND no guest clauses the processor is never
+    # used, so the returned clause list is byte-for-byte identical whether or
+    # not it is built.  Constructing a (sandboxed) Jinja template processor is
+    # expensive when ENABLE_TEMPLATE_PROCESSING is on, and this runs once per
+    # datasource per chart (e.g. the chart-list thumbnail digest, which is
+    # ``O(charts)`` calls) — so only build it when there is something to
+    # template.  Init errors still surface for datasources that actually carry
+    # RLS rules (the outer try/except maps Jinja errors to
+    # QueryObjectValidationError).
+    if template_processor is None and (rls_filters or guest_clauses):
         from superset.jinja_context import get_template_processor
 
         database = getattr(table, "database", None)
@@ -475,16 +490,13 @@ def compose_rls_text_clauses(  # noqa: C901  # complex business logic
             else:
                 all_filters.append(text_clause)
 
-        # Guest token RLS — only relevant when EMBEDDED_SUPERSET is on
-        # *and* the current user is a guest. ``get_current_user``
-        # returns the guest user in that case (the auth middleware
-        # decodes the guest token).
-        if _embedded_superset_enabled():
-            for clause_str in _sync_get_guest_rls_clauses(user, table):
-                if template_processor is not None and clause_str:
-                    clause_str = template_processor.process_template(clause_str)
-                if clause_str:
-                    all_filters.append(text(f"({clause_str})"))
+        # Guest token RLS — ``guest_clauses`` is already empty unless
+        # EMBEDDED_SUPERSET is on and the current user is a guest.
+        for clause_str in guest_clauses:
+            if template_processor is not None and clause_str:
+                clause_str = template_processor.process_template(clause_str)
+            if clause_str:
+                all_filters.append(text(f"({clause_str})"))
 
         for clauses in filter_groups.values():
             all_filters.append(or_(*clauses))
