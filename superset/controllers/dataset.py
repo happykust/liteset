@@ -363,7 +363,7 @@ class DatasetController(Controller):
         from sqlalchemy.orm import selectinload
 
         from superset.db.filters import dataset_access_filters
-        from superset.models.connectors import SqlaTable
+        from superset.models.connectors import link_table_backrefs, SqlaTable
 
         # Parse id_or_uuid: integer ID or UUID string
         try:
@@ -393,6 +393,12 @@ class DatasetController(Controller):
         if not results:
             raise ObjectNotFoundError("Dataset", id_or_uuid)
         dataset = results[0]
+
+        # Back-fill the column/metric ``table`` back-refs so ``type_generic``
+        # resolves via the engine-spec mapping (selectinload doesn't populate
+        # the reverse many-to-one on an AsyncSession) — otherwise every
+        # non-temporal column serialises with ``type_generic = None``.
+        link_table_backrefs(dataset)
 
         detail = DatasetDetailResult.from_model(dataset)
         # Strip 'folders' from the response when the DATASET_FOLDERS feature

@@ -353,6 +353,37 @@ class BaseDatasource:
         return compose_rls_text_clauses(self, template_processor=template_processor)
 
 
+def link_table_backrefs(table: Any) -> None:
+    """Populate the ``TableColumn.table`` / ``SqlMetric.table`` back-refs.
+
+    ``selectinload(SqlaTable.columns)`` loads the forward collection but does
+    NOT back-fill the reverse many-to-one ``column.table`` attribute, so on an
+    :class:`AsyncSession` it stays *unloaded* and any access would emit a sync
+    lazy-load → ``MissingGreenlet``.  :attr:`TableColumn.type_generic` guards
+    against that by returning ``None`` when ``table``/``table.database`` is
+    unloaded — which silently mistyped every non-temporal column (numeric and
+    string columns came back with ``type_generic = None``, breaking e.g. the
+    numerical-range native filter whose column picker only lists ``NUMERIC``
+    columns).
+
+    Pointing each child's back-ref at the already-loaded parent (which carries
+    an eager ``database``) lets ``type_generic``/``db_engine_spec`` resolve via
+    the engine-spec column mapping exactly as the original's sync lazy-load
+    would — and emits no query.  Call this right after loading a ``SqlaTable``
+    with ``selectinload(SqlaTable.columns)`` + ``selectinload(SqlaTable.database)``
+    and before serialising its columns.
+    """
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    if table is None or "database" in sa.inspect(table).unloaded:
+        return
+    for rel in ("columns", "metrics"):
+        if rel in sa.inspect(table).unloaded:
+            continue
+        for child in getattr(table, rel, None) or []:
+            set_committed_value(child, "table", table)
+
+
 # ---------------------------------------------------------------------------
 # TableColumn
 # ---------------------------------------------------------------------------
