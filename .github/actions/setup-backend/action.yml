@@ -26,12 +26,13 @@ runs:
       shell: bash
       run: |
         if [ "${{ inputs.python-version }}" = "current" ]; then
-          echo "PYTHON_VERSION=3.12" >> $GITHUB_ENV
-        elif [ "${{ inputs.python-version }}" = "next" ]; then
-          # liteset targets >=3.10,<3.14 (see pyproject.toml requires-python)
-          echo "PYTHON_VERSION=3.13" >> $GITHUB_ENV
-        elif [ "${{ inputs.python-version }}" = "previous" ]; then
           echo "PYTHON_VERSION=3.11" >> $GITHUB_ENV
+        elif [ "${{ inputs.python-version }}" = "next" ]; then
+          # 3.12 is the highest version pandas<2.2 (pinned) builds on; pandas 2.1.4
+          # has no cp313 wheel and its sources fail to compile on Python 3.13.
+          echo "PYTHON_VERSION=3.12" >> $GITHUB_ENV
+        elif [ "${{ inputs.python-version }}" = "previous" ]; then
+          echo "PYTHON_VERSION=3.10" >> $GITHUB_ENV
         else
           echo "PYTHON_VERSION=${{ inputs.python-version }}" >> $GITHUB_ENV
         fi
