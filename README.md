@@ -123,7 +123,7 @@ The schema of the metadata tables (`ab_user`, `ab_role`, `dashboards`, `slices`,
 
 ### 3. HTTP API
 
-All 37+ REST controllers reproduce the Superset contract 1:1 — URL routes, response codes, field names (dual `camelCase`/`snake_case` lookup is supported on the msgspec side), pagination shape, SIP-40 errors, Swagger spec layout. OpenAPI docs are auto-generated at `/swagger/v1`.
+All REST controllers reproduce the Superset contract 1:1 — URL routes, response codes, field names (dual `camelCase`/`snake_case` lookup is supported on the msgspec side), pagination shape, SIP-40 errors, Swagger spec layout. OpenAPI docs are auto-generated at `/swagger/v1`.
 
 ---
 
@@ -136,7 +136,7 @@ liteset/
 │   ├── config.py                   # SupersetSettings (pydantic-settings)
 │   ├── dependencies.py             # DI Provide's (session, user, security_manager)
 │   ├── exceptions.py               # SIP-40 hierarchy + handlers
-│   ├── controllers/                # Presentation layer — 37 controllers
+│   ├── controllers/                # Presentation layer — 45 controllers
 │   │   ├── base.py                 # RISON helpers, pagination, serialization
 │   │   ├── chart.py, dashboard.py, database.py, dataset.py, …
 │   │   └── sqllab.py, report.py, security.py, user.py, …

@@ -173,7 +173,7 @@
     "message": "Обзор"
   },
   "home.overview.subtitle": {
-    "message": "Liteset сохраняет все возможности Apache Superset и заменяет синхронный Flask-бэкенд одним ASGI-процессом с event loop. Меньше памяти, выше параллелизм, тот же UX."
+    "message": "Liteset сохраняет все возможности Apache Superset и заменяет синхронный Flask-бэкенд одним ASGI-процессом с event loop. Выше параллелизм и ниже хвостовая латентность при небольшом росте памяти, тот же UX."
   },
   "home.features.powerful.title": {
     "message": "Мощно — и асинхронно"

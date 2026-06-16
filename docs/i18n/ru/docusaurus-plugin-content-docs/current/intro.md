@@ -87,7 +87,7 @@ Liteset — это **drop-in замена** Apache Superset 6.0.0 на уров�
 
 ### 3. HTTP API
 
-Все 37+ REST-контроллеров воспроизводят контракт Superset 1:1 — URL-маршруты, коды ответа, имена полей (поддерживается двойной поиск `camelCase`/`snake_case` на стороне msgspec), shape пагинации, SIP-40 ошибки, layout Swagger-спеки. OpenAPI-документация авто-генерируется на `/swagger/v1`.
+Все REST-контроллеры воспроизводят контракт Superset 1:1 — URL-маршруты, коды ответа, имена полей (поддерживается двойной поиск `camelCase`/`snake_case` на стороне msgspec), shape пагинации, SIP-40 ошибки, layout Swagger-спеки. OpenAPI-документация авто-генерируется на `/swagger/v1`.
 
 ---
 

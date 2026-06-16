@@ -628,7 +628,7 @@ export default function Home(): JSX.Element {
             subtitle={translate({
               id: 'home.overview.subtitle',
               message:
-                'Liteset keeps every familiar feature of Apache Superset and replaces the synchronous Flask backend with a single-loop ASGI server. Lower memory footprint, higher concurrency, identical UX.',
+                'Liteset keeps every familiar feature of Apache Superset and replaces the synchronous Flask backend with a single-loop ASGI server. Higher concurrency and lower tail latency at a modest memory cost, identical UX.',
             })}
           />
           <StyledFeaturesList>
