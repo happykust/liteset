@@ -31,7 +31,7 @@ jobs:
       uses: ./.github/actions/latest-tag
       if: (! ${{ steps.latest-tag.outputs.SKIP_TAG }} )
       with:
-        description: Superset latest release
+        description: Liteset latest release
         tag-name: latest
       env:
         GITHUB_TOKEN: ${{ github.token }}

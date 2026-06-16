@@ -148,20 +148,41 @@ cypress-run-all() {
   local APP_ROOT=$2
   cd "$GITHUB_WORKSPACE/superset-frontend/cypress-base"
 
-  # Start Flask and run it in background
-  # --no-debugger means disable the interactive debugger on the 500 page
-  # so errors can print to stderr.
-  local flasklog="${HOME}/flask.log"
+  # Start the Liteset ASGI app (Litestar) via uvicorn and run it in background.
+  # Liteset replaced Flask/WSGI with Litestar/ASGI, so the backend is launched
+  # with the ``superset.app:create_app`` factory instead of ``flask run``.
+  local serverlog="${HOME}/liteset.log"
   local port=8081
   CYPRESS_BASE_URL="http://localhost:${port}"
+  local ROOT_PATH_FLAG=''
   if [ -n "$APP_ROOT" ]; then
+    # Litestar honours ASGI root_path; uvicorn exposes it via --root-path.
     export SUPERSET_APP_ROOT=$APP_ROOT
+    ROOT_PATH_FLAG="--root-path $APP_ROOT"
     CYPRESS_BASE_URL=${CYPRESS_BASE_URL}${APP_ROOT}
   fi
   export CYPRESS_BASE_URL
 
-  nohup flask run --no-debugger -p $port >"$flasklog" 2>&1 </dev/null &
-  local flaskProcessId=$!
+  nohup uvicorn superset.app:create_app --factory --host 127.0.0.1 --port $port $ROOT_PATH_FLAG \
+    >"$serverlog" 2>&1 </dev/null &
+  local serverProcessId=$!
+
+  # Wait for the ASGI app to become ready (startup connects to the DB/cache, so
+  # it is not instant like the old Flask dev server).
+  say "::group::Wait for Liteset to be ready on :${port}"
+  for i in $(seq 1 60); do
+    if curl -fsS "http://localhost:${port}/health" >/dev/null 2>&1; then
+      echo "Liteset is up after ${i}s"
+      break
+    fi
+    if ! kill -0 $serverProcessId 2>/dev/null; then
+      echo "Liteset process died during startup; log follows:"
+      cat "$serverlog"
+      exit 1
+    fi
+    sleep 1
+  done
+  say "::endgroup::"
 
   USE_DASHBOARD_FLAG=''
   if [ "$USE_DASHBOARD" = "true" ]; then
@@ -174,12 +195,12 @@ cypress-run-all() {
   python ../../scripts/cypress_run.py --parallelism $PARALLELISM --parallelism-id $PARALLEL_ID --group $PARALLEL_ID --retries 5 $USE_DASHBOARD_FLAG
   # kill $memoryMonitorPid
 
-  # After job is done, print out Flask log for debugging
-  echo "::group::Flask log for default run"
-  cat "$flasklog"
+  # After the job is done, print out the server log for debugging
+  echo "::group::Liteset log for default run"
+  cat "$serverlog"
   echo "::endgroup::"
   # make sure the program exits
-  kill $flaskProcessId
+  kill $serverProcessId
 }
 
 eyes-storybook-dependencies() {

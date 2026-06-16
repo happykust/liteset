@@ -11,6 +11,7 @@ concurrency:
 
 jobs:
   check-hold-label:
+    if: github.repository == 'happykust/liteset'
     runs-on: ubuntu-24.04
     steps:
     - name: Check for 'hold' label

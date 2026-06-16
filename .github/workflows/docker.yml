@@ -1,17 +1,25 @@
 name: Build & publish docker images
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: happykust
+
 on:
   push:
     branches:
-      - "master"
+      - "main"
       - "[0-9].[0-9]*"
   pull_request:
     branches:
-      - "master"
+      - "main"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
+
+permissions:
+  packages: write
+  contents: read
 
 jobs:
 
@@ -22,7 +30,8 @@ jobs:
     steps:
       - id: set_matrix
         run: |
-          MATRIX_CONFIG=$(if [ "${{ github.event_name }}" == "pull_request" ]; then echo '["dev", "lean"]'; else echo '["dev", "lean", "py310", "websocket", "dockerize", "py311"]'; fi)
+          # Valid Dockerfile build targets are: dev, lean, ci (see repo-root Dockerfile).
+          MATRIX_CONFIG=$(if [ "${{ github.event_name }}" == "pull_request" ]; then echo '["dev", "lean"]'; else echo '["dev", "lean", "ci"]'; fi)
           echo "matrix_config=${MATRIX_CONFIG}" >> $GITHUB_OUTPUT
           echo $GITHUB_OUTPUT
 
@@ -34,10 +43,6 @@ jobs:
       matrix:
         build_preset: ${{fromJson(needs.setup_matrix.outputs.matrix_config)}}
       fail-fast: false
-    env:
-      DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USER }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-      IMAGE_TAG: apache/superset:GHA-${{ matrix.build_preset }}-${{ github.run_id }}
 
     steps:
 
@@ -52,17 +57,21 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Docker Environment
+      - name: Set up QEMU
         if: steps.check.outputs.python || steps.check.outputs.frontend || steps.check.outputs.docker
-        uses: ./.github/actions/setup-docker
-        with:
-          dockerhub-user: ${{ secrets.DOCKERHUB_USER }}
-          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
-          build: "true"
+        uses: docker/setup-qemu-action@v3
 
-      - name: Setup supersetbot
+      - name: Set up Docker Buildx
         if: steps.check.outputs.python || steps.check.outputs.frontend || steps.check.outputs.docker
-        uses: ./.github/actions/setup-supersetbot/
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        if: steps.check.outputs.python || steps.check.outputs.frontend || steps.check.outputs.docker
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Docker Image
         if: steps.check.outputs.python || steps.check.outputs.frontend || steps.check.outputs.docker
@@ -70,6 +79,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Build the image tag from the workflow-level REGISTRY/IMAGE_NAMESPACE
+          # env (single source of truth) and expose it to later steps.
+          IMAGE_TAG="${REGISTRY}/${IMAGE_NAMESPACE}/liteset:GHA-${{ matrix.build_preset }}-${{ github.run_id }}"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+
           # Single platform builds in pull_request context to speed things up
           if [ "${{ github.event_name }}" = "push" ]; then
             PLATFORM_ARG="--platform linux/arm64 --platform linux/amd64"
@@ -80,18 +94,18 @@ jobs:
             PUSH_OR_LOAD="--load"
           fi
 
-          supersetbot docker \
+          docker buildx build \
             $PUSH_OR_LOAD \
-            --preset ${{ matrix.build_preset }} \
-            --context "$EVENT" \
-            --context-ref "$RELEASE" $FORCE_LATEST \
-            --extra-flags "--build-arg INCLUDE_CHROMIUM=false --tag $IMAGE_TAG" \
-            $PLATFORM_ARG
+            --target ${{ matrix.build_preset }} \
+            --build-arg INCLUDE_CHROMIUM=false \
+            --tag $IMAGE_TAG \
+            $PLATFORM_ARG \
+            .
 
       # in the context of push (using multi-platform build), we need to pull the image locally
       - name: Docker pull
         if: github.event_name == 'push' && (steps.check.outputs.python || steps.check.outputs.frontend || steps.check.outputs.docker)
-        run:  docker pull $IMAGE_TAG
+        run: docker pull $IMAGE_TAG
 
       - name: Print docker stats
         if: steps.check.outputs.python || steps.check.outputs.frontend || steps.check.outputs.docker
@@ -111,9 +125,9 @@ jobs:
           docker compose up superset-init --exit-code-from superset-init
 
   docker-compose-image-tag:
-    # Run this job only on pushes to master (not for PRs)
+    # Run this job only on pushes to main (not for PRs)
     # goal is to check that building the latest image works, not required for all PR pushes
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     steps:
       - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
@@ -125,14 +139,19 @@ jobs:
         uses: ./.github/actions/change-detector/
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Setup Docker Environment
+      - name: Set up QEMU
         if: steps.check.outputs.docker
-        uses: ./.github/actions/setup-docker
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.docker
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GitHub Container Registry
+        if: steps.check.outputs.docker
+        uses: docker/login-action@v3
         with:
-          dockerhub-user: ${{ secrets.DOCKERHUB_USER }}
-          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
-          build: "false"
-          install-docker-compose: "true"
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: docker-compose sanity check
         if: steps.check.outputs.docker
         shell: bash

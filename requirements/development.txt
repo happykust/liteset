@@ -2,11 +2,11 @@
 #    uv pip compile requirements/development.in -c requirements/base.txt -o requirements/development.txt
 -e .
     # via -r requirements/development.in
-aiohappyeyeballs==2.6.1
+aiohappyeyeballs==2.6.2
     # via
     #   -c requirements/base.txt
     #   aiohttp
-aiohttp==3.13.5
+aiohttp==3.14.1
     # via
     #   -c requirements/base.txt
     #   aiotrino
@@ -26,7 +26,7 @@ aiotrino==0.3.0
     # via
     #   -c requirements/base.txt
     #   liteset
-alembic==1.15.2
+alembic==1.18.4
     # via
     #   -c requirements/base.txt
     #   liteset
@@ -45,65 +45,78 @@ anyio==4.13.0
     #   liteset
     #   litestar
     #   watchfiles
-apsw==3.50.1.0
+apispec==6.6.1
+    # via
+    #   -c requirements/base.txt
+    #   liteset
+apsw==3.53.2.0
     # via shillelagh
-astroid==3.3.10
+ast-serialize==0.5.0
+    # via mypy
+astroid==4.0.4
     # via pylint
+async-timeout==4.0.3
+    # via
+    #   -c requirements/base.txt
+    #   liteset
 asyncpg==0.31.0
     # via
     #   -c requirements/base.txt
     #   liteset
-attrs==25.3.0
+attrs==26.1.0
     # via
     #   -c requirements/base.txt
     #   aiohttp
     #   cattrs
     #   jsonschema
+    #   jsonschema-path
     #   outcome
     #   referencing
     #   requests-cache
     #   trio
+babel==2.18.0
+    # via
+    #   -c requirements/base.txt
+    #   liteset
 backoff==2.2.1
     # via
     #   -c requirements/base.txt
     #   liteset
-bcrypt==4.3.0
+bcrypt==5.0.0
     # via
     #   -c requirements/base.txt
     #   paramiko
-billiard==4.2.1
+billiard==4.2.4
     # via
     #   -c requirements/base.txt
     #   celery
-bottleneck==1.5.0
+bottleneck==1.6.0
     # via
     #   -c requirements/base.txt
     #   liteset
-cachetools==5.5.2
-    # via google-auth
-cattrs==25.1.1
+cattrs==26.1.0
     # via requests-cache
-celery==5.5.2
+celery==5.6.3
     # via
     #   -c requirements/base.txt
     #   liteset
-certifi==2025.6.15
+certifi==2026.5.20
     # via
     #   -c requirements/base.txt
     #   httpcore
     #   httpx
     #   requests
     #   selenium
-cffi==1.17.1
+cffi==2.0.0
     # via
     #   -c requirements/base.txt
     #   cryptography
     #   pynacl
-cfgv==3.4.0
+cfgv==3.5.0
     # via pre-commit
-charset-normalizer==3.4.2
+charset-normalizer==3.4.7
     # via requests
-click==8.2.1
+click==8.4.1
     # via
     #   -c requirements/base.txt
     #   celery
@@ -119,11 +132,11 @@ click-didyoumean==0.3.1
     # via
     #   -c requirements/base.txt
     #   celery
-click-option-group==0.5.7
+click-option-group==0.5.9
     # via
     #   -c requirements/base.txt
     #   liteset
-click-plugins==1.1.1
+click-plugins==1.1.1.2
     # via
     #   -c requirements/base.txt
     #   celery
@@ -131,43 +144,47 @@ click-repl==0.3.0
     # via
     #   -c requirements/base.txt
     #   celery
-cmdstanpy==1.1.0
+cmdstanpy==1.3.0
     # via prophet
 colorama==0.4.6
     # via
     #   -c requirements/base.txt
     #   liteset
-contourpy==1.0.7
+contourpy==1.3.3
     # via matplotlib
-coverage==7.6.8
+coverage==7.14.1
     # via pytest-cov
-cron-descriptor==1.4.5
+cron-descriptor==2.1.0
     # via
     #   -c requirements/base.txt
     #   liteset
-croniter==6.0.0
+croniter==6.2.2
     # via
     #   -c requirements/base.txt
     #   liteset
 cryptography==44.0.3
     # via
     #   -c requirements/base.txt
+    #   google-auth
     #   liteset
     #   paramiko
     #   pyopenssl
+    #   types-paramiko
+    #   types-pyopenssl
+    #   types-redis
 cycler==0.12.1
     # via matplotlib
-db-dtypes==1.3.1
+db-dtypes==1.7.0
     # via pandas-gbq
 defusedxml==0.7.1
     # via
     #   -c requirements/base.txt
     #   odfpy
-dill==0.4.0
+dill==0.4.1
     # via pylint
-distlib==0.3.8
+distlib==0.4.3
     # via virtualenv
-docker==7.0.0
+docker==7.1.0
     # via liteset
 editorconfig==0.17.1
     # via
@@ -177,15 +194,17 @@ et-xmlfile==2.0.0
     # via
     #   -c requirements/base.txt
     #   openpyxl
-faker==40.12.0
+faker==40.23.0
     # via
     #   -c requirements/base.txt
     #   polyfactory
-filelock==3.12.2
-    # via virtualenv
-fonttools==4.55.0
+filelock==3.29.4
+    # via
+    #   python-discovery
+    #   virtualenv
+fonttools==4.63.0
     # via matplotlib
-freezegun==1.5.1
+freezegun==1.5.5
     # via liteset
 frozenlist==1.8.0
     # via
@@ -194,7 +213,7 @@ frozenlist==1.8.0
     #   aiosignal
 future==1.0.0
     # via pyhive
-geographiclib==2.0
+geographiclib==2.1
     # via
     #   -c requirements/base.txt
     #   geopy
@@ -202,16 +221,15 @@ geopy==2.4.1
     # via
     #   -c requirements/base.txt
     #   liteset
-gevent==24.2.1
+gevent==24.11.1
     # via liteset
-google-api-core==2.23.0
+google-api-core==2.31.0
     # via
     #   google-cloud-bigquery
-    #   google-cloud-bigquery-storage
     #   google-cloud-core
     #   pandas-gbq
     #   sqlalchemy-bigquery
-google-auth==2.40.3
+google-auth==2.54.0
     # via
     #   google-api-core
     #   google-auth-oauthlib
@@ -221,24 +239,22 @@ google-auth==2.40.3
     #   pydata-google-auth
     #   shillelagh
     #   sqlalchemy-bigquery
-google-auth-oauthlib==1.2.1
+google-auth-oauthlib==1.4.0
     # via
     #   pandas-gbq
     #   pydata-google-auth
-google-cloud-bigquery==3.27.0
+google-cloud-bigquery==3.41.0
     # via
     #   liteset
     #   pandas-gbq
     #   sqlalchemy-bigquery
-google-cloud-bigquery-storage==2.19.1
-    # via pandas-gbq
-google-cloud-core==2.4.1
+google-cloud-core==2.6.0
     # via google-cloud-bigquery
-google-crc32c==1.6.0
+google-crc32c==1.8.0
     # via google-resumable-media
-google-resumable-media==2.7.2
+google-resumable-media==2.10.0
     # via google-cloud-bigquery
-googleapis-common-protos==1.66.0
+googleapis-common-protos==1.75.0
     # via
     #   google-api-core
     #   grpcio-status
@@ -249,12 +265,12 @@ greenlet==3.1.1
     #   liteset
     #   shillelagh
     #   sqlalchemy
-grpcio==1.71.0
+grpcio==1.81.1
     # via
     #   google-api-core
     #   grpcio-status
     #   liteset
-grpcio-status==1.60.1
+grpcio-status==1.81.1
     # via google-api-core
 h11==0.16.0
     # via
@@ -266,7 +282,7 @@ hashids==1.3.1
     # via
     #   -c requirements/base.txt
     #   liteset
-holidays==0.82
+holidays==0.99
     # via
     #   -c requirements/base.txt
     #   liteset
@@ -275,7 +291,7 @@ httpcore==1.0.9
     # via
     #   -c requirements/base.txt
     #   httpx
-httptools==0.7.1
+httptools==0.8.0
     # via
     #   -c requirements/base.txt
     #   uvicorn
@@ -284,13 +300,13 @@ httpx==0.28.1
     #   -c requirements/base.txt
     #   liteset
     #   litestar
-humanize==4.12.3
+humanize==4.15.0
     # via
     #   -c requirements/base.txt
     #   liteset
-identify==2.5.36
+identify==2.6.19
     # via pre-commit
-idna==3.10
+idna==3.18
     # via
     #   -c requirements/base.txt
     #   anyio
@@ -299,15 +315,19 @@ idna==3.10
     #   trio
     #   url-normalize
     #   yarl
-importlib-resources==6.5.2
+importlib-resources==7.1.0
     # via prophet
-iniconfig==2.0.0
+iniconfig==2.3.0
     # via pytest
+invoke==3.0.3
+    # via
+    #   -c requirements/base.txt
+    #   paramiko
 isodate==0.7.2
     # via
     #   -c requirements/base.txt
     #   liteset
-isort==6.0.1
+isort==8.0.1
     # via pylint
 itsdangerous==2.2.0
     # via
@@ -321,31 +341,37 @@ jsbeautifier==1.15.4
     # via
     #   -c requirements/base.txt
     #   litestar
-jsonpath-ng==1.7.0
+jsonpath-ng==1.8.0
     # via
     #   -c requirements/base.txt
     #   liteset
-jsonschema==4.23.0
+jsonschema==4.26.0
     # via
     #   -c requirements/base.txt
     #   openapi-schema-validator
     #   openapi-spec-validator
-jsonschema-path==0.3.4
+jsonschema-path==0.5.0
     # via openapi-spec-validator
-jsonschema-specifications==2025.4.1
+jsonschema-specifications==2025.9.1
     # via
     #   -c requirements/base.txt
     #   jsonschema
     #   openapi-schema-validator
-kiwisolver==1.4.7
+kiwisolver==1.5.0
     # via matplotlib
-kombu==5.5.3
+kombu==5.6.2
     # via
     #   -c requirements/base.txt
     #   celery
-lazy-object-proxy==1.10.0
+lazy-object-proxy==1.12.0
     # via openapi-spec-validator
-litestar==2.21.1
+ldap3==2.9.1
+    # via
+    #   -c requirements/base.txt
+    #   liteset
+librt==0.11.0
+    # via mypy
+litestar==2.24.0
     # via
     #   -c requirements/base.txt
     #   liteset
@@ -357,25 +383,26 @@ lz4==4.4.5
     # via
     #   -c requirements/base.txt
     #   aiotrino
-mako==1.3.10
+    #   trino
+mako==1.3.12
     # via
     #   -c requirements/base.txt
     #   alembic
     #   liteset
-markdown==3.8
+markdown==3.10.2
     # via
     #   -c requirements/base.txt
     #   liteset
-markdown-it-py==3.0.0
+markdown-it-py==4.2.0
     # via
     #   -c requirements/base.txt
     #   rich
-markupsafe==3.0.2
+markupsafe==3.0.3
     # via
     #   -c requirements/base.txt
     #   jinja2
     #   mako
-matplotlib==3.9.0
+matplotlib==3.11.0
     # via prophet
 mccabe==0.7.0
     # via pylint
@@ -387,7 +414,7 @@ msgpack==1.0.8
     # via
     #   -c requirements/base.txt
     #   liteset
-msgspec==0.19.0
+msgspec==0.21.1
     # via
     #   -c requirements/base.txt
     #   liteset
@@ -402,14 +429,22 @@ multipart==1.3.1
     # via
     #   -c requirements/base.txt
     #   litestar
-mysqlclient==2.2.6
+mypy==2.1.0
     # via liteset
-nh3==0.2.21
+mypy-extensions==1.1.0
+    # via mypy
+mysqlclient==2.2.8
+    # via liteset
+nh3==0.2.22
     # via
     #   -c requirements/base.txt
     #   liteset
-nodeenv==1.8.0
+nodeenv==1.10.0
     # via pre-commit
+numexpr==2.14.1
+    # via
+    #   -c requirements/base.txt
+    #   liteset
 numpy==1.26.4
     # via
     #   -c requirements/base.txt
@@ -419,39 +454,45 @@ numpy==1.26.4
     #   db-dtypes
     #   liteset
     #   matplotlib
+    #   numexpr
     #   pandas
     #   pandas-gbq
     #   prophet
-    #   pyarrow
-oauthlib==3.2.2
+    #   stanio
+oauthlib==3.3.1
     # via requests-oauthlib
 odfpy==1.4.1
     # via
     #   -c requirements/base.txt
     #   pandas
-openapi-schema-validator==0.6.3
+openapi-schema-validator==0.9.0
     # via
     #   -c requirements/base.txt
+    #   liteset
     #   openapi-spec-validator
-openapi-spec-validator==0.7.1
+openapi-spec-validator==0.9.0
     # via liteset
 openpyxl==3.1.5
     # via
     #   -c requirements/base.txt
     #   pandas
+orjson==3.11.9
+    # via trino
 outcome==1.3.0.post0
     # via
     #   -c requirements/base.txt
     #   trio
     #   trio-websocket
-packaging==25.0
+packaging==26.2
     # via
     #   -c requirements/base.txt
+    #   apispec
     #   db-dtypes
-    #   docker
     #   google-cloud-bigquery
+    #   kombu
     #   liteset
     #   matplotlib
+    #   pandas-gbq
     #   pytest
     #   shillelagh
     #   sqlalchemy-bigquery
@@ -463,11 +504,11 @@ pandas==2.1.4
     #   liteset
     #   pandas-gbq
     #   prophet
-pandas-gbq==0.19.1
+pandas-gbq==0.35.0
     # via liteset
 parameterized==0.9.0
     # via liteset
-paramiko==3.5.1
+paramiko==5.0.0
     # via
     #   -c requirements/base.txt
     #   liteset
@@ -476,9 +517,11 @@ parsedatetime==2.6
     # via
     #   -c requirements/base.txt
     #   liteset
-pathable==0.4.3
+pathable==0.6.0
     # via jsonschema-path
-pgsanity==0.2.9
+pathspec==1.1.1
+    # via mypy
+pgsanity==0.3.0
     # via
     #   -c requirements/base.txt
     #   liteset
@@ -487,122 +530,126 @@ pillow==11.3.0
     #   -c requirements/base.txt
     #   liteset
     #   matplotlib
-pip==25.1.1
+pip==26.1.2
     # via liteset
-platformdirs==4.3.8
+platformdirs==4.10.0
     # via
     #   pylint
+    #   python-discovery
     #   requests-cache
     #   virtualenv
-pluggy==1.5.0
-    # via pytest
-ply==3.11
+pluggy==1.6.0
     # via
-    #   -c requirements/base.txt
-    #   jsonpath-ng
+    #   pytest
+    #   pytest-cov
 polyfactory==3.3.0
     # via
     #   -c requirements/base.txt
     #   litestar
-polyline==2.0.2
+polyline==2.0.4
     # via
     #   -c requirements/base.txt
     #   liteset
-pre-commit==4.1.0
+pre-commit==4.6.0
     # via liteset
 prison==0.2.1
     # via
     #   -c requirements/base.txt
     #   liteset
-progress==1.6
+progress==1.6.1
     # via liteset
-prompt-toolkit==3.0.51
+prompt-toolkit==3.0.52
     # via
     #   -c requirements/base.txt
     #   click-repl
-propcache==0.4.1
+propcache==0.5.2
     # via
     #   -c requirements/base.txt
     #   aiohttp
     #   yarl
-prophet==1.2.0
+prophet==1.3.0
     # via liteset
-proto-plus==1.25.0
+proto-plus==1.28.0
+    # via google-api-core
+protobuf==7.35.1
     # via
     #   google-api-core
-    #   google-cloud-bigquery-storage
-protobuf==4.25.5
-    # via
-    #   google-api-core
-    #   google-cloud-bigquery-storage
     #   googleapis-common-protos
     #   grpcio-status
     #   proto-plus
-psutil==6.1.0
-    # via liteset
-psycopg2-binary==2.9.11
+psutil==7.2.2
+    # via
+    #   liteset
+    #   pandas-gbq
+psycopg2-binary==2.9.12
     # via
     #   -c requirements/base.txt
     #   liteset
-pyarrow==16.1.0
+pyarrow==18.1.0
     # via
     #   -c requirements/base.txt
     #   db-dtypes
     #   liteset
     #   pandas-gbq
-pyasn1==0.6.1
+pyasn1==0.6.3
     # via
+    #   -c requirements/base.txt
+    #   ldap3
     #   pyasn1-modules
     #   python-ldap
-    #   rsa
 pyasn1-modules==0.4.2
     # via
     #   google-auth
     #   python-ldap
-pycparser==2.22
+pycparser==3.0
     # via
     #   -c requirements/base.txt
     #   cffi
-pydantic==2.12.5
+pydantic==2.13.4
     # via
     #   -c requirements/base.txt
+    #   openapi-schema-validator
+    #   openapi-spec-validator
     #   pydantic-settings
-pydantic-core==2.41.5
+pydantic-core==2.46.4
     # via
     #   -c requirements/base.txt
     #   pydantic
-pydantic-settings==2.13.1
+pydantic-settings==2.14.1
     # via
     #   -c requirements/base.txt
     #   liteset
-pydata-google-auth==1.9.0
+    #   openapi-schema-validator
+    #   openapi-spec-validator
+pydata-google-auth==1.9.1
     # via pandas-gbq
 pydruid==0.6.9
     # via liteset
-pyfakefs==5.3.5
+pyfakefs==6.2.0
     # via liteset
-pygments==2.19.1
+pygments==2.20.0
     # via
     #   -c requirements/base.txt
     #   pytest
     #   rich
 pyhive==0.7.0
     # via liteset
-pyinstrument==4.4.0
+pyinstrument==4.7.3
     # via liteset
-pyjwt==2.10.1
+pyjwt==2.13.0
     # via
     #   -c requirements/base.txt
     #   liteset
-pylint==3.3.7
+    #   redis
+pylint==4.0.6
     # via liteset
-pynacl==1.5.0
+pynacl==1.6.2
     # via
     #   -c requirements/base.txt
     #   paramiko
 pyopenssl==25.1.0
     # via shillelagh
-pyparsing==3.2.3
+pyparsing==3.3.2
     # via
     #   -c requirements/base.txt
     #   liteset
@@ -611,17 +658,17 @@ pysocks==1.7.1
     # via
     #   -c requirements/base.txt
     #   urllib3
-pytest==9.0.2
+pytest==9.1.0
     # via
     #   liteset
     #   pytest-asyncio
     #   pytest-cov
     #   pytest-mock
-pytest-asyncio==1.3.0
+pytest-asyncio==1.4.0
     # via liteset
-pytest-cov==6.0.0
+pytest-cov==7.1.0
     # via liteset
-pytest-mock==3.10.0
+pytest-mock==3.15.1
     # via liteset
 python-dateutil==2.9.0.post0
     # via
@@ -638,29 +685,30 @@ python-dateutil==2.9.0.post0
     #   pyhive
     #   shillelagh
     #   trino
-python-dotenv==1.1.0
+python-discovery==1.4.2
+    # via virtualenv
+python-dotenv==1.2.2
     # via
     #   -c requirements/base.txt
     #   pydantic-settings
     #   uvicorn
-python-geohash==0.8.5
+python-geohash==0.9.2
     # via
     #   -c requirements/base.txt
     #   liteset
-python-ldap==3.4.4
+python-ldap==3.4.7
     # via liteset
-pytz==2025.2
+pytz==2026.2
     # via
     #   -c requirements/base.txt
     #   aiotrino
-    #   croniter
     #   pandas
     #   trino
 pyxlsb==1.0.10
     # via
     #   -c requirements/base.txt
     #   pandas
-pyyaml==6.0.2
+pyyaml==6.0.3
     # via
     #   -c requirements/base.txt
     #   jsonschema-path
@@ -668,29 +716,29 @@ pyyaml==6.0.2
     #   litestar
     #   pre-commit
     #   uvicorn
-redis==4.6.0
+redis==5.3.1
     # via
     #   -c requirements/base.txt
     #   liteset
-referencing==0.36.2
+referencing==0.37.0
     # via
     #   -c requirements/base.txt
     #   jsonschema
     #   jsonschema-path
     #   jsonschema-specifications
-requests==2.32.4
+    #   openapi-schema-validator
+requests==2.34.2
     # via
     #   docker
     #   google-api-core
     #   google-cloud-bigquery
-    #   jsonschema-path
     #   pydruid
     #   pyhive
     #   requests-cache
     #   requests-oauthlib
     #   shillelagh
     #   trino
-requests-cache==1.2.1
+requests-cache==1.3.2
     # via shillelagh
 requests-oauthlib==2.0.0
     # via google-auth-oauthlib
@@ -698,38 +746,33 @@ rfc3339-validator==0.1.4
     # via
     #   -c requirements/base.txt
     #   openapi-schema-validator
-rich==13.9.4
+rich==15.0.0
     # via
     #   -c requirements/base.txt
     #   litestar
     #   rich-click
-rich-click==1.9.7
+rich-click==1.9.8
     # via
     #   -c requirements/base.txt
     #   litestar
-rpds-py==0.25.0
+rpds-py==2026.5.1
     # via
     #   -c requirements/base.txt
     #   jsonschema
     #   referencing
-rsa==4.9.1
-    # via google-auth
-ruff==0.8.0
+ruff==0.15.17
     # via liteset
-selenium==4.32.0
+selenium==4.39.0
     # via
     #   -c requirements/base.txt
     #   liteset
-setuptools==80.7.1
+setuptools==82.0.1
     # via
-    #   nodeenv
     #   pandas-gbq
     #   pydata-google-auth
-    #   zope-event
-    #   zope-interface
-shillelagh==1.4.3
+shillelagh==1.4.4
     # via liteset
-simplejson==3.20.1
+simplejson==4.1.1
     # via
     #   -c requirements/base.txt
     #   liteset
@@ -740,7 +783,7 @@ six==1.17.0
     #   prison
     #   python-dateutil
     #   rfc3339-validator
-slack-sdk==3.35.0
+slack-sdk==3.42.0
     # via
     #   -c requirements/base.txt
     #   liteset
@@ -753,7 +796,7 @@ sortedcontainers==2.4.0
     # via
     #   -c requirements/base.txt
     #   trio
-sqlalchemy==2.0.48
+sqlalchemy==2.0.51
     # via
     #   -c requirements/base.txt
     #   --override (workspace)
@@ -762,41 +805,43 @@ sqlalchemy==2.0.48
     #   shillelagh
     #   sqlalchemy-bigquery
     #   sqlalchemy-utils
-sqlalchemy-bigquery==1.15.0
+sqlalchemy-bigquery==1.17.0
     # via liteset
 sqlalchemy-utils==0.38.3
     # via
     #   -c requirements/base.txt
     #   liteset
-sqlglot==27.15.2
+sqlglot==27.29.0
     # via
     #   -c requirements/base.txt
     #   liteset
-sqloxide==0.1.51
+sqloxide==0.61.1
     # via liteset
 sshtunnel==0.4.0
     # via
     #   -c requirements/base.txt
     #   liteset
+stanio==0.5.1
+    # via cmdstanpy
 statsd==4.0.1
     # via liteset
-structlog==25.5.0
+structlog==26.1.0
     # via
     #   -c requirements/base.txt
     #   liteset
-tabulate==0.9.0
+tabulate==0.10.0
     # via
     #   -c requirements/base.txt
     #   liteset
-tomlkit==0.13.3
+tomlkit==0.15.0
     # via pylint
-tqdm==4.67.1
+tqdm==4.68.2
     # via
     #   cmdstanpy
     #   prophet
-trino==0.330.0
+trino==0.337.0
     # via liteset
-trio==0.30.0
+trio==0.33.0
     # via
     #   -c requirements/base.txt
     #   selenium
@@ -805,15 +850,45 @@ trio-websocket==0.12.2
     # via
     #   -c requirements/base.txt
     #   selenium
+types-cffi==2.0.0.20260518
+    # via types-pyopenssl
+types-croniter==6.2.2.20260518
+    # via liteset
+types-markdown==3.10.2.20260518
+    # via liteset
+types-paramiko==4.0.0.20260518
+    # via liteset
+types-pyopenssl==24.1.0.20240722
+    # via types-redis
+types-python-dateutil==2.9.0.20260518
+    # via liteset
+types-pytz==2026.2.0.20260518
+    # via liteset
+types-pyyaml==6.0.12.20260518
+    # via liteset
+types-redis==4.6.0.20241004
+    # via liteset
+types-requests==2.33.0.20260518
+    # via liteset
+types-setuptools==82.0.0.20260518
+    # via
+    #   liteset
+    #   types-cffi
+types-simplejson==3.20.0.20260518
+    # via liteset
 typing-extensions==4.15.0
     # via
     #   -c requirements/base.txt
+    #   aiohttp
     #   aiosignal
     #   alembic
     #   anyio
     #   cattrs
+    #   cron-descriptor
+    #   grpcio
     #   liteset
     #   litestar
+    #   mypy
     #   polyfactory
     #   pydantic
     #   pydantic-core
@@ -829,27 +904,30 @@ typing-inspection==0.4.2
     #   -c requirements/base.txt
     #   pydantic
     #   pydantic-settings
-tzdata==2025.2
+tzdata==2026.2
     # via
     #   -c requirements/base.txt
     #   aiotrino
     #   kombu
     #   pandas
-tzlocal==5.3.1
+tzlocal==5.4
     # via
     #   -c requirements/base.txt
     #   aiotrino
+    #   celery
     #   trino
-url-normalize==2.2.1
+url-normalize==3.0.0
     # via requests-cache
 urllib3==2.5.0
     # via
     #   -c requirements/base.txt
     #   docker
+    #   liteset
     #   requests
     #   requests-cache
     #   selenium
-uvicorn==0.42.0
+    #   types-requests
+uvicorn==0.49.0
     # via
     #   -c requirements/base.txt
     #   liteset
@@ -865,17 +943,17 @@ vine==5.1.0
     #   amqp
     #   celery
     #   kombu
-virtualenv==20.29.2
+virtualenv==21.5.0
     # via pre-commit
-watchfiles==1.1.1
+watchfiles==1.2.0
     # via
     #   -c requirements/base.txt
     #   uvicorn
-wcwidth==0.2.13
+wcwidth==0.8.1
     # via
     #   -c requirements/base.txt
     #   prompt-toolkit
-websocket-client==1.8.0
+websocket-client==1.9.0
     # via
     #   -c requirements/base.txt
     #   selenium
@@ -883,11 +961,11 @@ websockets==16.0
     # via
     #   -c requirements/base.txt
     #   uvicorn
-wsproto==1.2.0
+wsproto==1.3.2
     # via
     #   -c requirements/base.txt
     #   trio-websocket
-xlrd==2.0.1
+xlrd==2.0.2
     # via
     #   -c requirements/base.txt
     #   pandas
@@ -896,15 +974,16 @@ xlsxwriter==3.0.9
     #   -c requirements/base.txt
     #   liteset
     #   pandas
-yarl==1.23.0
+yarl==1.24.2
     # via
     #   -c requirements/base.txt
     #   aiohttp
-zope-event==5.0
+zope-event==6.2
     # via gevent
-zope-interface==5.4.0
+zope-interface==8.5
     # via gevent
-zstandard==0.23.0
+zstandard==0.25.0
     # via
     #   -c requirements/base.txt
     #   aiotrino
+    #   trino

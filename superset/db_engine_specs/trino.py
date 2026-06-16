@@ -155,23 +155,39 @@ class Row(types.TypeEngine):
 
 
 class TimeStamp(types.TypeDecorator):
-    """Inline-renders TIMESTAMP literals — Presto/Trino can't auto-cast."""
+    """Inline-renders TIMESTAMP literals — Presto/Trino can't auto-cast.
+
+    Overrides ``literal_processor`` directly so the value renders verbatim as
+    ``TIMESTAMP '...'``. ``process_literal_param`` would only transform the
+    value and then hand it to the ``TIMESTAMP`` impl's own literal processor,
+    which rejects the formatted string. Partition predicates are compiled with
+    ``literal_binds=True`` (see ``where_latest_partition``).
+    """
 
     impl = types.TIMESTAMP
+    cache_ok = True
 
-    @classmethod
-    def process_bind_param(cls, value: str, dialect: Any) -> str:
-        return f"TIMESTAMP '{value}'"
+    def literal_processor(self, dialect: Any) -> Any:
+        def process(value: str) -> str:
+            return f"TIMESTAMP '{value}'"
+
+        return process
 
 
 class Date(types.TypeDecorator):
-    """Inline-renders DATE literals — Presto/Trino can't auto-cast."""
+    """Inline-renders DATE literals — Presto/Trino can't auto-cast.
+
+    Overrides ``literal_processor`` directly; see ``TimeStamp`` above.
+    """
 
     impl = types.DATE
+    cache_ok = True
 
-    @classmethod
-    def process_bind_param(cls, value: str, dialect: Any) -> str:
-        return f"DATE '{value}'"
+    def literal_processor(self, dialect: Any) -> Any:
+        def process(value: str) -> str:
+            return f"DATE '{value}'"
+
+        return process
 
 
 # ---------------------------------------------------------------------------
@@ -1211,7 +1227,27 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
             sqla_columns = inspector.get_columns(table.table, table.schema)
             base_cols = convert_inspector_columns(sqla_columns)
         except NoSuchTableError:
-            base_cols = super().get_columns(inspector, table, options)
+            # The SQLAlchemy dialect can't always reflect Trino tables (e.g. ones
+            # with ROW columns raise NoSuchTableError); fall back to SHOW COLUMNS
+            # and parse the Trino type strings directly.
+            from trino.sqlalchemy import datatype
+
+            full_table_name = cls.quote_table(table, inspector.engine.dialect)
+            rows = inspector.bind.execute(
+                f"SHOW COLUMNS FROM {full_table_name}"  # noqa: S608
+            ).fetchall()
+            base_cols = [
+                {
+                    "name": row.Column,
+                    "column_name": row.Column,
+                    "type": datatype.parse_sqltype(row.Type),
+                    "is_dttm": None,
+                    "type_generic": None,
+                    "default": None,
+                    "nullable": True,
+                }
+                for row in rows
+            ]
 
         if not (options or {}).get("expand_rows"):
             return base_cols

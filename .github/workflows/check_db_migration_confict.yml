@@ -4,7 +4,7 @@ on:
     paths:
       - "superset/migrations/**"
     branches:
-      - "master"
+      - "main"
       - "[0-9].[0-9]*"
   pull_request:
     paths:
@@ -69,7 +69,7 @@ jobs:
                     `❗ @${pull.user.login} Your base branch \`${currentBranch}\` has ` +
                     'also updated `superset/migrations`.\n' +
                     '\n' +
-                    '**Please consider rebasing your branch and [resolving potential db migration conflicts](https://github.com/apache/superset/blob/master/CONTRIBUTING.md#merging-db-migrations).**',
+                    '**Please consider rebasing your branch and [resolving potential db migration conflicts](https://github.com/happykust/liteset/blob/main/CONTRIBUTING.md#merging-db-migrations).**',
                 });
               }
             }

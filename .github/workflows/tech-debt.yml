@@ -1,13 +1,11 @@
 name: Upload Technical Debt Metrics to Google Sheets
 
 on:
-  push:
-    branches:
-      - master
-      - "[0-9].[0-9]*"
+  workflow_dispatch:
 
 jobs:
   config:
+    if: github.repository == 'happykust/liteset'
     runs-on: ubuntu-24.04
     outputs:
       has-secrets: ${{ steps.check.outputs.has-secrets }}

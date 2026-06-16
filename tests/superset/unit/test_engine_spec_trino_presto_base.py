@@ -122,5 +122,9 @@ def test_trino_where_latest_partition_unpartitioned_returns_none():
     ],
 )
 def test_presto_date_timestamp_inline_rendering(type_, literal, expected):
-    """Upstream presto_sql_types render partition values as typed literals."""
-    assert type_.process_bind_param(literal, MagicMock()) == expected
+    """Upstream presto_sql_types render partition values as typed literals.
+
+    Rendering happens via ``literal_processor`` (partition predicates are
+    compiled with ``literal_binds=True``), not ``process_bind_param``.
+    """
+    assert type_().literal_processor(MagicMock())(literal) == expected

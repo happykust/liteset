@@ -1,5 +1,9 @@
 name: Publish a Release
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: happykust
+
 on:
   release:
     types: [published, edited]
@@ -21,28 +25,20 @@ on:
         options:
           - 'true'
           - 'false'
+
+permissions:
+  packages: write
+  contents: write
+
 jobs:
-  config:
-    runs-on: ubuntu-24.04
-    outputs:
-      has-secrets: ${{ steps.check.outputs.has-secrets }}
-    steps:
-      - name: "Check for secrets"
-        id: check
-        shell: bash
-        run: |
-          if [ -n "${{ (secrets.DOCKERHUB_USER != '' && secrets.DOCKERHUB_TOKEN != '') || '' }}" ]; then
-            echo "has-secrets=1" >> "$GITHUB_OUTPUT"
-          fi
 
   docker-release:
-    needs: config
-    if: needs.config.outputs.has-secrets
     name: docker-release
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        build_preset: ["dev", "lean", "py310", "websocket", "dockerize", "py311"]
+        # Valid Dockerfile build targets are: dev, lean, ci (see repo-root Dockerfile).
+        build_preset: ["dev", "lean", "ci"]
       fail-fast: false
     steps:
 
@@ -51,59 +47,65 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Docker Environment
-        uses: ./.github/actions/setup-docker
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          dockerhub-user: ${{ secrets.DOCKERHUB_USER }}
-          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
-          install-docker-compose: "false"
-          build: "true"
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Use Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Setup supersetbot
-        uses: ./.github/actions/setup-supersetbot/
-
-      - name: Execute custom Node.js script
-        env:
-          DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USER }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Determine release ref and image tag
+        id: release-meta
+        shell: bash
         run: |
           RELEASE="${{ github.event.release.tag_name }}"
-          FORCE_LATEST=""
-          EVENT="${{github.event_name}}"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            # in the case of a manually-triggered run, read release from input
             RELEASE="${{ github.event.inputs.release }}"
-            if [ "${{ github.event.inputs.force-latest }}" = "true" ]; then
-              FORCE_LATEST="--force-latest"
-            fi
             git checkout "${{ github.event.inputs.git-ref }}"
-            EVENT="release"
+          fi
+          echo "release=${RELEASE}" >> $GITHUB_OUTPUT
+          echo "image_tag=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/liteset:${RELEASE}-${{ matrix.build_preset }}" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FORCE_LATEST_TAG=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.force-latest }}" = "true" ]; then
+            FORCE_LATEST_TAG="--tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/liteset:latest-${{ matrix.build_preset }}"
           fi
 
-          supersetbot docker \
+          docker buildx build \
             --push \
-            --preset ${{ matrix.build_preset }} \
-            --context "$EVENT" \
-            --context-ref "$RELEASE" $FORCE_LATEST \
+            --target ${{ matrix.build_preset }} \
+            --build-arg INCLUDE_CHROMIUM=false \
+            --tag ${{ steps.release-meta.outputs.image_tag }} \
+            $FORCE_LATEST_TAG \
             --platform "linux/arm64" \
-            --platform "linux/amd64"
+            --platform "linux/amd64" \
+            .
 
-          # Returning to master to support closing setup-supersetbot
-          git checkout master
+      - name: Checkout main after release build
+        if: github.event_name == 'workflow_dispatch'
+        run: git checkout main
 
-  update-prs-with-release-info:
-    needs: config
-    if: needs.config.outputs.has-secrets
+  python-release:
+    name: Build and publish Python package to PyPI
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
-      pull-requests: write
+      # id-token: write enables PyPI Trusted Publishing (OIDC) — no API token needed.
+      # Configure the trusted publisher once on PyPI (project → Publishing): owner
+      # happykust, repo liteset, workflow tag-release.yml. contents: write is for the
+      # GitHub Release asset upload below (job-level perms replace the workflow default).
+      id-token: write
+      contents: write
     steps:
 
       - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
@@ -111,24 +113,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Use Node.js 20
-        uses: actions/setup-node@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          node-version: 20
+          python-version: "3.12"
 
-      - name: Setup supersetbot
-        uses: ./.github/actions/setup-supersetbot/
+      - name: Install build tools
+        run: pip install --upgrade build
 
-      - name: Label the PRs with the right release-related labels
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Upload release assets to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          export GITHUB_ACTOR=""
-          git fetch --all --tags
-          git checkout master
-          RELEASE="${{ github.event.release.tag_name }}"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            # in the case of a manually-triggered run, read release from input
-            RELEASE="${{ github.event.inputs.release }}"
-          fi
-          supersetbot release-label $RELEASE
+
+      - name: Publish to PyPI
+        # Uses OIDC Trusted Publishing (no password/secret). Requires the
+        # id-token: write permission above and a trusted publisher configured on PyPI.
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true

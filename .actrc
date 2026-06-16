@@ -1,0 +1,16 @@
+# nektos/act configuration for running the liteset GitHub Actions locally.
+# Docs: https://nektosact.com  —  https://github.com/nektos/act
+#
+# Map GitHub-hosted runner labels to act-compatible container images.
+# catthehacker/ubuntu:act-latest is 24.04-based and ships python/node/docker tooling.
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+-P ubuntu-24.04=catthehacker/ubuntu:act-latest
+-P ubuntu-22.04=catthehacker/ubuntu:act-22.04
+
+# This host is linux/amd64; pin it so images don't get pulled for the wrong arch.
+--container-architecture linux/amd64
+
+# NOTE for rootless Docker: act defaults to /var/run/docker.sock (root-owned). If you
+# run rootless Docker, point act at your user socket before invoking it, e.g.:
+#   export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock
+# (Check your socket with: docker context ls)

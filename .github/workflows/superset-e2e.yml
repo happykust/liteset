@@ -3,7 +3,7 @@ name: E2E
 on:
   push:
     branches:
-      - "master"
+      - "main"
       - "[0-9].[0-9]*"
   pull_request:
     types: [synchronize, opened, reopened, ready_for_review]
@@ -44,11 +44,9 @@ jobs:
         browser: ["chrome"]
         app_root: ["", "/app/prefix"]
     env:
-      SUPERSET_ENV: development
-      SUPERSET_CONFIG: tests.integration_tests.superset_test_config
-      SUPERSET__SQLALCHEMY_DATABASE_URI: postgresql+psycopg2://superset:superset@127.0.0.1:15432/superset
+      LITESET_SQLALCHEMY_DATABASE_URI: postgresql+asyncpg://superset:superset@127.0.0.1:15432/superset
+      LITESET_SECRET_KEY: test-secret-key-at-least-32-bytes-long-xx
       PYTHONPATH: ${{ github.workspace }}
-      REDIS_PORT: 16379
       GITHUB_TOKEN: ${{ github.token }}
       # Only use dashboard when explicitly requested via workflow_dispatch
       USE_DASHBOARD: ${{ github.event.inputs.use_dashboard == 'true' || 'false' }}

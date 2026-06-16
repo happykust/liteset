@@ -106,6 +106,19 @@ def main(event_type: str, sha: str, repo: str) -> None:
     """Main function to check for file changes based on event context."""
     print("SHA:", sha)
     print("EVENT_TYPE", event_type)
+
+    # When running locally under nektos/act there is no GitHub API to query for
+    # the changed-file list, so every ``if: steps.check.outputs.*`` gate would be
+    # skipped. act sets ``ACT=true`` — fall back to triggering every group so the
+    # workflow actually exercises its steps locally.
+    if os.getenv("ACT"):
+        print("Running under act — triggering all change-detector groups")
+        output_path = os.getenv("GITHUB_OUTPUT") or "/tmp/GITHUB_OUTPUT.txt"  # noqa: S108
+        with open(output_path, "a") as f:
+            for group in PATTERNS:
+                print(f"{group}=true", file=f)
+        return
+
     files = []
     if event_type == "pull_request":
         pr_number = os.getenv("GITHUB_REF", "").split("/")[-2]
@@ -166,7 +179,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--repo",
-        default=os.getenv("GITHUB_REPOSITORY") or "apache/superset",
+        default=os.getenv("GITHUB_REPOSITORY") or "happykust/liteset",
         help="GitHub repository in the format owner/repo",
     )
     args = parser.parse_args()

@@ -1,14 +1,11 @@
 name: supersetbot orglabel based on author
 
 on:
-  issues:
-    types: [created, edited]
-
-  pull_request:
-    types: [created, edited]
+  workflow_dispatch:
 
 jobs:
   superbot-orglabel:
+    if: github.repository == 'happykust/liteset'
     runs-on: ubuntu-24.04
     permissions:
       contents: read

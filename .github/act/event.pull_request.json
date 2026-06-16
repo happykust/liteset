@@ -1,0 +1,14 @@
+{
+  "action": "synchronize",
+  "pull_request": {
+    "number": 1,
+    "draft": false,
+    "head": { "ref": "feature-branch", "sha": "0000000000000000000000000000000000000000" },
+    "base": { "ref": "main" }
+  },
+  "repository": {
+    "name": "liteset",
+    "full_name": "happykust/liteset",
+    "owner": { "login": "happykust" }
+  }
+}

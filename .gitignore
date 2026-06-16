@@ -139,3 +139,6 @@ CLAUDE.local.md
 .env.local
 PROJECT.md
 /liteset.egg-info/
+
+# act (local CI) — real secrets, never commit
+.github/act/secrets
