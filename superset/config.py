@@ -884,12 +884,12 @@ class SupersetSettings(BaseSettings):
     guest_token_validator_hook: Any | None = None
 
     # ── UI / Branding ──
-    app_name: str = "Superset"
-    app_icon: str = "/static/assets/images/superset-logo-horiz.png"
+    app_name: str = "Liteset"
+    app_icon: str = "/static/assets/images/liteset-logo-horiz.png"
     logo_target_path: str | None = None
-    logo_tooltip: str = ""
+    logo_tooltip: str = "Liteset"
     logo_right_text: Any = ""  # Can be str or Callable
-    favicons: list[dict[str, str]] = [{"href": "/static/assets/images/favicon.png"}]
+    favicons: list[dict[str, str]] = [{"href": "/static/assets/images/liteset-favicon.png"}]
 
     # ── Version / Build ──
     version_string: str = ""

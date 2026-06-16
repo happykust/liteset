@@ -209,8 +209,8 @@ const config: Config = {
     navbar: {
       logo: {
         alt: 'Liteset Logo',
-        src: '/img/superset-logo-horiz.svg',
-        srcDark: '/img/superset-logo-horiz-dark.svg',
+        src: '/img/liteset-logo-horiz.svg',
+        srcDark: '/img/liteset-logo-horiz-dark.svg',
       },
       items: [
         {

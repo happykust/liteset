@@ -491,7 +491,7 @@ export default function Home(): JSX.Element {
     const logo = document.body.querySelector('.navbar__logo img');
     if (!navbar || !logo) return;
     navbar.classList.add('navbar--dark');
-    logo.setAttribute('src', '/img/superset-logo-horiz-dark.svg');
+    logo.setAttribute('src', '/img/liteset-logo-horiz-dark.svg');
   };
 
   const changeToLight = () => {
@@ -499,7 +499,7 @@ export default function Home(): JSX.Element {
     const logo = document.body.querySelector('.navbar__logo img');
     if (!navbar || !logo) return;
     navbar.classList.remove('navbar--dark');
-    logo.setAttribute('src', '/img/superset-logo-horiz.svg');
+    logo.setAttribute('src', '/img/liteset-logo-horiz.svg');
   };
 
   // Set up dark <-> light navbar change
@@ -549,7 +549,7 @@ export default function Home(): JSX.Element {
           <div className="info-container">
             <img
               className="superset-mark"
-              src="/img/superset-mark-dark.svg"
+              src="/img/liteset-mark-dark.svg"
               alt="Liteset mark"
             />
             <div className="info-text">
