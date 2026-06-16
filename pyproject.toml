@@ -484,6 +484,11 @@ authorized_licenses = [
     "simplified bsd",
     "the unlicense (unlicense)",
     "the unlicense",
+    # SPDX identifiers reported by newer deps (asyncpg, aiohttp stack, litestar, …)
+    "apache-2.0",
+    "apache-2.0 and mit",
+    "apache-2.0 or bsd-2-clause",
+    "bsd-2-clause",
 ]
 [tool.liccheck.authorized_packages]
 # --------------------------------------------------------------
@@ -495,8 +500,10 @@ polyline = "2"
 python-geohash = "0"
 # --------------------------------------------------------------
 
-# TODO REMOVE THESE DEPS FROM CODEBASE
-paramiko = "3"  # GPL
+# LGPL deps — acceptable for dynamically-linked Python packages
+ldap3 = "2"  # LGPLv3
+paramiko = "5"  # LGPL-2.1
+psycopg2-binary = "2"  # LGPL
 pyxlsb = "1"  # GPL
 
 [tool.uv]
