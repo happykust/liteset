@@ -84,13 +84,12 @@ jobs:
           IMAGE_TAG="${REGISTRY}/${IMAGE_NAMESPACE}/liteset:GHA-${{ matrix.build_preset }}-${{ github.run_id }}"
           echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
 
-          # Single platform builds in pull_request context to speed things up
+          # amd64-only: arm64 has no prebuilt wheels for some deps (e.g.
+          # python-geohash) and would need a Rust toolchain in the build image.
+          PLATFORM_ARG="--platform linux/amd64"
           if [ "${{ github.event_name }}" = "push" ]; then
-            PLATFORM_ARG="--platform linux/arm64 --platform linux/amd64"
-            # can only --load images in single-platform builds
             PUSH_OR_LOAD="--push"
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            PLATFORM_ARG="--platform linux/amd64"
             PUSH_OR_LOAD="--load"
           fi
 

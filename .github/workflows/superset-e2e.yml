@@ -45,6 +45,7 @@ jobs:
         app_root: ["", "/app/prefix"]
     env:
       LITESET_SQLALCHEMY_DATABASE_URI: postgresql+asyncpg://superset:superset@127.0.0.1:15432/superset
+      LITESET_SQLALCHEMY_EXAMPLES_URI: postgresql+asyncpg://superset:superset@127.0.0.1:15432/superset
       LITESET_SECRET_KEY: test-secret-key-at-least-32-bytes-long-xx
       PYTHONPATH: ${{ github.workspace }}
       GITHUB_TOKEN: ${{ github.token }}

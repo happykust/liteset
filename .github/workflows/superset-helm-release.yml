@@ -49,13 +49,9 @@ jobs:
       - name: Add bitnami repo dependency
         run: helm repo add bitnami https://charts.bitnami.com/bitnami
 
-      - name: Fetch/list all tags
-        run: |
-          # Debugging tags
-          git fetch --tags --force
-          git tag -d superset-helm-chart-0.13.4 || true
-          echo "DEBUG TAGS"
-          git show-ref --tags
+      - name: Fetch tags
+        # chart-releaser uses git tags to detect already-released chart versions.
+        run: git fetch --tags --force
 
       - name: Create unique pages branch name
         id: vars
@@ -84,10 +80,9 @@ jobs:
           # Return to the original branch
           git checkout local_gha_temp
 
-      - name: Fetch/list all tags
-        run: |
-          git submodule update
-          cat .github/actions/chart-releaser-action/action.yml
+      - name: Restore submodules
+        # The branch dance above deinits submodules; chart-releaser-action is one.
+        run: git submodule update --init --recursive
 
       - name: Run chart-releaser
         uses: ./.github/actions/chart-releaser-action
