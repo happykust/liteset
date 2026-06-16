@@ -392,9 +392,7 @@ class SecurityHeadersMiddleware(ASGIMiddleware):
             location = _build_force_https_location(scope)
             if location is not None:
                 status = (
-                    301
-                    if talisman_config.get("force_https_permanent", False)
-                    else 302
+                    301 if talisman_config.get("force_https_permanent", False) else 302
                 )
                 await send(
                     {

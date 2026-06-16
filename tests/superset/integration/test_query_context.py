@@ -61,7 +61,6 @@ from superset.utils.pandas_postprocessing.utils import FLAT_COLUMN_SEPARATOR
 pytestmark = pytest.mark.asyncio
 
 
-
 # ---------------------------------------------------------------------------
 # Query-context payload generator (inlined 1:1 from
 # ``tests/common/query_context_generator.py`` so the test does not import the
@@ -402,9 +401,7 @@ async def _get_payload(
     return out
 
 
-async def get_sql_text(
-    session: AsyncSession, payload: dict[str, Any]
-) -> str:
+async def get_sql_text(session: AsyncSession, payload: dict[str, Any]) -> str:
     """1:1 with the upstream module-level ``get_sql_text`` helper."""
     payload["result_type"] = "query"
     query_context, processor, _ = await _load_query_context(session, payload)
@@ -860,9 +857,7 @@ class TestQueryContext:
         sql_text = await get_sql_text(db_session, payload)
         assert "123 = 123" in sql_text
 
-    async def test_query_object_unknown_fields(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_query_object_unknown_fields(self, db_session: AsyncSession) -> None:
         """Query objects with unknown fields don't raise and keep the cache key."""
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context("birth_names", ds.id)
@@ -876,9 +871,7 @@ class TestQueryContext:
         assert orig_cache_key == new_cache_key
 
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
-    async def test_time_offsets_in_query_object(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_time_offsets_in_query_object(self, db_session: AsyncSession) -> None:
         """Ensure that time_offsets can generate the correct query."""
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context("birth_names", ds.id)
@@ -1265,9 +1258,7 @@ async def _make_physical_dataset(session: AsyncSession) -> SqlaTable:
                 type="TIMESTAMP",
                 is_dttm=True,
             ),
-            _SqlMetric(
-                table_id=dataset.id, metric_name="count", expression="count(*)"
-            ),
+            _SqlMetric(table_id=dataset.id, metric_name="count", expression="count(*)"),
         ]
     )
     await session.flush()

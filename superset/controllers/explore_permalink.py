@@ -73,9 +73,9 @@ class ExplorePermalinkCreateSchema(msgspec.Struct, rename="camel"):
     # Each item is a 2-element ``(key, value)`` pair — 1:1 with upstream
     # ``fields.Tuple((String(allow_none=True), String(allow_none=True)))``
     # (explore/permalink/schemas.py): a list of any other length is rejected.
-    url_params: (
-        list[tuple[str | None, str | None]] | None | msgspec.UnsetType
-    ) = msgspec.UNSET
+    url_params: list[tuple[str | None, str | None]] | None | msgspec.UnsetType = (
+        msgspec.UNSET
+    )
 
 
 class ExplorePermalinkController(Controller):

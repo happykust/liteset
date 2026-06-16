@@ -73,9 +73,7 @@ def sync_session() -> Iterator[Session]:
 
 @pytest.fixture
 def owners(sync_session: Session) -> list[User]:
-    admin = (
-        sync_session.query(User).filter(User.username == "admin").one_or_none()
-    )
+    admin = sync_session.query(User).filter(User.username == "admin").one_or_none()
     if admin is None:
         admin = User(
             username="admin",
@@ -114,9 +112,7 @@ def alert_reports_enabled() -> Iterator[MagicMock]:
     """Patch the feature-flag manager so ``ALERT_REPORTS`` is enabled."""
     ff = MagicMock()
     ff.is_feature_enabled.return_value = True
-    with patch(
-        "superset.utils.feature_flags.feature_flag_manager", ff
-    ):
+    with patch("superset.utils.feature_flags.feature_flag_manager", ff):
         yield ff
 
 

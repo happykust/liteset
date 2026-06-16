@@ -1396,9 +1396,7 @@ class TestDeckGLMultiLayer:
         settings = SupersetSettings(mapbox_api_key="test_key")  # type: ignore[call-arg]
         datasource = get_datasource_mock()
 
-        database = await f.create_database(
-            db_session, database_name="deck_multi_db_1"
-        )
+        database = await f.create_database(db_session, database_name="deck_multi_db_1")
         ds = await f.create_dataset(
             db_session, table_name="deck_multi_ds_1", database=database
         )
@@ -1446,9 +1444,7 @@ class TestDeckGLMultiLayer:
         }
 
         test_viz = viz.DeckGLMultiLayer(datasource, form_data, settings=settings)
-        test_viz._apply_layer_filtering = Mock(
-            side_effect=lambda fd, idx: fd
-        )
+        test_viz._apply_layer_filtering = Mock(side_effect=lambda fd, idx: fd)
 
         with patch.object(viz, "viz_types", viz_type_map):
             result = await test_viz.async_get_data(pd.DataFrame(), db_session)
@@ -1485,9 +1481,7 @@ class TestDeckGLMultiLayer:
         settings = SupersetSettings(mapbox_api_key="test_key")  # type: ignore[call-arg]
         datasource = get_datasource_mock()
 
-        database = await f.create_database(
-            db_session, database_name="deck_multi_db_2"
-        )
+        database = await f.create_database(db_session, database_name="deck_multi_db_2")
         ds = await f.create_dataset(
             db_session, table_name="deck_multi_ds_2", database=database
         )

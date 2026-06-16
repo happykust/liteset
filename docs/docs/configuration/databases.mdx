@@ -29,6 +29,40 @@ each database engine you want to connect to.
 You can read more [here](/docs/configuration/databases#installing-drivers-in-docker-images) about how to
 install new database drivers into your Liteset configuration.
 
+### How Liteset connects: async and sync drivers
+
+Liteset talks to your databases over SQLAlchemy 2.0's **async** engine. Unlike Apache Superset — which is synchronous end to end — Liteset has two connection paths, and it picks the right one automatically based on the database engine:
+
+- **Native async drivers.** For engines that have a real asyncio DB-API, Liteset ships a dedicated async engine spec (`superset/db/engine_specs/`) that runs queries **without blocking the event loop**. While one query waits on the database, the same worker keeps serving other requests — this is where the throughput and tail-latency gains in the [benchmarks](/docs/benchmarks/results) come from.
+- **Sync fallback.** Every other SQLAlchemy-supported database keeps working through `SyncFallbackEngineSpec`, which drives the **standard synchronous DB-API** (`psycopg2`, `pymysql`, `snowflake-sqlalchemy`, …) through SQLAlchemy's greenlet `run_sync` bridge. This preserves Superset's full database catalogue with no loss of functionality — the trade-off is that such a query occupies its coroutine until it returns, so it does not yield the event loop the way a native async driver does.
+
+**You install the same driver packages and use the same SQLAlchemy URIs as in Apache Superset** (see the [table below](#supported-databases-and-dependencies)). You don't rewrite connection strings: Liteset resolves the engine spec from the URI backend and, when a native async spec and its driver are present, uses the async driver under the hood.
+
+Engines with a **native async engine spec**:
+
+| Database engine(s)                                                                                          | Native async driver       |
+| ----------------------------------------------------------------------------------------------------------- | ------------------------- |
+| PostgreSQL — and the Postgres-wire engines TimescaleDB, Hologres, YugabyteDB, AWS Redshift, CockroachDB, CrateDB, Denodo, RisingWave | `asyncpg`                 |
+| MySQL, StarRocks                                                                                            | `asyncmy`                 |
+| Apache Doris, OceanBase                                                                                     | `aiomysql`                |
+| ClickHouse                                                                                                  | `asynch`                  |
+| Trino                                                                                                       | `aiotrino`                |
+| Microsoft SQL Server / Azure SQL                                                                            | `aioodbc`                 |
+| Oracle                                                                                                      | `oracledb` (thin, async)  |
+| Apache Pinot                                                                                                | async HTTP (`pinotdb`)    |
+| AWS Athena                                                                                                  | `pyathena` (REST)         |
+| AWS DynamoDB                                                                                                | `aioboto3`                |
+| Elasticsearch / OpenDistro                                                                                  | async Elasticsearch client |
+| Azure Data Explorer (Kusto — SQL & KQL)                                                                     | async HTTP                |
+| Databend                                                                                                    | `databend`                |
+| Firebird                                                                                                    | `firebirdsql`             |
+| Firebolt                                                                                                    | `firebolt`                |
+| YDB                                                                                                         | `ydb`                     |
+
+:::note
+The async drivers **bundled in the Liteset image** are `asyncpg`, `aiosqlite` (SQLite) and `aiotrino` — these cover the metadata database and the most exercised analytical engines. **PostgreSQL, MySQL, ClickHouse and Trino** are the four engines validated under the load tests. For any other engine — async or sync — install the matching driver package exactly as you would on Apache Superset, following the table in the next section.
+:::
+
 ### Supported Databases and Dependencies
 
 Some of the recommended packages are shown below. Please refer to

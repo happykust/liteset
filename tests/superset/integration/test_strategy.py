@@ -173,9 +173,7 @@ async def test_dashboard_tags_strategy(db_session) -> None:
         unicode_dash.slices = [unicode_slice]
         session.add(unicode_dash)
         session.commit()
-        created.update(
-            table=table, slice=unicode_slice, dashboard=unicode_dash
-        )
+        created.update(table=table, slice=unicode_slice, dashboard=unicode_dash)
 
         tag1 = _get_or_create_tag(session, "tag1")
         # delete first to make test idempotent
@@ -237,11 +235,7 @@ async def test_dashboard_tags_strategy(db_session) -> None:
         dash = cleanup.query(Dashboard).filter_by(slug="unicode-test").one_or_none()
         if dash:
             cleanup.delete(dash)
-        sl = (
-            cleanup.query(Slice)
-            .filter_by(slice_name="Unicode Cloud")
-            .one_or_none()
-        )
+        sl = cleanup.query(Slice).filter_by(slice_name="Unicode Cloud").one_or_none()
         if sl:
             cleanup.delete(sl)
         tbl = (

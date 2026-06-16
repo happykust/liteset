@@ -144,9 +144,7 @@ def test_permissions_with_catalog() -> None:
 async def _seed_named_datasets(session: AsyncSession, database_id: int) -> None:
     """Seed datasets covering the name/catalog/schema lookup matrix."""
 
-    def make(
-        catalog: str | None, schema: str | None, table_name: str
-    ) -> SqlaTable:
+    def make(catalog: str | None, schema: str | None, table_name: str) -> SqlaTable:
         ds = SqlaTable(
             database_id=database_id,
             catalog=catalog,
@@ -187,9 +185,7 @@ def test_query_datasources_by_name(tmp_path: Path) -> None:
             await conn.run_sync(Base.metadata.create_all)
         try:
             async with AsyncSession(engine, expire_on_commit=False) as session:
-                database = Database(
-                    database_name="my_db", sqlalchemy_uri="sqlite://"
-                )
+                database = Database(database_name="my_db", sqlalchemy_uri="sqlite://")
                 session.add(database)
                 await session.flush()
                 await _seed_named_datasets(session, database.id)

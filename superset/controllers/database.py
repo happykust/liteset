@@ -1229,9 +1229,7 @@ class DatabaseController(Controller):
                 # Analytics event — 1:1 with upstream CreateDatabaseCommand.run
                 # (superset_old/commands/database/create.py:109-112).
                 event_logger.log_with_context(
-                    action=(
-                        f"db_creation_failed.{type(_ssh_exc).__name__}.ssh_tunnel"
-                    ),
+                    action=(f"db_creation_failed.{type(_ssh_exc).__name__}.ssh_tunnel"),
                     engine=(create_data.get("sqlalchemy_uri") or "").split(":")[0],
                 )
                 raise
@@ -2679,9 +2677,9 @@ class DatabaseController(Controller):
             # the engine we build the connection-relevant fields from it — 1:1
             # with upstream, which only ever sees the sync specs here.
             params_spec = form_spec if form_spec is not None else spec_cls
-            default_driver = (
-                getattr(params_spec, "default_driver", "") or ""
-            ) or (getattr(spec_cls, "default_driver", "") or "")
+            default_driver = (getattr(params_spec, "default_driver", "") or "") or (
+                getattr(spec_cls, "default_driver", "") or ""
+            )
             # Use the engine spec's sqlalchemy_uri_placeholder when available
             # — 1:1 with ``superset_old/databases/api.py:1904``.
             placeholder = getattr(

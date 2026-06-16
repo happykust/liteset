@@ -182,9 +182,7 @@ async def test_extra_filters_parameter_takes_precedence():
     mock_qc.queries = [mock_query]
 
     extra_filters_json = '[{"col": "state", "op": "==", "val": "CA"}]'
-    command = _make_command(
-        chart, dashboard_id=42, extra_filters=extra_filters_json
-    )
+    command = _make_command(chart, dashboard_id=42, extra_filters=extra_filters_json)
 
     # Spy on the dashboard-metadata fetch to ensure it is NOT consulted.
     with (
@@ -390,9 +388,7 @@ async def test_legacy_chart_warm_up_with_dashboard():
     mock_datasource.id = 1
 
     mock_viz = Mock()
-    mock_viz.get_payload = AsyncMock(
-        return_value={"errors": None, "status": "success"}
-    )
+    mock_viz.get_payload = AsyncMock(return_value={"errors": None, "status": "success"})
 
     dashboard_filters = [{"col": "country", "op": "==", "val": "USA"}]
     command = _make_command(chart, dashboard_id=42)
@@ -434,9 +430,7 @@ async def test_legacy_chart_warm_up_without_dashboard():
     mock_datasource.id = 1
 
     mock_viz = Mock()
-    mock_viz.get_payload = AsyncMock(
-        return_value={"errors": None, "status": "success"}
-    )
+    mock_viz.get_payload = AsyncMock(return_value={"errors": None, "status": "success"})
 
     command = _make_command(chart, dashboard_id=None)
 

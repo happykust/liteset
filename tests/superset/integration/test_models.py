@@ -272,8 +272,7 @@ class TestDatabaseModel:
             call_args = mocked_create_engine.call_args
 
             assert (
-                str(call_args[0][0])
-                == "mysql+mysqlconnector://user:password@localhost"
+                str(call_args[0][0]) == "mysql+mysqlconnector://user:password@localhost"
             )
             assert call_args[1]["connect_args"]["allow_local_infile"] == 0
 

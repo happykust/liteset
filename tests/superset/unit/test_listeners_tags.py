@@ -37,12 +37,8 @@ def test_tag_listeners_not_wired_when_flag_off() -> None:
     ``register_sqla_event_listeners`` under the feature flag, so with tagging
     disabled a sync insert (Celery query worker, CLI import) creates no
     implicit ``owner:``/``type:`` tags."""
-    assert not event.contains(
-        Slice, "after_insert", _listeners._chart_tag_after_insert
-    )
-    assert not event.contains(
-        Query, "after_insert", _listeners._query_tag_after_insert
-    )
+    assert not event.contains(Slice, "after_insert", _listeners._chart_tag_after_insert)
+    assert not event.contains(Query, "after_insert", _listeners._query_tag_after_insert)
     assert not event.contains(
         SavedQuery, "after_insert", _listeners._query_tag_after_insert
     )

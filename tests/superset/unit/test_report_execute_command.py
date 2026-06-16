@@ -313,9 +313,7 @@ def test_get_dashboard_urls_with_multiple_tabs(
     settings.webdriver_baseurl = BASE_URL
 
     with (
-        patch(
-            "superset.commands.report_execute._get_settings", return_value=settings
-        ),
+        patch("superset.commands.report_execute._get_settings", return_value=settings),
         patch("superset.utils.urls._cached_settings", return_value=settings),
     ):
         result: list[str] = class_instance.get_dashboard_urls()
@@ -355,9 +353,7 @@ def test_get_dashboard_urls_with_exporting_dashboard_only(
     settings.webdriver_baseurl = BASE_URL
 
     with (
-        patch(
-            "superset.commands.report_execute._get_settings", return_value=settings
-        ),
+        patch("superset.commands.report_execute._get_settings", return_value=settings),
         patch("superset.utils.urls._cached_settings", return_value=settings),
     ):
         result: list[str] = class_instance.get_dashboard_urls()
@@ -492,9 +488,7 @@ def test_screenshot_width_calculation(
     settings.webdriver_baseurl_user_friendly = BASE_URL
 
     with (
-        patch(
-            "superset.commands.report_execute._get_settings", return_value=settings
-        ),
+        patch("superset.commands.report_execute._get_settings", return_value=settings),
         patch("superset.utils.urls._cached_settings", return_value=settings),
         patch("superset.utils.screenshots._cached_settings", return_value=settings),
         patch(

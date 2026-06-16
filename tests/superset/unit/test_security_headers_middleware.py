@@ -262,8 +262,12 @@ from superset.middleware.security_headers import (  # noqa: E402
 )
 
 
-def _make_scope(scheme: str = "http", host: str = "superset.example.com",
-                path: str = "/dashboard/1/", query: bytes = b"") -> dict:
+def _make_scope(
+    scheme: str = "http",
+    host: str = "superset.example.com",
+    path: str = "/dashboard/1/",
+    query: bytes = b"",
+) -> dict:
     return {
         "type": "http",
         "scheme": scheme,
@@ -305,9 +309,7 @@ async def _drive(scope: dict, talisman_config: dict, talisman_enabled: bool = Tr
 
 
 def test_force_https_location_builds_https_url():
-    loc = _build_force_https_location(
-        _make_scope(path="/c/", query=b"a=1&b=2")
-    )
+    loc = _build_force_https_location(_make_scope(path="/c/", query=b"a=1&b=2"))
     assert loc == b"https://superset.example.com/c/?a=1&b=2"
 
 

@@ -24,6 +24,40 @@ Liteset требует установленного Python [DB-API драйве�
 
 Подробнее об установке новых драйверов в Liteset — см. [Установка драйверов в Docker-образах](#installing-drivers-in-docker-images).
 
+### Как Liteset подключается: async- и sync-драйверы {#how-liteset-connects}
+
+Liteset работает с базами данных через **async**-движок SQLAlchemy 2.0. В отличие от Apache Superset, который синхронен от и до, у Liteset два пути подключения, и он выбирает нужный автоматически по типу движка БД:
+
+- **Нативные async-драйверы.** Для движков с настоящим asyncio DB-API Liteset поставляет отдельный async engine spec (`superset/db/engine_specs/`), который выполняет запросы **не блокируя event loop**. Пока один запрос ждёт ответа БД, тот же воркер обслуживает другие — именно отсюда прирост пропускной способности и хвостовой латентности в [бенчмарках](/docs/benchmarks/results).
+- **Sync-фолбэк.** Любая другая поддерживаемая SQLAlchemy база продолжает работать через `SyncFallbackEngineSpec`, который выполняет **стандартный синхронный DB-API** (`psycopg2`, `pymysql`, `snowflake-sqlalchemy`, …) через greenlet-мост SQLAlchemy `run_sync`. Это сохраняет весь каталог БД Superset без потери функциональности — ценой того, что такой запрос занимает свою корутину до завершения и не отдаёт event loop, как нативный async-драйвер.
+
+**Вы устанавливаете те же пакеты драйверов и используете те же SQLAlchemy-URI, что и в Apache Superset** (см. [таблицу ниже](#supported-databases-and-dependencies)). Строки подключения переписывать не нужно: Liteset определяет engine spec по backend'у из URI и, если нативный async-спек и его драйвер доступны, использует async-драйвер под капотом.
+
+Движки с **нативным async engine spec**:
+
+| Движок(и) БД                                                                                                | Нативный async-драйвер     |
+| ----------------------------------------------------------------------------------------------------------- | -------------------------- |
+| PostgreSQL — и Postgres-wire движки TimescaleDB, Hologres, YugabyteDB, AWS Redshift, CockroachDB, CrateDB, Denodo, RisingWave | `asyncpg`                  |
+| MySQL, StarRocks                                                                                            | `asyncmy`                  |
+| Apache Doris, OceanBase                                                                                     | `aiomysql`                 |
+| ClickHouse                                                                                                  | `asynch`                   |
+| Trino                                                                                                       | `aiotrino`                 |
+| Microsoft SQL Server / Azure SQL                                                                            | `aioodbc`                  |
+| Oracle                                                                                                      | `oracledb` (thin, async)   |
+| Apache Pinot                                                                                                | async HTTP (`pinotdb`)     |
+| AWS Athena                                                                                                  | `pyathena` (REST)          |
+| AWS DynamoDB                                                                                                | `aioboto3`                 |
+| Elasticsearch / OpenDistro                                                                                  | async Elasticsearch-клиент |
+| Azure Data Explorer (Kusto — SQL и KQL)                                                                     | async HTTP                 |
+| Databend                                                                                                    | `databend`                 |
+| Firebird                                                                                                    | `firebirdsql`              |
+| Firebolt                                                                                                    | `firebolt`                 |
+| YDB                                                                                                         | `ydb`                      |
+
+:::note
+Async-драйверы, **входящие в образ Liteset** — это `asyncpg`, `aiosqlite` (SQLite) и `aiotrino`; они покрывают БД метаданных и наиболее нагруженные аналитические движки. **PostgreSQL, MySQL, ClickHouse и Trino** — четыре движка, проверенные под нагрузочными тестами. Для любого другого движка — async или sync — установите соответствующий пакет драйвера ровно так же, как в Apache Superset, по таблице из следующего раздела.
+:::
+
 ### Поддерживаемые БД и зависимости {#supported-databases-and-dependencies}
 
 Рекомендуемые пакеты ниже. Версии, совместимые с Liteset — см. [pyproject.toml](https://github.com/happykust/liteset/blob/main/pyproject.toml).

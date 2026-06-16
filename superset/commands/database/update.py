@@ -76,9 +76,7 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
                     DatabaseInvalidError,
                 )
 
-                raise DatabaseInvalidError(
-                    exceptions=[DatabaseExistsValidationError()]
-                )
+                raise DatabaseInvalidError(exceptions=[DatabaseExistsValidationError()])
 
         # Field validators — 1:1 with ``DatabasePutSchema`` (extra/server_cert
         # validators + ``Length`` bounds: database_name 1-250, sqlalchemy_uri

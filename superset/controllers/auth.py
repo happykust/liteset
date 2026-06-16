@@ -456,9 +456,7 @@ class AuthController(Controller):
         # Authentication successful -- create session cookie
         # ------------------------------------------------------------------
         secret_key = _get_secret_key(settings)
-        session_max_age = getattr(
-            settings, "session_max_age", _DEFAULT_SESSION_MAX_AGE
-        )
+        session_max_age = getattr(settings, "session_max_age", _DEFAULT_SESSION_MAX_AGE)
         cookie_value = _create_session_cookie(
             secret_key, user_id, max_age_seconds=session_max_age
         )

@@ -362,9 +362,7 @@ def test_get_or_create_db() -> None:
     try:
         get_or_create_db("test_db", "sqlite:///superset.db")
         session.commit()
-        database = (
-            session.query(Database).filter_by(database_name="test_db").one()
-        )
+        database = session.query(Database).filter_by(database_name="test_db").one()
         assert database is not None
         assert database.sqlalchemy_uri == "sqlite:///superset.db"
 
@@ -392,15 +390,11 @@ def test_get_or_create_db() -> None:
         # Test change URI
         get_or_create_db("test_db", "sqlite:///changed.db")
         session.commit()
-        database = (
-            session.query(Database).filter_by(database_name="test_db").one()
-        )
+        database = session.query(Database).filter_by(database_name="test_db").one()
         assert database.sqlalchemy_uri == "sqlite:///changed.db"
     finally:
         database = (
-            session.query(Database)
-            .filter_by(database_name="test_db")
-            .one_or_none()
+            session.query(Database).filter_by(database_name="test_db").one_or_none()
         )
         if database is not None:
             session.delete(database)
@@ -417,9 +411,7 @@ def test_get_or_create_db_invalid_uri() -> None:
     finally:
         session.rollback()
         database = (
-            session.query(Database)
-            .filter_by(database_name="test_db")
-            .one_or_none()
+            session.query(Database).filter_by(database_name="test_db").one_or_none()
         )
         if database is not None:
             session.delete(database)
@@ -439,9 +431,7 @@ def test_get_or_create_db_existing_invalid_uri() -> None:
         assert database.sqlalchemy_uri == "sqlite:///superset.db"
     finally:
         database = (
-            session.query(Database)
-            .filter_by(database_name="test_db")
-            .one_or_none()
+            session.query(Database).filter_by(database_name="test_db").one_or_none()
         )
         if database is not None:
             session.delete(database)

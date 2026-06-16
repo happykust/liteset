@@ -124,13 +124,8 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
             total_uncompressed = sum(zi.file_size for zi in infos)
             total_compressed = sum(zi.compress_size for zi in infos)
             max_ratio = self._zip_max_compress_ratio()
-            if (
-                total_compressed
-                and total_uncompressed / total_compressed > max_ratio
-            ):
-                raise CommandInvalidError(
-                    "Zip compress ratio above allowed threshold."
-                )
+            if total_compressed and total_uncompressed / total_compressed > max_ratio:
+                raise CommandInvalidError("Zip compress ratio above allowed threshold.")
             entries = [n for n in zf.namelist() if not n.endswith("/")]
             if len(entries) > MAX_ZIP_ENTRIES:
                 raise ValueError(
@@ -222,9 +217,7 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
 
         await self._validate(validatable)
 
-    def _validate_entry_schemas(
-        self, validatable: dict[str, dict[str, Any]]
-    ) -> None:
+    def _validate_entry_schemas(self, validatable: dict[str, dict[str, Any]]) -> None:
         """Validate each recognized bundle entry against its prefix schema.
 
         Mirrors ``load_configs``' per-entry ``schema(config)`` call using the

@@ -130,9 +130,7 @@ async def test_missing_database_still_404s() -> None:
     controller, dao, sm, user = _common()
     dao.find_by_id = AsyncMock(return_value=None)
     accessible = AsyncMock(return_value=True)
-    with patch(
-        "superset.controllers.database._database_is_accessible", new=accessible
-    ):
+    with patch("superset.controllers.database._database_is_accessible", new=accessible):
         with pytest.raises(ObjectNotFoundError):
             await _fn("related_objects")(
                 controller, pk=99, dao=dao, security_manager=sm, current_user=user

@@ -147,9 +147,7 @@ async def test_update_shh_tunnel_no_port(dao_env) -> None:
     assert "Test2" == result.server_address
 
 
-@pytest.mark.parametrize(
-    "dao_env", ["weird+db://u:p@localhost/testdb"], indirect=True
-)
+@pytest.mark.parametrize("dao_env", ["weird+db://u:p@localhost/testdb"], indirect=True)
 async def test_update_shh_tunnel_no_port_no_default(dao_env) -> None:
     """
     Test that error is raised when updating SSH Tunnel without explicit/default ports.

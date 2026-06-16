@@ -95,6 +95,7 @@ def with_feature_flags(**mock_feature_flags):
 
     return decorate
 
+
 # sample config for OAuth2 tests
 oauth2_client_info = {
     "oauth2_client_info": {
@@ -560,9 +561,7 @@ def test_get_sqla_engine_user_impersonation(mocker: MockerFixture) -> None:
     )
 
 
-@pytest.mark.skip(
-    reason="Port has no Database.add_database_to_signature helper."
-)
+@pytest.mark.skip(reason="Port has no Database.add_database_to_signature helper.")
 def test_add_database_to_signature() -> None:
     """Test `add_database_to_signature`."""
     args = ["param1", "param2"]
@@ -984,9 +983,7 @@ def test_compile_sqla_query(query: Select, mocker: MockerFixture) -> None:
 
     mocker.patch(
         "superset.utils.feature_flags.feature_flag_manager",
-        mocker.MagicMock(
-            is_feature_enabled=lambda feature: feature == "OPTIMIZE_SQL"
-        ),
+        mocker.MagicMock(is_feature_enabled=lambda feature: feature == "OPTIMIZE_SQL"),
     )
 
     database = Database(

@@ -65,9 +65,7 @@ def test_load_test_users_grants_examples_db_access(monkeypatch) -> None:
         )
         examples_perm = examples.perm
         for role_name in ("gamma_sqllab", "gamma_no_csv"):
-            role = (
-                s.execute(select(Role).where(Role.name == role_name)).scalars().one()
-            )
+            role = s.execute(select(Role).where(Role.name == role_name)).scalars().one()
             granted = {
                 (pv.permission.name, pv.view_menu.name) for pv in role.permissions
             }

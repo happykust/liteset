@@ -151,11 +151,15 @@ def test_metastore_namespace_seeds_from_config_key():
         return MagicMock()
 
     fs = _build_metastore_cache_from_config(
-        cfg={}, session_factory=_sf, fallback_default_ttl=300,
+        cfg={},
+        session_factory=_sf,
+        fallback_default_ttl=300,
         config_key="FILTER_STATE_CACHE_CONFIG",
     )
     ex = _build_metastore_cache_from_config(
-        cfg={}, session_factory=_sf, fallback_default_ttl=300,
+        cfg={},
+        session_factory=_sf,
+        fallback_default_ttl=300,
         config_key="EXPLORE_FORM_DATA_CACHE_CONFIG",
     )
     assert fs._namespace == get_uuid_namespace("FILTER_STATE_CACHE_CONFIG")

@@ -474,9 +474,7 @@ def compose_rls_text_clauses(  # noqa: C901  # complex business logic
     # the guest user's decoded ``rls_rules``) so we can tell whether anything
     # actually needs Jinja rendering.
     guest_clauses = (
-        _sync_get_guest_rls_clauses(user, table)
-        if _embedded_superset_enabled()
-        else []
+        _sync_get_guest_rls_clauses(user, table) if _embedded_superset_enabled() else []
     )
 
     # The original renders Jinja unconditionally

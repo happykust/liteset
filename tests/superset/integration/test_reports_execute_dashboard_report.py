@@ -284,8 +284,7 @@ async def test_report_with_header_data(
             assert header_data.get("dashboard_id") == dashboard_id
             assert header_data.get("notification_format") == report.report_format
             assert (
-                header_data.get("notification_source")
-                == ReportSourceFormat.DASHBOARD
+                header_data.get("notification_source") == ReportSourceFormat.DASHBOARD
             )
             assert header_data.get("notification_type") == report.type
             assert len(send_email_smtp_mock.call_args.kwargs["header_data"]) == 8

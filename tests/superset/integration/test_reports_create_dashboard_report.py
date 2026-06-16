@@ -175,9 +175,7 @@ async def _make_tabbed_dashboard(session: AsyncSession) -> Dashboard:
     )
 
 
-def _make_command(
-    session: AsyncSession, data: dict
-) -> CreateReportScheduleCommand:
+def _make_command(session: AsyncSession, data: dict) -> CreateReportScheduleCommand:
     settings = SupersetSettings()  # type: ignore[call-arg]
     sm = build_async_security_manager(session, settings)
     return CreateReportScheduleCommand(

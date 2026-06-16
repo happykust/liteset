@@ -159,8 +159,8 @@ def _template_processing_on():
     flipped on the feature-flag manager that ``get_template_processor`` reads.
     """
     ff = Mock()
-    ff.is_feature_enabled.side_effect = (
-        lambda name: name == "ENABLE_TEMPLATE_PROCESSING"
+    ff.is_feature_enabled.side_effect = lambda name: (
+        name == "ENABLE_TEMPLATE_PROCESSING"
     )
     return patch("superset.jinja_context.feature_flag_manager", ff)
 
@@ -170,9 +170,7 @@ def _template_processing_on():
 # ---------------------------------------------------------------------------
 def _get_owner(session: Session) -> User:
     """Get-or-create the default report owner (``admin@fab.org``)."""
-    owner = (
-        session.query(User).filter(User.email == DEFAULT_OWNER_EMAIL).one_or_none()
-    )
+    owner = session.query(User).filter(User.email == DEFAULT_OWNER_EMAIL).one_or_none()
     if owner is None:
         owner = User(
             username="admin",
@@ -1645,9 +1643,7 @@ def test_slack_chart_report_schedule_v2(
                     == SCREENSHOT_FILE
                 )
                 assert_log(sync_session, report, ReportState.SUCCESS)
-                assert statsd_mock.call_args_list[0] == call(
-                    "reports.slack.send.ok", 1
-                )
+                assert statsd_mock.call_args_list[0] == call("reports.slack.send.ok", 1)
 
 
 @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
@@ -1823,9 +1819,7 @@ def test_report_schedule_working_timeout(
 ):
     """ExecuteReport Command: report schedule working timeout."""
     report = create_report_slack_chart_working
-    current_time = report.last_eval_dttm + timedelta(
-        seconds=report.working_timeout + 1
-    )
+    current_time = report.last_eval_dttm + timedelta(seconds=report.working_timeout + 1)
     with freeze_time(current_time):
         with _patch_settings():
             with pytest.raises(ReportScheduleWorkingTimeoutError):
@@ -1844,14 +1838,10 @@ def test_report_schedule_working_timeout(
     assert report.last_state == ReportState.ERROR
 
 
-def test_report_schedule_success_grace(
-    sync_session, create_alert_slack_chart_success
-):
+def test_report_schedule_success_grace(sync_session, create_alert_slack_chart_success):
     """ExecuteReport Command: report schedule on success to grace."""
     report = create_alert_slack_chart_success
-    current_time = report.last_eval_dttm + timedelta(
-        seconds=report.grace_period - 10
-    )
+    current_time = report.last_eval_dttm + timedelta(seconds=report.grace_period - 10)
     with freeze_time(current_time):
         with _patch_settings():
             _run(report.id, sync_session)
@@ -1873,9 +1863,7 @@ def test_report_schedule_success_grace_end(
     """ExecuteReport Command: report schedule on grace to noop/success."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     report = create_alert_slack_chart_grace
-    current_time = report.last_eval_dttm + timedelta(
-        seconds=report.grace_period + 1
-    )
+    current_time = report.last_eval_dttm + timedelta(seconds=report.grace_period + 1)
     notification_targets = get_target_from_report_schedule(report)
     channel_name = notification_targets[0]
     channel_id = "channel_id"
@@ -2073,7 +2061,8 @@ def test_slack_token_callable_chart_report(
                 _run(report.id, sync_session)
                 slack_token_mock.assert_called()
                 slack_client_mock_class.assert_called_with(
-                    token="cool_code", proxy=None  # noqa: S106
+                    token="cool_code",
+                    proxy=None,  # noqa: S106
                 )
                 assert_log(sync_session, report, ReportState.SUCCESS)
 
@@ -2277,9 +2266,7 @@ def test_fail_csv(
 
 @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
 @patch("superset.reports.notifications.email._send_email_smtp")
-def test_email_disable_screenshot(
-    email_mock, sync_session, create_alert_email_chart
-):
+def test_email_disable_screenshot(email_mock, sync_session, create_alert_email_chart):
     """ExecuteReport Command: alert with screenshot attachment disabled."""
     report = create_alert_email_chart
 

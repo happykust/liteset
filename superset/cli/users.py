@@ -440,9 +440,7 @@ def load_test_users(password: str) -> None:  # noqa: C901  # complex business lo
                     getattr(settings, "sqlalchemy_examples_uri", None)
                     or settings.sqlalchemy_database_uri
                 )
-                examples_db = Database(
-                    database_name="examples", uuid=EXAMPLES_DB_UUID
-                )
+                examples_db = Database(database_name="examples", uuid=EXAMPLES_DB_UUID)
                 session.add(examples_db)
                 examples_db.set_sqlalchemy_uri(str(examples_uri))
                 await session.flush()  # assign id so ``.perm`` resolves

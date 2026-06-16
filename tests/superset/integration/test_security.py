@@ -93,9 +93,7 @@ async def _grant_pvms(db_session: Any, role: Any, *pvms: Any) -> None:
     await db_session.flush()
 
 
-async def _create_group(
-    db_session: Any, name: str, roles: list[Any]
-) -> Any:
+async def _create_group(db_session: Any, name: str, roles: list[Any]) -> Any:
     """Persist an ``ab_group`` row with the given roles (port of add_group)."""
     from superset.models.security import Group
 
@@ -111,17 +109,13 @@ async def _create_group(
     return group
 
 
-async def _create_user_in_group(
-    db_session: Any, username: str, group: Any
-) -> Any:
+async def _create_user_in_group(db_session: Any, username: str, group: Any) -> Any:
     """Persist a user whose only role membership is via ``group``.
 
     ``groups`` is set on the transient instance at construction so the
     assignment never fires a synchronous lazy-load on the async session.
     """
-    user = await f.create_user(
-        db_session, username=username, roles=[], groups=[group]
-    )
+    user = await f.create_user(db_session, username=username, roles=[], groups=[group])
     return user
 
 
@@ -190,12 +184,8 @@ def test_is_alpha_only() -> None:
     # Write on a dataset is alpha-only
     assert _is_alpha_only(_build_pvm("can_write", "Dataset"))
     # all_datasource_access / all_database_access are alpha-only
-    assert _is_alpha_only(
-        _build_pvm("all_datasource_access", "all_datasource_access")
-    )
-    assert _is_alpha_only(
-        _build_pvm("all_database_access", "all_database_access")
-    )
+    assert _is_alpha_only(_build_pvm("all_datasource_access", "all_datasource_access"))
+    assert _is_alpha_only(_build_pvm("all_database_access", "all_database_access"))
 
 
 def test_is_gamma_pvm() -> None:
@@ -210,9 +200,7 @@ def test_is_gamma_pvm() -> None:
 async def test_schemas_accessible_by_user_admin(db_session: Any) -> None:
     sm = _make_manager(db_session)
     admin_role = await f.create_role(db_session, name="Admin")
-    admin = await f.create_user(
-        db_session, username="sec_admin", roles=[admin_role]
-    )
+    admin = await f.create_user(db_session, username="sec_admin", roles=[admin_role])
     database = await _get_example_database(db_session)
     schemas = await sm.get_schemas_accessible_by_user(
         database, ["1", "2", "3"], user=admin
@@ -282,9 +270,7 @@ async def test_schemas_accessible_by_user_datasource_and_schema_access(
     ds_pvm = await sm.add_permission_view_menu("datasource_access", dataset.perm)
     schema_pvm = await sm.add_permission_view_menu("schema_access", "[examples].[2]")
     await _grant_pvms(db_session, role, ds_pvm, schema_pvm)
-    user = await f.create_user(
-        db_session, username="sec_ds_schema", roles=[role]
-    )
+    user = await f.create_user(db_session, username="sec_ds_schema", roles=[role])
 
     schemas = await sm.get_schemas_accessible_by_user(
         database, ["temp_schema", "2", "3"], user=user
@@ -311,16 +297,20 @@ async def test_can_access_datasource(db_session: Any) -> None:
 
     # can_access_datasource inlines its own checks (it does NOT delegate to
     # raise_for_access in the port); drive it by patching the access primitives.
-    with patch.object(sm, "is_admin", return_value=False), patch.object(
-        sm, "has_access", new=AsyncMock(return_value=True)
+    with (
+        patch.object(sm, "is_admin", return_value=False),
+        patch.object(sm, "has_access", new=AsyncMock(return_value=True)),
     ):
         assert await sm.can_access_datasource(datasource, user=user) is True
 
-    with patch.object(sm, "is_admin", return_value=False), patch.object(
-        sm, "has_access", new=AsyncMock(return_value=False)
-    ), patch.object(
-        sm, "_can_access_datasource_schema", new=AsyncMock(return_value=False)
-    ), patch.object(sm, "is_owner", return_value=False):
+    with (
+        patch.object(sm, "is_admin", return_value=False),
+        patch.object(sm, "has_access", new=AsyncMock(return_value=False)),
+        patch.object(
+            sm, "_can_access_datasource_schema", new=AsyncMock(return_value=False)
+        ),
+        patch.object(sm, "is_owner", return_value=False),
+    ):
         assert await sm.can_access_datasource(datasource, user=user) is False
 
 
@@ -359,10 +349,12 @@ async def test_raise_for_access_datasource(db_session: Any) -> None:
     ):
         await sm.raise_for_access(datasource=datasource, user=user)
 
-    with patch.object(
-        sm, "_can_access_datasource_schema", new=AsyncMock(return_value=False)
-    ), patch.object(sm, "can_access", new=AsyncMock(return_value=False)), patch.object(
-        sm, "is_owner", return_value=False
+    with (
+        patch.object(
+            sm, "_can_access_datasource_schema", new=AsyncMock(return_value=False)
+        ),
+        patch.object(sm, "can_access", new=AsyncMock(return_value=False)),
+        patch.object(sm, "is_owner", return_value=False),
     ):
         with pytest.raises(SupersetSecurityException):
             await sm.raise_for_access(datasource=datasource, user=user)
@@ -382,12 +374,13 @@ async def test_raise_for_access_query(db_session: Any) -> None:
     with patch.object(sm, "can_access_database", new=AsyncMock(return_value=True)):
         await sm.raise_for_access(query=query, user=user)
 
-    with patch.object(
-        sm, "can_access_database", new=AsyncMock(return_value=False)
-    ), patch.object(sm, "can_access", new=AsyncMock(return_value=False)), patch.object(
-        sm, "is_owner", return_value=False
-    ), patch.object(
-        sm, "_can_access_table_datasource", new=AsyncMock(return_value=False)
+    with (
+        patch.object(sm, "can_access_database", new=AsyncMock(return_value=False)),
+        patch.object(sm, "can_access", new=AsyncMock(return_value=False)),
+        patch.object(sm, "is_owner", return_value=False),
+        patch.object(
+            sm, "_can_access_table_datasource", new=AsyncMock(return_value=False)
+        ),
     ):
         with pytest.raises(SupersetSecurityException):
             await sm.raise_for_access(query=query, user=user)
@@ -429,10 +422,12 @@ async def test_raise_for_access_query_context(db_session: Any) -> None:
     ):
         await sm.raise_for_access(query_context=query_context, user=user)
 
-    with patch.object(
-        sm, "_can_access_datasource_schema", new=AsyncMock(return_value=False)
-    ), patch.object(sm, "can_access", new=AsyncMock(return_value=False)), patch.object(
-        sm, "is_owner", return_value=False
+    with (
+        patch.object(
+            sm, "_can_access_datasource_schema", new=AsyncMock(return_value=False)
+        ),
+        patch.object(sm, "can_access", new=AsyncMock(return_value=False)),
+        patch.object(sm, "is_owner", return_value=False),
     ):
         with pytest.raises(SupersetSecurityException):
             await sm.raise_for_access(query_context=query_context, user=user)
@@ -447,10 +442,12 @@ async def test_raise_for_access_table(db_session: Any) -> None:
     with patch.object(sm, "can_access_database", new=AsyncMock(return_value=True)):
         await sm.raise_for_access(database=database, table=table, user=user)
 
-    with patch.object(
-        sm, "can_access_database", new=AsyncMock(return_value=False)
-    ), patch.object(sm, "can_access", new=AsyncMock(return_value=False)), patch.object(
-        sm, "_can_access_table_datasource", new=AsyncMock(return_value=False)
+    with (
+        patch.object(sm, "can_access_database", new=AsyncMock(return_value=False)),
+        patch.object(sm, "can_access", new=AsyncMock(return_value=False)),
+        patch.object(
+            sm, "_can_access_table_datasource", new=AsyncMock(return_value=False)
+        ),
     ):
         with pytest.raises(SupersetSecurityException):
             await sm.raise_for_access(database=database, table=table, user=user)
@@ -466,10 +463,12 @@ async def test_raise_for_access_viz(db_session: Any) -> None:
     ):
         await sm.raise_for_access(viz=test_viz, user=user)
 
-    with patch.object(
-        sm, "_can_access_datasource_schema", new=AsyncMock(return_value=False)
-    ), patch.object(sm, "can_access", new=AsyncMock(return_value=False)), patch.object(
-        sm, "is_owner", return_value=False
+    with (
+        patch.object(
+            sm, "_can_access_datasource_schema", new=AsyncMock(return_value=False)
+        ),
+        patch.object(sm, "can_access", new=AsyncMock(return_value=False)),
+        patch.object(sm, "is_owner", return_value=False),
     ):
         with pytest.raises(SupersetSecurityException):
             await sm.raise_for_access(viz=test_viz, user=user)
@@ -495,19 +494,29 @@ async def test_raise_for_access_rbac(db_session: Any) -> None:
     user = await f.create_user(db_session, username="rbac_gamma", roles=[gamma_role])
 
     births = (
-        await db_session.execute(select(Dashboard).where(Dashboard.slug == "births"))
-    ).scalars().first()
+        (await db_session.execute(select(Dashboard).where(Dashboard.slug == "births")))
+        .scalars()
+        .first()
+    )
     world_health = (
-        await db_session.execute(
-            select(Dashboard).where(Dashboard.slug == "world_health")
+        (
+            await db_session.execute(
+                select(Dashboard).where(Dashboard.slug == "world_health")
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     girls = (
-        await db_session.execute(select(Slice).where(Slice.slice_name == "Girls"))
-    ).scalars().first()
+        (await db_session.execute(select(Slice).where(Slice.slice_name == "Girls")))
+        .scalars()
+        .first()
+    )
     treemap = (
-        await db_session.execute(select(Slice).where(Slice.slice_name == "Treemap"))
-    ).scalars().first()
+        (await db_session.execute(select(Slice).where(Slice.slice_name == "Treemap")))
+        .scalars()
+        .first()
+    )
     # Eager-load datasources so the sync ``.datasource`` reads don't fire a
     # lazy-load on the async session.
     await db_session.refresh(girls, attribute_names=["table"])
@@ -533,13 +542,17 @@ async def test_raise_for_access_rbac(db_session: Any) -> None:
     )
     await db_session.flush()
 
-    with patch.object(sm, "is_owner", return_value=False), patch.object(
-        sm, "can_access", new=AsyncMock(return_value=False)
-    ), patch.object(
-        sm, "_can_access_datasource_schema", new=AsyncMock(return_value=False)
-    ), patch.object(
-        sm, "_can_access_table_datasource", new=AsyncMock(return_value=False)
-    ), patch.object(sm, "can_access_dashboard", new=AsyncMock(return_value=True)):
+    with (
+        patch.object(sm, "is_owner", return_value=False),
+        patch.object(sm, "can_access", new=AsyncMock(return_value=False)),
+        patch.object(
+            sm, "_can_access_datasource_schema", new=AsyncMock(return_value=False)
+        ),
+        patch.object(
+            sm, "_can_access_table_datasource", new=AsyncMock(return_value=False)
+        ),
+        patch.object(sm, "can_access_dashboard", new=AsyncMock(return_value=True)),
+    ):
         for kwarg in ["query_context", "viz"]:
             births.roles = []
             await db_session.flush()
@@ -701,9 +714,7 @@ async def test_gamma_user_schema_access_to_dashboards(db_session: Any) -> None:
         "datasource_access", "[examples].[wb_health_population](id:2)"
     )
     await _grant_pvms(db_session, role, pvm)
-    user = await f.create_user(
-        db_session, username="schema_gamma", roles=[role]
-    )
+    user = await f.create_user(db_session, username="schema_gamma", roles=[role])
 
     base_filters = await dashboard_access_filters(sm, user)
     assert base_filters  # non-admin -> restrictive filter, never empty
@@ -740,9 +751,7 @@ async def test_sqllab_gamma_user_schema_access_to_sqllab(db_session: Any) -> Non
     role = await f.create_role(db_session, name="sqllab_schema_role")
     pvm = await sm.add_permission_view_menu("schema_access", "[examples].[public]")
     await _grant_pvms(db_session, role, pvm)
-    user = await f.create_user(
-        db_session, username="sqllab_schema_gamma", roles=[role]
-    )
+    user = await f.create_user(db_session, username="sqllab_schema_gamma", roles=[role])
 
     async def _expose_in_sqllab_count(target_user: Any) -> int:
         base_filters = await database_access_filters(sm, target_user)
@@ -869,9 +878,7 @@ async def test_gamma_user_view_menu_names_with_groups_dar(db_session: Any) -> No
     assert await sm.user_view_menu_names("can_external_metadata", user=user) == {
         "Datasource"
     }
-    assert await sm.user_view_menu_names("can_recent_activity", user=user) == {
-        "Log"
-    }
+    assert await sm.user_view_menu_names("can_recent_activity", user=user) == {"Log"}
 
 
 async def test_all_database_access(db_session: Any) -> None:
@@ -1060,9 +1067,7 @@ async def test_get_guest_user_no_user() -> None:
     token = jwt.encode(claims, GUEST_SECRET, algorithm="HS256")
 
     middleware = SupersetAuthMiddleware.__new__(SupersetAuthMiddleware)
-    guest_user = await middleware._resolve_guest_from_jwt(
-        _guest_connection(), token
-    )
+    guest_user = await middleware._resolve_guest_from_jwt(_guest_connection(), token)
     assert guest_user is None
 
 
@@ -1083,9 +1088,7 @@ async def test_get_guest_user_no_resource() -> None:
     token = jwt.encode(claims, GUEST_SECRET, algorithm="HS256")
 
     middleware = SupersetAuthMiddleware.__new__(SupersetAuthMiddleware)
-    guest_user = await middleware._resolve_guest_from_jwt(
-        _guest_connection(), token
-    )
+    guest_user = await middleware._resolve_guest_from_jwt(_guest_connection(), token)
     assert guest_user is None
 
 

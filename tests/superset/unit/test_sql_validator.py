@@ -68,9 +68,7 @@ class TestPrestoValidator:
         ``get_sqla_engine(...).__enter__().raw_connection().cursor()`` returns
         a cursor whose ``poll()`` short-circuits the validation loop."""
         database = MagicMock()
-        database_engine = (
-            database.get_sqla_engine.return_value.__enter__.return_value
-        )
+        database_engine = database.get_sqla_engine.return_value.__enter__.return_value
         database_conn = database_engine.raw_connection.return_value
         database_cursor = database_conn.cursor.return_value
         database_cursor.poll.return_value = None

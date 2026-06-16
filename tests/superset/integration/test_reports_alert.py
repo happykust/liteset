@@ -84,9 +84,7 @@ def get_user(sync_session: Session):
     """Return a factory that gets-or-creates a real ``User`` by username."""
 
     def _get_user(username: str) -> User:
-        user = (
-            sync_session.query(User).filter(User.username == username).one_or_none()
-        )
+        user = sync_session.query(User).filter(User.username == username).one_or_none()
         if user is None:
             user = User(
                 username=username,
@@ -170,9 +168,7 @@ def test_execute_query_as_report_executor(
         alert_reports_query_execution_max_tries=1,
         mutate_alert_query=False,
     )
-    mocker.patch(
-        "superset.commands.report_alert._get_settings", return_value=settings
-    )
+    mocker.patch("superset.commands.report_alert._get_settings", return_value=settings)
     mocker.patch.object(
         report_schedule.database,
         "get_df",
@@ -199,18 +195,14 @@ def test_execute_query_mutate_query_enabled(
         alert_reports_executors=[ExecutorType.OWNER],
         alert_reports_query_execution_max_tries=1,
     )
-    mocker.patch(
-        "superset.commands.report_alert._get_settings", return_value=settings
-    )
+    mocker.patch("superset.commands.report_alert._get_settings", return_value=settings)
     mocker.patch("superset.utils.core.override_user")
     mock_df = mocker.MagicMock(spec=pd.DataFrame)
     mock_df.empty = True
     mock_database = get_example_database()
     mock_get_df = mocker.patch.object(mock_database, "get_df", return_value=mock_df)
     mock_limited_sql = mocker.patch.object(mock_database, "apply_limit_to_sql")
-    mock_mutate_call = mocker.patch.object(
-        mock_database, "mutate_sql_based_on_config"
-    )
+    mock_mutate_call = mocker.patch.object(mock_database, "mutate_sql_based_on_config")
 
     report_schedule = ReportSchedule(
         created_by=get_user("admin"),
@@ -247,9 +239,7 @@ def test_execute_query_mutate_query_disabled(
         alert_reports_executors=[ExecutorType.OWNER],
         alert_reports_query_execution_max_tries=1,
     )
-    mocker.patch(
-        "superset.commands.report_alert._get_settings", return_value=settings
-    )
+    mocker.patch("superset.commands.report_alert._get_settings", return_value=settings)
     mocker.patch("superset.utils.core.override_user")
     mock_database = mocker.MagicMock()
 
@@ -284,9 +274,7 @@ def test_execute_query_succeeded_no_retry(mocker: MockerFixture) -> None:
     from superset.commands.report_alert import AlertCommand
 
     settings = _settings_with(alert_reports_query_execution_max_tries=3)
-    mocker.patch(
-        "superset.commands.report_alert._get_settings", return_value=settings
-    )
+    mocker.patch("superset.commands.report_alert._get_settings", return_value=settings)
     execute_query_mock = mocker.patch(
         "superset.commands.report_alert.AlertCommand._execute_query",
         side_effect=lambda: pd.DataFrame([{"sample_col": 0}]),
@@ -303,9 +291,7 @@ def test_execute_query_succeeded_with_retries(mocker: MockerFixture) -> None:
     from superset.commands.report_alert import AlertCommand, AlertQueryError
 
     settings = _settings_with(alert_reports_query_execution_max_tries=3)
-    mocker.patch(
-        "superset.commands.report_alert._get_settings", return_value=settings
-    )
+    mocker.patch("superset.commands.report_alert._get_settings", return_value=settings)
     execute_query_mock = mocker.patch(
         "superset.commands.report_alert.AlertCommand._execute_query"
     )
@@ -337,9 +323,7 @@ def test_execute_query_failed_no_retry(mocker: MockerFixture) -> None:
     from superset.commands.report_alert import AlertCommand, AlertQueryTimeout
 
     settings = _settings_with(alert_reports_query_execution_max_tries=3)
-    mocker.patch(
-        "superset.commands.report_alert._get_settings", return_value=settings
-    )
+    mocker.patch("superset.commands.report_alert._get_settings", return_value=settings)
     execute_query_mock = mocker.patch(
         "superset.commands.report_alert.AlertCommand._execute_query"
     )
@@ -361,9 +345,7 @@ def test_execute_query_failed_max_retries(mocker: MockerFixture) -> None:
     from superset.commands.report_alert import AlertCommand, AlertQueryError
 
     settings = _settings_with(alert_reports_query_execution_max_tries=3)
-    mocker.patch(
-        "superset.commands.report_alert._get_settings", return_value=settings
-    )
+    mocker.patch("superset.commands.report_alert._get_settings", return_value=settings)
     execute_query_mock = mocker.patch(
         "superset.commands.report_alert.AlertCommand._execute_query"
     )

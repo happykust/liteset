@@ -139,9 +139,7 @@ class TestComputeAndCache:
         cache_payload: ScreenshotCachePayloadType = screenshot_obj.cache.get("key")
         assert cache_payload["status"] == "Error"
 
-    def test_skips_if_computing(
-        self, mocker: MockerFixture, screenshot_obj, mock_user
-    ):
+    def test_skips_if_computing(self, mocker: MockerFixture, screenshot_obj, mock_user):
         mocks = self._setup_compute_and_cache(mocker, screenshot_obj, mock_user)
         cached_value = ScreenshotCachePayload()
         cached_value.computing()

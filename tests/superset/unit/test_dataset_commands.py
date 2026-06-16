@@ -719,9 +719,7 @@ async def test_delete_column_ownership_checked_on_column(mock_dao, mock_column_d
     sm.raise_for_ownership.assert_awaited_once_with(mock_column, 42)
 
 
-async def test_delete_column_missing_is_404_before_ownership(
-    mock_dao, mock_column_dao
-):
+async def test_delete_column_missing_is_404_before_ownership(mock_dao, mock_column_dao):
     """Column existence is validated BEFORE ownership — a non-owner probing a
     nonexistent column gets 404, not 403 (upstream order: find → ownership)."""
     mock_column_dao.find_by_dataset_and_id = AsyncMock(return_value=None)

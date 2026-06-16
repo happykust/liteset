@@ -94,11 +94,13 @@ async def _dashboard_and_chart_ids(session):
     from superset.models.dashboard import dashboard_slices
 
     dashboard_ids = (
-        await session.execute(select(dashboard_slices.c.dashboard_id).distinct())
-    ).scalars().all()
+        (await session.execute(select(dashboard_slices.c.dashboard_id).distinct()))
+        .scalars()
+        .all()
+    )
     chart_ids = (
-        await session.execute(select(dashboard_slices.c.slice_id))
-    ).scalars().all()
+        (await session.execute(select(dashboard_slices.c.slice_id))).scalars().all()
+    )
     return dashboard_ids, chart_ids
 
 

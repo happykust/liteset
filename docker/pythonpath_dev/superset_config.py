@@ -110,9 +110,7 @@ CELERY_CONFIG = CeleryConfig
 
 FEATURE_FLAGS = {"ALERT_REPORTS": True}
 ALERT_REPORTS_NOTIFICATION_DRY_RUN = True
-WEBDRIVER_BASEURL = (
-    f"http://superset_app{os.environ.get('SUPERSET_APP_ROOT', '/')}/"
-)
+WEBDRIVER_BASEURL = f"http://superset_app{os.environ.get('SUPERSET_APP_ROOT', '/')}/"
 WEBDRIVER_BASEURL_USER_FRIENDLY = (
     f"http://localhost:8088{os.environ.get('SUPERSET_APP_ROOT', '/')}/"
 )

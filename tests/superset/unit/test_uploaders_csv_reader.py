@@ -393,9 +393,7 @@ def test_csv_reader_file_metadata_invalid_file():
         options=CSVReaderOptions(),
     )
     with pytest.raises(DatabaseUploadFailed) as ex:
-        csv_reader.file_metadata(
-            io.StringIO("c1,c2,c3\na,b,c\n1,2,3,4,5,6,7\n1,2,3")
-        )
+        csv_reader.file_metadata(io.StringIO("c1,c2,c3\na,b,c\n1,2,3,4,5,6,7\n1,2,3"))
     assert str(ex.value) == (
         "Parsing error: Error tokenizing data. C error:"
         " Expected 3 fields in line 3, saw 7\n"

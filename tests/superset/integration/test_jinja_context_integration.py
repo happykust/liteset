@@ -52,8 +52,9 @@ def _enable_template_processing(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setattr(
         "superset.jinja_context.feature_flag_manager",
-        MagicMock(is_feature_enabled=lambda feature: feature
-                  == "ENABLE_TEMPLATE_PROCESSING"),
+        MagicMock(
+            is_feature_enabled=lambda feature: feature == "ENABLE_TEMPLATE_PROCESSING"
+        ),
     )
 
 

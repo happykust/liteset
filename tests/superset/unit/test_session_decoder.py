@@ -47,8 +47,7 @@ SECRET_KEY = "test-secret-key-at-least-16-chars"
 # because the embedded timestamp would otherwise make the fixture expire (the
 # guarded regression is the HMAC key-derivation/signature, not expiry).
 _REAL_FLASK_COOKIE = (
-    "eyJfdXNlcl9pZCI6IjUiLCJjc3JmX3Rva2VuIjoidG9rIn0"
-    ".ai3PrA.VZ2-eWT_RBQOIYu1O4KqSDta1i0"
+    "eyJfdXNlcl9pZCI6IjUiLCJjc3JmX3Rva2VuIjoidG9rIn0.ai3PrA.VZ2-eWT_RBQOIYu1O4KqSDta1i0"
 )
 
 
