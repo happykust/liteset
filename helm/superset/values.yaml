@@ -232,6 +232,14 @@ ingress:
     # nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
   path: /
   pathType: ImplementationSpecific
+  # -- Liteset serves the async-query WebSocket natively from the main app
+  # (ASGI handler at `/ws/events` on the `http` port) — there is no separate
+  # Node `superset-websocket` service. Enable this to add an extra ingress
+  # path routing the WS endpoint to the main Superset service.
+  websockets:
+    enabled: false
+    path: /ws/events
+    pathType: Prefix
   hosts:
     - chart-example.local
   tls: []
@@ -619,101 +627,6 @@ supersetCeleryFlower:
   podSecurityContext: {}
   containerSecurityContext: {}
   # -- Set priorityClassName for supersetCeleryFlower pods
-  priorityClassName: ~
-
-supersetWebsockets:
-  # -- This is only required if you intend to use `GLOBAL_ASYNC_QUERIES` in `ws` mode
-  # see https://github.com/apache/superset/blob/master/CONTRIBUTING.md#async-chart-queries
-  enabled: false
-  replicaCount: 1
-  # -- Sets the [pod disruption budget](https://kubernetes.io/docs/tasks/run-application/configure-pdb/) for supersetWebsockets pods
-  podDisruptionBudget:
-    # -- Whether the pod disruption budget should be created
-    enabled: false
-    # -- If set, maxUnavailable must not be set - see https://kubernetes.io/docs/tasks/run-application/configure-pdb/#specifying-a-poddisruptionbudget
-    minAvailable: 1
-    # -- If set, minAvailable must not be set - see https://kubernetes.io/docs/tasks/run-application/configure-pdb/#specifying-a-poddisruptionbudget
-    maxUnavailable: 1
-  ingress:
-    path: /ws
-    pathType: Prefix
-  image:
-    # -- There is no official image (yet), this one is community-supported
-    repository: oneacrefund/superset-websocket
-    tag: latest
-    pullPolicy: IfNotPresent
-  # -- The config.json to pass to the server, see https://github.com/apache/superset/tree/master/superset-websocket
-  # Note that the configuration can also read from environment variables (which will have priority), see https://github.com/apache/superset/blob/master/superset-websocket/src/config.ts for a list of supported variables
-  # @default -- see `values.yaml`
-  config:
-    {
-      "port": 8080,
-      "logLevel": "debug",
-      "logToFile": false,
-      "logFilename": "app.log",
-      "statsd": { "host": "127.0.0.1", "port": 8125, "globalTags": [] },
-      "redis":
-        {
-          "port": 6379,
-          "host": "127.0.0.1",
-          "password": "",
-          "db": 0,
-          "ssl": false,
-        },
-      "redisStreamPrefix": "async-events-",
-      "jwtSecret": "CHANGE-ME",
-      "jwtCookieName": "async-token",
-    }
-  service:
-    type: ClusterIP
-    annotations: {}
-    loadBalancerIP: ~
-    port: 8080
-    nodePort:
-      # -- (int)
-      http: nil
-  command: []
-  resources: {}
-  # -- Launch additional containers into supersetWebsockets pods
-  extraContainers: []
-  deploymentAnnotations: {}
-  # -- Affinity to be added to supersetWebsockets deployment
-  affinity: {}
-  # -- TopologySpreadConstrains to be added to supersetWebsockets deployments
-  topologySpreadConstraints: []
-  podAnnotations: {}
-  podLabels: {}
-  strategy: {}
-  podSecurityContext: {}
-  containerSecurityContext: {}
-  startupProbe:
-    httpGet:
-      path: /health
-      port: ws
-    initialDelaySeconds: 5
-    timeoutSeconds: 1
-    failureThreshold: 60
-    periodSeconds: 5
-    successThreshold: 1
-  livenessProbe:
-    httpGet:
-      path: /health
-      port: ws
-    initialDelaySeconds: 5
-    timeoutSeconds: 1
-    failureThreshold: 3
-    periodSeconds: 5
-    successThreshold: 1
-  readinessProbe:
-    httpGet:
-      path: /health
-      port: ws
-    initialDelaySeconds: 5
-    timeoutSeconds: 1
-    failureThreshold: 3
-    periodSeconds: 5
-    successThreshold: 1
-  # -- Set priorityClassName for supersetWebsockets pods
   priorityClassName: ~
 
 init:

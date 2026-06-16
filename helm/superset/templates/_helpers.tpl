@@ -188,11 +188,6 @@ app: {{ include "superset.name" . }}
 release: {{ .Release.Name }}
 {{- end }}
 
-{{- define "supersetWebsockets.selectorLabels" -}}
-app: {{ include "superset.name" . }}-ws
-release: {{ .Release.Name }}
-{{- end }}
-
 {{- define "supersetWorker.selectorLabels" -}}
 app: {{ include "superset.name" . }}-worker
 release: {{ .Release.Name }}

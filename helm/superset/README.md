@@ -58,7 +58,7 @@ On helm this can be set on `extraSecretEnv.SUPERSET_SECRET_KEY` or `configOverri
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | affinity | object | `{}` |  |
-| bootstrapScript | string | see `values.yaml` | Install additional packages and do any other bootstrap configuration in this script For production clusters it's recommended to build own image with this step done in CI |
+| bootstrapScript | string | see `values.yaml` | Install additional packages and do any other bootstrap configuration in this script. Sourced by every pod before the main command runs (web/worker/beat/init). For production clusters it's recommended to bake any extra pip packages into a custom image (``FROM liteset:latest`` + ``RUN pip install ...``) so pods start faster and don't need PyPI at runtime. |
 | configFromSecret | string | `"{{ template \"superset.fullname\" . }}-config"` | The name of the secret which we will use to generate a superset_config.py file Note: this secret must have the key superset_config.py in it and can include other files as well |
 | configMountPath | string | `"/app/pythonpath"` |  |
 | configOverrides | object | `{}` | A dictionary of overrides to append at the end of superset_config.py - the name does not matter WARNING: the order is not guaranteed Files can be passed as helm --set-file configOverrides.my-override=my-file.py |
@@ -67,7 +67,7 @@ On helm this can be set on `extraSecretEnv.SUPERSET_SECRET_KEY` or `configOverri
 | envFromSecrets | list | `[]` | This can be a list of templated strings |
 | extraConfigMountPath | string | `"/app/configs"` |  |
 | extraConfigs | object | `{}` | Extra files to be mounted as ConfigMap on the path specified in `extraConfigMountPath` |
-| extraEnv | object | `{}` | Extra environment variables that will be passed into pods |
+| extraEnv | object | `{"SUPERSET_CONFIG_PATH":"/app/pythonpath/superset_config.py"}` | Extra environment variables that will be passed into pods |
 | extraEnvRaw | list | `[]` | Extra environment variables in RAW format that will be passed into pods |
 | extraLabels | object | `{}` | Labels to be added to all resources |
 | extraSecretEnv | object | `{}` | Extra environment variables to pass as secrets |
@@ -77,8 +77,8 @@ On helm this can be set on `extraSecretEnv.SUPERSET_SECRET_KEY` or `configOverri
 | fullnameOverride | string | `nil` | Provide a name to override the full names of resources |
 | hostAliases | list | `[]` | Custom hostAliases for all superset pods # https://kubernetes.io/docs/tasks/network/customize-hosts-file-for-pods/ |
 | image.pullPolicy | string | `"IfNotPresent"` |  |
-| image.repository | string | `"apachesuperset.docker.scarf.sh/apache/superset"` |  |
-| image.tag | string | `nil` |  |
+| image.repository | string | `"liteset"` |  |
+| image.tag | string | `"latest"` |  |
 | imagePullSecrets | list | `[]` |  |
 | ingress.annotations | object | `{}` |  |
 | ingress.enabled | bool | `false` |  |
@@ -88,6 +88,7 @@ On helm this can be set on `extraSecretEnv.SUPERSET_SECRET_KEY` or `configOverri
 | ingress.path | string | `"/"` |  |
 | ingress.pathType | string | `"ImplementationSpecific"` |  |
 | ingress.tls | list | `[]` |  |
+| ingress.websockets | object | `{"enabled":false,"path":"/ws/events","pathType":"Prefix"}` | Liteset serves the async-query WebSocket natively from the main app (ASGI handler at `/ws/events` on the `http` port) — there is no separate Node `superset-websocket` service. Enable this to add an extra ingress path routing the WS endpoint to the main Superset service. |
 | init.adminUser.email | string | `"admin@superset.com"` |  |
 | init.adminUser.firstname | string | `"Superset"` |  |
 | init.adminUser.lastname | string | `"Admin"` |  |
@@ -112,7 +113,7 @@ On helm this can be set on `extraSecretEnv.SUPERSET_SECRET_KEY` or `configOverri
 | init.tolerations | list | `[]` |  |
 | init.topologySpreadConstraints | list | `[]` | TopologySpreadConstrains to be added to init job |
 | initImage.pullPolicy | string | `"IfNotPresent"` |  |
-| initImage.repository | string | `"apache/superset"` |  |
+| initImage.repository | string | `"apache/superset"` | A small image providing the ``dockerize`` binary, used only by init containers to wait for Postgres/Redis TCP readiness. ``apache/superset:dockerize`` is the publicly-available image — safe to reuse as-is since we only call ``/usr/local/bin/dockerize`` from it. |
 | initImage.tag | string | `"dockerize"` |  |
 | nameOverride | string | `nil` | Provide a name to override the name of the chart |
 | nodeSelector | object | `{}` |  |
@@ -153,7 +154,7 @@ On helm this can be set on `extraSecretEnv.SUPERSET_SECRET_KEY` or `configOverri
 | supersetCeleryFlower.command | list | a `celery flower` command | Command |
 | supersetCeleryFlower.containerSecurityContext | object | `{}` |  |
 | supersetCeleryFlower.deploymentAnnotations | object | `{}` | Annotations to be added to supersetCeleryFlower deployment |
-| supersetCeleryFlower.enabled | bool | `false` | Enables a Celery flower deployment (management UI to monitor celery jobs) WARNING: on superset 1.x, this requires a Superset image that has `flower<1.0.0` installed (which is NOT the case of the default images) flower>=1.0.0 requires Celery 5+ which Superset 1.5 does not support |
+| supersetCeleryFlower.enabled | bool | `false` | Enables a Celery flower deployment (management UI to monitor celery jobs). WARNING: the Liteset ``lean`` image does NOT ship ``flower``. Either bake it into a custom image (``pip install flower`` on top of ``liteset:latest``) or override ``supersetCeleryFlower.command`` to install it on startup. |
 | supersetCeleryFlower.extraContainers | list | `[]` | Launch additional containers into supersetCeleryFlower pods |
 | supersetCeleryFlower.initContainers | list | a container waiting for postgres and redis | List of init containers |
 | supersetCeleryFlower.livenessProbe.failureThreshold | int | `3` |  |
@@ -251,56 +252,6 @@ On helm this can be set on `extraSecretEnv.SUPERSET_SECRET_KEY` or `configOverri
 | supersetNode.startupProbe.timeoutSeconds | int | `1` |  |
 | supersetNode.strategy | object | `{}` |  |
 | supersetNode.topologySpreadConstraints | list | `[]` | TopologySpreadConstrains to be added to supersetNode deployments |
-| supersetWebsockets.affinity | object | `{}` | Affinity to be added to supersetWebsockets deployment |
-| supersetWebsockets.command | list | `[]` |  |
-| supersetWebsockets.config | object | see `values.yaml` | The config.json to pass to the server, see https://github.com/apache/superset/tree/master/superset-websocket Note that the configuration can also read from environment variables (which will have priority), see https://github.com/apache/superset/blob/master/superset-websocket/src/config.ts for a list of supported variables |
-| supersetWebsockets.containerSecurityContext | object | `{}` |  |
-| supersetWebsockets.deploymentAnnotations | object | `{}` |  |
-| supersetWebsockets.enabled | bool | `false` | This is only required if you intend to use `GLOBAL_ASYNC_QUERIES` in `ws` mode see https://github.com/apache/superset/blob/master/CONTRIBUTING.md#async-chart-queries |
-| supersetWebsockets.extraContainers | list | `[]` | Launch additional containers into supersetWebsockets pods |
-| supersetWebsockets.image.pullPolicy | string | `"IfNotPresent"` |  |
-| supersetWebsockets.image.repository | string | `"oneacrefund/superset-websocket"` | There is no official image (yet), this one is community-supported |
-| supersetWebsockets.image.tag | string | `"latest"` |  |
-| supersetWebsockets.ingress.path | string | `"/ws"` |  |
-| supersetWebsockets.ingress.pathType | string | `"Prefix"` |  |
-| supersetWebsockets.livenessProbe.failureThreshold | int | `3` |  |
-| supersetWebsockets.livenessProbe.httpGet.path | string | `"/health"` |  |
-| supersetWebsockets.livenessProbe.httpGet.port | string | `"ws"` |  |
-| supersetWebsockets.livenessProbe.initialDelaySeconds | int | `5` |  |
-| supersetWebsockets.livenessProbe.periodSeconds | int | `5` |  |
-| supersetWebsockets.livenessProbe.successThreshold | int | `1` |  |
-| supersetWebsockets.livenessProbe.timeoutSeconds | int | `1` |  |
-| supersetWebsockets.podAnnotations | object | `{}` |  |
-| supersetWebsockets.podDisruptionBudget | object | `{"enabled":false,"maxUnavailable":1,"minAvailable":1}` | Sets the [pod disruption budget](https://kubernetes.io/docs/tasks/run-application/configure-pdb/) for supersetWebsockets pods |
-| supersetWebsockets.podDisruptionBudget.enabled | bool | `false` | Whether the pod disruption budget should be created |
-| supersetWebsockets.podDisruptionBudget.maxUnavailable | int | `1` | If set, minAvailable must not be set - see https://kubernetes.io/docs/tasks/run-application/configure-pdb/#specifying-a-poddisruptionbudget |
-| supersetWebsockets.podDisruptionBudget.minAvailable | int | `1` | If set, maxUnavailable must not be set - see https://kubernetes.io/docs/tasks/run-application/configure-pdb/#specifying-a-poddisruptionbudget |
-| supersetWebsockets.podLabels | object | `{}` |  |
-| supersetWebsockets.podSecurityContext | object | `{}` |  |
-| supersetWebsockets.priorityClassName | string | `nil` | Set priorityClassName for supersetWebsockets pods |
-| supersetWebsockets.readinessProbe.failureThreshold | int | `3` |  |
-| supersetWebsockets.readinessProbe.httpGet.path | string | `"/health"` |  |
-| supersetWebsockets.readinessProbe.httpGet.port | string | `"ws"` |  |
-| supersetWebsockets.readinessProbe.initialDelaySeconds | int | `5` |  |
-| supersetWebsockets.readinessProbe.periodSeconds | int | `5` |  |
-| supersetWebsockets.readinessProbe.successThreshold | int | `1` |  |
-| supersetWebsockets.readinessProbe.timeoutSeconds | int | `1` |  |
-| supersetWebsockets.replicaCount | int | `1` |  |
-| supersetWebsockets.resources | object | `{}` |  |
-| supersetWebsockets.service.annotations | object | `{}` |  |
-| supersetWebsockets.service.loadBalancerIP | string | `nil` |  |
-| supersetWebsockets.service.nodePort.http | int | `"nil"` |  |
-| supersetWebsockets.service.port | int | `8080` |  |
-| supersetWebsockets.service.type | string | `"ClusterIP"` |  |
-| supersetWebsockets.startupProbe.failureThreshold | int | `60` |  |
-| supersetWebsockets.startupProbe.httpGet.path | string | `"/health"` |  |
-| supersetWebsockets.startupProbe.httpGet.port | string | `"ws"` |  |
-| supersetWebsockets.startupProbe.initialDelaySeconds | int | `5` |  |
-| supersetWebsockets.startupProbe.periodSeconds | int | `5` |  |
-| supersetWebsockets.startupProbe.successThreshold | int | `1` |  |
-| supersetWebsockets.startupProbe.timeoutSeconds | int | `1` |  |
-| supersetWebsockets.strategy | object | `{}` |  |
-| supersetWebsockets.topologySpreadConstraints | list | `[]` | TopologySpreadConstrains to be added to supersetWebsockets deployments |
 | supersetWorker.affinity | object | `{}` | Affinity to be added to supersetWorker deployment |
 | supersetWorker.autoscaling.enabled | bool | `false` |  |
 | supersetWorker.autoscaling.maxReplicas | int | `100` |  |
