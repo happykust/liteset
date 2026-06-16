@@ -40,6 +40,9 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./docs/build
+          # Custom domain (docusaurus url). Without cname every deploy would wipe
+          # the GitHub Pages custom-domain CNAME and the site would 404.
+          cname: liteset.happykust.dev
           # The Helm chart repo (superset-helm-release.yml) also lives on gh-pages
           # (index.yaml + *.tgz). keep_files preserves those so docs (index.html +
           # assets) and the Helm repo coexist on the same Pages branch.
