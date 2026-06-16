@@ -841,7 +841,7 @@ export default function Home(): JSX.Element {
               subtitle={translate({
                 id: 'home.benchmarks.subtitle',
                 message:
-                  'Liteset is being benchmarked against Apache Superset 6.0.0 on identical workloads. Below — a preview of the metrics we collect; full methodology and results live in the testing report.',
+                  'Liteset was benchmarked against Apache Superset 6.0.0 on identical hardware and workloads (SSB SF=10 dataset, Locust load generator). Below — the headline metrics; full methodology and results live in the testing report.',
               })}
             />
             <BenchmarkCharts />

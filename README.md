@@ -19,21 +19,44 @@ under the License.
 
 # Liteset
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/license/apache-2-0)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
-[![Litestar](https://img.shields.io/badge/Litestar-2.15+-7c3aed.svg)](https://litestar.dev/)
-[![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-red.svg)](https://www.sqlalchemy.org/)
-[![Based on Apache Superset](https://img.shields.io/badge/based%20on-Apache%20Superset%206.0.0-blue.svg)](https://github.com/apache/superset)
+<p align="center">
+  <strong>Async port of Apache Superset — the same BI platform, rebuilt from Flask/WSGI onto Litestar/ASGI.</strong>
+</p>
 
-**Liteset is an async port of Apache Superset, rewritten from Flask/WSGI onto Litestar/ASGI.**
+<p align="center">
+  <a href="https://opensource.org/license/apache-2-0"><img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" /></a>
+  <a href="https://www.python.org/"><img alt="Python" src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg" /></a>
+  <a href="https://litestar.dev/"><img alt="Litestar" src="https://img.shields.io/badge/Litestar-2.15+-7c3aed.svg" /></a>
+  <a href="https://www.sqlalchemy.org/"><img alt="SQLAlchemy" src="https://img.shields.io/badge/SQLAlchemy-2.0-red.svg" /></a>
+  <a href="https://liteset.happykust.dev"><img alt="Docs" src="https://img.shields.io/badge/docs-liteset.happykust.dev-1fa8a8.svg" /></a>
+  <a href="https://github.com/apache/superset"><img alt="Based on Apache Superset" src="https://img.shields.io/badge/based%20on-Apache%20Superset%206.0.0-blue.svg" /></a>
+</p>
 
-The project preserves full backward compatibility with existing Apache Superset installations: the metadata database schema, the HTTP API, the WebSocket contract and the frontend stay unchanged. Stop Superset, install Liteset on top of the same database, and keep working with the same dashboards, datasets, users and roles.
+> **Drop-in replacement for the Apache Superset 6.0.0 backend.** Keep the same metadata database, the same REST API, the same WebSocket contract and the same frontend — only the web layer becomes async. Stop Superset, start Liteset on top of the same database, and keep working with the same dashboards, datasets, users and roles.
+
+---
+
+## ⚡ Performance
+
+On identical hardware, against an IO-bound analytical workload (Star Schema Benchmark at Scale Factor 10, ~60 M rows, a deliberately constrained PostgreSQL), swapping the sync backend for the async one delivers:
+
+- **8.3×** higher throughput — 10.57 vs 1.27 RPS under a 200-user dashboard fan-out
+- **29.8×** lower median response time — 4.5 s vs 134 s in the same run
+- **up to 10×** more throughput as I/O latency grows — the regime BI platforms actually live in
+- error rate down from **32.8 % → 7.4 %**, while infrastructure endpoints (login, CSRF) stay responsive instead of degrading by two orders of magnitude
+
+[![Dashboard Fan-Out throughput: Liteset vs Apache Superset](https://raw.githubusercontent.com/happykust/liteset/main/docs/static/img/benchmarks/scenario1-throughput.png)](https://liteset.happykust.dev/docs/benchmarks/results/)
+
+<p align="center"><em>Dashboard Fan-Out throughput across the run (figure from the testing report).</em></p>
+
+The cost is a modest **+5 %** resident memory — the async runtime keeps coroutine state and an asyncpg pool in one process instead of pre-forking workers. See the full **[benchmark report](https://liteset.happykust.dev/docs/benchmarks/results/)** for all three scenarios, and the **[methodology](https://liteset.happykust.dev/docs/benchmarks/methodology/)** for the test bench.
 
 ---
 
 ## Table of contents
 
-- [Motivation](#motivation)
+- [Performance](#-performance)
+- [Why Liteset](#why-liteset)
 - [Target architecture](#target-architecture)
 - [Technology stack](#technology-stack)
 - [Compatibility guarantees](#compatibility-guarantees)
@@ -43,15 +66,15 @@ The project preserves full backward compatibility with existing Apache Superset 
 
 ---
 
-## Motivation
+## Why Liteset
 
 Historically Apache Superset is built on Flask/WSGI and runs under Gunicorn with pre-forked processes. This model has three fundamental limitations:
 
-1. **Blocking I/O.** During long-running queries against analytical databases the worker thread sits idle waiting for a response and does not serve other requests.
+1. **Blocking I/O.** During long-running queries against analytical databases the worker process sits idle waiting for a response and does not serve other requests.
 2. **High memory footprint.** Every worker process copies the whole application and maintains its own metadata-database connection pool.
 3. **Limited concurrency.** The number of concurrent requests is hard-capped by processes × threads.
 
-Liteset removes these bottlenecks by moving the entire web layer to the async ASGI model. The expected outcome is a 2–3× RPS gain on IO-bound workloads and a substantial reduction in resident memory thanks to switching from pre-forked processes to a single event loop.
+Liteset removes these bottlenecks by moving the entire web layer to the async ASGI model. The measured outcome on IO-bound workloads is the multi-fold throughput and tail-latency gains shown above, at a single-digit memory cost — see the [benchmark report](https://liteset.happykust.dev/docs/benchmarks/results/).
 
 ---
 
@@ -166,6 +189,6 @@ Liteset is distributed under the [Apache License 2.0](https://apache.org/license
 
 ---
 
-<p>
+<p align="center">
   <em>Liteset is an academic port; the author may have missed important details that cause regressions relative to Apache Superset 6.0.0. For production installations, keep using <a href="https://github.com/apache/superset">apache/superset</a>.</em>
 </p>

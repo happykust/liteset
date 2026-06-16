@@ -137,49 +137,52 @@ const StyledPlaceholderNotice = styled('p')`
   color: var(--ifm-secondary-text);
 `;
 
+// Real measurements from the diploma load-testing report (Apache Superset 6.0.0
+// on Flask + Gunicorn 4 sync workers vs Liteset on Litestar + Uvicorn 4 workers,
+// identical hardware, SSB Scale Factor 10 dataset, Locust load generator).
 const DEFAULT_CHARTS: BenchmarkChart[] = [
   {
     id: 'rps',
     title: 'Throughput (RPS)',
-    subtitle: 'Pre-rendered dashboard endpoint, 100 concurrent users',
+    subtitle: 'Dashboard Fan-Out, 200 concurrent users',
     unit: 'req/s',
     betterDirection: 'higher',
     bars: [
-      { label: 'Apache Superset', value: 420 },
-      { label: 'Liteset', value: 1180, highlight: true },
+      { label: 'Apache Superset', value: 1.27 },
+      { label: 'Liteset', value: 10.57, highlight: true },
     ],
   },
   {
-    id: 'p95',
-    title: 'p95 latency',
-    subtitle: 'Time to serve /api/v1/dashboard/<id>',
+    id: 'latency',
+    title: 'Median response time',
+    subtitle: 'Dashboard Fan-Out, 200 concurrent users',
     unit: 'ms',
     betterDirection: 'lower',
     bars: [
-      { label: 'Apache Superset', value: 510 },
-      { label: 'Liteset', value: 180, highlight: true },
+      { label: 'Apache Superset', value: 134000 },
+      { label: 'Liteset', value: 4500, highlight: true },
     ],
   },
   {
-    id: 'memory',
-    title: 'Resident memory',
-    subtitle: 'Single-instance footprint at idle',
-    unit: 'MB',
+    id: 'errors',
+    title: 'Error rate',
+    subtitle: 'Dashboard Fan-Out, 200 concurrent users',
+    unit: '%',
     betterDirection: 'lower',
     bars: [
-      { label: 'Apache Superset', value: 920 },
-      { label: 'Liteset', value: 310, highlight: true },
+      { label: 'Apache Superset', value: 32.8 },
+      { label: 'Liteset', value: 7.4, highlight: true },
     ],
   },
   {
-    id: 'concurrency',
-    title: 'Sustained concurrency',
-    subtitle: 'Active connections without latency degradation',
-    unit: 'conn.',
+    id: 'io-sweep',
+    title: 'Throughput at 1 s I/O latency',
+    subtitle: 'Controlled IO Latency Sweep, 50 users',
+    unit: 'req/s',
     betterDirection: 'higher',
     bars: [
-      { label: 'Apache Superset', value: 64 },
-      { label: 'Liteset', value: 512, highlight: true },
+      { label: 'Apache Superset', value: 2.47 },
+      { label: 'Liteset', value: 25.52, highlight: true },
     ],
   },
 ];
@@ -192,12 +195,12 @@ interface BenchmarkChartsProps {
 
 const BenchmarkCharts = ({
   charts = DEFAULT_CHARTS,
-  showPlaceholderNotice = true,
+  showPlaceholderNotice = false,
   placeholderNotice,
 }: BenchmarkChartsProps): JSX.Element => {
   const notice =
     placeholderNotice ??
-    'Demo numbers — real benchmark results will be published in the testing report.';
+    'Measured on identical hardware against the SSB SF=10 dataset; see the methodology page.';
   return (
     <>
       {showPlaceholderNotice && (

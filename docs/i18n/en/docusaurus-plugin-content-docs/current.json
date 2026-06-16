@@ -11,9 +11,13 @@
     "message": "Configuration",
     "description": "The label for category Configuration in sidebar CustomSidebar"
   },
-  "sidebar.CustomSidebar.category.Using Superset": {
-    "message": "Using Superset",
-    "description": "The label for category Using Superset in sidebar CustomSidebar"
+  "sidebar.CustomSidebar.category.Using Liteset": {
+    "message": "Using Liteset",
+    "description": "The label for category Using Liteset in sidebar CustomSidebar"
+  },
+  "sidebar.CustomSidebar.category.Benchmarks": {
+    "message": "Benchmarks",
+    "description": "The label for category Benchmarks in sidebar CustomSidebar"
   },
   "sidebar.CustomSidebar.category.Contributing": {
     "message": "Contributing",

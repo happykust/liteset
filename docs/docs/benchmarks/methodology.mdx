@@ -5,77 +5,92 @@ sidebar_position: 1
 
 # Benchmark methodology
 
-This page describes how Liteset is benchmarked against upstream Apache Superset 6.0.0. The goal is **fair, reproducible measurement** — same metadata database, same dashboards, same load profile, only the backend changes.
+This page describes how Liteset was benchmarked against upstream Apache Superset 6.0.0. The goal is **fair, reproducible measurement** — same hardware, same dataset, same load profile, only the backend's concurrency model changes.
 
-:::caution Work in progress
-The numbers shown on the [Results](./results.mdx) page are placeholder demo values. Real benchmark runs will be published as part of the diploma testing report.
-:::
+The single variable between every pair of runs is the backend: **Flask + Gunicorn (4 sync workers)** versus **Litestar + Uvicorn (4 workers + uvloop)**. The database, data, network and load generator are identical.
+
+<details>
+<summary>A personal note from the author</summary>
+
+This is my first load-testing effort at this scale, and it was done as part of a diploma thesis rather than in a dedicated benchmarking lab. I've tried to keep the methodology fair and reproducible, but I may well have made mistakes somewhere. Please don't judge too harshly — and if you're interested and notice any errors or weak spots, I'm genuinely open to criticism and feedback.
+
+</details>
 
 ## Test bench
 
-| Component | Configuration |
-|---|---|
-| **Hardware** | TBD (single VM, fixed CPU/RAM) |
-| **OS** | Linux (kernel 6.x) |
-| **Python** | 3.12 |
-| **Metadata DB** | PostgreSQL 16 + asyncpg |
-| **Cache** | Redis 7 |
-| **Frontend** | Identical SPA bundle for both backends |
-| **Sample data** | Apache Superset's built-in example dashboards |
+| Component | vCPU | RAM | Disk | Notes |
+|---|---|---|---|---|
+| **Backend VM** | 4 | 8 GB | — | 100 % vCPU cap; Flask/Gunicorn or Litestar/Uvicorn |
+| **Locust VM** | 2 | 4 GB | — | load generator, same LAN |
+| **PostgreSQL 16** | 4 | 16 GB | 50 GB NVMe | metadata + analytical data; the IO bottleneck |
+
+Host: Dell PowerEdge R420, 2× Xeon E5-2420 v2 (2.6 GHz), DDR3 ECC, NVMe SSD, Rocky Linux 9. All services run in Docker Compose.
+
+PostgreSQL is **deliberately under-provisioned** relative to the data volume so analytical queries take 5–50 s, making the workload IO-bound. Tuning: `shared_buffers = 4 GB`, `work_mem = 64 MB`, `effective_cache_size = 12 GB`, `random_page_cost = 8`, `max_parallel_workers = 4`.
 
 ## Software under test
 
 | Variant | Stack |
 |---|---|
-| **Apache Superset 6.0.0** | Flask + Gunicorn (`gevent` workers, `WORKERS=4`, `THREADS=10`) |
-| **Liteset** | Litestar + Uvicorn + uvloop, single process |
+| **Apache Superset 6.0.0** | Flask + Gunicorn, 4 **sync** workers, 300 s timeout |
+| **Liteset** | Litestar + Uvicorn, 4 workers + uvloop, async event loop |
 
-Both variants run against the **same PostgreSQL metadata database** to keep the data layer isolated as a variable.
+Equal worker counts (4 each) isolate the concurrency model: a sync worker handles one request at a time and blocks on IO; an async worker multiplexes many coroutines in one process. Both run against the **same PostgreSQL instance** with no schema changes — `superset_config.py` is loaded unmodified.
+
+## Dataset
+
+The analytical database is loaded with the **Star Schema Benchmark (SSB) at Scale Factor 10** — ~60 M rows in `LINEORDER` plus four dimension tables (`CUSTOMER`, `SUPPLIER`, `PART`, `DATE`). SSB is a standard analytical benchmark with deterministic generation (`ssb-dbgen`), realistic JOIN/aggregation queries and wide academic use. On top of it, **10 dashboards** of 6–12 charts each implement the four standard SSB Query Flights (Q1.1–Q4.3).
+
+## Load generator
+
+Load is generated with [**Locust**](https://docs.locust.io/) from a separate VM on the same LAN to minimise network latency.
 
 ## Workloads
 
-The load is generated with [`k6`](https://k6.io/) (preferred) or [`wrk`](https://github.com/wg/wrk). Each workload is run for **5 minutes** at a fixed virtual-user (VU) count, after a 30-second warm-up.
+### Scenario 1 — Dashboard Fan-Out
 
-### W1 — Dashboard read
+Loading a dashboard with 3–13 charts, each firing its own SQL query. **200 concurrent users, 15 minutes.** Each user loads a random dashboard with a 3–5 s think time. Stresses the backend's ability to run many IO-bound operations in parallel.
 
-- `GET /api/v1/dashboard/{id}` for an existing example dashboard
-- 100 concurrent virtual users
-- Authenticated requests (Flask session cookie)
+### Scenario 2 — SQL Lab Interactive Session
 
-### W2 — Chart data
+A data engineer running SSB queries sequentially via the SQL Lab API, waiting for each result. **50 concurrent users, 10 minutes**, 10 queries each from the SSB Query Flights. Measures latency under concurrent access to the analytical DB — and the responsiveness of infrastructure endpoints alongside heavy queries.
 
-- `POST /api/v1/chart/data` with a pre-rendered query context
-- 50 concurrent virtual users
-- Hits both metadata DB (read) and analytical DB (read)
+### Scenario 3 — Controlled IO Latency Sweep
 
-### W3 — SQL Lab query
-
-- `POST /api/v1/sqllab/execute/` with a small SELECT
-- 25 concurrent virtual users
-
-### W4 — Idle memory
-
-- No load; server warms up, sits idle for 60 s, RSS is recorded
+Queries a `pg_sleep`-based virtual dataset at fixed delays (10 ms, 50 ms, 100 ms, 500 ms, 1 s, 5 s). **50 concurrent users**, 2 minutes per delay. Removes SQL variability so the **only** variable is the concurrency model — the clearest demonstration of the async advantage.
 
 ## Metrics
 
+Six metric groups per scenario:
+
 | Metric | Why it matters |
 |---|---|
-| **RPS (req/s)** | Throughput — how many requests the backend serves per second |
-| **p50 / p95 / p99 latency** | Response-time distribution — tail latency reveals queueing |
-| **Resident memory (MB)** | Steady-state RAM footprint — important for cost / density |
-| **Sustained concurrency** | Highest connection count without latency degradation |
-| **Error rate** | Non-2xx responses; must stay at 0 |
+| **Throughput (RPS)** | Successful requests per second (Locust) |
+| **Response time** | Median, p95 and p99 (Locust) — tail latency reveals queueing |
+| **Error rate** | Percentage of 4xx/5xx responses |
+| **CPU usage** | Average and peak backend-container CPU (`docker stats`) |
+| **Resident memory (RSS)** | Backend process footprint (`docker stats`) |
+| **PostgreSQL connections** | Active connections via `pg_stat_activity` — detects connection leaks |
+
+## Procedure
+
+Each scenario follows a standardised five-step procedure:
+
+1. **Reset** — restart the backend and Redis containers to clear state.
+2. **Warm-up** — 60 s of minimal load, discarded.
+3. **Main run** — 5 minutes of steady load at the target user count (per-scenario durations noted above).
+4. **Capture** — export Locust CSVs (`stats`, `stats_history`, `failures`) and `docker stats`.
+5. **Repeat** — each scenario is run **3 times** for statistically stable results.
 
 ## Comparability
 
 Both backends are deployed:
 
-- **Behind the same reverse proxy** (or no proxy at all) — networking is identical
-- **With identical caching policy** — both use Redis, same TTLs
-- **With the same dataset / dashboard fixtures** — bootstrapped from a snapshot
-- **With the same authentication path** — Flask-signed session cookies issued once and reused
+- **In the same Docker Compose stack** — only the backend image is swapped
+- **With identical PostgreSQL, Redis and Celery** — unchanged between runs
+- **With the same dataset and dashboard fixtures** — bootstrapped from the same SSB snapshot
+- **With the same authentication path** — itsdangerous-signed session cookies issued once and reused
 
 ## Reproducing
 
-The exact load scripts, infrastructure manifests and raw results are kept in the [`liteset/benchmarks`](https://github.com/happykust/liteset) folder of the upstream repository. Each result on the [Results](./results.mdx) page links to the corresponding run.
+The exact Locust scripts, infrastructure manifests and raw CSV results are kept alongside the diploma testing report. Each result on the [Results](./results.mdx) page corresponds to one of the three scenarios above.

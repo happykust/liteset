@@ -119,14 +119,14 @@ GitHub Codespaces provides a complete, pre-configured development environment in
 
 :::info
 We're grateful to GitHub for providing this excellent cloud development service that makes
-contributing to Apache Superset more accessible to developers worldwide.
+contributing to Liteset more accessible to developers worldwide.
 :::
 
 ### Getting Started with Codespaces
 
 1. **Create a Codespace**: Use this pre-configured link that sets up everything you need:
 
-   [**Launch Superset Codespace →**](https://github.com/codespaces/new?skip_quickstart=true&machine=standardLinux32gb&repo=39464018&ref=master&devcontainer_path=.devcontainer%2Fdevcontainer.json&geo=UsWest)
+   [**Launch Liteset Codespace →**](https://codespaces.new/happykust/liteset?quickstart=1)
 
    :::caution
    **Important**: You must select at least the **4 CPU / 16GB RAM** machine type (pre-selected in the link above).
@@ -274,7 +274,7 @@ curl -f http://localhost:8088/health && echo "✅ Superset ready"
 - **Read [LLMS.md](https://github.com/happykust/liteset/blob/main/LLMS.md) first** - Contains comprehensive development guidelines, coding standards, and critical refactor information
 - **Check platform-specific files** when available:
   - `CLAUDE.md` - For Claude/Anthropic tools
-  - `CURSOR.md` - For Cursor editor
+  - `.cursor/rules/dev-standard.mdc` - For Cursor editor
   - `GEMINI.md` - For Google Gemini tools
   - `GPT.md` - For OpenAI/ChatGPT tools
 - Follow the TypeScript migration guidelines and avoid deprecated patterns listed in LLMS.md
@@ -457,7 +457,7 @@ cd superset-frontend
 npm ci
 ```
 
-Note that Superset uses [Scarf](https://docs.scarf.sh) to capture telemetry/analytics about versions being installed, including the `scarf-js` npm package and an analytics pixel. As noted elsewhere in this documentation, Scarf gathers aggregated stats for the sake of security/release strategy and does not capture/retain PII. [You can read here](https://docs.scarf.sh/package-analytics/) about the `scarf-js` package, and various means to opt out of it, but you can opt out of the npm package _and_ the pixel by setting the `SCARF_ANALYTICS` environment variable to `false` or opt out of the pixel by adding this setting in `superset-frontent/package.json`:
+The inherited frontend still carries the upstream `@scarf/scarf` dependency in `package.json`, but **Liteset does not operate any Scarf telemetry gateway or analytics pixel** — see the [telemetry FAQ](/docs/faq#does-liteset-collect-any-telemetry-data). If you want to be extra sure the `scarf-js` npm package stays inert during local installs, set the `SCARF_ANALYTICS` environment variable to `false`, or disable it in `superset-frontend/package.json`:
 
 ```json
 // your-package/package.json
