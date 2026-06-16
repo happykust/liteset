@@ -193,6 +193,12 @@ describe('Dashboards list', () => {
 
       // bulk deletes in list-view
       setGridMode('list');
+      // The card-mode bulk delete + view switch triggers a layout settle
+      // (ResizeObserver loop) and an async clear of the carried-over row
+      // selection; give the table a moment to stabilize before asserting row
+      // positions, otherwise eq(0) can resolve to the stale selected row
+      // mid-transition. (Same rationale as the cy.wait in chart_list/list.)
+      cy.wait(2500);
       cy.getBySel('table-row').eq(0).contains('3 - Sample dashboard');
       cy.getBySel('table-row').eq(1).contains('4 - Sample dashboard');
       cy.get('[data-test="table-row"] input[type="checkbox"]').eq(0).click();
